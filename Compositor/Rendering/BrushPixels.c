@@ -1,6 +1,8 @@
 #include "BrushPixels.h"
+#include "CompositorKernels.h"
 
 void brush_alpha_bounds(const uint8_t *bytes, size_t width, size_t height, size_t stride, size_t bounds[4]) {
+    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
     size_t left = width, right = 0, top = height, bottom = 0;
     for (size_t y = 0; y < height; ++y) {
         const uint8_t *row = bytes + y * stride;
@@ -21,6 +23,7 @@ void brush_alpha_bounds(const uint8_t *bytes, size_t width, size_t height, size_
 }
 
 void layer_unpremultiply_opaque(uint8_t *rgba, size_t stride, size_t width, size_t height) {
+    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
     for (size_t y = 0; y < height; ++y) {
         uint8_t *p = rgba + y * stride;
         for (size_t x = 0; x < width; ++x, p += 4) {
@@ -34,6 +37,8 @@ void layer_unpremultiply_opaque(uint8_t *rgba, size_t stride, size_t width, size
     }
 }
 void layer_restore_alpha(uint8_t *rgba, size_t stride, const uint8_t *alpha, size_t alphaStride, size_t width, size_t height) {
+    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
+    COMPOSITOR_REQUIRE_CANONICAL_GRAY(alphaStride, width);
     for (size_t y = 0; y < height; ++y) {
         uint8_t *p = rgba + y * stride;
         for (size_t x = 0; x < width; ++x, p += 4) {
@@ -44,6 +49,8 @@ void layer_restore_alpha(uint8_t *rgba, size_t stride, const uint8_t *alpha, siz
     }
 }
 void layer_extract_alpha(const uint8_t *rgba, size_t rgbaStride, uint8_t *gray, size_t grayStride, size_t width, size_t height) {
+    COMPOSITOR_REQUIRE_CANONICAL_RGBA(rgbaStride, width);
+    COMPOSITOR_REQUIRE_CANONICAL_GRAY(grayStride, width);
     for (size_t y = 0; y < height; ++y)
         for (size_t x = 0; x < width; ++x)
             gray[y * grayStride + x] = rgba[y * rgbaStride + x * 4 + 3];

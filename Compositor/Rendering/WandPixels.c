@@ -1,4 +1,5 @@
 #include "WandPixels.h"
+#include "CompositorKernels.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,6 +17,7 @@ static inline int wand_matches(const uint8_t *p, const int reference[4], int tol
 
 long wand_mask(const uint8_t *rgba, size_t width, size_t height, size_t stride,
                size_t seedX, size_t seedY, size_t radius, int tolerance, int contiguous, uint8_t *mask) {
+    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
     if (!width || !height) return 0;
     memset(mask, 0, width * height);
     if (seedX >= width || seedY >= height) return 0;
