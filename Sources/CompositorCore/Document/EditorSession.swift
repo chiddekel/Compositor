@@ -35,11 +35,15 @@ final class EditorSession {
     /// The pending interactive transform, if any. Dragging transform handles writes
     /// the draft here; `commitTransform` writes it to the model in one undo step.
     var transformEdit: TransformEdit?
+    /// Option-drag duplicate in progress: the copy being moved and the source it came from
+    /// (Backing storage — the public surface lives in SelectionTransform.swift).
+    var transformDuplicateState: (copy: UUID, source: UUID)?
     var isMaskSelected = false
     /// The last raster command's failure, if any (macOS parity: `brushError` surfaces
     /// Distort/paint failures to the host as a dismissible message).
     var brushError: String?
     var activeLayer: ImageLayer? { document?.layers.first { $0.id == activeLayerID } }
+    var selection: DocumentSelection? { document?.selection }
 
     func replaceCurrentDocument(_ document: CanvasDocument) {
         self.document = document

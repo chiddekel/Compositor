@@ -93,13 +93,17 @@ extension EditorSession {
 
     func commitTransform() {
         guard let edit = transformEdit else { return }
+        defer {
+            if transformDuplicateState != nil { transformDuplicateState = nil; endEdit() }
+        }
         transformEdit = nil
-        guard edit.draft.isValid else { return }
-        if edit.floating != nil {
-            // FloatingSelection merge needs the lift/merge raster milestone; commit
-            // without it is deferred, so the pending edit simply closes.
+        if let floating = edit.floating {
+            // Unchanged: restore exactly, so soft selection edges never pick up a seam.
+            if edit.draft == floating.original && edit.corners == nil { cancelFloatingTransform(floating) }
+            else { mergeFloatingTransform(edit, floating) }
             return
         }
+        guard edit.draft.isValid else { return }
         if edit.mask { commitMaskTransform(edit); return }
         if let corners = edit.corners { commitDistort(edit, corners: corners); return }
         if let group = edit.group {
@@ -131,8 +135,17 @@ extension EditorSession {
     }
 
     func cancelTransform() {
-        // The draft never touched the model; discarding it is enough.
+        guard let edit = transformEdit else { return }
         transformEdit = nil
+        if let duplicate = transformDuplicateState {
+            var next = document!
+            next.layers.removeAll { $0.id == duplicate.copy }
+            replaceCurrentDocument(next)
+            setActiveLayer(duplicate.source)
+            transformDuplicateState = nil
+            endEdit()
+        }
+        if let floating = edit.floating { cancelFloatingTransform(floating) }
     }
 
     // MARK: - Distortion (port of macOS EditorSession beginDistort/previewCorners/commitDistort/distort)
