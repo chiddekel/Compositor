@@ -16,6 +16,7 @@ extern "C" {
 int compositor_host_run(int argc, char **argv);
 int compositor_host_dialog_smoke(int argc, char **argv);
 int compositor_host_io_smoke(int argc, char **argv);
+int compositor_host_layers_smoke(int argc, char **argv);
 
 #ifdef __cplusplus
 }

@@ -69,9 +69,21 @@ the live session, and leaves the current document unchanged on failure.
 `CompositorHostBootstrap --io-smoke` verifies this path under Swift runtime.
 Portal file chooser integration remains outside direct path persistence.
 
+**Layers dock round-trip verified (host-verifiable slice).** The `SessionWindow`
+Layers dock (`QListWidget` + opacity `QSlider`) mirrors the state JSON the Swift
+core emits and drives `addLayer`/`selectLayer`/`setOpacity`/`duplicateLayer`/
+`deleteLayer` through the C ABI. `CompositorHostBootstrap --layers-smoke` drives
+the real widgets: dock rows match `state.layers`, New Layer adds a dock row +
+session layer and selects it, Duplicate stacks on top, row selection switches
+`activeLayerID`, the opacity slider round-trips 50 → `opacity` 0.5, Delete
+removes the row + layer, and the composited render still paints. `sessionState`
+is public on `SessionWindow` so the test reads ABI bytes through the same code
+path the dock renders.
+
 **Current verification.** SwiftPM under KDE SDK 6.10 passes **408 tests, 0
 failures**. Host CMake/CTest passes **4/4** checks. Release static Swift build,
-Swift composition-root launch, Qt brush/menu host build, and Qt IO smoke all pass.
+Swift composition-root launch, Qt brush/menu host build, and the Qt dialog/IO/
+layers smokes all pass.
 Flatpak source download validation passes for pinned Skia/OpenCV archives.
 
 Reproduce:

@@ -41,6 +41,10 @@ public:
     bool saveProject(const QString &path);
     bool loadProject(const QString &path);
 
+    // Snapshot of the Swift editor core's state JSON (test hook: reads the same
+    // bytes the dock renders, through the real C ABI).
+    QJsonObject sessionState() const;
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -53,7 +57,6 @@ private:
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
     void showAdjustDialog(const QString &kind);
-    QJsonObject sessionState() const;
     bool sendCommand(QJsonObject command);
     QPointF documentPoint(const QPointF &windowPoint) const;
     void refreshImage();

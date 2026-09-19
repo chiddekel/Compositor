@@ -35,6 +35,12 @@ struct HostBootstrap {
             print("CompositorHostBootstrap: Qt IO smoke OK")
             return
         }
+        if CommandLine.arguments.contains("--layers-smoke") {
+            let result = compositor_host_layers_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt layers smoke returned \(result)") }
+            print("CompositorHostBootstrap: Qt layers smoke OK")
+            return
+        }
         // `compositor_session_command` uses Foundation's JSONDecoder internally;
         // from a Swift main that is bootstrapped, it works (it traps from a
         // C++ main). This first call is the architectural proof.
