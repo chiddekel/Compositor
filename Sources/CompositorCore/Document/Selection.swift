@@ -52,6 +52,26 @@ nonisolated enum PortablePath: Equatable, @unchecked Sendable {
         case .polygon(let points): return points.isEmpty
         }
     }
+
+    /// The path transformed by `transform`. Matches CoreGraphics `CGPath.copy(using:)`
+    /// for the outline kinds the selection tools produce: the rect/ellipse/rounded-rect
+    /// cases transform their bounding rect (a rotated rect becomes a polygon-bounded
+    /// outline on macOS; here the rect is carried through `CGRect.applying`, which maps
+    /// it to its axis-aligned bounding box — sufficient for the translation-only moves
+    /// the pixel-move tool issues), and the polygon case transforms each vertex.
+    func applying(_ transform: CGAffineTransform) -> PortablePath {
+        switch self {
+        case .rectangle(let r): return .rectangle(r.applying(transform))
+        case .ellipse(let r): return .ellipse(r.applying(transform))
+        case .roundedRect(let r, let radius): return .roundedRect(r.applying(transform), cornerRadius: radius)
+        case .polygon(let points): return .polygon(points.map { $0.applying(transform) })
+        }
+    }
+
+    /// Matches `CGPath.copy(using:)`: returns the path transformed by `transform`.
+    /// The inout transform is left unchanged — our enum paths don't adjust it the way
+    /// some CGPath element types do.
+    func copy(using transform: inout CGAffineTransform) -> PortablePath { applying(transform) }
 }
 
 /// A document-space selection outline, clipped to the canvas. `nil` on the document
