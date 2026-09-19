@@ -111,6 +111,21 @@ nonisolated struct LayerTransform: Equatable, Codable, Sendable {
     static let handles = [CGPoint(x: 0, y: 0), CGPoint(x: 0.5, y: 0), CGPoint(x: 1, y: 0),
                           CGPoint(x: 1, y: 0.5), CGPoint(x: 1, y: 1), CGPoint(x: 0.5, y: 1),
                           CGPoint(x: 0, y: 1), CGPoint(x: 0, y: 0.5)]
+
+    /// This placement mirrored across a vertical line at `axis` (or, not `horizontally`, a horizontal one): the
+    /// picture flips, its angle turns the other way, and its middle crosses to the other side of the line.
+    func mirrored(horizontally: Bool, across axis: CGFloat) -> LayerTransform {
+        var result = self
+        if horizontally {
+            result.flipX.toggle()
+            result.origin.x = 2 * axis - center.x - size.width / 2
+        } else {
+            result.flipY.toggle()
+            result.origin.y = 2 * axis - center.y - size.height / 2
+        }
+        result.rotation = -rotation
+        return result
+    }
 }
 
 /// Several layers transformed together: the upright box around them when the edit began (what the draft edits),

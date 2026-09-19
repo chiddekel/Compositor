@@ -31,6 +31,7 @@ nonisolated final class RasterImage: @unchecked Sendable {
     init(_ pixels: PortableImage) { self.pixels = pixels }
     var width: Int { pixels.width }
     var height: Int { pixels.height }
+    var bytesPerRow: Int { pixels.bytesPerRow }
 }
 
 nonisolated struct ImportedImage: @unchecked Sendable {
