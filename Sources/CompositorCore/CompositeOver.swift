@@ -18,8 +18,8 @@ import Foundation
 /// runtime extension. Changing the toolchain is an ABI-affecting decision.
 @_cdecl("compositor_composite_over")
 public func compositorCompositeOver(
-    dstRGBA: UnsafeMutablePointer<UInt8>,
-    srcRGBA: UnsafePointer<UInt8>,
+    dstRGBA: UnsafeMutablePointer<UInt8>?,
+    srcRGBA: UnsafePointer<UInt8>?,
     coverage: UnsafePointer<UInt8>?,
     width: Int,
     height: Int,
@@ -27,7 +27,8 @@ public func compositorCompositeOver(
     opacity: Float
 ) -> Int32 {
     // ENG-15: validate geometry at the ABI entry; reject malformed input before
-    // any pixel work rather than passing bad geometry to the kernels.
+    // any pixel work rather than passing bad geometry to the kernels. The dst/src
+    // pointers are imported as nullable so a NULL from the C side fails safely here.
     guard width > 0, height > 0, stride >= width * 4 else { return -1 }
     guard let dst = dstRGBA, let src = srcRGBA else { return -1 }
 

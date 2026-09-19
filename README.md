@@ -67,7 +67,7 @@ Open `Compositor.xcodeproj` and run the **Compositor** scheme.
 
 The Linux port builds entirely inside the Flatpak SDK sandbox — it never links
 the build host's installed system libraries. Qt6 comes from the KDE SDK (6.10),
-Swift from the `swift6` SDK extension (Freedesktop 24.08 branch, Swift 6.2), and
+Swift from the `swift6` SDK extension (Freedesktop 25.08 branch, Swift 6.3.3), and
 Skia + OpenCV are vendored as pinned Flatpak modules compiled into `/app`.
 
 Install the runtime, SDK, and Swift extension (one-time):
@@ -75,7 +75,7 @@ Install the runtime, SDK, and Swift extension (one-time):
 ```
 flatpak install --user flathub \
     org.kde.Platform//6.10 org.kde.Sdk//6.10 \
-    org.freedesktop.Sdk.Extension.swift6//24.08
+    org.freedesktop.Sdk.Extension.swift6//25.08
 ```
 
 Build and install the app:

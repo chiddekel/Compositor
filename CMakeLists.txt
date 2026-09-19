@@ -88,9 +88,13 @@ endif()
 # Wired now to prove the manifest modules install correctly; no target links
 # them yet in the MVP (the C kernels + QImage do the pixel/codec work). The
 # Skia compositing and OpenCV named-op backends plug in here later.
+# COMPOSITOR_REQUIRE_VENDORED_DEPS=ON (the full Flatpak manifest) makes these
+# REQUIRED so a build that omits the Skia/OpenCV modules fails fast. The minimal
+# Swift+Qt Flatpak build sets it OFF to de-risk the Swift toolchain first.
 # Only required inside a Flatpak build (where the manifest installed them to /app);
 # skipped on the host so the Qt-independent kernel + ABI tests still build.
-if(DEFINED ENV{FLATPAK_ID})
+option(COMPOSITOR_REQUIRE_VENDORED_DEPS OFF)
+if(DEFINED ENV{FLATPAK_ID} AND COMPOSITOR_REQUIRE_VENDORED_DEPS)
     find_path(Skia_INCLUDE_DIR NAMES SkCanvas.h PATHS /app/include/skia REQUIRED)
     find_library(Skia_STATIC_LIB NAMES skia PATHS /app/lib REQUIRED)
     find_package(OpenCV REQUIRED COMPONENTS core imgproc)
