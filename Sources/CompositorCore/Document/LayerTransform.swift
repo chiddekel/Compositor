@@ -8,11 +8,11 @@
 // SOLID: the value types keep their responsibilities and contracts; the macOS
 // original stays the source of truth.
 //
-// Partial scope: TransformEdit is omitted from this port because it references
-// FloatingTransform, which depends on CanvasDocument (the document model layer,
-// ported next). The pure math types below — LayerSampling, LayerTransform,
-// TransformGroup, TransformDrag, TransformSnap — have no model dependency and are
-// the unblocked foundation. TransformEdit ports with the model layer.
+// `TransformEdit` and `FloatingTransform` (selection/multi-layer transform edits)
+// reference the document model and port here unchanged now that `CanvasDocument`
+// exists (DocumentModel.swift). The pure math types — LayerSampling,
+// LayerTransform, TransformGroup, TransformDrag, TransformSnap — have no model
+// dependency.
 
 import Foundation
 
@@ -232,4 +232,36 @@ nonisolated enum TransformSnap {
         }
         return (best?.move ?? 0, best?.target)
     }
+}
+
+/// A transform edit in progress. The draft is the live value; `persistent` marks an
+/// already-committed transform being re-edited (⌘T). Ported verbatim from the macOS
+/// original; `floating` and `group` carry the selection-transform and multi-layer
+/// cases (their value types are below). This was omitted from the first transform
+/// port because it references the document model; with the model now in place it
+/// ports unchanged.
+struct TransformEdit {
+    let layerID: UUID
+    var draft: LayerTransform
+    let persistent: Bool
+    /// Set when transforming selected pixels (Cmd-T with a selection) rather than a layer.
+    var floating: FloatingTransform? = nil
+    /// Set once a handle is Cmd-dragged: the four corners (document pixels, handle order) move
+    /// freely, and Apply resamples the pixels into that shape.
+    var corners: [CGPoint]? = nil
+    /// Set when an unlinked mask is selected: the edit places the mask alone (its `placement`).
+    var mask = false
+    /// Set when several layers are selected: the draft is the box around them all, and each follows it.
+    var group: TransformGroup? = nil
+}
+
+/// Cmd-T with a selection: the selected pixels float on a temporary layer, edited with the
+/// normal transform handles, then merge back into their layer. The whole thing is one
+/// "Transform Selection" undo step; Escape restores the document exactly.
+struct FloatingTransform {
+    let sourceID: UUID
+    let before: CanvasDocument
+    let beforeActive: UUID?
+    let original: LayerTransform
+    let pixelSize: CGSize
 }
