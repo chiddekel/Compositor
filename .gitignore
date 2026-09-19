@@ -22,3 +22,8 @@ xcuserdata/
 # Claude Code settings personal to this machine
 .claude/settings.local.json
 BUILD_PLAN.md
+
+# Flatpak build artifacts (sources are fetched by flatpak-builder at build time)
+.flatpak-builder/
+build-dir/
+build-flatpak/

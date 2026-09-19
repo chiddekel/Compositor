@@ -18,7 +18,10 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
-        .library(name: "CompositorCore", targets: ["CompositorCore"]),
+        // Static library so the C++ host (ENG-2 composition root) links the Swift
+        // core's @_cdecl symbols in-process; built with --static-swift-stdlib in
+        // the Flatpak manifest so the Swift runtime is bundled, not a system dep.
+        .library(name: "CompositorCore", type: .static, targets: ["CompositorCore"]),
     ],
     targets: [
         .target(

@@ -1,0 +1,170 @@
+# Flatpak manifest — Compositor Linux port.
+#
+# Build runs entirely inside the Flatpak SDK sandbox. Nothing links the build
+# host's installed system libraries (user constraint: "use no system library -
+# only flatpak compilers allow - library download to repo directory").
+#
+#   - Qt6 + Swift come from the Flatpak SDK: org.kde.Sdk 6.10 bundles Qt6
+#     (extends Freedesktop 24.08); org.freedesktop.Sdk.Extension.swift6 (branch
+#     24.08, Swift 6.2) provides the Swift toolchain. Neither is a host-system
+#     library.
+#   - Skia + OpenCV are NOT in any installed SDK. They are vendored: pinned
+#     source URLs + sha256 below; flatpak-builder fetches and verifies them at
+#     build time and compiles them with the SDK compiler into /app. Provenance
+#     records live in third_party/skia.pinned and third_party/opencv.pinned.
+#   - Swift runtime is bundled (--static-swift-stdlib); end users need only the
+#     Platform, not the SDK or the swift6 extension.
+#
+# Real-world checks (verify on first build, see plan §"Real-world checks"):
+#   - swift6 in-sandbox path: /usr/lib/sdk/swift6/bin  (may be .../usr/bin)
+#   - KDE Qt6 cmake dir: /usr/lib/x86_64-linux-gnu/cmake/Qt6
+#   - Skia GN args drift between milestones; run `bin/gn args --list` in sandbox.
+#   - Fill in the TODO-pin sha256 / tag fields before a real build.
+
+app-id: com.wonderassembly.Compositor
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+
+# Swift toolchain. The extension branch tracks the Freedesktop base: KDE 6.10
+# extends Freedesktop 24.08, so the matching extension branch is 24.08
+# (provides Swift 6.2).
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.swift6//24.08
+
+command: compositor
+
+finish-args:
+  - --share=ipc            # Qt platform plugin IPC
+  - --socket=fallback-x11   # Qt windowing (X11 fallback)
+  - --socket=wayland        # Qt windowing (Wayland, preferred)
+  - --device=dri            # GPU path for the future Vulkan brush milestone
+  # MVP host uses QFileDialog (not xdg-desktop-portal yet) -> broad filesystem
+  # access. Tracked gap: migrate to portal FileChooser, then tighten to
+  # --filesystem=xdg-download only.
+  - --filesystem=home
+  - --filesystem=xdg-download
+  - --filesystem=/tmp
+  - --talk-name=org.freedesktop.portal.*   # future portal migration
+
+# Strip static archives post-link (they are consumed at build time).
+cleanup:
+  - '*.a'
+
+modules:
+  # ───────────────────────── Module 1: Skia (vendored, static, CPU-only) ──
+  - name: skia
+    buildsystem: simple
+    build-options:
+      # Skia needs python3 + ninja from the SDK.
+      build-commands:
+        - python3 tools/git-sync-deps
+        - |
+          bin/gn gen out/Static --args='
+            is_official_build=true
+            skia_enable_gpu=false
+            skia_use_vulkan=false
+            skia_use_egl=false
+            skia_use_gl=false
+            skia_use_system_icu=false
+            skia_use_system_zlib=false
+            skia_use_system_libpng=false
+            skia_use_system_libjpeg_turbo=false
+            skia_use_system_libwebp=false
+            skia_use_system_harfbuzz=false
+            skia_use_system_freetype2=false
+            skia_use_system_fontconfig=false
+            skia_use_vulkan=false
+            skia_enable_skshaper=true
+          '
+        - ninja -C out/Static
+        - mkdir -p /app/lib /app/include/skia
+        - cp out/Static/libskia.a /app/lib/
+        - cp -r include/*.h /app/include/skia/
+        - cp -r include/core/*.h /app/include/skia/
+        - cp -r include/config/*.h /app/include/skia/ 2>/dev/null || true
+    sources:
+      - type: archive
+        url: https://github.com/google/skia/archive/refs/tags/<TODO-skia-tag>.tar.gz
+        sha256: <TODO-pin-sha256>
+        # TODO(pin): set a Skia milestone tag (e.g. chrome/m126) and the real sha256.
+
+  # ───────────────────────── Module 2: OpenCV (vendored, static, minimal) ─
+  - name: opencv
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_LIST=core,imgproc
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_DOCS=OFF
+      - -DBUILD_PERF_TESTS=OFF
+      - -DBUILD_opencv_python2=OFF
+      - -DBUILD_opencv_python3=OFF
+      - -DBUILD_ZLIB=ON
+      - -DBUILD_PNG=ON
+      - -DBUILD_JPEG=ON
+      - -DBUILD_TIFF=OFF
+      - -DBUILD_WEBP=OFF
+      - -DBUILD_OPENJPEG=OFF
+      - -DBUILD_OPENEXR=OFF
+      - -DWITH_TIFF=OFF
+      - -DWITH_WEBP=OFF
+      - -DWITH_OPENJPEG=OFF
+      - -DWITH_OPENEXR=OFF
+      - -DWITH_V4L=OFF
+      - -DWITH_GTK=OFF
+      - -DWITH_GSTREAMER=OFF
+      - -DWITH_FFMPEG=OFF
+      - -DWITH_LAPACK=OFF
+      - -DWITH_IPP=OFF
+      - -DWITH_EIGEN=OFF
+      - -DWITH_OPENCL=OFF
+      - -DWITH_PROTOBUF=OFF
+      - -DCMAKE_INSTALL_PREFIX=/app
+    sources:
+      - type: archive
+        url: https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz
+        sha256: <TODO-pin-sha256>
+        # TODO(pin): set the real sha256 for opencv-4.10.0.
+
+  # ───────────────────────── Module 3: Compositor app ─────────────────────
+  - name: compositor
+    buildsystem: simple
+    build-commands:
+      # (a) Put the Swift toolchain on PATH. Verify path on first build:
+      #     may be /usr/lib/sdk/swift6/usr/bin on some extension versions.
+      - export PATH=/usr/lib/sdk/swift6/bin:$PATH
+      # (b) Build the Swift core as a static library with the runtime bundled.
+      - swift build -c release --static-swift-stdlib
+      # (c) Configure the C++ side against Flatpak-SDK Qt6 + vendored Skia/OpenCV
+      #     in /app, and import the freshly built Swift static lib.
+      - |
+        cmake -S . -B build \
+          -DCMAKE_PREFIX_PATH=/app \
+          -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+          -DOpenCV_DIR=/app/lib/cmake/opencv4 \
+          -DCompositorCore_SWIFT_STATIC_LIB=$PWD/.build/release/libCompositorCore.a
+      # (d) Build + test. Host journey test needs offscreen Qt.
+      - cmake --build build
+      - QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+      # (e) Install the app binary.
+      - install -Dm755 build/compositor /app/bin/compositor
+      # (f) Install hicolor icons (sourced from the macOS AppIcon set).
+      - |
+        for s in 16 32 64 128 256 512; do
+          install -Dm644 \
+            Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-${s}.png \
+            /app/share/icons/hicolor/${s}x${s}/apps/com.wonderassembly.Compositor.png
+        done
+      # (g) Install desktop entry + AppStream metainfo.
+      - install -Dm644 flatpak/com.wonderassembly.Compositor.desktop /app/share/applications/com.wonderassembly.Compositor.desktop
+      - install -Dm644 flatpak/com.wonderassembly.Compositor.metainfo.xml /app/share/metainfo/com.wonderassembly.Compositor.metainfo.xml
+    sources:
+      # Flathub / CI source: pinned git commit (set before submission).
+      # - type: git
+      #   url: https://github.com/robbietilton/Compositor.git
+      #   commit: <TODO-commit>
+      # Local dev source: build from the current checkout.
+      - type: dir
+        path: .

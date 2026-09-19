@@ -23,6 +23,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
+# COMPOSITOR_BUILD_HOST=ON is a local-dev escape hatch that allows finding Qt6
+# from the host system. The Flatpak build (the only supported build path) never
+# sets it: Qt6 comes from the KDE SDK, Skia/OpenCV are vendored under /app, and
+# the build refuses to use a host-system Qt. See com.wonderassembly.Compositor.yaml.
+option(COMPOSITOR_BUILD_HOST OFF)
+
 # Header-only ABI contract, consumed by the shim and tests.
 add_library(CompositorCoreAbi INTERFACE)
 target_include_directories(CompositorCoreAbi INTERFACE ${CMAKE_SOURCE_DIR}/include)
@@ -43,6 +49,8 @@ add_library(CompositorKernels STATIC
     Compositor/Rendering/CompositorKernelAssert.c)
 target_include_directories(CompositorKernels PUBLIC ${CMAKE_SOURCE_DIR}/Compositor/Rendering)
 target_compile_definitions(CompositorKernels PUBLIC COMPOSITOR_PORTABLE)
+# libm is part of glibc bundled in the Freedesktop runtime, not a separately
+# installed host library, so this is not a host-system dependency.
 target_link_libraries(CompositorKernels PUBLIC m)
 
 # Thin C++ wrapper over the C ABI.
@@ -55,10 +63,55 @@ add_library(CompositorCoreRef STATIC tests/ref/compositor_composite_over.c)
 target_link_libraries(CompositorCoreRef PUBLIC CompositorCoreAbi)
 
 # ---- ENG-2: Qt6 Widgets host shell / composition root ---------------------
-# find_package is QUIET and early so both Qt-gated targets below see Qt6_FOUND.
-# On a host without Qt (e.g. a Swift-only SDK container) the kernel + ABI targets
-# still build; the host app and host journey test are simply skipped.
-find_package(Qt6 COMPONENTS Widgets QUIET)
+# Qt6 must come from the Flatpak SDK (KDE 6.10), never the host system. The
+# previous bare `find_package(Qt6 ... QUIET)` silently picked up the host's
+# installed Qt6. Behavior now:
+#   - Flatpak build (FLATPAK_ID set): accept the SDK's Qt6, build Qt targets.
+#   - Host without Qt6: skip Qt targets; the kernel + ABI tests still build.
+#   - Host WITH a host-system Qt6 and not COMPOSITOR_BUILD_HOST: hard error
+#     (refuses to link the forbidden host-system Qt).
+#   - COMPOSITOR_BUILD_HOST=ON: local-dev escape hatch, accept host Qt6.
+if(COMPOSITOR_BUILD_HOST)
+    find_package(Qt6 COMPONENTS Widgets QUIET)
+else()
+    find_package(Qt6 COMPONENTS Widgets QUIET)
+    if(Qt6_FOUND AND NOT DEFINED ENV{FLATPAK_ID})
+        message(FATAL_ERROR
+            "Qt6 was found (at ${Qt6_DIR}) but this is a host-system Qt, not the "
+            "Flatpak SDK Qt. Build via the Flatpak manifest "
+            "(com.wonderassembly.Compositor.yaml), or set -DCOMPOSITOR_BUILD_HOST=ON "
+            "explicitly for local dev.")
+    endif()
+endif()
+
+# Vendored Skia (static, no cmake config) + OpenCV (cmake config) under /app.
+# Wired now to prove the manifest modules install correctly; no target links
+# them yet in the MVP (the C kernels + QImage do the pixel/codec work). The
+# Skia compositing and OpenCV named-op backends plug in here later.
+# Only required inside a Flatpak build (where the manifest installed them to /app);
+# skipped on the host so the Qt-independent kernel + ABI tests still build.
+if(DEFINED ENV{FLATPAK_ID})
+    find_path(Skia_INCLUDE_DIR NAMES SkCanvas.h PATHS /app/include/skia REQUIRED)
+    find_library(Skia_STATIC_LIB NAMES skia PATHS /app/lib REQUIRED)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+endif()
+
+# Prebuilt Swift static lib (libCompositorCore.a), built by SwiftPM in the
+# Flatpak manifest build-commands with --static-swift-stdlib so the Swift
+# runtime is bundled. Passed in via -DCompositorCore_SWIFT_STATIC_LIB=<path>.
+# The Swift core exposes its callables via @_cdecl (the C ABI seam, ENG-1).
+set(COMPOSITOR_CORE_LINK "")
+if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
+    add_library(CompositorCoreSwift STATIC IMPORTED)
+    set_target_properties(CompositorCoreSwift PROPERTIES
+        IMPORTED_LOCATION "${CompositorCore_SWIFT_STATIC_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/include")
+    # --whole-archive keeps the @_cdecl exports even if no C++ TU references
+    # them directly at link time (Swift symbols are pulled by the runtime, not
+    # by the C++ call sites until the shim is wired).
+    set(COMPOSITOR_CORE_LINK
+        "-Wl,--whole-archive" CompositorCoreSwift "-Wl,--no-whole-archive")
+endif()
 
 enable_testing()
 
@@ -85,6 +138,7 @@ if(Qt6_FOUND)
         host/MainWindow.cpp
         host/CanvasWidget.cpp
         host/CanonicalBuffer.cpp)
-    target_link_libraries(compositor PRIVATE Qt6::Widgets CompositorKernels)
-    # The host app is the ENG-2 composition root; the C kernels run in-process.
+    target_link_libraries(compositor PRIVATE Qt6::Widgets CompositorKernels ${COMPOSITOR_CORE_LINK})
+    # The host app is the ENG-2 composition root; the C kernels run in-process,
+    # and (when built via Flatpak) the Swift core is linked via CompositorCoreSwift.
 endif()

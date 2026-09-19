@@ -1,0 +1,19 @@
+# Skia — vendored source provenance record.
+#
+# The actual source archive is NOT committed to this repo. flatpak-builder
+# fetches the URL below at build time and verifies the sha256 (declared in
+# com.wonderassembly.Compositor.yaml, Module "skia"). This file is the
+# human-readable pin record; the manifest is the source of truth.
+#
+# Build: static, CPU-only, self-contained third-party deps (skia_use_system_*=false).
+#        GN args live in the manifest module build-commands.
+
+name:    skia
+version: <skia-milestone>          # TODO(pin): set to a Skia milestone tag (e.g. chrome/m126)
+url:     https://github.com/google/skia/archive/refs/tags/<tag>.tar.gz
+sha256:  <TODO-pin-sha256>         # TODO(pin): sha256 of the fetched tarball
+gn_args_summary: |
+  is_official_build=true
+  skia_enable_gpu=false skia_use_vulkan=false skia_use_egl=false skia_use_gl=false
+  skia_use_system_*=false  (icu/zlib/libpng/libjpeg/libwebp/harfbuzz/freetype/fontconfig)
+install: libskia.a + public headers -> /app/lib, /app/include/skia
