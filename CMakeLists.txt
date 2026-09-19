@@ -191,4 +191,13 @@ if(Qt6_FOUND)
     # duplicate members from this project's own kernel archive, which stays in
     # the link line for its include path.
     target_link_libraries(compositor PRIVATE Qt6::Widgets ${COMPOSITOR_CORE_LINK} CompositorKernels)
+
+    # The Swift-@main composition root (Sources/CompositorHostBootstrap) links
+    # this static lib to call compositor_host_run (host/host_run.cpp, moc-free)
+    # from a Swift entry point that bootstraps the Swift runtime + Foundation.
+    # Built by CMake because it needs Qt6 + AUTOMOC for the full MainWindow; the
+    # Flatpak manifest links it into the Swift executable. host_run.cpp itself
+    # is moc-free so the bootstrap can also be built by SwiftPM in the SDK.
+    add_library(CompositorHostRun STATIC host/host_run.cpp)
+    target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets)
 endif()
