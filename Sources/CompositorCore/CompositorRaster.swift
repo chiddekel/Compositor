@@ -30,7 +30,9 @@ import Foundation
 public struct PixelBuffer {
     public let width: Int
     public let height: Int
-    public private(set) var bytes: [UInt8]
+    /// Owned pixel storage; mutable until the buffer is committed as an
+    /// immutable `PortableImage` (value semantics make every assignment a copy).
+    public var bytes: [UInt8]
 
     public var bytesPerRow: Int { width * 4 }
 
@@ -82,7 +84,8 @@ public struct PixelBuffer {
 public struct MaskBuffer {
     public let width: Int
     public let height: Int
-    public private(set) var bytes: [UInt8]
+    /// Owned pixel storage; mutable until committed into a `PortableImage`.
+    public var bytes: [UInt8]
 
     public var bytesPerRow: Int { width }
 
