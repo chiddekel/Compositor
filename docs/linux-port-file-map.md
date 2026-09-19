@@ -69,7 +69,7 @@ the live session, and leaves the current document unchanged on failure.
 `CompositorHostBootstrap --io-smoke` verifies this path under Swift runtime.
 Portal file chooser integration remains outside direct path persistence.
 
-**Current verification.** SwiftPM under KDE SDK 6.10 passes **380 tests, 0
+**Current verification.** SwiftPM under KDE SDK 6.10 passes **390 tests, 0
 failures**. Host CMake/CTest passes **4/4** checks. Release static Swift build,
 Swift composition-root launch, Qt brush/menu host build, and Qt IO smoke all pass.
 Flatpak source download validation passes for pinned Skia/OpenCV archives.
@@ -168,7 +168,7 @@ Verification: full Swift suite **363 tests, 0 failures** in KDE 6.10 SDK. CTest 
 
 A broad set of "Keep logic; replace Apple operations" rows is now ported onto
 `EditorSession` with bridge commands and session tests. Verified at this
-checkpoint: **380 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
+checkpoint: **390 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
 
 | Original responsibility | Portable implementation | Current evidence / remaining scope |
 |---|---|---|
@@ -234,7 +234,7 @@ completion of the full file map.
 | `Compositor/Document/Levels.swift` | 229 | AppKit, Observation | Keep logic; replace Apple operations | Ported (`Document/Levels.swift`): per-channel level ranges, apply/gamma normalization, histogram-display scaling — pinned by `SettingsTests` (`testLevelRangeIdentityApplyIsLinear`, `testLevelsSettingsIsIdentity`, channel index, clamped normalization); auto-levels (contrast/color/neutral) pinned by `ColorPickerAndAutoTests` (`testLevelsAuto*`) |
 | `Compositor/Document/LevelsAutomatic.swift` | 85 | AppKit | Keep logic; replace Apple operations | Ported (`Document/LevelsAutomatic.swift`): auto-contrast (shared range), auto-color (per-channel ranges), neutral gamma, and the black/white/gray point samplers — pinned by `ColorPickerAndAutoTests` (`testLevelsAutoContrastSetsSharedRange`, `testLevelsAutoColorSetsPerChannelRanges`, `testLevelsAutoNeutralAppliesGamma`, `testLevelsSampling*`) |
 | `Compositor/Document/LiveLayerMask.swift` | 231 | AppKit | Keep logic; replace Apple operations | Ported (`Document/LiveLayerMask.swift`): `LiveMaskGraph.validate` (cycle/duplicate/missing clipping checks), `adoptClipping`/`releaseDetachedClipping` for folder/live-mask structure — pinned by `HierarchyMaskSelectionTests`. Renderer integration of live masks remains (raster milestone) |
-| `Compositor/Document/MagicWand.swift` | 139 | AppKit | Keep logic; replace Apple operations | Partially ported (`Document/MagicWand.swift`): `WandSampleSize`, `WandSettings`, `MagicWand.Failure` — pinned by `CropWandDistortTests`; the Photoshop-saturation flood selection raster pass still needs a kernel and pixel check |
+| `Compositor/Document/MagicWand.swift` | 139 | AppKit | Keep logic; replace Apple operations | Ported (`Document/MagicWand.swift`): `WandSampleSize`, `WandSettings`, `MagicWand.Failure`, plus `MagicWand.select` (Swift port of the `wand_mask` matching kernel + `MaskTracing.outline` tracing) and `EditorSession.magicWand`/`wandSample`/`applySelection` (replace/add/subtract via coverage combine) — pinned by `MagicWandTests` (10 tests) and exercised through the `wand_mask` CTest pixel check |
 | `Compositor/Document/MaskTracing.swift` | 93 | AppKit | Keep logic; replace Apple operations | Ported (`Document/MaskTracing.swift`): contour outline (empty/single-pixel/full-grid/hole/dropped vertices/alpha offset) plus `darkOutline`/`opaqueOutline` masks — pinned by `MaskTracingTests` (9 tests) |
 | `Compositor/Document/PixelAdjust.swift` | 66 | AppKit, CoreImage | Apple replacement / adaptation | Replace CoreImage rendering/context with named imaging operations |
 | `Compositor/Document/PixelInvert.swift` | 47 | AppKit, Accelerate, CoreImage | Apple replacement / adaptation | Keep numerical intent; replace Accelerate/CoreImage image operations |
