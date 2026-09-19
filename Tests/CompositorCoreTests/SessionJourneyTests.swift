@@ -127,4 +127,60 @@ final class SessionJourneyTests: XCTestCase {
         // A closed handle must reject commands (-6 invalid/closed handle).
         XCTAssertEqual(cmd(h, #"{"version":1,"action":"undo"}"#), -6, "closed handle rejected")
     }
+
+    /// Save/reopen leg of the first workstream, verifiable without Qt: flatten a
+    /// painted document to composited RGBA (`compositor_session_render` = the
+    /// "export"/"save" bytes), then reopen it in a *fresh* session via
+    /// `compositor_session_import_rgba` (replacing) and render again. The two
+    /// renders must be byte-identical: the import→render path is the round-trip
+    /// foundation that the PNG/JPEG export (ImageExporter→QImageWriter) and the
+    /// project-file save (ProjectStore Codable) legs both build on. Qt codecs and
+    /// portal coordination layer on top of this; the ABI round-trip itself needs
+    /// only Foundation + the C ABI, so it runs under `swift test`.
+    func testRenderImportRoundTripReopensCompositedImage() {
+        // Session A: build a painted document and flatten it to RGBA.
+        let a = compositorSessionCreate()
+        XCTAssertNotEqual(a, 0, "session A create")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"new","width":4,"height":4}"#), 0, "A new canvas")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"addLayer"}"#), 0, "A add layer")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"brushBegin","x":1,"y":1,"parameters":{"diameter":3,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}}"#), 0, "A brush begin")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"brushMove","x":2,"y":2}"#), 0, "A brush move")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"brushEnd"}"#), 0, "A brush end")
+        let saved = render(a, expectedBytes: 64)
+        XCTAssertTrue(hasRed(saved), "A render has red paint to save")
+        // Sanity: the saved buffer is a mix of painted red and transparent blank.
+        XCTAssertTrue(isBlank(saved) == false, "A render is not fully blank")
+
+        // Reopen: a brand-new session imports the flattened RGBA as its document.
+        let b = compositorSessionCreate()
+        XCTAssertNotEqual(b, 0, "session B create")
+        XCTAssertNotEqual(b, a, "B is a distinct session handle")
+        let nameBytes = Array("Reopened".utf8)
+        let importRC = nameBytes.withUnsafeBufferPointer { nameBuf -> Int32 in
+            saved.withUnsafeBufferPointer { pxBuf in
+                compositorSessionImportRGBA(b, pxBuf.baseAddress, pxBuf.count, 4, 4,
+                                            nameBuf.baseAddress, nameBuf.count, 1)
+            }
+        }
+        XCTAssertEqual(importRC, 0, "B import RGBA (replacing) succeeds")
+
+        // The reopened document reports the right canvas size and is not busy.
+        let s = state(b)
+        XCTAssertEqual(jsonInt(s, "width"), 4, "B state width")
+        XCTAssertEqual(jsonInt(s, "height"), 4, "B state height")
+        XCTAssertEqual(jsonBool(s, "busy"), false, "B not busy after import")
+        XCTAssertTrue(s.contains("\"layers\":"), "B state has layers array")
+        // One imported image layer.
+        let layerCount = s.components(separatedBy: "\"id\":").count - 1
+        XCTAssertEqual(layerCount, 1, "B has exactly one imported layer")
+
+        // Round-trip equivalence: rendering the reopened image reproduces the
+        // saved bytes exactly.
+        let reopened = render(b, expectedBytes: 64)
+        XCTAssertEqual(reopened, saved, "reopened render is byte-identical to saved render")
+        XCTAssertTrue(hasRed(reopened), "reopened render still shows red paint")
+
+        compositorSessionClose(a)
+        compositorSessionClose(b)
+    }
 }
