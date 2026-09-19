@@ -69,7 +69,7 @@ the live session, and leaves the current document unchanged on failure.
 `CompositorHostBootstrap --io-smoke` verifies this path under Swift runtime.
 Portal file chooser integration remains outside direct path persistence.
 
-**Current verification.** SwiftPM under KDE SDK 6.10 passes **390 tests, 0
+**Current verification.** SwiftPM under KDE SDK 6.10 passes **400 tests, 0
 failures**. Host CMake/CTest passes **4/4** checks. Release static Swift build,
 Swift composition-root launch, Qt brush/menu host build, and Qt IO smoke all pass.
 Flatpak source download validation passes for pinned Skia/OpenCV archives.
@@ -168,7 +168,7 @@ Verification: full Swift suite **363 tests, 0 failures** in KDE 6.10 SDK. CTest 
 
 A broad set of "Keep logic; replace Apple operations" rows is now ported onto
 `EditorSession` with bridge commands and session tests. Verified at this
-checkpoint: **390 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
+checkpoint: **400 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
 
 | Original responsibility | Portable implementation | Current evidence / remaining scope |
 |---|---|---|
@@ -221,7 +221,7 @@ completion of the full file map.
 | `Compositor/Document/Filters.swift` | 474 | AppKit, CoreImage, Observation | Apple replacement / adaptation | Keep settings/validation/preview transactions; replace named CoreImage filters with Skia/OpenCV/custom kernels |
 | `Compositor/Document/FloatingSelection.swift` | 160 | AppKit | Keep logic; replace Apple operations | Ported onto `EditorSession` (`Document/SelectionTransform.swift`): `TransformEdit.floating`, `beginSelectionTransform`/`previewTransform`/`commitTransform`/`cancelTransform`, `renderSelectedPixels` (region-relative lift; the clip's soft edges multiply the premultiplied alpha exactly as a CG clip does), `FloatingMerge.merge` (source drawn axis-aligned, floating pixels via their placed transform, layer grid grows past its edge, mask grow branch), and `beginDuplicateTransform` (Option-drag copy in one undo step). Floating-selection drag presentation remains UI |
 | `Compositor/Document/Gradient.swift` | 110 | AppKit | Keep logic; replace Apple operations | Partially ported (`Document/Gradient.swift`): `GradientStyle`/`GradientShape`/`GradientSettings` values pinned by `HistoryAndOpsTests` (`testGradientSettingsDefaults`). The gradient edit's raster drawing (a `BrushStroke` on macOS) and its tool/UI remain on the Qt tier |
-| `Compositor/Document/GuidedMatte.swift` | 119 | CoreGraphics, Foundation | Apple replacement / adaptation | Partially ported (`Document/GuidedMatte.swift`): the refinement settings/parameters. The guided-mat refinement raster walk (CoreGraphics buffers on macOS) still needs a portable kernel and a pixel check — no Swift/host test pins it yet |
+| `Compositor/Document/GuidedMatte.swift` | 119 | CoreGraphics, Foundation | Apple replacement / adaptation | Ported (`Document/GuidedMatte.swift`): `GuidedMatteSettings`, `box` (running-sum square mean; clamped-edge C semantics), `filter` (He/Sun/Tang guided refinement), `levels(of:)` (Rec.709 luma after unpremultiply) plus `image(_:)`, and `refine(mask:guide:radius:limit:)` (shrink → filter → bilinear grow, matching the macOS CoreGraphics pipeline). Pinned by `GuidedMatteTests` (box profile + naive cross-check, flat/edge filter behavior, luma extraction, downsample averaging, gray-image round trip, full-size and scaled refine) |
 | `Compositor/Document/HueSaturation.swift` | 575 | AppKit, CoreImage | Keep logic; replace Apple operations | Ported (`Document/HueSaturation.swift`): `ColorRange` hue bands, range/weight math, settings normalization, HSL round trip, `HueSaturationFilter.adjust`/`hueResponse`/`shiftedHue` (the CoreImage `CIColorCube` replacement) — pinned by `SettingsTests` (band weights, identity, colorize, cube dimension, shifted-hue) and `AdjustmentEditingTests` preview gating. HueSampleMode help strings remain UI |
 | `Compositor/Document/ImageAdjustments.swift` | 135 | AppKit | Keep logic; replace Apple operations | Ported (`Document/ImageAdjustments.swift`): `AdjustmentClamp`, `AdjustmentColor`, and the exposure/gradient-map/grain normalized settings — pinned by `SettingsTests`; their kernels execute in `PixelFilter`, pinned by `FilterExecutionTests` (`testExposureApplyStopsToWhiteAndKeepsAlpha`, `testGradientMapEndsApplyInOrder`, `testGrainIsDeterministicPerSeedAndKeepsAlpha`) |
 | `Compositor/Document/LayerAdjustment.swift` | 113 | AppKit, CoreImage | Keep logic; replace Apple operations | Ported: adjustment-layer add/preview/commit/cancel through `EditorSession.adjustmentEditingID` gating (`AdjustmentEditing.swift` row), pinned by `AdjustmentEditingTests` (9 tests); preview shows the adjustment slot so cancelling restores the pre-edit document. The adjustment slot and picker UI remain on the Qt tier |
