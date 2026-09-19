@@ -85,7 +85,7 @@ let package = Package(
             name: "HostRun",
             dependencies: [],
             path: "host",
-            sources: ["host_run.cpp"],
+            sources: ["host_run.cpp", "SessionWindow.cpp", "moc_SessionWindow.cpp"],
             cxxSettings: [
                 .unsafeFlags([
                     "-I/usr/include/QtWidgets",
