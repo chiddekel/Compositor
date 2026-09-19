@@ -17,7 +17,7 @@ This checkpoint adds the following portable core responsibilities. Tests establi
 |---|---|---|
 | `BlurTool.swift`, `PixelInvert.swift` | `Sources/CompositorCore/Document/BlurTool.swift` | Premultiplied invert, mask invert, selection-limited operations, and rotated reveal-mask regression in `FilterExecutionTests`; input/tool wiring remains. |
 | `Filters.swift`, `ContentFill.swift`, image-adjustment execution | `Document/PixelFilter.swift`, `Document/FilterEdit.swift` under `Sources/CompositorCore` | Kernel execution, padded blur, deterministic noise, preview revisions, cancel, stale target rejection, one-step undo, and carried masks tested. Qt filter dialogs and scheduling remain; background removal still reports missing model. Motion blur uses a box streak and needs reference parity work. |
-| Layer-mask raster adapters | `Sources/CompositorCore/Document/MaskRaster.swift` | Mask validation, solid masks, border tone, and independently placed mask resampling tested. Folder/live-mask renderer integration and placement caches remain. |
+| Layer-mask raster adapters | `Sources/CompositorCore/Document/MaskRaster.swift` | Mask validation, solid masks, border tone, and independently placed mask resampling tested. `DocumentRenderer` folder/live-mask compositing pinned by `RendererIntegrationTests` (folder mask clips children only, child stacking, live-mask alpha sharing, coverage independent of source visibility). Placement caches (`DownsampleCache`) remain display-tier, deferred |
 | Smooth layer/coverage rendering | `Sources/CompositorCore/Rendering/LayerRenderer.swift` | Corrected pixel-center sampling and requested-center scaling. Exact 1:1 color/alpha and rotated reveal-mask behavior tested; full Skia/blend parity remains. |
 | `IO/CanvasResizer.swift` | `Sources/CompositorCore/Document/CanvasResizer.swift` | All nine anchors, odd-size expansion/shrink, unchanged source identity, detached mask placement, colored extension transparency, undo snapshots, and allocation limits tested. UI/persistence journey remains. |
 | `IO/ImageResizer.swift` | `Sources/CompositorCore/Document/ImageResizer.swift` | Resolution-only sharing, transformed per-layer resampling, output-budget preflight, area integration for downsampling, hidden layers, alpha, and identity/undo preservation tested. Backend pixel parity, large-document performance, and UI remain. |
@@ -69,7 +69,7 @@ the live session, and leaves the current document unchanged on failure.
 `CompositorHostBootstrap --io-smoke` verifies this path under Swift runtime.
 Portal file chooser integration remains outside direct path persistence.
 
-**Current verification.** SwiftPM under KDE SDK 6.10 passes **400 tests, 0
+**Current verification.** SwiftPM under KDE SDK 6.10 passes **404 tests, 0
 failures**. Host CMake/CTest passes **4/4** checks. Release static Swift build,
 Swift composition-root launch, Qt brush/menu host build, and Qt IO smoke all pass.
 Flatpak source download validation passes for pinned Skia/OpenCV archives.
@@ -168,7 +168,7 @@ Verification: full Swift suite **363 tests, 0 failures** in KDE 6.10 SDK. CTest 
 
 A broad set of "Keep logic; replace Apple operations" rows is now ported onto
 `EditorSession` with bridge commands and session tests. Verified at this
-checkpoint: **400 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
+checkpoint: **404 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
 
 | Original responsibility | Portable implementation | Current evidence / remaining scope |
 |---|---|---|
@@ -233,7 +233,7 @@ completion of the full file map.
 | `Compositor/Document/LayerTransform.swift` | 236 | CoreGraphics, Foundation | Apple replacement / adaptation | Keep transformation math and serialization; transform-edit state machine (`beginTransform`/`previewTransform`/`commitTransform`/`cancelTransform`, mask-alone + group) ported in TransformEditLinux.swift — see checkpoint |
 | `Compositor/Document/Levels.swift` | 229 | AppKit, Observation | Keep logic; replace Apple operations | Ported (`Document/Levels.swift`): per-channel level ranges, apply/gamma normalization, histogram-display scaling — pinned by `SettingsTests` (`testLevelRangeIdentityApplyIsLinear`, `testLevelsSettingsIsIdentity`, channel index, clamped normalization); auto-levels (contrast/color/neutral) pinned by `ColorPickerAndAutoTests` (`testLevelsAuto*`) |
 | `Compositor/Document/LevelsAutomatic.swift` | 85 | AppKit | Keep logic; replace Apple operations | Ported (`Document/LevelsAutomatic.swift`): auto-contrast (shared range), auto-color (per-channel ranges), neutral gamma, and the black/white/gray point samplers — pinned by `ColorPickerAndAutoTests` (`testLevelsAutoContrastSetsSharedRange`, `testLevelsAutoColorSetsPerChannelRanges`, `testLevelsAutoNeutralAppliesGamma`, `testLevelsSampling*`) |
-| `Compositor/Document/LiveLayerMask.swift` | 231 | AppKit | Keep logic; replace Apple operations | Ported (`Document/LiveLayerMask.swift`): `LiveMaskGraph.validate` (cycle/duplicate/missing clipping checks), `adoptClipping`/`releaseDetachedClipping` for folder/live-mask structure — pinned by `HierarchyMaskSelectionTests`. Renderer integration of live masks remains (raster milestone) |
+| `Compositor/Document/LiveLayerMask.swift` | 231 | AppKit | Keep logic; replace Apple operations | Ported (`Document/LiveLayerMask.swift`): `LiveMaskGraph.validate` (cycle/duplicate/missing clipping checks), `adoptClipping`/`releaseDetachedClipping` for folder/live-mask structure — pinned by `HierarchyMaskSelectionTests`. Renderer integration of live masks and folder masks (clipping-stack alpha sharing, hidden-source coverage, folder child masking) pinned by `RendererIntegrationTests` |
 | `Compositor/Document/MagicWand.swift` | 139 | AppKit | Keep logic; replace Apple operations | Ported (`Document/MagicWand.swift`): `WandSampleSize`, `WandSettings`, `MagicWand.Failure`, plus `MagicWand.select` (Swift port of the `wand_mask` matching kernel + `MaskTracing.outline` tracing) and `EditorSession.magicWand`/`wandSample`/`applySelection` (replace/add/subtract via coverage combine) — pinned by `MagicWandTests` (10 tests) and exercised through the `wand_mask` CTest pixel check |
 | `Compositor/Document/MaskTracing.swift` | 93 | AppKit | Keep logic; replace Apple operations | Ported (`Document/MaskTracing.swift`): contour outline (empty/single-pixel/full-grid/hole/dropped vertices/alpha offset) plus `darkOutline`/`opaqueOutline` masks — pinned by `MaskTracingTests` (9 tests) |
 | `Compositor/Document/PixelAdjust.swift` | 66 | AppKit, CoreImage | Apple replacement / adaptation | Replace CoreImage rendering/context with named imaging operations |
