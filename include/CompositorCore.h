@@ -1,0 +1,59 @@
+#ifndef CompositorCore_h
+#define CompositorCore_h
+
+/*
+ * Compositor C ABI — versioned seam between the retained Swift core and the
+ * Qt/C++ host (see docs/linux-port-plan.md, ENG-1).
+ *
+ * Canonical buffer contract:
+ *   - 8-bit premultiplied RGBA, sRGB, in byte order R,G,B,A.
+ *   - Explicit `stride` (bytes per row); rows are `stride` bytes apart, not
+ *     necessarily `width*4`. Every C-kernel entry asserts stride >= width*4
+ *     and that buffers are premultiplied (ENG-17).
+ *   - Separate 8-bit grayscale coverage, one byte per pixel, row stride = width.
+ *   - Committed tiles are immutable; callers must not mutate a tile in flight.
+ *
+ * ABI versioning: `@_cdecl` is an unofficial, Swift-version-sensitive attribute.
+ * The Swift toolchain version is pinned in the versioned-ABI contract
+ * (Package.swift swiftLanguageMode + the Freedesktop Swift runtime extension).
+ * Bumping the toolchain is an ABI-affecting change.
+ *
+ * Status codes:
+ *   0  success
+ *  -1  invalid argument (bad geometry, NULL required buffer, out-of-range size)
+ */
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * Composite a source tile over a destination tile in place using premultiplied
+ * source-over, modulated by an optional coverage mask and opacity.
+ *
+ *   dst_rgba   in/out, premultiplied RGBA, `stride` bytes per row, width*height pixels.
+ *   src_rgba   read-only, premultiplied RGBA, same stride and dimensions.
+ *   coverage   read-only, one uint8 per pixel (0-255), row stride = width.
+ *              May be NULL, treated as full coverage (255 everywhere).
+ *   width,height  tile dimensions in pixels. Both must be > 0.
+ *   stride     bytes per row; must be >= width*4.
+ *   opacity    source opacity, clamped to [0.0, 1.0].
+ *
+ * Returns 0 on success, -1 on invalid argument.
+ */
+int compositor_composite_over(uint8_t *dst_rgba,
+                               const uint8_t *src_rgba,
+                               const uint8_t *coverage,
+                               size_t width,
+                               size_t height,
+                               size_t stride,
+                               float opacity);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* CompositorCore_h */
