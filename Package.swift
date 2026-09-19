@@ -69,5 +69,19 @@ let package = Package(
             dependencies: ["CompositorCore"],
             path: "Tests/CompositorCoreTests"
         ),
+        // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift
+        // runtime + Foundation (which a C++ main cannot on the Freedesktop Swift
+        // 6.3 SDK — see docs/linux-port-file-map.md "composition-root constraint"),
+        // then drives the Qt host through a C ABI. This bootstrap target proves
+        // the architecture by running the session journey through the real
+        // compositor_session_* ABI from a Swift entry point. The Flatpak build
+        // replaces `hostMain` with the one that calls the Qt host's
+        // `compositor_host_run(argc, argv)` C entry.
+        .executableTarget(
+            name: "CompositorHostBootstrap",
+            dependencies: ["CompositorCore"],
+            path: "Sources/CompositorHostBootstrap",
+            swiftSettings: [.unsafeFlags(["-swift-version", "5"])]
+        ),
     ]
 )
