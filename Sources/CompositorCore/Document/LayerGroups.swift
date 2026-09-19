@@ -4,14 +4,13 @@
 // `entries`/`visibleLayers`/`validate`) and `ImageLayer.hierarchyRecord` (the
 // model→record projection the persistence layer serializes).
 //
-// Omitted (model/UI milestone — EditorSession app state):
-//   - The `EditorSession` group/select/place/toggle extensions (`groupSelectedLayers`,
-//     `addGroup`, `toggleGroupExpansion`, `placeLayer`, `moveActiveLayerOutOfGroup`,
-//     `descendantIDs`, `layerRows`). These mutate `EditorSession` document/selection
-//     state and are rebuilt on the Qt side.
-//   - `CanvasDocument.hierarchyEntries`/`effectiveVisibleIDs`/`renderLayers` —
-//     model-state conveniences that fold `LayerHierarchy` back onto `ImageLayer`s;
-//     ported when the document controller exists.
+// Omitted (UI milestone — Qt side): the interactive place/toggle/expand/move
+// methods (`toggleGroupExpansion`, `placeLayer`, `moveActiveLayerOutOfGroup`,
+// `canPlaceLayer`) which depend on Qt drag/drop presentation. The selection and
+// grouping mutations (`groupSelectedLayers`, `addGroup`, `selectLayers`,
+// `selectLayer`, `descendantIDs`, `layerRows`, `canTransform`) are ported on
+// `EditorSession` (see EditorSession.swift), and `CanvasDocument.hierarchyEntries`
+// /`effectiveVisibleIDs`/`renderLayers` are ported below.
 //
 // SOLID: the tree logic keeps its responsibility and contract (a depth-bounded
 // parent/child traversal and its invariants); the Apple API surface (the
@@ -70,5 +69,17 @@ extension ImageLayer {
     var hierarchyRecord: ProjectLayerRecord {
         ProjectLayerRecord(id: id, name: name, isVisible: isVisible, transform: transform,
             imageFile: asset == nil ? nil : "\(id.uuidString).png", parentID: parentID, isGroup: isGroup, opacity: opacity, blendMode: blendMode, maskFile: mask == nil ? nil : "\(id.uuidString).mask.png", maskEnabled: mask?.isEnabled, maskSourceID: maskSourceID, adjustment: adjustment, maskPlacement: mask?.placement, maskLinked: mask?.isLinked)
+    }
+}
+
+extension CanvasDocument {
+    /// Hierarchy traversal over this document's layers (projected to records).
+    var hierarchyEntries: [LayerHierarchy.Entry] { LayerHierarchy.entries(layers.map(\.hierarchyRecord)) }
+    /// IDs visible through the folded hierarchy (a group's visibility cascades).
+    var effectiveVisibleIDs: Set<UUID> { Set(hierarchyEntries.filter(\.visible).map { $0.layer.id }) }
+    /// Visible pixel layers in render order, folding groups and visibility.
+    var renderLayers: [ImageLayer] {
+        let byID = Dictionary(uniqueKeysWithValues: layers.map { ($0.id, $0) })
+        return hierarchyEntries.filter { $0.visible && $0.layer.isGroup != true }.compactMap { byID[$0.layer.id] }
     }
 }

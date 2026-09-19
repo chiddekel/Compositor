@@ -5,7 +5,11 @@ import Foundation
 final class EditorSession {
     enum Failure: Error { case noDocument, noLayer, busy, invalidArgument, dependentLayer }
     private(set) var document: CanvasDocument?
-    private(set) var activeLayerID: UUID?
+    var selectedLayerIDs: Set<UUID> = []
+    private(set) var activeLayerID: UUID? {
+        didSet { selectedLayerIDs = activeLayerID.map { [$0] } ?? [] }
+    }
+    var collapsedGroupIDs: Set<UUID> = []
     let history = DocumentHistory()
     private(set) var brushStroke: BrushStroke?
     private(set) var filterEdit: FilterEdit?
@@ -15,14 +19,16 @@ final class EditorSession {
         guard brushStroke == nil, filterEdit == nil else { throw Failure.busy }
     }
 
-    func createDocument(width: Int, height: Int) throws {
+    func createDocument(width: Int, height: Int, emptyLayer: Bool = false) throws {
         try requireIdle()
         guard (1...30_000).contains(width), (1...30_000).contains(height), width * height <= 100_000_000 else {
             throw ProjectError.tooLarge
         }
-        let layer = ImageLayer(name: "Layer 1", blankSize: CGSize(width: width, height: height))
-        document = CanvasDocument(width: width, height: height, layers: [layer])
-        activeLayerID = layer.id
+        var doc = CanvasDocument(width: width, height: height)
+        let layer = emptyLayer ? ImageLayer(name: "Layer 1", blankSize: doc.size) : nil
+        if let layer { doc.layers = [layer] }
+        document = doc
+        activeLayerID = layer?.id
         history.reset()
     }
 
@@ -81,9 +87,9 @@ final class EditorSession {
         }
     }
 
-    func selectLayer(_ id: UUID) throws {
-        try requireIdle()
-        guard document?.layers.contains(where: { $0.id == id }) == true else { throw Failure.noLayer }
+    func selectLayer(_ id: UUID?) {
+        guard brushStroke == nil, filterEdit == nil else { return }
+        if id != activeLayerID { commitTransform(); resolveGradient() }
         activeLayerID = id
     }
 
@@ -240,5 +246,142 @@ final class EditorSession {
             doc.layers[index].transform = edit.grownTransform ?? edit.transform
         }
         return try DocumentRenderer(doc).render()
+    }
+
+    // MARK: - Grouping & selection (port of Compositor/Document/LayerGroups.swift's
+    // EditorSession extensions; file-map "Keep/adapt" tier). Pure hierarchy/selection
+    // logic — no pixels, no Apple API. The macOS original stays the source of truth;
+    // selection state (`selectedLayerIDs`) is restored on undo/redo via the
+    // `activeLayerID` didSet (history stores only `activeLayerID`, as on macOS).
+
+    /// True when layers can be added/removed/grouped. Faithful subset of the macOS
+    /// gate (which also blocks on UI modal state); the core has no UI modal state.
+    var canEditLayers: Bool { document != nil && brushStroke == nil && filterEdit == nil }
+
+    /// Nestable transaction boundary matching macOS `beginEdit`/`endEdit`, for the
+    /// grouping methods that set several fields between the two calls. `edit(_:_:)`
+    /// above wraps the same pair for the throwing single-body edits.
+    func beginEdit(_ name: String) { history.begin(name, document: document, selection: activeLayerID) }
+    func endEdit() { history.end(document: document, selection: activeLayerID) }
+
+    /// No-ops in the headless core: commitTransform finalizes a pending interactive
+    /// transform box and resolveGradient cancels a pending gradient — both are
+    /// UI-layer constructs not present here. Kept as hooks so selection changes
+    /// match the macOS call sequence.
+    func commitTransform() {}
+    func resolveGradient() {}
+
+    var transformsAsGroup: Bool { selectedLayerIDs.count > 1 || (selectedLayerIDs.count == 1 && activeLayer?.isGroup == true) }
+    var groupTransformMembers: [ImageLayer] {
+        guard transformsAsGroup, let document else { return [] }
+        let parents = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0.parentID) })
+        let visible = document.effectiveVisibleIDs
+        return document.layers.filter { layer in
+            guard layer.asset != nil, !layer.isGroup, visible.contains(layer.id) else { return false }
+            var current: UUID? = layer.id
+            for _ in 0..<64 {
+                guard let id = current else { return false }
+                if selectedLayerIDs.contains(id) { return true }
+                current = parents[id] ?? nil
+            }
+            return false
+        }
+    }
+    var canTransform: Bool {
+        guard canEditLayers else { return false }
+        if transformsAsGroup { return !groupTransformMembers.isEmpty }
+        return activeLayer?.asset != nil && activeLayer?.isGroup == false
+            && activeLayerID.map { document?.effectiveVisibleIDs.contains($0) == true } == true
+    }
+
+    func selectLayers(_ ids: Set<UUID>, primary: UUID?) {
+        guard brushStroke == nil else { return }
+        let valid = ids.intersection(Set(document?.layers.map(\.id) ?? []))
+        if valid != selectedLayerIDs { commitTransform(); resolveGradient() }
+        activeLayerID = primary.flatMap { valid.contains($0) ? $0 : nil } ?? valid.first
+        selectedLayerIDs = valid
+    }
+
+    func descendantIDs(of id: UUID) -> Set<UUID> {
+        let children = Dictionary(grouping: document?.layers ?? [], by: \.parentID)
+        var result = Set<UUID>(), pending = [id]
+        while let parent = pending.popLast() {
+            for child in children[parent] ?? [] where result.insert(child.id).inserted { pending.append(child.id) }
+        }
+        return result
+    }
+
+    var layerRows: [LayerHierarchy.Entry] {
+        LayerHierarchy.entries(document?.layers.map(\.hierarchyRecord) ?? [], topFirst: true, collapsed: collapsedGroupIDs)
+    }
+
+    func groupSelectedLayers() {
+        guard canEditLayers, let doc = document, doc.layers.count < 10_000 else { return }
+        let byID = Dictionary(uniqueKeysWithValues: doc.layers.map { ($0.id, $0) })
+        let selected = selectedLayerIDs.intersection(Set(byID.keys))
+        func ancestors(_ id: UUID) -> [UUID?] {
+            var result: [UUID?] = []
+            var parent = byID[id]?.parentID
+            while let id = parent { result.append(id); parent = byID[id]?.parentID }
+            result.append(nil)
+            return result
+        }
+        // A selected folder carries its subtree; selected descendants must not be pulled out of it.
+        let rootIDs = selected.filter { id in !ancestors(id).contains { $0.map(selected.contains) ?? false } }
+        let ordered = doc.hierarchyEntries.map { $0.layer.id }.filter(rootIDs.contains)
+        let parent: UUID? = ordered.first.flatMap { first in
+            ancestors(first).first { candidate in ordered.allSatisfy { ancestors($0).contains(candidate) } } ?? nil
+        }
+        let names = Set(doc.layers.map(\.name))
+        var number = 1
+        while names.contains("Folder \(number)") { number += 1 }
+        var group = ImageLayer(name: "Folder \(number)", blankSize: doc.size)
+        group.isGroup = true
+        group.parentID = parent
+        // Put the wrapper at the topmost selected branch in the common parent.
+        let branches = ordered.map { id -> UUID in
+            var branch = id
+            while let next = byID[branch]?.parentID, next != parent { branch = next }
+            return branch
+        }
+        let highest = doc.layers.lastIndex { branches.contains($0.id) }
+        let insertion = highest.map { doc.layers.prefix($0 + 1).filter { !rootIDs.contains($0.id) }.count }
+            ?? doc.layers.count
+        var layers = doc.layers.filter { !rootIDs.contains($0.id) }
+        layers.insert(group, at: min(insertion, layers.count))
+        for id in ordered {
+            guard var child = byID[id] else { continue }
+            child.parentID = group.id
+            layers.append(child)
+        }
+        guard (try? LayerHierarchy.validate(layers.map(\.hierarchyRecord))) != nil else { return }
+        beginEdit("Group Layers")
+        var next = doc
+        next.layers = layers
+        document = next
+        activeLayerID = group.id
+        if let parent { collapsedGroupIDs.remove(parent) }
+        endEdit()
+    }
+
+    func addGroup() {
+        guard canEditLayers, let doc = document, doc.layers.count < 10_000 else { return }
+        let names = Set(doc.layers.map(\.name))
+        var number = 1
+        while names.contains("Folder \(number)") { number += 1 }
+        var group = ImageLayer(name: "Folder \(number)", blankSize: doc.size)
+        group.isGroup = true
+        group.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
+        var layers = doc.layers
+        let insertion = layers.firstIndex(where: { $0.id == activeLayerID }).map { $0 + 1 } ?? layers.count
+        layers.insert(group, at: insertion)
+        guard (try? LayerHierarchy.validate(layers.map(\.hierarchyRecord))) != nil else { return }
+        beginEdit("New Folder")
+        var next = doc
+        next.layers = layers
+        document = next
+        activeLayerID = group.id
+        if let parent = group.parentID { collapsedGroupIDs.remove(parent) }
+        endEdit()
     }
 }

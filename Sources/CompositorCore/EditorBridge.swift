@@ -126,7 +126,8 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
         case "addLayer": try s.addBlankLayer()
         case "selectLayer":
             guard let id = command.layerID else { throw EditorSession.Failure.invalidArgument }
-            try s.selectLayer(id)
+            guard s.document?.layers.contains(where: { $0.id == id }) == true else { throw EditorSession.Failure.noLayer }
+            s.selectLayer(id)
         case "deleteLayer": try s.deleteLayer()
         case "renameLayer":
             guard let name = command.name else { throw EditorSession.Failure.invalidArgument }
