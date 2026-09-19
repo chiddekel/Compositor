@@ -6,11 +6,12 @@
 // on Linux the geometry comes from Foundation + CompositorCore and the image
 // from `RasterImage`.
 //
-// Omitted (raster/path milestone): `ShapeKind.path(in:cornerRadius:)` builds a
-// `CGPath` (rectangle/ellipse/rounded-rect). On Linux the path/shape rasterization
-// is the Skia/CPU milestone; `PortablePath` (Selection.swift) carries the same
-// outline kinds. The `EditorSession` shape helpers (begin/drag/finish/…) are
-// SwiftUI-bound (model milestone).
+// Omitted (raster/path milestone): the shape *rasterization* (`shapeImage`,
+// `redrawShape`, `shapeTransformPreview`) builds pixels via `CGContext`; on
+// Linux the Skia/CPU raster milestone draws these. The outline geometry is
+// portable and ported below as `ShapeKind.path(in:cornerRadius:) -> PortablePath`.
+// The `EditorSession` shape helpers (begin/drag/finish/…) are SwiftUI-bound
+// (model milestone).
 //
 // SOLID: the value types keep their responsibilities and contracts; the Apple API
 // surface (CGPath/CGImage) is exchanged. The macOS original stays the source of
@@ -21,8 +22,15 @@ import Foundation
 nonisolated enum ShapeKind: String, CaseIterable, Codable, Sendable {
     case rectangle = "Rectangle"
     case ellipse = "Ellipse"
-    // macOS also builds a CGPath here (rectangle/ellipse/rounded-rect); on Linux the
-    // Skia/CPU path milestone rasterizes these. `PortablePath` carries the same kinds.
+    /// The shape filling `rect`. A rectangle's corners round by `cornerRadius`, at most half its shorter
+    /// side (so a large radius makes a pill); ellipses ignore it. On Linux this returns a `PortablePath`
+    /// (rectangle/ellipse/roundedRect) in place of the macOS `CGPath`.
+    func path(in rect: CGRect, cornerRadius: CGFloat = 0) -> PortablePath {
+        if self == .ellipse { return .ellipse(rect) }
+        let radius = min(max(0, cornerRadius), rect.width / 2, rect.height / 2)
+        guard radius > 0 else { return .rectangle(rect) }
+        return .roundedRect(rect, cornerRadius: radius)
+    }
 }
 
 /// What a shape layer draws, kept so the shape can be drawn again at a new size.
