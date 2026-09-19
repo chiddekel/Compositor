@@ -183,4 +183,51 @@ final class SessionJourneyTests: XCTestCase {
         compositorSessionClose(a)
         compositorSessionClose(b)
     }
+
+    /// Manifest export/import round-trip: serialize ProjectManifest to JSON,
+    /// import into a fresh session, verify dimensions and layer count.
+    func testManifestExportImportRoundTrip() {
+        let a = compositorSessionCreate()
+        XCTAssertNotEqual(a, 0, "session A create")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"new","width":8,"height":8}"#), 0, "A new canvas")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"addLayer"}"#), 0, "A add layer")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"brushBegin","x":1,"y":1,"parameters":{"diameter":3,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}}"#), 0, "A brush begin")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"brushMove","x":2,"y":2}"#), 0, "A brush move")
+        XCTAssertEqual(cmd(a, #"{"version":1,"action":"brushEnd"}"#), 0, "A brush end")
+
+        // Export manifest from session A
+        let manifestN = compositorSessionExportManifest(a, nil, 0)
+        XCTAssertGreaterThan(manifestN, 0, "manifest byte count")
+        var manifestBytes = [UInt8](repeating: 0, count: Int(manifestN))
+        let n = manifestBytes.withUnsafeMutableBufferPointer { buf in
+            compositorSessionExportManifest(a, buf.baseAddress, Int(manifestN))
+        }
+        XCTAssertEqual(n, manifestN, "export manifest byte count")
+
+        // Debug: print manifest JSON
+        let manifestJSON = String(bytes: manifestBytes, encoding: .utf8) ?? ""
+        print("Exported manifest: \(manifestJSON)")
+
+        // Import manifest into fresh session B
+        let b = compositorSessionCreate()
+        XCTAssertNotEqual(b, 0, "session B create")
+        let importRC = manifestBytes.withUnsafeBufferPointer { buf in
+            compositorSessionImportManifest(b, buf.baseAddress, buf.count)
+        }
+        XCTAssertEqual(importRC, 0, "B import manifest succeeds")
+
+        // Verify B has correct canvas size
+        let s = state(b)
+        print("B state: \(s)")
+        XCTAssertEqual(jsonInt(s, "width"), 8, "B state width")
+        XCTAssertEqual(jsonInt(s, "height"), 8, "B state height")
+        XCTAssertEqual(jsonBool(s, "busy"), false, "B not busy after import")
+
+        // Verify layer structure (at least one layer)
+        let layerCount = s.components(separatedBy: "\"id\":").count - 1
+        XCTAssertGreaterThanOrEqual(layerCount, 1, "B has at least one layer")
+
+        compositorSessionClose(a)
+        compositorSessionClose(b)
+    }
 }

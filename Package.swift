@@ -24,6 +24,10 @@ let package = Package(
         .library(name: "CompositorCore", type: .static, targets: ["CompositorCore"]),
     ],
     targets: [
+        .target(name: "CompositorBrushBackend", path: "backends/brush",
+            exclude: ["shaders/continuous_brush.comp"],
+            sources: ["BrushCoverageCPU.cpp", "VulkanBrushCoverage.cpp"],
+            publicHeadersPath: "include", linkerSettings: [.linkedLibrary("vulkan")]),
         // The portable C pixel kernels (file-map "Keep" tier), reused verbatim from
         // the macOS source tree. The same .c files are ALSO built by CMakeLists.txt
         // for the C++ host and tests; this target makes them callable from the Swift
@@ -55,7 +59,7 @@ let package = Package(
         ),
         .target(
             name: "CompositorCore",
-            dependencies: ["CompositorKernels"],
+            dependencies: ["CompositorKernels", "CompositorBrushBackend"],
             path: "Sources/CompositorCore",
             swiftSettings: [
                 // ENG-12 provisional decision: Swift 5 language mode for the
@@ -85,7 +89,7 @@ let package = Package(
             name: "HostRun",
             dependencies: [],
             path: "host",
-            sources: ["host_run.cpp", "SessionWindow.cpp", "moc_SessionWindow.cpp"],
+            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "moc_SessionWindow.cpp"],
             cxxSettings: [
                 .unsafeFlags([
                     "-I/usr/include/QtWidgets",
@@ -108,5 +112,6 @@ let package = Package(
                               "-Xlinker", "-rpath", "-Xlinker", "/usr/lib/x86_64-linux-gnu"]),
             ]
         ),
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )

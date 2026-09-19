@@ -17,6 +17,10 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QProcessEnvironment>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QDir>
 
 #include "compositor_host_run.h"
 #include "SessionWindow.h"
@@ -30,8 +34,26 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     // The richer MainWindow (C-kernels Qt shell) is the C++-only build path's window.
     SessionWindow window;
     window.show();
-    // Headless-safe: flush pending paint events (triggers SessionWindow::paintEvent
-    // drawing the C-ABI-rendered QImage) without the blocking event loop.
-    QCoreApplication::processEvents();
+    // CI and Swift smoke runs use offscreen Qt. Real desktop launches keep the
+    // event loop alive; offscreen runs only need one paint pass.
+    if (qEnvironmentVariable("QT_QPA_PLATFORM") == "offscreen") {
+        QCoreApplication::processEvents();
+        return 0;
+    }
+    return app.exec();
+}
+
+extern "C" int compositor_host_io_smoke(int argc, char **argv) {
+    QApplication app(argc, argv);
+    QTemporaryDir temporary;
+    if (!temporary.isValid()) return 1;
+    SessionWindow window;
+    const QString root = temporary.path();
+    if (!window.exportPNG(root + "/export.png") || !QFile::exists(root + "/export.png")) return 2;
+    if (!window.exportJPEG(root + "/export.jpg", 90) || !QFile::exists(root + "/export.jpg")) return 3;
+    if (!window.saveProject(root + "/project")) return 4;
+    if (!QFile::exists(root + "/project/manifest.json") ||
+        QDir(root + "/project/images").entryList(QDir::Files).isEmpty()) return 5;
+    if (!window.loadProject(root + "/project")) return 6;
     return 0;
 }

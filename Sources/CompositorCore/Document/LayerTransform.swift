@@ -136,7 +136,7 @@ struct TransformGroup {
 }
 
 struct TransformDrag {
-    enum Mode { case move, resize(Int), rotate, distort(Int) }
+    enum Mode: Equatable { case move, resize(Int), rotate, distort(Int) }
     let original: LayerTransform
     let start: CGPoint
     let mode: Mode

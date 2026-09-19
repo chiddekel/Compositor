@@ -5,6 +5,10 @@ actor CanvasResizer {
     static let shared = CanvasResizer()
 
     func resize(_ snapshot: ProjectSnapshot, to options: CanvasSizeOptions) throws -> ProjectSnapshot {
+        try Self.resizeSnapshot(snapshot, to: options)
+    }
+
+    nonisolated static func resizeSnapshot(_ snapshot: ProjectSnapshot, to options: CanvasSizeOptions) throws -> ProjectSnapshot {
         try ProjectStore.validate(snapshot.manifest)
         try Task.checkCancellation()
         guard (1...30_000).contains(options.width), (1...30_000).contains(options.height),

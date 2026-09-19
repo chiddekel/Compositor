@@ -68,4 +68,40 @@ final class AdjustmentTests: XCTestCase {
         a.curves.channels[0] = [CurvePoint(x: 0, y: 0), CurvePoint(x: 100, y: 255), CurvePoint(x: 255, y: 255), CurvePoint(x: 50, y: 0)]
         XCTAssertFalse(a.isValid)
     }
+
+    // MARK: AdjustmentSurface affected-region semantics
+    //
+    // macOS `AdjustmentSurface.draw(in:)` renders the live composite into a
+    // bounded offscreen surface. On Linux the portable equivalent is
+    // `DocumentRenderer.adjust`: an adjustment layer only changes color inside
+    // the region its (placed) mask covers; coverage/alpha outside is untouched.
+
+    func testAdjustmentChangesOnlyMaskedRegionAndNeverAlpha() throws {
+        var base = PixelBuffer(width: 4, height: 4)
+        for y in 0..<4 { for x in 0..<4 { base[x, y] = (200, 100, 50, 255) } }
+        let baseImage = ImportedImage(image: RasterImage(PortableImage(base)), thumbnail: RasterImage(PortableImage(base)), name: "Base")
+
+        var maskPixels = MaskBuffer(width: 4, height: 4)
+        for y in 0..<4 { for x in 0..<4 { maskPixels[x, y] = x < 2 ? 255 : 0 } }
+        let maskAsset = ImportedImage(mask: PortableImage(maskPixels), name: "Mask")
+        let mask = LayerMask(asset: maskAsset)
+
+        var adjustment = LayerAdjustment(kind: .levels)
+        adjustment.levels.ranges[0].outputWhite = 40
+        let layer = ImageLayer(id: UUID(), asset: nil, name: "Levels", isVisible: true,
+            transform: LayerTransform(origin: .zero, size: CGSize(width: 4, height: 4)),
+            mask: mask, adjustment: adjustment)
+
+        let doc = CanvasDocument(width: 4, height: 4, layers: [
+            ImageLayer(asset: baseImage, origin: .zero),
+            layer,
+        ])
+        let out = try DocumentRenderer(doc).render()
+        let covered = RasterSample.rgbaNearest(out, fx: 0, fy: 0)
+        let outside = RasterSample.rgbaNearest(out, fx: 3, fy: 0)
+        XCTAssertLessThan(covered.r, 200, "masked half is darkened by the levels edit")
+        XCTAssertEqual(out.bytes[3], 255, "covered alpha unchanged")
+        XCTAssertEqual(out.bytes[4 * 3 + 3], 255, "outside alpha unchanged")
+        XCTAssertEqual(out.bytes[4 * 3 + 0], 200, "unmasked half keeps original color")
+    }
 }

@@ -75,6 +75,28 @@ int compositor_composite_over(uint8_t *dst_rgba,
                                size_t stride,
                                float opacity);
 
+/*
+ * Project manifest (JSON) serialization for save/load operations.
+ * The manifest is the Codable ProjectManifest (version 1-7 schema).
+ * Returns required byte count or negative status.
+ */
+int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
+int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
+
+/*
+ * Export or install one canonical layer asset. UUID is its textual
+ * representation. RGBA assets use premultiplied RGBA bytes; mask assets use
+ * one grayscale byte per pixel.
+ */
+int64_t compositor_session_export_layer(uint64_t handle,
+                                        const uint8_t *layer_id, size_t layer_id_count,
+                                        int32_t mask, uint8_t *output, size_t capacity,
+                                        size_t *width, size_t *height);
+int32_t compositor_session_import_layer(uint64_t handle,
+                                        const uint8_t *layer_id, size_t layer_id_count,
+                                        int32_t mask, const uint8_t *pixels, size_t count,
+                                        size_t width, size_t height);
+
 #ifdef __cplusplus
 }
 #endif

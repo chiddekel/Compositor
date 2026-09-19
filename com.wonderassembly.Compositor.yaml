@@ -19,7 +19,8 @@
 #   - swift6 in-sandbox path: /usr/lib/sdk/swift6/bin  (may be .../usr/bin)
 #   - KDE Qt6 cmake dir: /usr/lib/x86_64-linux-gnu/cmake/Qt6
 #   - Skia GN args drift between milestones; run `bin/gn args --list` in sandbox.
-#   - Fill in the TODO-pin sha256 / tag fields before a real build.
+#   - Skia and OpenCV sources are pinned below; update both URL and digest
+#     together when upgrading either dependency.
 
 app-id: com.wonderassembly.Compositor
 runtime: org.kde.Platform
@@ -55,12 +56,11 @@ modules:
   # ───────────────────────── Module 1: Skia (vendored, static, CPU-only) ──
   - name: skia
     buildsystem: simple
-    build-options:
-      # Skia needs python3 + ninja from the SDK.
-      build-commands:
-        - python3 tools/git-sync-deps
-        - |
-          bin/gn gen out/Static --args='
+    # Skia needs python3 + ninja from the SDK.
+    build-commands:
+      - python3 tools/git-sync-deps
+      - |
+        bin/gn gen out/Static --args='
             is_official_build=true
             skia_enable_gpu=false
             skia_use_vulkan=false
@@ -76,18 +76,17 @@ modules:
             skia_use_system_fontconfig=false
             skia_use_vulkan=false
             skia_enable_skshaper=true
-          '
-        - ninja -C out/Static
-        - mkdir -p /app/lib /app/include/skia
-        - cp out/Static/libskia.a /app/lib/
-        - cp -r include/*.h /app/include/skia/
-        - cp -r include/core/*.h /app/include/skia/
-        - cp -r include/config/*.h /app/include/skia/ 2>/dev/null || true
+        '
+      - ninja -C out/Static
+      - mkdir -p /app/lib /app/include/skia
+      - cp out/Static/libskia.a /app/lib/
+      - cp -r include/*.h /app/include/skia/
+      - cp -r include/core/*.h /app/include/skia/
+      - cp -r include/config/*.h /app/include/skia/ 2>/dev/null || true
     sources:
-      - type: archive
-        url: https://github.com/google/skia/archive/refs/tags/<TODO-skia-tag>.tar.gz
-        sha256: <TODO-pin-sha256>
-        # TODO(pin): set a Skia milestone tag (e.g. chrome/m126) and the real sha256.
+       - type: archive
+         url: https://github.com/google/skia/archive/refs/tags/canvaskit%2F0.42.0.tar.gz
+         sha256: 3b574f9b0315d00b54c611ff6d827c29a1b65121ceed7278b451c20f0f8516a1
 
   # ───────────────────────── Module 2: OpenCV (vendored, static, minimal) ─
   - name: opencv
@@ -123,10 +122,9 @@ modules:
       - -DWITH_PROTOBUF=OFF
       - -DCMAKE_INSTALL_PREFIX=/app
     sources:
-      - type: archive
-        url: https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz
-        sha256: <TODO-pin-sha256>
-        # TODO(pin): set the real sha256 for opencv-4.10.0.
+       - type: archive
+         url: https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz
+         sha256: b2171af5be6b26f7a06b1229948bbb2bdaa74fcf5cd097e0af6378fce50a6eb9
 
   # ───────────────────────── Module 3: Compositor app ─────────────────────
   - name: compositor
@@ -139,6 +137,7 @@ modules:
       append-path: /usr/lib/sdk/swift6/bin
     build-commands:
       # (a) Build the Swift core as a static library with the runtime bundled.
+      - python3 scripts/build-brush-shader.py
       - swift build -c release --static-swift-stdlib
       # (c) Configure the C++ side against Flatpak-SDK Qt6 + vendored Skia/OpenCV
       #     in /app, and import the freshly built Swift static lib.
@@ -152,8 +151,9 @@ modules:
       # (d) Build + test. Host journey test needs offscreen Qt.
       - cmake --build build
       - QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
-      # (e) Install the app binary.
-      - install -Dm755 build/compositor /app/bin/compositor
+      # (e) Install Swift composition root. A C++ main cannot bootstrap the
+      # Swift runtime + Foundation on the Freedesktop Swift SDK.
+      - install -Dm755 .build/release/CompositorHostBootstrap /app/bin/compositor
       # (f) Install hicolor icons (sourced from the macOS AppIcon set).
       - |
         for s in 16 32 64 128 256 512; do
@@ -165,10 +165,17 @@ modules:
       - install -Dm644 flatpak/com.wonderassembly.Compositor.desktop /app/share/applications/com.wonderassembly.Compositor.desktop
       - install -Dm644 flatpak/com.wonderassembly.Compositor.metainfo.xml /app/share/metainfo/com.wonderassembly.Compositor.metainfo.xml
     sources:
-      # Flathub / CI source: pinned git commit (set before submission).
-      # - type: git
-      #   url: https://github.com/robbietilton/Compositor.git
-      #   commit: <TODO-commit>
-      # Local dev source: build from the current checkout.
-      - type: dir
-        path: .
+       # Local source for development. Release builds replace this with the
+       # exact repository commit used for the artifact.
+       # Local dev source: build from the current checkout.
+       - type: dir
+         path: .
+         skip:
+           - .git
+           - .build
+           - .flatpak-builder
+           - build
+           - build-host
+           - build-swift
+           - build-flatpak
+           - build-flatpak-minimal

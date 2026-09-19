@@ -13,6 +13,10 @@ actor ImageResizer {
     static let shared = ImageResizer()
 
     func resize(_ snapshot: ProjectSnapshot, to options: ImageSizeOptions) throws -> ProjectSnapshot {
+        try Self.resizeSnapshot(snapshot, to: options)
+    }
+
+    nonisolated static func resizeSnapshot(_ snapshot: ProjectSnapshot, to options: ImageSizeOptions) throws -> ProjectSnapshot {
         try ProjectStore.validate(snapshot.manifest)
         try Task.checkCancellation()
         guard (1...30_000).contains(options.width), (1...30_000).contains(options.height),
@@ -88,7 +92,7 @@ actor ImageResizer {
         return ProjectSnapshot(manifest: manifest, images: images, masks: masks)
     }
 
-    private func resample(_ source: PortableImage, from original: LayerTransform, scale: CGAffineTransform,
+    private nonisolated static func resample(_ source: PortableImage, from original: LayerTransform, scale: CGAffineTransform,
                           into target: LayerTransform, width: Int, height: Int, sampling: LayerSampling) throws -> PortableImage {
         let inverse = BrushRaster.pixelToDocument(original, width: source.width, height: source.height)
             .concatenating(scale).inverted()
@@ -133,7 +137,7 @@ actor ImageResizer {
 
     /// Exact box integration over an affine pixel footprint. Polygon clipping
     /// avoids imposing an arbitrary sample-count cap on large reductions.
-    private func areaSample(_ source: PortableImage, footprint: [CGPoint]) -> [UInt8] {
+    private nonisolated static func areaSample(_ source: PortableImage, footprint: [CGPoint]) -> [UInt8] {
         func area(_ polygon: [CGPoint]) -> CGFloat {
             guard polygon.count > 2 else { return 0 }
             var sum: CGFloat = 0

@@ -23,6 +23,18 @@ import HostRun
 @main
 struct HostBootstrap {
     static func main() {
+        compositorConfigureBrushAcceleration(ProcessInfo.processInfo.environment["COMPOSITOR_BRUSH_BACKEND"] != "cpu")
+        if CommandLine.arguments.contains("--dialog-smoke") {
+            let result = compositor_host_dialog_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt dialog smoke returned \(result)") }
+            return
+        }
+        if CommandLine.arguments.contains("--io-smoke") {
+            let result = compositor_host_io_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt IO smoke returned \(result)") }
+            print("CompositorHostBootstrap: Qt IO smoke OK")
+            return
+        }
         // `compositor_session_command` uses Foundation's JSONDecoder internally;
         // from a Swift main that is bootstrapped, it works (it traps from a
         // C++ main). This first call is the architectural proof.

@@ -12,7 +12,7 @@
 name:    opencv
 version: 4.10.0
 url:     https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz
-sha256:  <TODO-pin-sha256>         # TODO(pin): sha256 of the fetched tarball
+sha256:  b2171af5be6b26f7a06b1229948bbb2bdaa74fcf5cd097e0af6378fce50a6eb9
 cmake_summary: |
   -DBUILD_LIST=core,imgproc -DBUILD_SHARED_LIBS=OFF
   -DBUILD_ZLIB=ON -DBUILD_PNG=ON -DBUILD_JPEG=ON

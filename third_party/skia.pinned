@@ -9,9 +9,9 @@
 #        GN args live in the manifest module build-commands.
 
 name:    skia
-version: <skia-milestone>          # TODO(pin): set to a Skia milestone tag (e.g. chrome/m126)
-url:     https://github.com/google/skia/archive/refs/tags/<tag>.tar.gz
-sha256:  <TODO-pin-sha256>         # TODO(pin): sha256 of the fetched tarball
+version: canvaskit/0.42.0
+url:     https://github.com/google/skia/archive/refs/tags/canvaskit%2F0.42.0.tar.gz
+sha256:  3b574f9b0315d00b54c611ff6d827c29a1b65121ceed7278b451c20f0f8516a1
 gn_args_summary: |
   is_official_build=true
   skia_enable_gpu=false skia_use_vulkan=false skia_use_egl=false skia_use_gl=false

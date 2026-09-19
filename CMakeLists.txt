@@ -114,7 +114,7 @@ if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
     # them directly at link time (Swift symbols are pulled by the runtime, not
     # by the C++ call sites until the shim is wired).
     set(COMPOSITOR_CORE_LINK
-        "-Wl,--whole-archive" CompositorCoreSwift "-Wl,--no-whole-archive")
+        "-Wl,--whole-archive" CompositorCoreSwift "-Wl,--no-whole-archive" vulkan)
     # The core archive alone leaves Swift runtime symbols undefined ($s…) when
     # the C++ linker (not swift build) creates the final binary. Link the toolchain's
     # static runtime set too; ld extracts only referenced members, so unused
@@ -174,6 +174,15 @@ if(Qt6_FOUND)
     add_executable(test_png_codec tests/test_png_codec.cpp)
     target_link_libraries(test_png_codec PRIVATE Qt6::Gui)
     add_test(NAME CompositorCore.PngCodec COMMAND test_png_codec)
+
+    # SessionWindow file operations test source remains available for the Swift
+    # composition root. Do not register its C++ main as CTest: Foundation-backed
+    # Swift calls require a Swift @main to bootstrap the runtime.
+    if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
+        add_executable(test_session_window_io tests/test_session_window_io.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp)
+        target_include_directories(test_session_window_io PRIVATE ${CMAKE_SOURCE_DIR}/host)
+        target_link_libraries(test_session_window_io PRIVATE Qt6::Widgets Qt6::Gui ${COMPOSITOR_CORE_LINK})
+    endif()
 endif()
 
 # Headless Swift-session journey test: new -> paint -> render -> undo -> redo ->
@@ -183,7 +192,8 @@ endif()
 if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
     add_executable(test_session_journey tests/test_session_journey.cpp)
     target_link_libraries(test_session_journey PRIVATE CompositorCoreAbi ${COMPOSITOR_CORE_LINK})
-    add_test(NAME CompositorCore.SessionJourney COMMAND test_session_journey)
+    # A C++ main cannot bootstrap Foundation on the Freedesktop Swift SDK.
+    # SessionJourneyTests and CompositorHostBootstrap cover this path from Swift.
 endif()
 
 if(Qt6_FOUND)
@@ -208,7 +218,7 @@ if(Qt6_FOUND)
     # generates SessionWindow's moc (the SwiftPM build uses the committed
     # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc). The
     # richer MainWindow (C-kernels Qt shell) is the C++-only compositor exe's window.
-    add_library(CompositorHostRun STATIC host/host_run.cpp host/SessionWindow.cpp)
+    add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
     target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets)
 endif()

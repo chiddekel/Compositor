@@ -7,14 +7,10 @@
 // mask-version/opacity/group rules, the duplicate-id/name/transform/imageFile
 // checks, and the `LayerHierarchy.validate`/`LiveMaskGraph.validate` graph rules).
 //
-// Omitted (IO milestone — the actor's file operations):
-//   - `ProjectStore` `save`/`load`/`readPackage` — they encode PNGs via
-//     `CGImageDestination`/`CGImageSource` (ImageIO), pack a directory via
-//     `FileWrapper`, and coordinate via `NSFileCoordinator`; all Apple-only. The
-//     Linux IO milestone uses `FileManager` + a Skia/libpng encode/decode + the
-//     `ProjectManifest`/`ProjectLayerRecord` Codable surface ported here.
-//   - `UTType.compositorProject` — `UniformTypeIdentifiers` is Apple-only; the
-//     Linux port declares the UTI string literal at the IO milestone.
+// Filesystem operations stay in the Qt host: QImageReader/QImageWriter replace
+// ImageIO, QDir replaces FileWrapper, and the host stages a sibling directory
+// before replacement. This Swift file remains the shared manifest validator and
+// snapshot mapping surface used by the C ABI.
 //
 // SOLID: the value types and the validation keep their responsibilities and
 // contracts (a serializable manifest and its invariants); the Apple API surface

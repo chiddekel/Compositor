@@ -1,10 +1,10 @@
 # Compositor project format, versions 1–7
 
-A `.comp` project is a directory package containing `manifest.json` and an `images/` directory of `<layer UUID>.png` assets. macOS presents the directory as a document package. The Linux core uses the same Codable manifest and asset names; Linux package persistence is still being implemented.
+A `.comp` project is a directory package containing `manifest.json` and an `images/` directory of `<layer UUID>.png` assets. macOS presents the directory as a document package. The Linux host uses the same Codable manifest and asset names through Qt codecs.
 
 The manifest identifies `com.compositor.project`, version `7` for new saves (versions `1`–`6` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
 
-Embedded PNGs preserve source pixels and transparency; transforms remain separate. Projects survive moving or deleting imported source photos. The macOS implementation saves using coordinated atomic package replacement and rejects unsupported versions, invalid metadata, missing assets, unsafe paths, and oversized data before replacing the live document. Linux currently validates manifests and in-memory snapshot mapping; these checks do not yet establish filesystem persistence or atomic-save parity.
+Embedded PNGs preserve source pixels and transparency; transforms remain separate. Projects survive moving or deleting imported source photos. The macOS implementation saves using coordinated atomic package replacement. Linux validates manifest data through the Swift ABI, writes PNG assets under `images/`, stages a sibling package, and replaces the destination only after all assets encode successfully. Both paths reject unsupported versions, invalid metadata, missing assets, unsafe paths, and oversized data before replacing the live document.
 
 Limits: 30,000 pixels per canvas/image side, 100 million total source pixels, 10,000 layers, 4 MiB manifest, 512 MiB per encoded asset. See `ProjectStore.swift` for validation.
 
@@ -48,4 +48,4 @@ A shape still embeds an ordinary image. Loading associates its style with that i
 | 6 | Folder masks |
 | 7 | Adjustment layers |
 
-The schema sources are `Sources/CompositorCore/Document/ProjectStore.swift`, `ProjectLayerRecord.swift`, `LayerAdjustment.swift`, and `LayerShape.swift`. `ProjectManifestTests` exercises supported versions and manifest round trips; `ResizeExecutionTests` exercises snapshot mapping, missing-asset rejection, v7 settings/shape/mask metadata round trips, and canvas/image resize preservation. These are in-memory core tests; a cross-platform `.comp` save/reopen fixture remains required for Linux persistence acceptance.
+The schema sources are `Sources/CompositorCore/Document/ProjectStore.swift`, `ProjectLayerRecord.swift`, `LayerAdjustment.swift`, and `LayerShape.swift`. `ProjectManifestTests` exercises supported versions and manifest round trips; `ResizeExecutionTests` exercises snapshot mapping, missing-asset rejection, v7 settings/shape/mask metadata round trips, and canvas/image resize preservation. `CompositorHostBootstrap --io-smoke` exercises PNG/JPEG export plus package asset save/reopen through Qt.

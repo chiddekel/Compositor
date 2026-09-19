@@ -1,40 +1,6 @@
-// Portable port of Compositor/Document/BrushStroke.swift (file-map tier: "Apple
-// replacement/adaptation: Keep sampling/smoothing and tile algorithm; replace
-// CGContext/CGImage storage and paint operations").
-//
-// Kept verbatim (pure math): the centripetal Catmull–Rom sampling with the
-// provisional-tail erase/redraw protocol, dab spacing, 256px touched-tile
-// allocation with the allocated-bounds memory guard, the coverage-then-recompose
-// publish pipeline (original + color × coverage × opacity), selection clipping,
-// clone/erase/healing-wash semantics, gradient/fill/clear canvas passes, and the
-// lift/move selected-pixels protocol. `BrushCommit` (flatten + alpha-bounds crop
-// + thumbnail) is kept as a plain type; the actor isolation of the macOS
-// original is a host-thread decision and returns with the async host milestone.
-//
-// Replaced: CGContext/CGImage with the canonical `PixelBuffer`/`MaskBuffer`/
-// `PortableImage` substrate and direct per-pixel math in top-left document
-// coordinates (the CGContext y-flip existed only to make CG draw top-left; the
-// buffers already are). The C kernels (`brush_alpha_bounds`, `spot_heal`,
-// `heal_coverage_bounds`) are called through the CompositorKernels module — the
-// same .c files the C++ host builds, one implementation on both sides.
-//
-// Omitted:
-//   - The GPU path (`MetalBrushCoverage`): macOS keeps Metal; the Linux Vulkan
-//     backend lands as a `BrushCoverageComputing` implementation at the host
-//     composition root (SOLID open/closed), not inside this file. This engine is
-//     the CPU contract the GPU backend must reproduce (ENG-10/ENG-11 fixtures).
-//   - `stamp`/`gridTip` tip caches: on macOS they bought back CG resampling
-//     cost; here dabs are computed procedurally per pixel (distance-field
-//     coverage), the same math with no resample step.
-//     ponytail: un-measured procedural dabs may cost more than blitted tips for
-//     very wide brushes; revisit with the brush benchmark after the Skia/Vulkan
-//     milestone, not before.
-//   - `RasterSnapshot` integration in `paintSnapshot` (a tile cache for redraw);
-//     the flatten here produces the same committed pixels, the cache is the
-//     renderer milestone.
-//
-// The macOS original stays the source of truth for behavior.
-
+// Portable brush orchestration: Swift owns centerline sampling, tile state,
+// selection clipping, and recomposition. BrushCoverageComputing supplies continuous
+// coverage through CPU or Vulkan; neither backend mutates document/history state.
 import Foundation
 import CompositorKernels
 
@@ -131,7 +97,7 @@ extension ImportedImage {
     }
 }
 
-// MARK: - BrushStroke (portable CPU engine)
+// MARK: - BrushStroke (backend-independent tile engine)
 
 /// Only touched 256px tiles allocate writable pixels. Snapshots copy at most
 /// those tiles, never the entire layer on a mouse-move event.
@@ -163,14 +129,10 @@ final class BrushStroke {
     /// The undo name, when the stroke's kind doesn't say it.
     var editName: String?
     private var allocatedBounds: CGRect?
-    private var previous: CGPoint?
     private var samples: [CGPoint] = []
-    /// Provisional-tail coverage backup: the tiles touched (set) and their saved
-    /// coverage (dict; absent from the dict = the tile had no coverage yet, so
-    /// `removeTail` zeroes it — the tri-state of the macOS `CGImage?` backup).
-    private var tailBackupTiles = Set<Int>()
-    private var tailBackupBuffers: [Int: MaskBuffer] = [:]
-    private var distanceToNext: CGFloat = 0
+    private let coverageComputer: BrushCoverageComputing
+    private var permanentCoverage: [Int: [Float]] = [:]
+    private var continuousTailKeys = Set<Int>()
     private(set) var dirtyDocumentRect: CGRect?
     private final class Tile {
         let rect: CGRect
@@ -199,7 +161,9 @@ final class BrushStroke {
         tiles.values.compactMap { tile in tile.image.map { BrushPatch(rect: tile.rect, image: $0) } }
     }
 
-    init(layer: ImageLayer, mask: Bool, settings: BrushSettings, canvas: CGSize) throws {
+    init(layer: ImageLayer, mask: Bool, settings: BrushSettings, canvas: CGSize,
+         coverageComputer: BrushCoverageComputing = CPUBrushCoverage()) throws {
+        self.coverageComputer = coverageComputer
         self.layer = layer
         isMask = mask
         self.settings = settings
@@ -252,128 +216,80 @@ final class BrushStroke {
         return 0
     }
 
-    /// Mouse samples arrive sparsely, so dabs follow a smooth curve through them rather
-    /// than straight chords. A curve piece needs the sample after it, so the newest piece
-    /// is first drawn as a provisional straight tail (the stroke never trails the cursor),
-    /// then erased and replaced by the curve when the next sample arrives or on `flush()`.
+    /// Both backends consume the same centerline and replaceable preview tail.
     func append(_ point: CGPoint) throws {
         guard point.x.isFinite, point.y.isFinite, abs(point.x) <= 10_000_000, abs(point.y) <= 10_000_000 else { return }
         guard samples.last != point else { return }
-        var changed = removeTail()
         samples.append(point)
         if samples.count > 4 { samples.removeFirst() }
-        let count = samples.count
-        if count == 1 {
-            try walk(to: point, changed: &changed)
-        } else if count >= 3 {
-            try curve(from: samples[count - 3], to: samples[count - 2],
-                      before: samples[max(0, count - 4)], after: samples[count - 1], changed: &changed)
+        let n = samples.count
+        var settled: [SIMD4<Float>] = []
+        if n == 1 { settled = [BrushCenterline.segment(point, point)] }
+        else if n >= 3 {
+            settled = BrushCenterline.curve(from: samples[n - 3], to: samples[n - 2],
+                before: samples[max(0, n - 4)], after: point)
         }
-        if count >= 2 { try drawTail(from: samples[count - 2], to: point, changed: &changed) }
-        try publish(changed)
+        let tail = n >= 2 ? [BrushCenterline.segment(samples[n - 2], point)] : []
+        try renderContinuous(settled: settled, tail: tail)
     }
 
-    /// Replaces the provisional tail with the stroke's final curve piece. Safe to repeat.
     func flush() throws {
-        var changed = removeTail()
-        let count = samples.count
-        if count >= 2 {
-            try curve(from: samples[count - 2], to: samples[count - 1],
-                      before: samples[max(0, count - 3)], after: samples[count - 1], changed: &changed)
-            samples = [samples[count - 1]]
-        }
-        try publish(changed)
+        let n = samples.count
+        guard n >= 2 else { return }
+        let settled = BrushCenterline.curve(from: samples[n - 2], to: samples[n - 1],
+            before: samples[max(0, n - 3)], after: samples[n - 1])
+        try renderContinuous(settled: settled, tail: [])
+        samples = [samples[n - 1]]
     }
 
-    /// Draws a straight tail to the cursor, first saving the coverage it can touch and the
-    /// dab spacing state, so `removeTail()` can put both back exactly.
-    private func drawTail(from start: CGPoint, to end: CGPoint, changed: inout Set<Int>) throws {
-        let reach = settings.diameter / 2 + 2
-        let box = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y))
-            .insetBy(dx: -reach, dy: -reach).intersection(canvas)
-        if !box.isNull, !box.isEmpty {
-            let affected = box.applying(pixelToDocument.inverted()).integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
-            if !affected.isNull, !affected.isEmpty {
-                let columns = (width + Self.tileSize - 1) / Self.tileSize
-                for y in Int(affected.minY) / Self.tileSize...Int(ceil(affected.maxY) - 1) / Self.tileSize {
-                    for x in Int(affected.minX) / Self.tileSize...Int(ceil(affected.maxX) - 1) / Self.tileSize {
-                        let key = y * columns + x
-                        tailBackupTiles.insert(key)
-                        if let buffer = coverage[key] { tailBackupBuffers[key] = buffer }
-                    }
-                }
-            }
-        }
-        let saved = (previous, distanceToNext)
-        try walk(to: end, changed: &changed)
-        (previous, distanceToNext) = saved
-    }
-
-    private func removeTail() -> Set<Int> {
-        var restored = Set<Int>()
-        for key in tailBackupTiles {
-            guard var context = coverage[key], let tile = tiles[key] else { continue }
-            if let backup = tailBackupBuffers[key] {
-                for y in 0..<min(backup.height, context.height) {
-                    for x in 0..<min(backup.width, context.width) {
-                        context[x, y] = backup[x, y]
-                    }
-                }
-            } else {
-                for y in 0..<context.height {
-                    for x in 0..<context.width { context[x, y] = 0 }
-                }
-            }
-            coverage[key] = context
-            dirtyTiles[key] = CGRect(origin: .zero, size: tile.rect.size)
-            restored.insert(key)
-        }
-        tailBackupTiles = []
-        tailBackupBuffers = [:]
-        return restored
-    }
-
-    /// Centripetal Catmull–Rom between `start` and `end`: it passes through every sample
-    /// without the loops or overshoot uniform splines make at uneven mouse speeds.
-    private func curve(from start: CGPoint, to end: CGPoint, before: CGPoint, after: CGPoint, changed: inout Set<Int>) throws {
-        func knot(_ t: CGFloat, _ a: CGPoint, _ b: CGPoint) -> CGFloat { t + max(0.0001, sqrt(hypot(b.x - a.x, b.y - a.y))) }
-        func mix(_ a: CGPoint, _ b: CGPoint, _ ta: CGFloat, _ tb: CGFloat, _ t: CGFloat) -> CGPoint {
-            let wa = (tb - t) / (tb - ta), wb = (t - ta) / (tb - ta)
-            return CGPoint(x: a.x * wa + b.x * wb, y: a.y * wa + b.y * wb)
-        }
-        let t0: CGFloat = 0, t1 = knot(t0, before, start), t2 = knot(t1, start, end), t3 = knot(t2, end, after)
-        let pieces = max(1, Int(ceil(hypot(end.x - start.x, end.y - start.y) / 2)))
-        for index in 1...pieces {
-            let t = t1 + (t2 - t1) * CGFloat(index) / CGFloat(pieces)
-            let a1 = mix(before, start, t0, t1, t), a2 = mix(start, end, t1, t2, t), a3 = mix(end, after, t2, t3, t)
-            let b1 = mix(a1, a2, t0, t2, t), b2 = mix(a2, a3, t1, t3, t)
-            try walk(to: index == pieces ? end : mix(b1, b2, t1, t2, t), changed: &changed)
-        }
-    }
-
-    /// Soft-tip deposition rate, shared with the continuous GPU integral.
-    /// The software fallback lays actual dabs at this spacing.
     static func spacingFraction(_ hardness: CGFloat) -> CGFloat { hardness >= 1 ? 0.015 : 0.025 }
 
-    /// Lays evenly spaced dabs along a straight run from the previous dab position.
-    private func walk(to point: CGPoint, changed: inout Set<Int>) throws {
-        let spacing = max(0.25, settings.diameter * Self.spacingFraction(settings.hardness))
-        if let previous {
-            let dx = point.x - previous.x, dy = point.y - previous.y
-            let length = hypot(dx, dy)
-            if length > 0 {
-                var distance = distanceToNext
-                while distance <= length {
-                    try dab(CGPoint(x: previous.x + dx * distance / length, y: previous.y + dy * distance / length), changed: &changed)
-                    distance += spacing
+    private func continuousKeys(_ segments: [SIMD4<Float>]) -> Set<Int> {
+        var keys = Set<Int>()
+        let reach = settings.diameter / 2 + 2
+        let inverse = pixelToDocument.inverted()
+        let columns = (width + Self.tileSize - 1) / Self.tileSize
+        for s in segments {
+            let box = CGRect(x: CGFloat(min(s.x, s.z)), y: CGFloat(min(s.y, s.w)),
+                width: CGFloat(abs(s.z - s.x)), height: CGFloat(abs(s.w - s.y)))
+                .insetBy(dx: -reach, dy: -reach).intersection(canvas)
+            guard !box.isNull, !box.isEmpty else { continue }
+            let affected = box.applying(inverse).integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+            guard !affected.isNull, !affected.isEmpty else { continue }
+            for y in Int(affected.minY) / Self.tileSize...Int(ceil(affected.maxY) - 1) / Self.tileSize {
+                for x in Int(affected.minX) / Self.tileSize...Int(ceil(affected.maxX) - 1) / Self.tileSize {
+                    keys.insert(y * columns + x)
                 }
-                distanceToNext = distance - length
             }
-        } else {
-            try dab(point, changed: &changed)
-            distanceToNext = spacing
         }
-        previous = point
+        return keys
+    }
+
+    private func renderContinuous(settled: [SIMD4<Float>], tail: [SIMD4<Float>]) throws {
+        let tailKeys = continuousKeys(tail)
+        let changed = continuousKeys(settled).union(tailKeys).union(continuousTailKeys)
+        let columns = (width + Self.tileSize - 1) / Self.tileSize
+        for key in changed.sorted() {
+            try allocateTile(key, x: key % columns, y: key / columns)
+            guard let tile = tiles[key] else { continue }
+            let w = Int(tile.rect.width), h = Int(tile.rect.height)
+            let request = BrushCoverageRequest(width: w, height: h,
+                origin: tile.rect.origin.applying(pixelToDocument), mapping: pixelToDocument,
+                canvas: canvas.size, radius: Float(settings.diameter / 2), hardness: Float(settings.hardness),
+                antialiasWidth: Float(max(0.001, min(hypot(pixelToDocument.a, pixelToDocument.b),
+                    hypot(pixelToDocument.c, pixelToDocument.d)))),
+                spacing: Float(max(0.25, settings.diameter * Self.spacingFraction(settings.hardness))),
+                settled: settled, tail: tail, permanent: permanentCoverage[key] ?? [Float](repeating: 0, count: w * h))
+            let result = try coverageComputer.render(request)
+            guard result.permanent.count == w * h, result.preview.count == w * h else { throw BrushCoverageFailure.invalidInput }
+            permanentCoverage[key] = result.permanent
+            var mask = MaskBuffer(width: w, height: h)
+            mask.bytes = result.preview
+            coverage[key] = mask
+            dirtyTiles[key] = CGRect(origin: .zero, size: tile.rect.size)
+        }
+        continuousTailKeys = tailKeys
+        try publish(changed)
     }
 
     private func publish(_ changed: Set<Int>) throws {
@@ -472,74 +388,6 @@ final class BrushStroke {
               doc.y >= clip.rect.minY, doc.y < clip.rect.maxY else { return 0 }
         guard let cov = clip.coverage else { return 1 }
         return Float(RasterSample.grayNearest(cov, fx: doc.x - clip.rect.minX, fy: doc.y - clip.rect.minY)) / 255
-    }
-
-    private func dab(_ point: CGPoint, changed: inout Set<Int>) throws {
-        let radius = settings.diameter / 2
-        let circle = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
-        let clipped = circle.intersection(canvas)
-        guard !clipped.isNull, !clipped.isEmpty else { return }
-        let inverse = pixelToDocument.inverted()
-        let pixelCanvas = canvas.applying(inverse)
-        let affected = clipped.applying(inverse).intersection(pixelCanvas)
-            .integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        guard !affected.isNull, !affected.isEmpty else { return }
-        let columns = (width + Self.tileSize - 1) / Self.tileSize
-        let hard = settings.hardness >= 1
-        let inner = radius * settings.hardness
-        let softSpan = max(0.0001, radius - inner)
-        for tileY in Int(affected.minY) / Self.tileSize...Int(ceil(affected.maxY) - 1) / Self.tileSize {
-            for tileX in Int(affected.minX) / Self.tileSize...Int(ceil(affected.maxX) - 1) / Self.tileSize {
-                let key = tileY * columns + tileX
-                try allocateTile(key, x: tileX, y: tileY)
-                guard let tile = tiles[key] else { continue }
-                if coverage[key] == nil { coverage[key] = MaskBuffer(width: Int(tile.rect.width), height: Int(tile.rect.height)) }
-                guard var cov = coverage[key] else { continue }
-                let ox = Int(tile.rect.minX), oy = Int(tile.rect.minY)
-                let startX = max(Int(affected.minX), ox), endX = min(Int(ceil(affected.maxX)), ox + Int(tile.rect.width))
-                let startY = max(Int(affected.minY), oy), endY = min(Int(ceil(affected.maxY)), oy + Int(tile.rect.height))
-                var touched = CGRect.null
-                for y in startY..<endY {
-                    for x in startX..<endX {
-                        // Tip coverage from the document-space distance field: inside the
-                        // hardness radius it is full, then the Gaussian falloff to the rim.
-                        let doc = CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5).applying(pixelToDocument)
-                        let dist = hypot(doc.x - point.x, doc.y - point.y)
-                        let tip: CGFloat
-                        if hard {
-                            tip = max(0, min(1, radius - dist + 0.5))
-                        } else if dist <= inner {
-                            tip = 1
-                        } else if dist < radius {
-                            tip = BrushRaster.falloff((dist - inner) / softSpan)
-                        } else {
-                            tip = 0
-                        }
-                        guard tip > 0 else { continue }
-                        let lx = x - ox, ly = y - oy
-                        // Accumulate within the stroke: hard tips lighten (silhouette),
-                        // soft tips screen (deposition adds, never exceeds 1).
-                        let current = Float(cov[lx, ly])
-                        let tipF = Float(tip * 255)
-                        let next: Float
-                        if hard {
-                            next = max(current, tipF)
-                        } else {
-                            next = current + tipF - current * tipF / 255
-                        }
-                        cov[lx, ly] = UInt8(min(255, next + 0.5))
-                        touched = touched.isNull
-                            ? CGRect(x: CGFloat(lx), y: CGFloat(ly), width: 1, height: 1)
-                            : touched.union(CGRect(x: CGFloat(lx), y: CGFloat(ly), width: 1, height: 1))
-                    }
-                }
-                coverage[key] = cov
-                if !touched.isNull {
-                    dirtyTiles[key] = dirtyTiles[key].map { $0.union(touched) } ?? touched
-                    changed.insert(key)
-                }
-            }
-        }
     }
 
     private func allocateTile(_ key: Int, x: Int, y: Int) throws {
