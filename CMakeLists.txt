@@ -157,7 +157,11 @@ if(Qt6_FOUND)
         host/MainWindow.cpp
         host/CanvasWidget.cpp
         host/CanonicalBuffer.cpp)
-    target_link_libraries(compositor PRIVATE Qt6::Widgets CompositorKernels ${COMPOSITOR_CORE_LINK})
-    # The host app is the ENG-2 composition root; the C kernels run in-process,
-    # and (when built via Flatpak) the Swift core is linked via CompositorCoreSwift.
+    # The host app is the ENG-2 composition root; the C kernels run in-process.
+    # When the Swift static lib is linked it already embeds the kernel objects
+    # (SwiftPM folds the C target into the library product), so it must come
+    # FIRST: with the kernel symbols already defined, ld never extracts the
+    # duplicate members from this project's own kernel archive, which stays in
+    # the link line for its include path.
+    target_link_libraries(compositor PRIVATE Qt6::Widgets ${COMPOSITOR_CORE_LINK} CompositorKernels)
 endif()

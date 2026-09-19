@@ -102,6 +102,10 @@ public struct MaskBuffer {
         get { bytes[y * width + x] }
         set { bytes[y * width + x] = newValue }
     }
+
+    public func withUnsafeBytes<R>(_ body: (UnsafePointer<UInt8>) throws -> R) rethrows -> R {
+        try bytes.withUnsafeBufferPointer { ptr in try body(ptr.baseAddress!) }
+    }
 }
 
 /// Immutable image value backed by a canonical pixel buffer. Replaces `CGImage` as
@@ -156,7 +160,7 @@ public struct PortableImage: Equatable {
                              bytesPerRow: cw * bytesPerPixel, bytes: out)
     }
 
-    private init(width: Int, height: Int, kind: Kind, bytesPerRow: Int, bytes: [UInt8]) {
+    init(width: Int, height: Int, kind: Kind, bytesPerRow: Int, bytes: [UInt8]) {
         self.width = width; self.height = height; self.kind = kind
         self.bytesPerRow = bytesPerRow; self.bytes = bytes
     }

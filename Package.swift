@@ -24,8 +24,38 @@ let package = Package(
         .library(name: "CompositorCore", type: .static, targets: ["CompositorCore"]),
     ],
     targets: [
+        // The portable C pixel kernels (file-map "Keep" tier), reused verbatim from
+        // the macOS source tree. The same .c files are ALSO built by CMakeLists.txt
+        // for the C++ host and tests; this target makes them callable from the Swift
+        // core (brush_alpha_bounds, spot_heal, …) so the two sides share one kernel
+        // implementation. COMPOSITOR_PORTABLE turns on the ENG-17 canonical-buffer
+        // entry asserts (no-ops on macOS/Xcode, which never defines it).
+        .target(
+            name: "CompositorKernels",
+            path: "Compositor/Rendering",
+            exclude: [
+                "AdjustmentSurface.swift",
+                "BrushCursorOverlay.swift",
+                "CanvasViewport.swift",
+                "DownsampleCache.swift",
+                "EditorCanvas.swift",
+                "LayerRenderer.swift",
+                "LiveMaskRenderer.swift",
+                "MetalBrushCoverage.swift",
+                "RasterSnapshot.swift",
+                "SampleRingOverlay.swift",
+                "SeparableBlend.swift",
+                "TiledLayerRenderer.swift",
+                "TransformOverlay.swift",
+            ],
+            publicHeadersPath: ".",
+            cSettings: [
+                .define("COMPOSITOR_PORTABLE"),
+            ]
+        ),
         .target(
             name: "CompositorCore",
+            dependencies: ["CompositorKernels"],
             path: "Sources/CompositorCore",
             swiftSettings: [
                 // ENG-12 provisional decision: Swift 5 language mode for the

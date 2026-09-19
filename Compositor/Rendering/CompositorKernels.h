@@ -3,6 +3,18 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// Umbrella for the portable C pixel kernels (file-map "Keep" tier). SwiftPM picks
+// this header as the module umbrella (module named CompositorKernels); including
+// every kernel header here exports the full surface to Swift in one import.
+#include "AdjustPixels.h"
+#include "BrushPixels.h"
+#include "ContentFill.h"
+#include "HealPixels.h"
+#include "LensPixels.h"
+#include "LevelsPixels.h"
+#include "NoisePixels.h"
+#include "WandPixels.h"
+
 // ENG-17 — canonical-buffer contract assert at every C-kernel entry.
 //
 // The port feeds kernels only canonical tiles: 8-bit premultiplied RGBA with
