@@ -40,9 +40,7 @@ Remaining work includes connecting the Swift document/session commands and immut
 
 The only supported way to use Foundation is a **Swift entry point** that SwiftPM bootstraps. The composition root must therefore change to a Swift `@main` that initializes the Swift runtime and Foundation, then drives the Qt host through a C ABI (the inverse of the current `host/main.cpp`), or otherwise guarantees a Swift entry runs before any Foundation use. The C++ `tests/test_session_journey.cpp` is gated out of the default build for this reason; its header documents the blocker.
 
-**Composition-root bootstrap verified.** `Sources/CompositorHostBootstrap/hostMain.swift` is a Swift `@main` that runs the same create→new→paint→render→undo→redo→close journey through the real `compositor_session_*` ABI and exits 0 (`swift run CompositorHostBootstrap`). This is the architectural proof that the Swift-`@main` root unblocks the host journey: Foundation's `JSONDecoder`/`JSONEncoder` (used inside `compositor_session_command`/`_state`) work from a Swift entry point, where they trap from a C++ `main`. In the Flatpak build, `hostMain.swift`'s `main` calls the Qt host's C entry (`compositor_host_run`) instead of the self-test; the Qt host then calls back into `compositor_session_*`.
-
-The Qt-side C entry exists and builds: `host/host_run.cpp` defines `extern "C" int compositor_host_run(int argc, char **argv)` (moc-free, so SwiftPM can compile it; the Flatpak build swaps in the full `MainWindow` + `app.exec()`). CMake builds it as the `CompositorHostRun` static lib (Qt6-gated), which the Flatpak manifest links into the Swift `@main` executable. Default CMake/CTest stays 3/3; the Swift suite stays 324/0.
+**Composition-root wiring verified end-to-end.** `Sources/CompositorHostBootstrap/hostMain.swift` is a Swift `@main` that imports the `HostRun` C++ target (host/host_run.cpp, moc-free Qt entry) and runs the create→new→paint→render→undo→redo→close journey through the real `compositor_session_*` ABI, then calls `compositor_host_run` to initialize Qt. Verified in-sandbox against the KDE SDK's Qt6: `swift run CompositorHostBootstrap` prints both "session journey OK" and "Qt host entry OK" (exit 0), and the release `--static-swift-stdlib` build (Flatpak-style, runtime bundled) runs identically — because the main IS Swift, the runtime bootstraps where a C++ `main` cannot. CMake also builds the Qt-side `CompositorHostRun` static lib (host/host_run.cpp + host/include/compositor_host_run.h) for the full-MainWindow Flatpak build. The minimal Flatpak manifest (`com.wonderassembly.Compositor.minimal.yaml`) now installs this Swift `@main` binary as the app command (it previously installed the C++ `compositor` target, which would segfault at the first Swift call). Default CMake/CTest stays 3/3; the Swift suite stays 324/0. Remaining for the first workstream: swap the bootstrap's plain-QWidget `host_run` for the real `MainWindow` + `app.exec()` (needs AUTOMOC, so built via CMake and linked in the Flatpak manifest), wire the canvas/tool/layer interactions to `compositor_session_*`, and the save/reopen/export legs (see the IO/codec mapping below).
 
 **Session journey verified (host-verifiable slice of the first workstream).** Because the journey can run under `swift test` (where SwiftPM bootstraps the runtime and Foundation), the same create→new→paint→render→undo→redo→state→close journey is verified end-to-end through the real `compositor_session_*` ABI in `Tests/CompositorCoreTests/SessionJourneyTests.swift`: a 4×4 canvas, a solid red brush stroke, render-byte and red-pixel assertions, undo-to-blank, redo-to-red, state JSON fields (`width`, `height`, `busy`, `canUndo`, `canRedo`), and closed-handle rejection (`-6`). This is real progress on the "First packaged open/paint/undo/save/reopen/export journey" workstream; the remaining save/reopen/export legs and the Qt-driven host journey still need the Swift-`@main` composition root above.
 
@@ -172,6 +170,30 @@ cmake -S . -B build-cmake -G Ninja && cmake --build build-cmake \
 | `Compositor/UI/SliderSnap.swift` | 43 | AppKit, ObjectiveC | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |
 | `Compositor/UI/ToolHeaderStyle.swift` | 27 | SwiftUI | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |
 | `Compositor/UI/TransformInspector.swift` | 113 | SwiftUI | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |
+
+## IO / codec mapping (ImageIO → Qt)
+
+The IO-tier rows below (`ImageExporter`, `ImageImporter`, `ProjectStore`, `ImageFileDrop`, `ProjectController`) replace Apple `ImageIO`/`UniformTypeIdentifiers`/`FileCoordinator`. Qt6 ships the codecs via the KDE Platform runtime (no vendored codec libs for PNG/JPEG). The mapping:
+
+| Apple ImageIO | Qt / Freedesktop alternative |
+|---|---|
+| `CGImageSource` / `CGImageSourceCreateWithURL` | `QImageReader(QString path)` |
+| `CGImageSourceCreateWithData` | `QBuffer` + `QImageReader(QIODevice*)` |
+| `CGImageSourceGetType` | `QImageReader::format()` / `imageFormat()` |
+| `CGImageSourceCopyTypeIdentifiers()` | `QImageReader::supportedImageFormats()` / `supportedMimeTypes()` |
+| `CGImageSourceGetCount()` / `CreateImageAtIndex()` | `imageCount()` / `jumpToImage(index)` → `read()` |
+| `CGImageSourceCreateThumbnailAtIndex()` | `setScaledSize()` → `read()` |
+| `CGImageSourceCopyPropertiesAtIndex()` | `QImageReader` properties + `text()`; `libexif`/Exiv2 for full EXIF/IPTC/XMP |
+| `CGImageSourceCreateIncremental()` / `UpdateData()` | `GdkPixbufLoader` / `gdk_pixbuf_loader_write()` |
+| `CGImageDestination` / `CreateWithURL` | `QImageWriter(QString path)` |
+| `CGImageDestinationCreateWithData` | `QBuffer` + `QImageWriter` |
+| `CGImageDestinationAddImage()` / `Finalize()` | `QImageWriter::write()` |
+| `kCGImageDestinationLossyCompressionQuality` | `QImageWriter::setQuality()` |
+| EXIF orientation | `QImageReader::transformation()` / auto-transform |
+| ICC / color profile | `QColorSpace`; lower-level `lcms2` |
+| custom codecs | `QImageIOHandler` + `QImageIOPlugin` |
+| `UTType` (UniformTypeIdentifiers) | `QMimeDatabase` / `QMimeType` |
+| `NSFileCoordinator` | Flatpak portals (`xdg-desktop-portal` OpenFile/SaveFile) via Qt |
 
 ## Tests
 
