@@ -23,3 +23,7 @@ nonisolated enum BlurToolMode: String, CaseIterable, Sendable {
     case blur = "Blur"
     case smudge = "Smudge"
 }
+
+// `SpotHealingMode`, `BrushSettings`, and `BrushPatch` live in Rendering/BrushRaster.swift
+// alongside the portable `BrushRaster.falloff`/`pixelToDocument` math; the raster brush
+// engine (`BrushStroke`/`BrushCommit`) is the Skia/CPU milestone.
