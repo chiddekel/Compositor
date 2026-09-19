@@ -144,6 +144,45 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
     }
 }
 
+// Brush palette + blend round-trip: the palette sliders and color button feed
+// brushBegin parameters through the C ABI, the blend combo drives setBlendMode,
+// and the painted stroke renders with the chosen color/size.
+extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
+    QApplication app(argc, argv);
+    try {
+        QTemporaryDir temporary;
+        require(temporary.isValid(), "temporary directory failed");
+        SessionWindow window; window.show(); QApplication::processEvents();
+        auto *diameter = window.findChild<QSlider *>("brush.diameter");
+        auto *hardness = window.findChild<QSlider *>("brush.hardness");
+        auto *opacity = window.findChild<QSlider *>("brush.opacity");
+        auto *blend = window.findChild<QComboBox *>("blend.mode");
+        require(diameter && hardness && opacity && blend, "brush palette controls missing");
+        diameter->setValue(24);
+        hardness->setValue(100);
+        opacity->setValue(100);
+        blend->setCurrentText("Multiply");
+        const QJsonArray layers = window.sessionState().value("layers").toArray();
+        require(layers.size() > 0 && layers.at(0).toObject().value("blendMode").toString() == "Multiply", "blend combo did not reach setBlendMode");
+
+        window.paintStroke(8, 8, 40, 40);
+        const QImage painted = exported(window, temporary.filePath("brush.png"));
+        int colored = 0;
+        const QColor expected(255, 0, 0);
+        for (int y = 0; y < painted.height(); ++y) {
+            for (int x = 0; x < painted.width(); ++x) {
+                const QColor pixel = painted.pixelColor(x, y);
+                if (pixel.alpha() > 0 && (pixel.red() > 200 || pixel.green() > 200 || pixel.blue() > 200)) ++colored;
+            }
+        }
+        require(colored > 0, "palette stroke did not paint");
+        qInfo("Qt brush palette journey OK (diameter/hardness/opacity, color, blend, paint)");
+        return 0;
+    } catch (const std::exception &e) {
+        qCritical("Qt brush palette journey failed: %s", e.what()); return 1;
+    }
+}
+
 // Layers dock journey: the QListWidget rows mirror the Swift state JSON, and the
 // Layer menu actions round-trip addLayer/duplicateLayer/deleteLayer/selectLayer/
 // setOpacity through the C ABI.

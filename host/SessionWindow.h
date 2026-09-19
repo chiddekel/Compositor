@@ -19,12 +19,16 @@
 #include <QMainWindow>
 #include <QImage>
 #include <QString>
+#include <QStringList>
 #include <QPointF>
 #include <QJsonObject>
 
 class QListWidget;
 class QListWidgetItem;
 class QSlider;
+class QComboBox;
+class QPushButton;
+class QColor;
 #include <vector>
 
 class SessionWindow : public QMainWindow {
@@ -45,6 +49,11 @@ public:
     // bytes the dock renders, through the real C ABI).
     QJsonObject sessionState() const;
 
+    // Paint a stroke from the current palette (diameter/hardness/opacity/color)
+    // through brushBegin/brushMove/brushEnd. Public so smokes can drive the
+    // same code path the mouse handlers use.
+    void paintStroke(double x1, double y1, double x2, double y2);
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -63,11 +72,27 @@ private:
     void refreshLayers();
     void selectLayerRow(int row);
     void setOpacityFromSlider(int value);
+    void setBrushDiameter(int value);
+    void setBrushHardness(int value);
+    void setBrushOpacity(int value);
+    void setBrushColor(const QColor &color);
+    void setBlendModeFromCombo(int index);
+    void pickBrushColor();
+    QStringList blendModes() const;
     QImage m_image;
     uint64_t m_sessionHandle = 0;
     bool m_painting = false;
     QString m_brushMode = "Paint";
     QListWidget *m_layers = nullptr;
     QSlider *m_opacity = nullptr;
+    QComboBox *m_blend = nullptr;
+    QPushButton *m_brushColorButton = nullptr;
+    QSlider *m_brushDiameterSlider = nullptr;
+    QSlider *m_brushHardnessSlider = nullptr;
+    QSlider *m_brushOpacitySlider = nullptr;
+    QColor m_brushColor = QColor(255, 0, 0);
+    int m_brushDiameter = 16;
+    int m_brushHardness = 100;
+    int m_brushOpacity = 100;
     bool m_syncingLayers = false;
 };

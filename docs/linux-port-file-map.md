@@ -80,10 +80,20 @@ removes the row + layer, and the composited render still paints. `sessionState`
 is public on `SessionWindow` so the test reads ABI bytes through the same code
 path the dock renders.
 
+**Brush palette + blend mode round-trip verified (host-verifiable slice).** The
+`Brush` dock (diameter/hardness/opacity sliders, color button, blend combo) feeds
+`brushBegin` parameters through the C ABI and the blend combo drives
+`setBlendMode` (the bridge reads the mode from `kind`). The paint mouse path and
+the public `paintStroke` both build commands from the palette members.
+`CompositorHostBootstrap --brush-smoke` sets diameter 24, hardness 100, opacity
+100, switches the active layer blend to Multiply (asserted back through
+`state.layers`), paints a diagonal stroke, and asserts colored pixels survive
+the composited render.
+
 **Current verification.** SwiftPM under KDE SDK 6.10 passes **408 tests, 0
 failures**. Host CMake/CTest passes **4/4** checks. Release static Swift build,
 Swift composition-root launch, Qt brush/menu host build, and the Qt dialog/IO/
-layers smokes all pass.
+layers/brush smokes all pass.
 Flatpak source download validation passes for pinned Skia/OpenCV archives.
 
 Reproduce:
@@ -310,8 +320,8 @@ completion of the full file map.
 | `Compositor/Rendering/TransformOverlay.swift` | 328 | AppKit | Apple replacement / adaptation | Geometry ported (`TransformOverlayGeometry`: handles, rotation, distortion, `hit`) + pinned tests; Qt handles/guides/`resizeCursor` NSView paint remains |
 | `Compositor/Rendering/WandPixels.c` | 175 | C/header | Keep | Reuse C kernel/interface; run cross-platform pixel tests and sanitizer checks |
 | `Compositor/Rendering/WandPixels.h` | 22 | C/header | Keep | Reuse C kernel/interface; run cross-platform pixel tests and sanitizer checks |
-| `Compositor/UI/BlendModePicker.swift` | 58 | SwiftUI, AppKit | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |
-| `Compositor/UI/BrushControls.swift` | 121 | SwiftUI, AppKit | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |
+| `Compositor/UI/BlendModePicker.swift` | 58 | SwiftUI, AppKit | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view. Blend combo ships in the SessionWindow Brush dock (drive `setBlendMode` via `kind`), brushed by `--brush-smoke` |
+| `Compositor/UI/BrushControls.swift` | 121 | SwiftUI, AppKit | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view. Diameter/hardness/opacity sliders, color button, and paint path ship in the Brush dock, brushed by `--brush-smoke` |
 | `Compositor/UI/CanvasSizeSheet.swift` | 114 | SwiftUI | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |
 | `Compositor/UI/CanvasThumbnail.swift` | 80 | AppKit | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |
 | `Compositor/UI/ColorPaletteControls.swift` | 80 | SwiftUI, AppKit | Rewrite Linux UI | Qt Widgets counterpart; preserve controls, shortcuts, cancel/commit and accessibility; keep macOS view |

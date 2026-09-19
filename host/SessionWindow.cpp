@@ -14,6 +14,9 @@
 #include <QFileDialog>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QComboBox>
+#include <QColorDialog>
+#include <QPushButton>
 #include <QStatusBar>
 #include <QDockWidget>
 #include <QListWidget>
@@ -223,6 +226,47 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_layers, &QListWidget::currentRowChanged, this, &SessionWindow::selectLayerRow);
     connect(m_opacity, &QSlider::valueChanged, this, &SessionWindow::setOpacityFromSlider);
     refreshLayers();
+
+    // Brush palette: diameter/hardness/opacity sliders, a color button, and the
+    // active-layer blend mode. Shared by the mouse paint path and smokes.
+    auto *brushDock = new QDockWidget(tr("Brush"), this);
+    auto *brushPanel = new QWidget(brushDock);
+    auto *brushLayout = new QVBoxLayout(brushPanel);
+    m_brushColorButton = new QPushButton(tr("Red"), brushPanel);
+    m_brushColorButton->setObjectName("brush.color");
+    m_brushColorButton->setStyleSheet("background-color: red;");
+    brushLayout->addWidget(m_brushColorButton);
+    brushLayout->addWidget(new QLabel(tr("Diameter"), brushPanel));
+    m_brushDiameterSlider = new QSlider(Qt::Horizontal, brushPanel);
+    m_brushDiameterSlider->setObjectName("brush.diameter");
+    m_brushDiameterSlider->setRange(1, 256);
+    m_brushDiameterSlider->setValue(m_brushDiameter);
+    brushLayout->addWidget(m_brushDiameterSlider);
+    brushLayout->addWidget(new QLabel(tr("Hardness"), brushPanel));
+    m_brushHardnessSlider = new QSlider(Qt::Horizontal, brushPanel);
+    m_brushHardnessSlider->setObjectName("brush.hardness");
+    m_brushHardnessSlider->setRange(0, 100);
+    m_brushHardnessSlider->setValue(m_brushHardness);
+    brushLayout->addWidget(m_brushHardnessSlider);
+    brushLayout->addWidget(new QLabel(tr("Opacity"), brushPanel));
+    m_brushOpacitySlider = new QSlider(Qt::Horizontal, brushPanel);
+    m_brushOpacitySlider->setObjectName("brush.opacity");
+    m_brushOpacitySlider->setRange(0, 100);
+    m_brushOpacitySlider->setValue(m_brushOpacity);
+    brushLayout->addWidget(m_brushOpacitySlider);
+    brushLayout->addWidget(new QLabel(tr("Blend"), brushPanel));
+    m_blend = new QComboBox(brushPanel);
+    m_blend->setObjectName("blend.mode");
+    for (const QString &mode : blendModes()) m_blend->addItem(mode);
+    brushLayout->addWidget(m_blend);
+    brushDock->setWidget(brushPanel);
+    addDockWidget(Qt::RightDockWidgetArea, brushDock);
+    connect(m_brushColorButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
+    connect(m_brushDiameterSlider, &QSlider::valueChanged, this, &SessionWindow::setBrushDiameter);
+    connect(m_brushHardnessSlider, &QSlider::valueChanged, this, &SessionWindow::setBrushHardness);
+    connect(m_brushOpacitySlider, &QSlider::valueChanged, this, &SessionWindow::setBrushOpacity);
+    connect(m_blend, &QComboBox::currentIndexChanged, this, &SessionWindow::setBlendModeFromCombo);
+
     statusBar()->showMessage(tr("Drag on canvas to paint."));
 }
 
@@ -327,14 +371,59 @@ void SessionWindow::setOpacityFromSlider(int value) {
     if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
 }
 
+QStringList SessionWindow::blendModes() const {
+    return {QStringLiteral("Normal"), QStringLiteral("Multiply"), QStringLiteral("Screen"),
+            QStringLiteral("Overlay"), QStringLiteral("Darken"), QStringLiteral("Lighten"),
+            QStringLiteral("Color Dodge"), QStringLiteral("Color Burn"), QStringLiteral("Hard Light"),
+            QStringLiteral("Soft Light"), QStringLiteral("Difference"), QStringLiteral("Exclusion"),
+            QStringLiteral("Hue"), QStringLiteral("Saturation"), QStringLiteral("Color"), QStringLiteral("Luminosity")};
+}
+
+void SessionWindow::pickBrushColor() {
+    const QColor color = QColorDialog::getColor(m_brushColor, this, tr("Brush color"));
+    if (color.isValid()) setBrushColor(color);
+}
+
+void SessionWindow::setBrushColor(const QColor &color) {
+    m_brushColor = color;
+    const QString style = QString("background-color: rgb(%1, %2, %3);").arg(color.red()).arg(color.green()).arg(color.blue());
+    m_brushColorButton->setStyleSheet(style);
+    m_brushColorButton->setText(color.name());
+}
+
+void SessionWindow::setBrushDiameter(int value) { m_brushDiameter = value; }
+void SessionWindow::setBrushHardness(int value) { m_brushHardness = value; }
+void SessionWindow::setBrushOpacity(int value) { m_brushOpacity = value; }
+
+void SessionWindow::setBlendModeFromCombo(int index) {
+    if (m_syncingLayers || index < 0) return;
+    const QJsonObject command{{"action", "setBlendMode"}, {"kind", blendModes().at(index)}};
+    if (sendCommand(command)) refreshImage();
+}
+
+void SessionWindow::paintStroke(double x1, double y1, double x2, double y2) {
+    const QByteArray begin = QString(
+        R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":%6,"green":%7,"blue":%8,"erasing":0,"mask":0}})")
+        .arg(x1, 0, 'f', 4).arg(y1, 0, 'f', 4)
+        .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
+        .arg(m_brushColor.redF(), 0, 'f', 4).arg(m_brushColor.greenF(), 0, 'f', 4).arg(m_brushColor.blueF(), 0, 'f', 4).toUtf8();
+    const QByteArray move = QString(R"({"version":1,"action":"brushMove","x":%1,"y":%2})")
+        .arg(x2, 0, 'f', 4).arg(y2, 0, 'f', 4).toUtf8();
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(begin.constData()), begin.size()) != 0) return;
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(move.constData()), move.size()) != 0) return;
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(R"({"version":1,"action":"brushEnd"})"), std::strlen(R"({"version":1,"action":"brushEnd"})")) == 0) refreshImage();
+}
+
 void SessionWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || m_painting) return;
     const QPointF point = documentPoint(event->position());
     const bool warp = m_brushMode != "Paint";
     const QString json = warp
-        ? QString(R"({"version":1,"action":"warpBegin","kind":"%1","x":%2,"y":%3,"parameters":{"diameter":16,"hardness":1,"opacity":1}})").arg(m_brushMode).arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-        : QString(R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":16,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}})")
-        .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
+        ? QString(R"({"version":1,"action":"warpBegin","kind":"%1","x":%2,"y":%3,"parameters":{"diameter":%4,"hardness":%5,"opacity":1}})").arg(m_brushMode).arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3)
+        : QString(R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":%6,"green":%7,"blue":%8,"erasing":0,"mask":0}})")
+        .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
+        .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
+        .arg(m_brushColor.redF(), 0, 'f', 4).arg(m_brushColor.greenF(), 0, 'f', 4).arg(m_brushColor.blueF(), 0, 'f', 4);
     const QByteArray bytes = json.toUtf8();
     if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
         m_painting = true;
