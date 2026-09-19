@@ -166,6 +166,14 @@ if(Qt6_FOUND)
     target_include_directories(test_host_journey PRIVATE ${CMAKE_SOURCE_DIR}/host)
     target_link_libraries(test_host_journey PRIVATE Qt6::Gui CompositorKernels)
     add_test(NAME CompositorCore.HostJourney COMMAND test_host_journey)
+
+    # IO-tier codec verification (ImageIO → Qt, file-map "IO / codec mapping"):
+    # PNG export/import round-trip byte-identical for QImage::Format_RGBA8888
+    # (the format compositor_session_render emits), plus the JPEG lossy leg.
+    # Qt-only (no Swift static lib); runs in the default CMake/CTest build.
+    add_executable(test_png_codec tests/test_png_codec.cpp)
+    target_link_libraries(test_png_codec PRIVATE Qt6::Gui)
+    add_test(NAME CompositorCore.PngCodec COMMAND test_png_codec)
 endif()
 
 # Headless Swift-session journey test: new -> paint -> render -> undo -> redo ->
