@@ -145,7 +145,10 @@ final class BrushStroke {
     let pixelToDocument: CGAffineTransform
     let sourceRect: CGRect
     let paintTransform: LayerTransform
-    private let source: PortableImage?
+    private let sourceRaster: RasterSnapshot?
+    private let sourceImage: PortableImage?
+    private let sourceWidth: Int
+    private let sourceHeight: Int
     private let paintGray: UInt8
     private let paintRGB: (r: UInt8, g: UInt8, b: UInt8)
     var pixelLimit = 100_000_000
@@ -227,7 +230,26 @@ final class BrushStroke {
         func channel(_ v: CGFloat) -> UInt8 { UInt8(max(0, min(255, v * 255 + 0.5))) }
         paintGray = channel(settings.red)
         paintRGB = (channel(settings.red), channel(settings.green), channel(settings.blue))
-        source = mask ? layer.mask?.asset.image.pixels : layer.asset?.image.pixels
+        // Prefer the sparse raster: sampling it per pixel keeps commits lazy (the
+        // mouse-up invariant). Only a concrete image materializes here.
+        let sourceAsset = mask ? layer.mask?.asset : layer.asset
+        sourceRaster = sourceAsset?.raster
+        sourceImage = sourceRaster == nil ? sourceAsset?.image.pixels : nil
+        sourceWidth = sourceRaster?.width ?? sourceImage?.width ?? originalWidth
+        sourceHeight = sourceRaster?.height ?? sourceImage?.height ?? originalHeight
+    }
+
+    /// Source pixel in the source grid (the original image's or the sparse
+    /// raster's own grid — identical coordinates). Never flattens a raster.
+    private func sourceRGBA(_ fx: CGFloat, _ fy: CGFloat) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) {
+        if let sourceRaster { return sourceRaster.pixel(u: fx, v: fy) }
+        if let sourceImage { return RasterSample.rgbaNearest(sourceImage, fx: fx, fy: fy) }
+        return (0, 0, 0, 0)
+    }
+    private func sourceGray(_ fx: CGFloat, _ fy: CGFloat) -> UInt8 {
+        if let sourceRaster { return sourceRaster.grayPixel(u: fx, v: fy) }
+        if let sourceImage { return RasterSample.grayNearest(sourceImage, fx: fx, fy: fy) }
+        return 0
     }
 
     /// Mouse samples arrive sparsely, so dabs follow a smooth curve through them rather
@@ -524,7 +546,8 @@ final class BrushStroke {
         guard tiles[key] == nil else { return }
         let size = Self.tileSize
         let rect = CGRect(x: x * size, y: y * size, width: min(size, width - x * size), height: min(size, height - y * size))
-        let nextBounds = allocatedBounds.map { $0.union(rect) } ?? (source == nil ? rect : sourceRect.union(rect))
+        let nextBounds = allocatedBounds.map { $0.union(rect) }
+            ?? ((sourceRaster == nil && sourceImage == nil) ? rect : sourceRect.union(rect))
         guard nextBounds.width <= 30_000, nextBounds.height <= 30_000,
               nextBounds.width * nextBounds.height <= CGFloat(pixelLimit) else { throw ProjectError.tooLarge }
         allocatedBounds = nextBounds
@@ -533,17 +556,17 @@ final class BrushStroke {
         var maskPixels = MaskBuffer(width: tw, height: th)
         // This tile's share of the source, nearest-neighbour (CG `.none` on macOS).
         // A uniform 1×1 mask is stretched over the whole grid by the same mapping.
-        if let source {
-            let scaleX = CGFloat(source.width) / sourceRect.width
-            let scaleY = CGFloat(source.height) / sourceRect.height
+        let scaleX = CGFloat(sourceWidth) / sourceRect.width
+        let scaleY = CGFloat(sourceHeight) / sourceRect.height
+        if sourceRaster != nil || sourceImage != nil {
             for py in 0..<th {
                 for px in 0..<tw {
                     let fx = (CGFloat(px) + 0.5 + rect.minX - sourceRect.minX) * scaleX - 0.5
                     let fy = (CGFloat(py) + 0.5 + rect.minY - sourceRect.minY) * scaleY - 0.5
                     if isMask {
-                        maskPixels[px, py] = RasterSample.grayNearest(source, fx: fx, fy: fy)
+                        maskPixels[px, py] = sourceGray(fx, fy)
                     } else {
-                        pixels[px, py] = RasterSample.rgbaNearest(source, fx: fx, fy: fy)
+                        pixels[px, py] = sourceRGBA(fx, fy)
                     }
                 }
             }
@@ -668,21 +691,21 @@ final class BrushStroke {
 
     /// Cuts the selected pixels out of the original image. False when nothing is lifted.
     func liftSelection() throws -> Bool {
-        guard !isMask, let source, let selectionClip, selectionClip.coverage != nil else { return false }
+        guard !isMask, sourceRaster != nil || sourceImage != nil, let selectionClip, selectionClip.coverage != nil else { return false }
         let inverse = pixelToDocument.inverted()
         let region = selectionClip.rect.applying(inverse).integral.intersection(sourceRect)
         guard !region.isNull, region.width >= 1, region.height >= 1 else { return false }
         let w = Int(region.width), h = Int(region.height)
         var buffer = PixelBuffer(width: w, height: h)
-        let scaleX = CGFloat(source.width) / sourceRect.width
-        let scaleY = CGFloat(source.height) / sourceRect.height
+        let scaleX = CGFloat(sourceWidth) / sourceRect.width
+        let scaleY = CGFloat(sourceHeight) / sourceRect.height
         for y in 0..<h {
             for x in 0..<w {
                 let doc = CGPoint(x: CGFloat(x) + 0.5 + region.minX, y: CGFloat(y) + 0.5 + region.minY).applying(pixelToDocument)
                 let f = selectionFactor(selectionClip, at: doc)
                 let fx = (CGFloat(x) + 0.5 + region.minX - sourceRect.minX) * scaleX - 0.5
                 let fy = (CGFloat(y) + 0.5 + region.minY - sourceRect.minY) * scaleY - 0.5
-                let s = RasterSample.rgbaNearest(source, fx: fx, fy: fy)
+                let s = sourceRGBA(fx, fy)
                 buffer[x, y] = (UInt8(Float(s.r) * f + 0.5), UInt8(Float(s.g) * f + 0.5),
                                 UInt8(Float(s.b) * f + 0.5), UInt8(Float(s.a) * f + 0.5))
             }
@@ -786,7 +809,7 @@ final class BrushStroke {
                 .offsetBy(dx: tile.rect.minX, dy: tile.rect.minY)
             painted = painted.map { $0.union(rect) } ?? rect
         }
-        guard let painted, let source else { return }
+        guard let painted, sourceRaster != nil || sourceImage != nil else { return }
         // Room for the kernel's patch search, which looks up to about three spot-widths away.
         let reach = (max(painted.width, painted.height) + 32) * 3.2
         let region = painted.insetBy(dx: -reach, dy: -reach)
@@ -795,14 +818,14 @@ final class BrushStroke {
         guard w > 0, h > 0 else { return }
         var pixels = PixelBuffer(width: w, height: h)
         var painting = MaskBuffer(width: w, height: h)
-        let scaleX = CGFloat(source.width) / sourceRect.width
-        let scaleY = CGFloat(source.height) / sourceRect.height
+        let scaleX = CGFloat(sourceWidth) / sourceRect.width
+        let scaleY = CGFloat(sourceHeight) / sourceRect.height
         // Original pixels + stroke coverage, both placed into the heal region.
         for py in 0..<h {
             for px in 0..<w {
                 let fx = (CGFloat(px) + 0.5 + region.minX - sourceRect.minX) * scaleX - 0.5
                 let fy = (CGFloat(py) + 0.5 + region.minY - sourceRect.minY) * scaleY - 0.5
-                pixels[px, py] = RasterSample.rgbaNearest(source, fx: fx, fy: fy)
+                pixels[px, py] = sourceRGBA(fx, fy)
             }
         }
         for (key, cov) in coverage {
@@ -866,8 +889,11 @@ final class BrushStroke {
 
     /// Painting only adds alpha. Existing content bounds remain valid, so only the
     /// changed 256px tiles need inspecting; there is no full-document bounds scan.
+    /// The commit is a sparse `RasterSnapshot` — pixels materialize lazily, exactly
+    /// as on macOS; `allocateTile` reads the committed full image directly (same
+    /// pixels; the raster tile cache is a perf-only fast path there).
     func paintSnapshot() throws -> (asset: ImportedImage, transform: LayerTransform, bounds: CGRect) {
-        var bounds: CGRect? = source == nil ? nil : sourceRect
+        var bounds: CGRect? = (sourceRaster == nil && sourceImage == nil) ? nil : sourceRect
         for tile in tiles.values where !isMask {
             var edges = [Int](repeating: 0, count: 4)
             tile.pixels.withUnsafeBytes { ptr in
@@ -879,10 +905,14 @@ final class BrushStroke {
             bounds = bounds.map { $0.union(rect) } ?? rect
         }
         let crop = bounds ?? committedBounds
-        let (image, _) = try BrushCommit.render(input: commitInputForCrop(crop))
-        return (ImportedImage(image: RasterImage(image),
-                              thumbnail: RasterImage(RasterSample.thumbnail(image)),
-                              name: layer.name),
+        let raster = RasterSnapshot.replacing(source: isMask ? layer.mask?.asset : layer.asset,
+                                              sourceRect: sourceRect, patches: patches,
+                                              crop: crop, isMask: isMask)
+        // Lazy image + eager small thumbnail: mouse-up never flattens the raster.
+        return (ImportedImage(image: raster.makeImage(),
+                              thumbnail: RasterImage(try raster.thumbnail()),
+                              name: layer.name,
+                              raster: raster),
                 transform(for: crop), crop)
     }
 
@@ -891,7 +921,10 @@ final class BrushStroke {
     }
 
     private func commitInputForCrop(_ bounds: CGRect) -> BrushCommit.Input {
-        BrushCommit.Input(width: Int(bounds.width), height: Int(bounds.height), source: source,
+        // The flatten path needs contiguous pixels; materializing here is the
+        // macOS BrushCommit actor's background job (mouse-up stays lazy).
+        let sourcePixels = sourceImage ?? sourceRaster.map { $0.makeImage().pixels }
+        return BrushCommit.Input(width: Int(bounds.width), height: Int(bounds.height), source: sourcePixels,
             patches: patches.map { BrushPatch(rect: $0.rect.offsetBy(dx: -bounds.minX, dy: -bounds.minY), image: $0.image) },
             mask: isMask, name: layer.name, sourceRect: sourceRect.offsetBy(dx: -bounds.minX, dy: -bounds.minY))
     }

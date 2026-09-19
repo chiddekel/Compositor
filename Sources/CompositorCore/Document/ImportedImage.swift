@@ -7,12 +7,11 @@
 // the canonical `PortableImage` substrate. `===` on `RasterImage` mirrors `===`
 // on `CGImage` exactly.
 //
-// Ported: `RasterImage` (CGImage stand-in), `ImportedImage` (struct, minus the
-// `raster: RasterSnapshot?` field — `RasterSnapshot` is deeply CGImage/CGContext
-// and is the Skia/CPU raster milestone; it was optional and defaulted nil, so
-// dropping it changes no model invariant), and `ImageImportError` (pure enum).
+// Ported: `RasterImage` (CGImage stand-in), `ImportedImage` (struct, including
+// the optional `raster: RasterSnapshot?` tile cache now that the portable
+// `RasterSnapshot` exists in Rendering/), and `ImageImportError` (pure enum).
 //
-// Omitted (IO/raster milestone): the `actor ImageImporter` — it decodes via
+// Omitted (IO milestone): the `actor ImageImporter` — it decodes via
 // `CGImageSource`/`CIContext`/`UTType`. The Linux decode pipeline (Qt image I/O or
 // a vendored codec) is the IO milestone. The model only needs the value type.
 //
@@ -26,12 +25,51 @@ import Foundation
 /// `CGImage` in the model layer so reference identity (`===`) works verbatim.
 /// Two `RasterImage`s are the same image iff they are the same instance, exactly
 /// as two `CGImage`s were on macOS.
+///
+/// Like `CGImage` wrapping a lazy `CGDataProvider`, a `RasterImage` can defer its
+/// bytes: `pixels` materializes at most once, on first read (the RasterSnapshot
+/// mouse-up invariant — a commit never flattens the document). Dimensions are
+/// known without materializing.
 nonisolated final class RasterImage: @unchecked Sendable {
-    let pixels: PortableImage
-    init(_ pixels: PortableImage) { self.pixels = pixels }
-    var width: Int { pixels.width }
-    var height: Int { pixels.height }
-    var bytesPerRow: Int { pixels.bytesPerRow }
+    private enum Source {
+        case concrete(PortableImage)
+        case deferred(() -> PortableImage)
+    }
+    private let source: Source
+    private let storedWidth: Int
+    private let storedHeight: Int
+    private let storedBytesPerRow: Int
+    private let lock = NSLock()
+    private var cache: PortableImage?
+
+    init(_ pixels: PortableImage) {
+        self.source = .concrete(pixels)
+        self.storedWidth = pixels.width
+        self.storedHeight = pixels.height
+        self.storedBytesPerRow = pixels.bytesPerRow
+    }
+    init(width: Int, height: Int, bytesPerRow: Int, deferred: @escaping () -> PortableImage) {
+        self.source = .deferred(deferred)
+        self.storedWidth = width
+        self.storedHeight = height
+        self.storedBytesPerRow = bytesPerRow
+    }
+    var pixels: PortableImage {
+        switch source {
+        case .concrete(let pixels): return pixels
+        case .deferred:
+            lock.lock()
+            defer { lock.unlock() }
+            if let cache { return cache }
+            let pixels: PortableImage
+            if case .deferred(let make) = source { pixels = make() } else { fatalError("unreachable") }
+            cache = pixels
+            return pixels
+        }
+    }
+    var width: Int { storedWidth }
+    var height: Int { storedHeight }
+    var bytesPerRow: Int { storedBytesPerRow }
 }
 
 nonisolated struct ImportedImage: @unchecked Sendable {
@@ -39,8 +77,9 @@ nonisolated struct ImportedImage: @unchecked Sendable {
     let image: RasterImage
     let thumbnail: RasterImage
     let name: String
-    // macOS also carries an optional `RasterSnapshot` here (a tiled CGImage/CGContext
-    // cache for fast redraw); that is the Skia/CPU raster milestone and is omitted.
+    /// Sparse tile cache for fast redraw (see `RasterSnapshot`); nil when the
+    /// image was imported rather than painted (macOS parity: optional, nil default).
+    var raster: RasterSnapshot? = nil
 }
 
 nonisolated enum ImageImportError: LocalizedError {
