@@ -92,6 +92,34 @@ nonisolated struct RangeAdjustment: Equatable, Sendable, Codable {
     var lightness: Double = 0
 }
 
+/// Which eyedropper is armed while the Hue/Saturation panel is open.
+nonisolated enum HueSampleMode: String, CaseIterable, Sendable {
+    case replace = "Sample", add = "Add", remove = "Remove"
+    /// All three are eyedroppers; Add and Remove carry a small badge.
+    var symbol: String { "eyedropper" }
+    var badge: String? {
+        switch self {
+        case .replace: nil
+        case .add: "plus.circle.fill"
+        case .remove: "minus.circle.fill"
+        }
+    }
+    var help: String {
+        switch self {
+        case .replace: "Click the image to center this range on that color"
+        case .add: "Click the image to widen this range to include that color"
+        case .remove: "Click the image to narrow this range to exclude that color"
+        }
+    }
+}
+
+/// A targeted-adjustment drag in progress.
+struct HueTargetDrag {
+    let range: ColorRange
+    let hue: Double
+    let saturation: Double
+}
+
 /// Hue is −180…180 (0…360 when colorizing), Saturation −100…100 (0…100 colorizing),
 /// Lightness −100…100. Each color range keeps its own values; Master applies everywhere.
 nonisolated struct HueSaturationSettings: Equatable, Sendable, Codable {
