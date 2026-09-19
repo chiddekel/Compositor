@@ -19,6 +19,13 @@ sdk: org.kde.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.swift6
 
+# The app command is the Swift `@main` composition root (CompositorHostBootstrap),
+# NOT the C++ `compositor` target. A C++ main cannot bootstrap the Swift runtime
+# + Foundation on the Freedesktop Swift 6.3 SDK (no swift_initSwiftRuntime; see
+# docs/linux-port-file-map.md "composition-root constraint"). The Swift `@main`
+# bootstraps both, runs the editor session through the compositor_session_* C
+# ABI, and calls compositor_host_run (the Qt host entry) — all in one
+# self-contained binary with the Swift runtime bundled via --static-swift-stdlib.
 command: compositor
 
 finish-args:
@@ -40,16 +47,23 @@ modules:
       # one-line `export PATH` would not persist across commands).
       append-path: /usr/lib/sdk/swift6/bin
     build-commands:
+      # Build the Swift composition root (CompositorHostBootstrap) with the Swift
+      # runtime bundled. This is the app binary. It links the HostRun C++ target
+      # (host/host_run.cpp, the Qt entry) and Qt6 from the KDE SDK.
       - swift build -c release --static-swift-stdlib
+      # CMake builds the C/C++ side (portable kernels, ABI tests, the Qt host
+      # shell for the standalone C++ build path, and the CompositorHostRun lib)
+      # and runs the headless ABI/kernel tests. The Swift session journey is
+      # verified separately by `swift test`.
       - |
         cmake -S . -B build \
           -DCMAKE_PREFIX_PATH=/app \
           -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
-          -DCompositorCore_SWIFT_STATIC_LIB=$PWD/.build/release/libCompositorCore.a \
           -DCOMPOSITOR_REQUIRE_VENDORED_DEPS=OFF
       - cmake --build build
       - QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
-      - install -Dm755 build/compositor /app/bin/compositor
+      # Install the Swift `@main` binary as the app command.
+      - install -Dm755 .build/release/CompositorHostBootstrap /app/bin/compositor
       - |
         for s in 16 32 64 128 256 512; do
           install -Dm644 \

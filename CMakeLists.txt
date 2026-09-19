@@ -199,5 +199,6 @@ if(Qt6_FOUND)
     # Flatpak manifest links it into the Swift executable. host_run.cpp itself
     # is moc-free so the bootstrap can also be built by SwiftPM in the SDK.
     add_library(CompositorHostRun STATIC host/host_run.cpp)
+    target_include_directories(CompositorHostRun PUBLIC host/include)
     target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets)
 endif()

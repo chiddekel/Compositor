@@ -16,6 +16,8 @@
 #include <QApplication>
 #include <QWidget>
 
+#include "compositor_host_run.h"
+
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("Compositor");

@@ -18,6 +18,7 @@
 
 import CompositorCore
 import Foundation
+import HostRun
 
 @main
 struct HostBootstrap {
@@ -85,6 +86,14 @@ struct HostBootstrap {
         guard cmd(#"{"version":1,"action":"undo"}"#) == -6 else { fail("closed handle rejected") }
 
         print("CompositorHostBootstrap: session journey OK (create/new/paint/render/undo/redo/close)")
+
+        // Full Swift-main -> Qt proof: initialize Qt from the Swift-driven entry
+        // point. Headless (QT_QPA_PLATFORM=offscreen); host_run returns 0 without
+        // entering the event loop. A non-zero return here would mean Qt itself
+        // failed to initialize from the Swift main.
+        let qt = compositor_host_run(CommandLine.argc, CommandLine.unsafeArgv)
+        guard qt == 0 else { fail("compositor_host_run returned \(qt)") }
+        print("CompositorHostBootstrap: Qt host entry OK")
     }
 
     private static func fail(_ msg: String) -> Never {

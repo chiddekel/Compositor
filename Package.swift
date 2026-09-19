@@ -74,14 +74,39 @@ let package = Package(
         // 6.3 SDK — see docs/linux-port-file-map.md "composition-root constraint"),
         // then drives the Qt host through a C ABI. This bootstrap target proves
         // the architecture by running the session journey through the real
-        // compositor_session_* ABI from a Swift entry point. The Flatpak build
-        // replaces `hostMain` with the one that calls the Qt host's
-        // `compositor_host_run(argc, argv)` C entry.
+        // compositor_session_* ABI from a Swift entry point, AND initializes Qt
+        // (via the HostRun C++ target) to prove the full Swift-main -> Qt link.
+        //
+        // HostRun compiles host/host_run.cpp (moc-free) as the Qt host entry
+        // compositor_host_run; the Flatpak full build swaps in the CMake-built
+        // CompositorHostRun lib (with the real MainWindow + app.exec()). Qt6
+        // comes from the KDE SDK at the standard /usr paths.
+        .target(
+            name: "HostRun",
+            dependencies: [],
+            path: "host",
+            sources: ["host_run.cpp"],
+            cxxSettings: [
+                .unsafeFlags([
+                    "-I/usr/include/QtWidgets",
+                    "-I/usr/include/QtCore",
+                    "-I/usr/include/QtGui",
+                    "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB",
+                ]),
+            ]
+        ),
         .executableTarget(
             name: "CompositorHostBootstrap",
-            dependencies: ["CompositorCore"],
+            dependencies: ["CompositorCore", "HostRun"],
             path: "Sources/CompositorHostBootstrap",
-            swiftSettings: [.unsafeFlags(["-swift-version", "5"])]
+            swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
+            linkerSettings: [
+                .linkedLibrary("Qt6Widgets"),
+                .linkedLibrary("Qt6Gui"),
+                .linkedLibrary("Qt6Core"),
+                .unsafeFlags(["-L/usr/lib/x86_64-linux-gnu",
+                              "-Xlinker", "-rpath", "-Xlinker", "/usr/lib/x86_64-linux-gnu"]),
+            ]
         ),
     ]
 )
