@@ -1,6 +1,7 @@
 # Build output
 dist/
 build/
+build-cmake/
 .build/
 DerivedData/
 *.xcarchive
