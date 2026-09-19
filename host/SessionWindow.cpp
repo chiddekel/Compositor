@@ -197,6 +197,12 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         auto *action = filter->addAction(kind, this, [this, kind] { showFilterDialog(kind); });
         action->setObjectName("filter." + kind);
     }
+    QMenu *adjust = menuBar()->addMenu(tr("&Adjust"));
+    for (const QString &kind : {QString("Levels"), QString("Hue/Saturation"), QString("Curves"),
+                                QString("Exposure"), QString("Gradient Map"), QString("Grain")}) {
+        auto *action = adjust->addAction(kind, this, [this, kind] { showAdjustDialog(kind); });
+        action->setObjectName("adjust." + kind);
+    }
     QMenu *imageMenu = menuBar()->addMenu(tr("&Image"));
     imageMenu->addAction(tr("Canvas Size…"), this, [this] { showSizeDialog(false); })->setObjectName("canvasSize");
     imageMenu->addAction(tr("Image Size…"), this, [this] { showSizeDialog(true); })->setObjectName("imageSize");

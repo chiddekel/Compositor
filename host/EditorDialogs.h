@@ -19,3 +19,9 @@ public:
     using Submit = std::function<bool(const QJsonObject &)>;
     FilterDialog(const QString &kind, Submit submit, QWidget *parent = nullptr);
 };
+
+class AdjustDialog final : public QDialog {
+public:
+    using Submit = std::function<bool(const QJsonObject &)>;
+    AdjustDialog(const QString &kind, Submit submit, QWidget *parent = nullptr);
+};

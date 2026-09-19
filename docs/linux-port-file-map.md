@@ -69,7 +69,7 @@ the live session, and leaves the current document unchanged on failure.
 `CompositorHostBootstrap --io-smoke` verifies this path under Swift runtime.
 Portal file chooser integration remains outside direct path persistence.
 
-**Current verification.** SwiftPM under KDE SDK 6.10 passes **404 tests, 0
+**Current verification.** SwiftPM under KDE SDK 6.10 passes **408 tests, 0
 failures**. Host CMake/CTest passes **4/4** checks. Release static Swift build,
 Swift composition-root launch, Qt brush/menu host build, and Qt IO smoke all pass.
 Flatpak source download validation passes for pinned Skia/OpenCV archives.
@@ -109,7 +109,7 @@ The dialogs do not depend on the Swift ABI or implement pixel operations.
 - Gaussian blur, motion blur, noise, lens correction, grain, and exposure have
   editable Qt controls, live previews, a Preview toggle, Cancel/window-close
   rollback, and one-step commit/undo. Preview requests are debounced; execution is
-  still synchronous. Worker scheduling and the other adjustment dialogs remain.
+  still synchronous. Worker scheduling remains.
 - Rendering refresh reads current session dimensions after resize/undo. PNG/JPEG
   exports use document resolution, including after reopening a project.
 
@@ -149,7 +149,23 @@ coverage." The CGContext-only `AdjustmentSurface.draw(in:)` is replaced on Linux
 placed mask region (`maskCoverage`) and never writes outside alpha. `AdjustmentTests.testAdjustmentChangesOnlyMaskedRegionAndNeverAlpha` pins
 both properties (color changes in masked half; alpha and unmasked color untouched).
 
-Verification: full Swift suite **358 tests, 0 failures** in KDE 6.10 SDK. CTest 4/4.
+The Qt adjustment sheets (`host/AdjustDialog.cpp` behind `EditorDialogs.h`) open
+from the "&Adjust" menu for all six kinds — Levels (channel + black/gamma/white/
+output black/white), Hue/Saturation (range + hue/sat/light + colorize/invert),
+Curves (channel + editable point table), Exposure, Gradient Map (end colors +
+reversed), and Grain. Each drives the shared debounced `adjustmentPreview` and
+commits with the `adjustment` payload (`adjustmentCommit`), canceling restores
+the pre-edit document. The sheets use `addAdjustment` (new layer for a fresh
+kind; the new sheet becomes the active layer) and `adjustmentBegin` for
+re-editing an existing sheet. `SessionJourneyTests` pins the full journeys:
+`testAdjustLevelsJourney` (output-range clip preview, commit keeps the mapping,
+re-edit cancel restores), `testAdjustHsvJourney` (saturation -100 desaturates
+red) and `testAdjustRemainingKindsJourney` (curves/exposure/gradient-map/grain
+preview+commit; cancel restores). This surfaced two contract facts the C ABI
+must keep: enum-keyed settings dictionaries (`hsvSettings.adjustments`/`bands`)
+C code as alternating-key JSON arrays, and `GrainSettings` requires a `seed`.
+
+Verification: full Swift suite **408 tests, 0 failures** in KDE 6.10 SDK. CTest 4/4.
 
 ### Transform handles, rotation and hit geometry
 
@@ -168,7 +184,7 @@ Verification: full Swift suite **363 tests, 0 failures** in KDE 6.10 SDK. CTest 
 
 A broad set of "Keep logic; replace Apple operations" rows is now ported onto
 `EditorSession` with bridge commands and session tests. Verified at this
-checkpoint: **404 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
+checkpoint: **408 tests, 0 failures** in the KDE 6.10 SDK; **4/4 CTest**.
 
 | Original responsibility | Portable implementation | Current evidence / remaining scope |
 |---|---|---|
@@ -212,7 +228,7 @@ completion of the full file map.
 | `Compositor/Document/ColorPalette.swift` | 217 | AppKit, Observation | Keep logic; replace Apple operations | Ported (`Document/ColorPalette.swift`): palette/`AdjustmentColor` values, HSB conversion, hex round trip, quantization, engine colors; pinned by `ColorPickerAndAutoTests`. The SwiftUI picker sheet remains UI |
 | `Compositor/Document/ContentFill.swift` | 28 | AppKit | Keep logic; replace Apple operations | Ported: the `ContentFill.c` kernel is kept/compiled (see its rows below), the Swift selection-gated entry runs in `PixelFilter` (content fill needs a selection, masked-area behavior), pinned by `FilterExecutionTests`; interactive inpainting results remain backend-parity work |
 | `Compositor/Document/Crop.swift` | 200 | Foundation, CoreGraphics | Keep logic; replace Apple operations | Canvas crop (`cropCanvas(to:)`) + flip (`flipCanvas`) ported onto `EditorSession` — see checkpoint; selection-rect/margin UI remains |
-| `Compositor/Document/Curves.swift` | 43 | AppKit | Keep logic; replace Apple operations | Ported (`Document/Curves.swift` + `Levels.swift` channel math): spline evaluation, monotonic-endpoint validation, per-channel curve application; pinned by `SettingsTests` (`testCurvesValueIdentityCurve`, `testCurvesIsValidRequiresMonotonicEndpoints`, channel map tests). Curve UI remains |
+| `Compositor/Document/Curves.swift` | 43 | AppKit | Keep logic; replace Apple operations | Ported (`Document/Curves.swift` + `Levels.swift` channel math): spline evaluation, monotonic-endpoint validation, per-channel curve application; pinned by `SettingsTests` (`testCurvesValueIdentityCurve`, `testCurvesIsValidRequiresMonotonicEndpoints`, channel map tests). The Qt curve point editor ships via the Adjust dialog (`host/AdjustDialog.cpp`) |
 | `Compositor/Document/Distort.swift` | 292 | AppKit, CoreImage | Ported | `DistortWarp` (`Document/Distort.swift`): corners/homography/imageCorners/carried/isUsable plus `warp`/`warpTrimmed`/`warpMask` on `RasterImage` — perspective resampling with CG-style pixel coverage at the quad edges, mask background fill, trim-to-visible; `commitDistort` warps layer and mask in one undo step. `mapPath` and the interactive preview cache remain Apple-replaced in TODOs. |
 | `Compositor/Document/DocumentHistory.swift` | 120 | Foundation, CoreGraphics, Observation | Apple replacement / adaptation | Keep immutable history semantics; replace snapshot image/geometry dependencies |
 | `Compositor/Document/EditorSession+Brush.swift` | 202 | AppKit | Apple replacement / adaptation | Keep stroke orchestration; port image/mask handoff |
@@ -224,7 +240,7 @@ completion of the full file map.
 | `Compositor/Document/GuidedMatte.swift` | 119 | CoreGraphics, Foundation | Apple replacement / adaptation | Ported (`Document/GuidedMatte.swift`): `GuidedMatteSettings`, `box` (running-sum square mean; clamped-edge C semantics), `filter` (He/Sun/Tang guided refinement), `levels(of:)` (Rec.709 luma after unpremultiply) plus `image(_:)`, and `refine(mask:guide:radius:limit:)` (shrink → filter → bilinear grow, matching the macOS CoreGraphics pipeline). Pinned by `GuidedMatteTests` (box profile + naive cross-check, flat/edge filter behavior, luma extraction, downsample averaging, gray-image round trip, full-size and scaled refine) |
 | `Compositor/Document/HueSaturation.swift` | 575 | AppKit, CoreImage | Keep logic; replace Apple operations | Ported (`Document/HueSaturation.swift`): `ColorRange` hue bands, range/weight math, settings normalization, HSL round trip, `HueSaturationFilter.adjust`/`hueResponse`/`shiftedHue` (the CoreImage `CIColorCube` replacement) — pinned by `SettingsTests` (band weights, identity, colorize, cube dimension, shifted-hue) and `AdjustmentEditingTests` preview gating. HueSampleMode help strings remain UI |
 | `Compositor/Document/ImageAdjustments.swift` | 135 | AppKit | Keep logic; replace Apple operations | Ported (`Document/ImageAdjustments.swift`): `AdjustmentClamp`, `AdjustmentColor`, and the exposure/gradient-map/grain normalized settings — pinned by `SettingsTests`; their kernels execute in `PixelFilter`, pinned by `FilterExecutionTests` (`testExposureApplyStopsToWhiteAndKeepsAlpha`, `testGradientMapEndsApplyInOrder`, `testGrainIsDeterministicPerSeedAndKeepsAlpha`) |
-| `Compositor/Document/LayerAdjustment.swift` | 113 | AppKit, CoreImage | Keep logic; replace Apple operations | Ported: adjustment-layer add/preview/commit/cancel through `EditorSession.adjustmentEditingID` gating (`AdjustmentEditing.swift` row), pinned by `AdjustmentEditingTests` (9 tests); preview shows the adjustment slot so cancelling restores the pre-edit document. The adjustment slot and picker UI remain on the Qt tier |
+| `Compositor/Document/LayerAdjustment.swift` | 113 | AppKit, CoreImage | Keep logic; replace Apple operations | Ported: adjustment-layer add/preview/commit/cancel through `EditorSession.adjustmentEditingID` gating (`AdjustmentEditing.swift` row), pinned by `AdjustmentEditingTests` (9 tests); preview shows the adjustment slot so cancelling restores the pre-edit document. Qt adjustment sheets for all six kinds ship via `AdjustDialog` (menu → Commit/Cancel) |
 | `Compositor/Document/LayerAppearance.swift` | 89 | Foundation, CoreGraphics | Keep logic; replace Apple operations | Ported onto `EditorSession` (`setLayerOpacity`/`setLayerBlendMode`/`cycleBlendMode`, one edit+undo) — see checkpoint |
 | `Compositor/Document/LayerFlip.swift` | 80 | AppKit | Keep logic; replace Apple operations | Ported onto `EditorSession` (`flipLayers`/`flipCanvas`, group-aware) — see checkpoint |
 | `Compositor/Document/LayerGroups.swift` | 191 | Foundation | Keep/adapt | Keep hierarchy validation/traversal (`LayerHierarchy`) and grouping/selection logic — ported onto the Linux `EditorSession`/`CanvasDocument`; interactive methods (`toggleGroupExpansion`/`placeLayer`/`moveActiveLayerOutOfGroup`) now also ported (LayerGroupsInteractive.swift); drag/drop presentation remains Qt UI |

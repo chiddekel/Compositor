@@ -27,6 +27,30 @@ import XCTest
 
 final class SessionJourneyTests: XCTestCase {
 
+    /// Regression: the full JSON payload for every adjustment kind decodes and
+    /// validates; CurvesSettings applies its table through the model.
+    func testAdjustmentJSONDecodesValid() throws {
+        let inverted = #"[{"x":0,"y":255},{"x":255,"y":0}]"#
+        let darkCurves = #"{"channel":"RGB","channels":[\#(inverted),\#(inverted),\#(inverted),\#(inverted)]}"#
+        let curves = try JSONDecoder().decode(CurvesSettings.self, from: Data(darkCurves.utf8))
+        XCTAssertTrue(curves.isValid, "inverted curve validates")
+        XCTAssertEqual(curves.value(255, channel: 0), 0, accuracy: 0.001, "inverted curve flips white")
+        XCTAssertEqual(curves.value(205, channel: 0), 50, accuracy: 0.001, "inverted curve maps grey")
+
+        let hsv = #"{"range":"Master","colorize":false,"invertRange":false,"adjustments":["Master",{"hue":0,"saturation":-100,"lightness":0}],"bands":["Master",{"falloffStart":0,"rangeStart":0,"rangeEnd":360,"falloffEnd":360},"Reds",{"falloffStart":315,"rangeStart":345,"rangeEnd":15,"falloffEnd":45},"Yellows",{"falloffStart":15,"rangeStart":45,"rangeEnd":75,"falloffEnd":105},"Greens",{"falloffStart":75,"rangeStart":105,"rangeEnd":135,"falloffEnd":165},"Cyans",{"falloffStart":135,"rangeStart":165,"rangeEnd":195,"falloffEnd":225},"Blues",{"falloffStart":195,"rangeStart":225,"rangeEnd":255,"falloffEnd":285},"Magentas",{"falloffStart":255,"rangeStart":285,"rangeEnd":315,"falloffEnd":345}]}"#
+        let pts = #"[{"x":0,"y":0},{"x":255,"y":255}]"#
+        let curvesJ = #"{"channel":"RGB","channels":[\#(pts),\#(pts),\#(pts),\#(pts)]}"#
+        let range = #"{"black":0,"gamma":1,"white":255,"outputBlack":0,"outputWhite":255}"#
+        let levels = #"{"channel":"RGB","ranges":[\#(range),\#(range),\#(range),\#(range)]}"#
+        let full: String = #"{"kind":"Hue/Saturation","hue":0,"saturation":-100,"lightness":0,"colorize":false,"hsvSettings":\#(hsv),"levels":\#(levels),"curves":\#(curvesJ)}"#
+        let decoder = JSONDecoder()
+        XCTAssertTrue(try decoder.decode(LayerAdjustment.self, from: Data(full.utf8)).isValid, "decoded adjustment validates")
+
+        let grainJ = #"{"amount":100,"size":5,"roughness":70,"seed":0}"#
+        let grainAdjJ: String = #"{"kind":"Grain","hue":0,"saturation":0,"lightness":0,"colorize":false,"grainSettings":\#(grainJ),"levels":\#(levels),"curves":\#(curvesJ)}"#
+        XCTAssertTrue(try decoder.decode(LayerAdjustment.self, from: Data(grainAdjJ.utf8)).isValid, "grain adjustment validates")
+    }
+
     /// Wraps compositor_session_command with a Swift string payload.
     @discardableResult
     private func cmd(_ h: UInt64, _ json: String) -> Int32 {
@@ -229,5 +253,148 @@ final class SessionJourneyTests: XCTestCase {
 
         compositorSessionClose(a)
         compositorSessionClose(b)
+    }
+
+    /// Returns a freshly opened 4x4 session with one painted layer.
+    private func paintedSession(_ red: Double = 1, _ green: Double = 1, _ blue: Double = 1) -> UInt64 {
+        let h = compositorSessionCreate()
+        XCTAssertNotEqual(h, 0, "session create")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"new","width":4,"height":4}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addLayer"}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushBegin","x":0,"y":0,"parameters":{"diameter":4,"hardness":1,"opacity":1,"red":\#(red),"green":\#(green),"blue":\#(blue),"erasing":0,"mask":0}}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushEnd"}"#), 0)
+        return h
+    }
+
+    private func activeLayer(_ h: UInt64) -> String {
+        let s = state(h)
+        guard let r = s.range(of: #""activeLayerID":""#) else { return "" }
+        let after = s[r.upperBound...]
+        guard let end = after.firstIndex(of: "\"") else { return "" }
+        return String(after[..<end])
+    }
+
+    private func avgLight(_ px: [UInt8]) -> Double {
+        var sum: Double = 0
+        var count = 0
+        for i in stride(from: 0, to: px.count, by: 4) where px[i + 3] > 0 {
+            sum += Double(px[i]) + Double(px[i + 1]) + Double(px[i + 2])
+            count += 1
+        }
+        return count == 0 ? 0 : sum / Double(3 * count)
+    }
+
+    private func meanSaturation(_ px: [UInt8]) -> Double {
+        var sum: Double = 0
+        var count = 0
+        for i in stride(from: 0, to: px.count, by: 4) where px[i + 3] > 0 {
+            let maxv = max(px[i], max(px[i + 1], px[i + 2]))
+            let minv = min(px[i], min(px[i + 1], px[i + 2]))
+            sum += Double(maxv - minv)
+            count += 1
+        }
+        return count == 0 ? 0 : sum / Double(count)
+    }
+
+    private func identityLevels() -> String {
+        let range = #"{"black":0,"gamma":1,"white":255,"outputBlack":0,"outputWhite":255}"#
+        return #"{"channel":"RGB","ranges":[\#(range),\#(range),\#(range),\#(range)]}"#
+    }
+
+    private func identityCurves() -> String {
+        let pts = #"[{"x":0,"y":0},{"x":255,"y":255}]"#
+        return #"{"channel":"RGB","channels":[\#(pts),\#(pts),\#(pts),\#(pts)]}"#
+    }
+
+    /// AdjustDialog JSON contract for a new sheet: addAdjustment creates the
+    /// adjustment layer and begins its edit, debounced adjustmentPreview live-
+    /// updates the render, adjustmentCommit pins the committed values, and a
+    /// follow-up re-edit cancel leaves the committed pixels untouched.
+    func testAdjustLevelsJourney() {
+        let h = paintedSession()
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addAdjustment","kind":"Levels"}"#), 0, "add levels sheet")
+        let range = #"{"black":0,"gamma":1,"white":255,"outputBlack":50,"outputWhite":200}"#
+        let clipped = #"{"channel":"RGB","ranges":[\#(range),\#(range),\#(range),\#(range)]}"#
+        let adjusted: String = #"{"kind":"Levels","hue":0,"saturation":0,"lightness":0,"colorize":false,"levels":\#(clipped),"curves":\#(identityCurves())}"#
+        let before = avgLight(render(h, expectedBytes: 64))
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentPreview","adjustment":\#(adjusted)}"#), 0, "levels preview")
+        let during = avgLight(render(h, expectedBytes: 64))
+        XCTAssertLessThan(during, before, "output range 50..200 darkens the paint")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCommit","adjustment":\#(adjusted)}"#), 0, "levels commit")
+        XCTAssertEqual(jsonBool(state(h), "busy"), false)
+        XCTAssertEqual(avgLight(render(h, expectedBytes: 64)), during, accuracy: 1, "committed levels keep the preview mapping")
+
+        // Re-edit the committed sheet: a canceled change keeps committed pixels.
+        let id = activeLayer(h)
+        XCTAssertFalse(id.isEmpty, "sheet layer id present")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentBegin","layerID":"\#(id)"}"#), 0, "re-edit sheet")
+        let lighter: String = #"{"kind":"Levels","hue":0,"saturation":0,"lightness":0,"colorize":false,"levels":\#(identityLevels()),"curves":\#(identityCurves())}"#
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentPreview","adjustment":\#(lighter)}"#), 0, "re-edit preview")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCancel"}"#), 0, "re-edit cancel")
+        XCTAssertEqual(avgLight(render(h, expectedBytes: 64)), during, accuracy: 1, "cancel restores committed mapping")
+        compositorSessionClose(h)
+    }
+
+    /// Hue/Saturation through the same lifecycle: saturating the master range
+    /// to -100 desaturates the red paint (RGB channels converge).
+    func testAdjustHsvJourney() {
+        let h = paintedSession(1, 0, 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addAdjustment","kind":"Hue/Saturation"}"#), 0, "add hsv sheet")
+        let hsv = #"{"range":"Master","colorize":false,"invertRange":false,"adjustments":["Master",{"hue":0,"saturation":-100,"lightness":0}],"bands":["Master",{"falloffStart":0,"rangeStart":0,"rangeEnd":360,"falloffEnd":360},"Reds",{"falloffStart":315,"rangeStart":345,"rangeEnd":15,"falloffEnd":45},"Yellows",{"falloffStart":15,"rangeStart":45,"rangeEnd":75,"falloffEnd":105},"Greens",{"falloffStart":75,"rangeStart":105,"rangeEnd":135,"falloffEnd":165},"Cyans",{"falloffStart":135,"rangeStart":165,"rangeEnd":195,"falloffEnd":225},"Blues",{"falloffStart":195,"rangeStart":225,"rangeEnd":255,"falloffEnd":285},"Magentas",{"falloffStart":255,"rangeStart":285,"rangeEnd":315,"falloffEnd":345}]}"#
+        let adjusted: String = #"{"kind":"Hue/Saturation","hue":0,"saturation":-100,"lightness":0,"colorize":false,"hsvSettings":\#(hsv),"levels":\#(identityLevels()),"curves":\#(identityCurves())}"#
+        XCTAssertGreaterThan(meanSaturation(render(h, expectedBytes: 64)), 150, "red paint is saturated")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentPreview","adjustment":\#(adjusted)}"#), 0, "hsv preview")
+        XCTAssertLessThan(meanSaturation(render(h, expectedBytes: 64)), 10, "saturation -100 desaturates red to gray")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCommit","adjustment":\#(adjusted)}"#), 0, "hsv commit")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCancel"}"#), -5, "cancel is a no-op when idle")
+        compositorSessionClose(h)
+    }
+
+    /// Curves, Exposure, Gradient Map, and Grain each preview and commit; a
+    /// rejected dialog (cancel) leaves pixels unchanged.
+    func testAdjustRemainingKindsJourney() {
+        let h = paintedSession()
+
+        let inverted = #"[{"x":0,"y":255},{"x":255,"y":0}]"#
+        let id = #"[{"x":0,"y":0},{"x":255,"y":255}]"#
+        let darkCurves = #"{"channel":"RGB","channels":[\#(inverted),\#(id),\#(id),\#(id)]}"#
+        let curvesAdj: String = #"{"kind":"Curves","hue":0,"saturation":0,"lightness":0,"colorize":false,"levels":\#(identityLevels()),"curves":\#(darkCurves)}"#
+        let before = avgLight(render(h, expectedBytes: 64))
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addAdjustment","kind":"Curves"}"#), 0, "add curves sheet")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentPreview","adjustment":\#(curvesAdj)}"#), 0, "curves preview")
+        XCTAssertLessThan(avgLight(render(h, expectedBytes: 64)), before - 50, "inverted curve darkens white")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCancel"}"#), 0, "cancel rolls back")
+        // The canceled sheet is an identity layer: the base pixels are untouched.
+        XCTAssertEqual(avgLight(render(h, expectedBytes: 64)), before, accuracy: 0.001, "cancel keeps original pixels")
+
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addAdjustment","kind":"Exposure"}"#), 0, "add exposure sheet")
+        let exposure = #"{"exposure":-20,"offset":0,"gamma":1}"#
+        let exposureAdj: String = #"{"kind":"Exposure","hue":0,"saturation":0,"lightness":0,"colorize":false,"exposureSettings":\#(exposure),"levels":\#(identityLevels()),"curves":\#(identityCurves())}"#
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentPreview","adjustment":\#(exposureAdj)}"#), 0, "exposure preview")
+        XCTAssertLessThan(avgLight(render(h, expectedBytes: 64)), before, "exposure -20 darkens")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCommit","adjustment":\#(exposureAdj)}"#), 0, "exposure commit")
+
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addAdjustment","kind":"Gradient Map"}"#), 0, "add gradient map sheet")
+        let gradient = #"{"shadows":{"red":1,"green":0,"blue":0},"highlights":{"red":1,"green":0,"blue":0},"reversed":false}"#
+        let gradientAdj: String = #"{"kind":"Gradient Map","hue":0,"saturation":0,"lightness":0,"colorize":false,"gradientMapSettings":\#(gradient),"levels":\#(identityLevels()),"curves":\#(identityCurves())}"#
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentPreview","adjustment":\#(gradientAdj)}"#), 0, "gradient map preview")
+        let red = render(h, expectedBytes: 64)
+        var isRed = true
+        for i in stride(from: 0, to: red.count, by: 4) where red[i + 3] > 0 {
+            if !(red[i] > 0 && red[i + 1] == 0 && red[i + 2] == 0) { isRed = false }
+        }
+        XCTAssertTrue(isRed, "red gradient map recolors paint red")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCommit","adjustment":\#(gradientAdj)}"#), 0, "gradient map commit")
+
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addAdjustment","kind":"Grain"}"#), 0, "add grain sheet")
+        let grain = #"{"amount":100,"size":5,"roughness":70,"seed":0}"#
+        let grainAdj: String = #"{"kind":"Grain","hue":0,"saturation":0,"lightness":0,"colorize":false,"grainSettings":\#(grain),"levels":\#(identityLevels()),"curves":\#(identityCurves())}"#
+        let quiet = render(h, expectedBytes: 64)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentPreview","adjustment":\#(grainAdj)}"#), 0, "grain preview")
+        let noisy = render(h, expectedBytes: 64)
+        XCTAssertNotEqual(noisy, quiet, "grain perturbs pixels")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"adjustmentCommit","adjustment":\#(grainAdj)}"#), 0, "grain commit")
+        XCTAssertEqual(jsonBool(state(h), "busy"), false)
+        compositorSessionClose(h)
     }
 }

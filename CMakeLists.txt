@@ -179,7 +179,7 @@ if(Qt6_FOUND)
     # composition root. Do not register its C++ main as CTest: Foundation-backed
     # Swift calls require a Swift @main to bootstrap the runtime.
     if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
-        add_executable(test_session_window_io tests/test_session_window_io.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp)
+        add_executable(test_session_window_io tests/test_session_window_io.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp)
         target_include_directories(test_session_window_io PRIVATE ${CMAKE_SOURCE_DIR}/host)
         target_link_libraries(test_session_window_io PRIVATE Qt6::Widgets Qt6::Gui ${COMPOSITOR_CORE_LINK})
     endif()
@@ -218,7 +218,7 @@ if(Qt6_FOUND)
     # generates SessionWindow's moc (the SwiftPM build uses the committed
     # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc). The
     # richer MainWindow (C-kernels Qt shell) is the C++-only compositor exe's window.
-    add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp)
+    add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
     target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets)
 endif()

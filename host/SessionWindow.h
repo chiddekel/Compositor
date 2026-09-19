@@ -52,6 +52,7 @@ protected:
 private:
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
+    void showAdjustDialog(const QString &kind);
     QJsonObject sessionState() const;
     bool sendCommand(QJsonObject command);
     QPointF documentPoint(const QPointF &windowPoint) const;

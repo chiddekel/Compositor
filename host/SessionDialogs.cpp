@@ -22,3 +22,18 @@ void SessionWindow::showFilterDialog(const QString &kind) {
     }, this);
     dialog.exec();
 }
+
+void SessionWindow::showAdjustDialog(const QString &kind) {
+    // New sheets: addAdjustment creates the adjustment layer and begins its edit
+    // (macOS Layers > New Adjustment Sheet). The sheet becomes the active layer.
+    if (!sendCommand({{"action", "addAdjustment"}, {"kind", kind}})) {
+        sendCommand({{"action", "adjustmentCancel"}});
+        return;
+    }
+    AdjustDialog dialog(kind, [this](const QJsonObject &command) {
+        const bool ok = sendCommand(command);
+        refreshImage();
+        return ok;
+    }, this);
+    dialog.exec();
+}
