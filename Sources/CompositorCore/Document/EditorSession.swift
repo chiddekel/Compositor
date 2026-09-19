@@ -36,6 +36,9 @@ final class EditorSession {
     /// the draft here; `commitTransform` writes it to the model in one undo step.
     var transformEdit: TransformEdit?
     var isMaskSelected = false
+    /// The last raster command's failure, if any (macOS parity: `brushError` surfaces
+    /// Distort/paint failures to the host as a dismissible message).
+    var brushError: String?
     var activeLayer: ImageLayer? { document?.layers.first { $0.id == activeLayerID } }
 
     func replaceCurrentDocument(_ document: CanvasDocument) {
