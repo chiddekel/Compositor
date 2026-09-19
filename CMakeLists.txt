@@ -115,6 +115,21 @@ if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
     # by the C++ call sites until the shim is wired).
     set(COMPOSITOR_CORE_LINK
         "-Wl,--whole-archive" CompositorCoreSwift "-Wl,--no-whole-archive")
+    # The core archive alone leaves Swift runtime symbols undefined ($s…) when
+    # the C++ linker (not swift build) creates the final binary. Link the toolchain's
+    # static runtime set too; ld extracts only referenced members, so unused
+    # archives cost link time, not binary size. Override path for non-Flatpak
+    # toolchains via -DCOMPOSITOR_SWIFT_STATIC_DIR=...
+    set(COMPOSITOR_SWIFT_STATIC_DIR "/usr/lib/sdk/swift6/lib/swift_static/linux"
+        CACHE PATH "Swift static runtime archive directory")
+    if(EXISTS "${COMPOSITOR_SWIFT_STATIC_DIR}/libswiftCore.a")
+        file(GLOB COMPOSITOR_SWIFT_RUNTIME_ARCHIVES
+            "${COMPOSITOR_SWIFT_STATIC_DIR}/*.a")
+        # --start-group: single-pass ld cannot resolve cross-archive cycles
+        # (e.g. libswift_Concurrency needs libdispatch, which needs swiftCore).
+        list(APPEND COMPOSITOR_CORE_LINK
+            "-Wl,--start-group" ${COMPOSITOR_SWIFT_RUNTIME_ARCHIVES} "-Wl,--end-group")
+    endif()
 endif()
 
 enable_testing()
