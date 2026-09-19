@@ -127,8 +127,25 @@ if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
             "${COMPOSITOR_SWIFT_STATIC_DIR}/*.a")
         # --start-group: single-pass ld cannot resolve cross-archive cycles
         # (e.g. libswift_Concurrency needs libdispatch, which needs swiftCore).
+        # --whole-archive + --allow-multiple-definition: the Swift runtime
+        # bootstraps via .init_array constructors that live in archive members
+        # no symbol references, so a demand-only link never extracts them.
+        # The system deps (curl/sqlite3/z/m/xml2) are pulled by the whole-archived
+        # Foundation runtime (CFURLSession→libcurl, etc.).
+        #
+        # NOTE: this static embedding does NOT fully initialize the Swift runtime
+        # from a non-Swift main on the Freedesktop Swift 6.3 SDK — there is no
+        # swift_initSwiftRuntime, and generic class metadata (_DictionaryStorage)
+        # is never bootststrapped, so the first Dictionary insertion SEGVs. The
+        # C++ test_session_journey is therefore gated out of the default build;
+        # the same journey is verified in Swift under `swift test`
+        # (SessionJourneyTests). The working host composition root is a Swift
+        # @main that bootstraps the runtime and calls into Qt via a C ABI; see
+        # tests/test_session_journey.cpp and docs/linux-port-file-map.md.
         list(APPEND COMPOSITOR_CORE_LINK
-            "-Wl,--start-group" ${COMPOSITOR_SWIFT_RUNTIME_ARCHIVES} "-Wl,--end-group")
+            "-Wl,--allow-multiple-definition"
+            "-Wl,--whole-archive" "-Wl,--start-group" ${COMPOSITOR_SWIFT_RUNTIME_ARCHIVES} "-Wl,--end-group" "-Wl,--no-whole-archive")
+        list(APPEND COMPOSITOR_CORE_LINK curl sqlite3 z m xml2)
     endif()
 endif()
 
@@ -149,6 +166,16 @@ if(Qt6_FOUND)
     target_include_directories(test_host_journey PRIVATE ${CMAKE_SOURCE_DIR}/host)
     target_link_libraries(test_host_journey PRIVATE Qt6::Gui CompositorKernels)
     add_test(NAME CompositorCore.HostJourney COMMAND test_host_journey)
+endif()
+
+# Headless Swift-session journey test: new -> paint -> render -> undo -> redo ->
+# state, driven through the real Swift core via the @_cdecl C ABI. Only meaningful
+# when the prebuilt Swift static lib is provided (Flatpak build, or a host build
+# that ran `swift build --static-swift-stdlib` and passed -DCompositorCore_SWIFT_STATIC_LIB).
+if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
+    add_executable(test_session_journey tests/test_session_journey.cpp)
+    target_link_libraries(test_session_journey PRIVATE CompositorCoreAbi ${COMPOSITOR_CORE_LINK})
+    add_test(NAME CompositorCore.SessionJourney COMMAND test_session_journey)
 endif()
 
 if(Qt6_FOUND)

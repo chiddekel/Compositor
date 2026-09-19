@@ -31,6 +31,30 @@ flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//6.10 \
 
 Remaining work includes connecting the Swift document/session commands and immutable history to Qt; the complete canvas/tool/layer/tab/dialog interactions; package persistence and codec metadata; complete mask/adjustment/tiled rendering and Skia integration; Vulkan brush compute with CPU fallback; offline segmentation; porting the original test assertions and UI journeys; macOS reference fixtures; performance measurements; and full Flatpak artifact validation. The existing minimal host and CPU-only unit tests are intermediate evidence, not completion of these rows.
 
+### Implementation checkpoint — 2026-09-19 (composition root & session journey)
+
+**Composition-root constraint (discovered, blocking the file map's first workstream).** The file map's ENG-2 composition root assumed a C++ Qt `main` that embeds the Swift core via the `@_cdecl` C ABI. On the Freedesktop Swift 6.3 SDK this does not work, and there is no documented in-process entry point to fix it:
+
+- *Static* stdlib embedded in a C++ binary: the SDK ships no `swift_initSwiftRuntime`. The static archives' `.init_array` constructors are registered in the linked binary's `.init_array` but do not bootstrap generic class metadata. The first `Dictionary` insertion (`_DictionaryStorage.allocate`) SEGVs with an uninitialized metadata pointer. This blocks `compositor_session_create` itself.
+- *Shared* stdlib (`libswiftCore.so` + Foundation `.so`s, rpath-linked): stdlib `Dictionary` works, but Foundation's `JSONDecoder` / `Data.withUnsafeBytes` (`__DataStorage`) traps (`UnsafeRawBufferPointer.swift:229` / `malloc_usable_size` on an invalid storage pointer) even on pure-Swift `Data` with no foreign pointer. So the JSON command path used by `compositor_session_command` is unusable from a C++ `main`.
+
+The only supported way to use Foundation is a **Swift entry point** that SwiftPM bootstraps. The composition root must therefore change to a Swift `@main` that initializes the Swift runtime and Foundation, then drives the Qt host through a C ABI (the inverse of the current `host/main.cpp`), or otherwise guarantees a Swift entry runs before any Foundation use. The C++ `tests/test_session_journey.cpp` is gated out of the default build for this reason; its header documents the blocker.
+
+**Session journey verified (host-verifiable slice of the first workstream).** Because the journey can run under `swift test` (where SwiftPM bootstraps the runtime and Foundation), the same create→new→paint→render→undo→redo→state→close journey is verified end-to-end through the real `compositor_session_*` ABI in `Tests/CompositorCoreTests/SessionJourneyTests.swift`: a 4×4 canvas, a solid red brush stroke, render-byte and red-pixel assertions, undo-to-blank, redo-to-red, state JSON fields (`width`, `height`, `busy`, `canUndo`, `canRedo`), and closed-handle rejection (`-6`). This is real progress on the "First packaged open/paint/undo/save/reopen/export journey" workstream; the remaining save/reopen/export legs and the Qt-driven host journey still need the Swift-`@main` composition root above.
+
+**Verification:** full Swift suite **324 tests, 0 failures** (was 307; the session journey adds one and prior checkpoints added the rest); default CMake build **3/3 CTest** pass unchanged (`CompositorCore.Abi`, `.Kernels`, `.HostJourney`). The C++ session-journey test is not in CTest (gated on `CompositorCore_SWIFT_STATIC_LIB`, which is not set for the default build).
+
+Reproduce:
+
+```sh
+# Swift suite (includes SessionJourneyTests):
+flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//6.10 \
+  -c 'cd "$1" && /usr/lib/sdk/swift6/bin/swift test' sh "$PWD"
+# Default CMake + CTest (C-ref stand-in; no Swift static lib):
+cmake -S . -B build-cmake -G Ninja && cmake --build build-cmake \
+  && (cd build-cmake && ctest --output-on-failure)
+```
+
 ## Application
 
 | Source | Lines* | Direct imports | Disposition | Linux responsibility |
@@ -219,7 +243,7 @@ These are preliminary engineering ranges, not measured delivery promises. Human 
 
 | Workstream | Human effort | Agent-assisted active engineering | Main uncertainty |
 |---|---|---|---|
-| First packaged open/paint/undo/save/reopen/export journey | 2–4 weeks | 4–10 days | Swift/Qt event loop, C ABI and directory permissions |
+| First packaged open/paint/undo/save/reopen/export journey | 2–4 weeks | 4–10 days | Swift/Qt event loop, C ABI and directory permissions. **Composition-root constraint:** the entry point must be Swift (`@main`) — a C++ Qt `main` cannot bootstrap the Swift runtime + Foundation on the Freedesktop Swift 6.3 SDK (no `swift_initSwiftRuntime`; Foundation `JSONDecoder` traps from a non-Swift main). The create/paint/undo/redo leg is verified under `swift test` (SessionJourneyTests); the save/reopen/export legs and the Qt-driven host journey need the Swift-`@main` root. |
 | Portable model/history/schema and raster contracts | 2–5 weeks | 5–12 days | Indirect Apple dependencies and isolation semantics |
 | Qt shell and complete interaction parity | 3–6 weeks | 1–3 weeks | Canvas gestures, shortcut conflicts, layers drag/drop |
 | Skia compositing, masks, color, filters, codecs | 5–10 weeks | 2–5 weeks | Pixel parity, resampling and codec metadata |
