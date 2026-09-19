@@ -30,6 +30,29 @@
 extern "C" {
 #endif
 
+/* Stateful editor ABI v1. One handle owns one document, transient edits, and
+ * history. Calls are serialized per handle. Close invalidates the ID; IDs are
+ * never reused. No Swift/Qt callbacks occur while a session lock is held.
+ *
+ * Commands are bounded UTF-8 JSON: {"version":1,"action":"new","width":64,
+ * "height":64}. See docs/abi.md for commands and ownership. Input is copied.
+ * Status: 0 success, -1 invalid input, -2 no document, -3 busy,
+ * -4 unsupported version, -5 operation failed, -6 invalid/closed handle.
+ *
+ * state/render return required byte count or a negative status. A NULL or short
+ * output buffer is not written. Query size, allocate, then call again with the
+ * capacity. JSON is NOT NUL-terminated. Render returns tightly packed RGBA8
+ * premultiplied sRGB, with dimensions from state. The caller owns all buffers.
+ */
+uint64_t compositor_session_create(void);
+void compositor_session_close(uint64_t handle);
+int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t count);
+int32_t compositor_session_import_rgba(uint64_t handle, const uint8_t *pixels, size_t count,
+                                      size_t width, size_t height, const uint8_t *name, size_t name_count,
+                                      int32_t replacing);
+int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
+int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
+
 /*
  * Composite a source tile over a destination tile in place using premultiplied
  * source-over, modulated by an optional coverage mask and opacity.

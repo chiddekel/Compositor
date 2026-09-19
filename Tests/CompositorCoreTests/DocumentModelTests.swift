@@ -175,7 +175,7 @@ final class DocumentModelTests: XCTestCase {
     func testDocumentSelectionClipClampsToCanvas() {
         let sel = DocumentSelection(path: .rectangle(CGRect(x: -5, y: -5, width: 20, height: 20)))
         let clip = sel.clip(canvas: CGSize(width: 10, height: 10))
-        XCTAssertNil(clip.coverage)  // coverage is the raster milestone (nil)
+        XCTAssertTrue(clip.coverage?.bytes.allSatisfy { $0 == 255 } == true)
         // Region is the inset-by-1 box intersected with the canvas.
         XCTAssertEqual(clip.rect, CGRect(x: -6, y: -6, width: 20, height: 20).integral
             .intersection(CGRect(origin: .zero, size: CGSize(width: 10, height: 10))))

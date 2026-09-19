@@ -69,7 +69,7 @@ nonisolated struct DocumentSelection: Equatable, @unchecked Sendable {
         let region = path.boundingBox.insetBy(dx: -1, dy: -1).integral
             .intersection(CGRect(origin: .zero, size: size))
         guard !isEmpty, !region.isNull, region.width >= 1, region.height >= 1 else { return SelectionClip(rect: .zero, coverage: nil) }
-        return SelectionClip(rect: region, coverage: nil)
+        return SelectionClip(rect: region, coverage: rasterized(in: region))
     }
     // macOS also rasterizes the path to grayscale coverage here; that is the Skia/CPU
     // raster milestone.

@@ -7,8 +7,9 @@
 // geometry comes from Foundation + CompositorCore and the image from `RasterImage`.
 //
 // Omitted from this port (raster milestone — Skia/CPU drawing backend):
-//   - `LayerMask.enabledImage`/`solid`/`asset(from:)`/`background`/`placed`/
-//     `drawSmooth`/`clipImage` — all CGContext/CGImage drawing and resampling.
+// MaskRaster.swift supplies solid masks, asset validation, border tone, and
+// placement/resampling into a layer's grid.
+// Still omitted:
 //   - `MaskPlacementCache`, `FolderMaskClip`, the `ProjectSnapshot` and
 //     `EditorSession` extensions, and the `BrushStroke.placedMaskPreview` extension.
 // The `enabledImage` accessor returns `RasterImage?` (a thin wrapper) so the model
@@ -39,9 +40,7 @@ nonisolated struct LayerMask: Equatable, @unchecked Sendable {
     func replacing(_ asset: ImportedImage) -> LayerMask {
         LayerMask(asset: asset, isEnabled: isEnabled, placement: placement, isLinked: isLinked)
     }
-    // macOS also validates a mask image's grayscale format here (isValid); on Linux
-    // the canonical MaskBuffer substrate carries that contract, so the check moves
-    // to the raster/IO milestone.
+    // Canonical grayscale validation and raster construction live in MaskRaster.swift.
 
     // MARK: Placement
 

@@ -5,13 +5,9 @@
 // The macOS original `import AppKit`, `import CoreImage`, and `import Observation`;
 // on Linux none of those are needed for the pure settings struct.
 //
-// Omitted from this port (raster / model milestones):
-//   - `FilterJob` (carries a `CGImage`) and `PixelFilter.run`/`trimmed` — CoreImage
-//     and CGContext-based filter application. The C kernels they call
-//     (`noise_add`, `lens_distort`, `brush_alpha_bounds`) are already portable;
-//     the drawing/warp backend is the Skia/CPU raster milestone.
-//   - `FilterEdit` (`@Observable`) and the `EditorSession` begin/update/cancel/commit
-//     helpers — SwiftUI-bound, ported with the document model.
+// PixelFilter.swift supplies image execution; FilterEdit.swift owns portable
+// preview/update/cancel/commit transactions. Qt panel wiring and the offline
+// background-removal model remain integration work.
 // `FilterSettings` is the dependency of `LayerAdjustment` and the model layer.
 //
 // SOLID: the value types keep their responsibilities and contracts; the Apple API

@@ -139,6 +139,7 @@ nonisolated enum LayerRenderer {
         guard pixels.kind == .rgba else { return }
         var scaled = transform
         scaled.size = CGSize(width: transform.size.width * scale, height: transform.size.height * scale)
+        scaled.origin = CGPoint(x: center.x - scaled.size.width / 2, y: center.y - scaled.size.height / 2)
         // Image pixel -> document point.
         let mapping = BrushRaster.pixelToDocument(scaled, width: pixels.width, height: pixels.height)
         let inverse = mapping.inverted()
@@ -158,7 +159,9 @@ nonisolated enum LayerRenderer {
                 if nearest {
                     s = RasterSample.rgbaNearest(pixels, fx: local.x, fy: local.y)
                 } else {
-                    s = RasterSample.rgbaBilinear(pixels, fx: local.x, fy: local.y)
+                    s = RasterSample.rgbaBilinear(pixels,
+                        fx: min(CGFloat(pixels.width - 1), max(0, local.x - 0.5)),
+                        fy: min(CGFloat(pixels.height - 1), max(0, local.y - 0.5)))
                 }
                 var alpha = Float(s.a) / 255 * opacityF
                 if let maskPixels {
@@ -217,11 +220,15 @@ nonisolated enum LayerRenderer {
                 if pixels.kind == .mask {
                     c = nearest
                         ? Float(RasterSample.grayNearest(pixels, fx: local.x, fy: local.y))
-                        : Float(RasterSample.grayBilinear(pixels, fx: local.x, fy: local.y))
+                        : Float(RasterSample.grayBilinear(pixels,
+                            fx: min(CGFloat(pixels.width - 1), max(0, local.x - 0.5)),
+                            fy: min(CGFloat(pixels.height - 1), max(0, local.y - 0.5))))
                 } else {
                     let s = nearest
                         ? RasterSample.rgbaNearest(pixels, fx: local.x, fy: local.y)
-                        : RasterSample.rgbaBilinear(pixels, fx: local.x, fy: local.y)
+                        : RasterSample.rgbaBilinear(pixels,
+                            fx: min(CGFloat(pixels.width - 1), max(0, local.x - 0.5)),
+                            fy: min(CGFloat(pixels.height - 1), max(0, local.y - 0.5)))
                     c = Float(s.a)
                 }
                 let a = c / 255
