@@ -28,6 +28,8 @@ class QListWidgetItem;
 class QSlider;
 class QComboBox;
 class QPushButton;
+class QCheckBox;
+class QMenu;
 class QColor;
 #include <vector>
 
@@ -66,7 +68,7 @@ private:
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
     void showAdjustDialog(const QString &kind);
-    bool sendCommand(QJsonObject command);
+    bool sendCommand(const QJsonObject &command);
     QPointF documentPoint(const QPointF &windowPoint) const;
     void refreshImage();
     void refreshLayers();
@@ -79,6 +81,8 @@ private:
     void setBlendModeFromCombo(int index);
     void pickBrushColor();
     QStringList blendModes() const;
+    bool setLayerFlag(const char *action, bool on);
+    void selectRegion(bool rectangle);
     QImage m_image;
     uint64_t m_sessionHandle = 0;
     bool m_painting = false;
@@ -90,6 +94,8 @@ private:
     QSlider *m_brushDiameterSlider = nullptr;
     QSlider *m_brushHardnessSlider = nullptr;
     QSlider *m_brushOpacitySlider = nullptr;
+    QCheckBox *m_visibleCheck = nullptr;
+    QCheckBox *m_maskCheck = nullptr;
     QColor m_brushColor = QColor(255, 0, 0);
     int m_brushDiameter = 16;
     int m_brushHardness = 100;

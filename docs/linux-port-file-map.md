@@ -88,7 +88,11 @@ the public `paintStroke` both build commands from the palette members.
 `CompositorHostBootstrap --brush-smoke` sets diameter 24, hardness 100, opacity
 100, switches the active layer blend to Multiply (asserted back through
 `state.layers`), paints a diagonal stroke, and asserts colored pixels survive
-the composited render.
+the composited render. The same smoke drives the layer Visibility checkbox
+(`setVisible` round-trips through `state.layers[].visible`) and the Select +
+Fill Foreground menu actions: the rectangle selection is created through the
+`selectRectangle` bridge, the fill paints, and the export carries the colored
+pixels. The Layers dock's Mask-enabled checkbox is wired to `setMaskEnabled`.
 
 **Current verification.** SwiftPM under KDE SDK 6.10 passes **408 tests, 0
 failures**. Host CMake/CTest passes **4/4** checks. Release static Swift build,

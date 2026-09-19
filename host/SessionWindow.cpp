@@ -15,6 +15,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QColorDialog>
 #include <QPushButton>
 #include <QStatusBar>
@@ -221,11 +222,31 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     m_opacity->setRange(0, 100);
     m_opacity->setValue(100);
     layout->addWidget(m_opacity);
+    m_visibleCheck = new QCheckBox(tr("Visible"), panel);
+    m_visibleCheck->setObjectName("layer.visible");
+    m_maskCheck = new QCheckBox(tr("Mask enabled"), panel);
+    m_maskCheck->setObjectName("layer.mask");
+    layout->addWidget(m_visibleCheck);
+    layout->addWidget(m_maskCheck);
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
     connect(m_layers, &QListWidget::currentRowChanged, this, &SessionWindow::selectLayerRow);
     connect(m_opacity, &QSlider::valueChanged, this, &SessionWindow::setOpacityFromSlider);
+    connect(m_visibleCheck, &QCheckBox::toggled, this, [this](bool on) { if (setLayerFlag("setVisible", on)) refreshImage(); });
+    connect(m_maskCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (sendCommand({{"action", "setMaskEnabled"}, {"enabled", on}})) refreshImage();
+    });
     refreshLayers();
+
+    QMenu *select = menuBar()->addMenu(tr("&Select"));
+    select->addAction(tr("Rectangle Selection"), this, [this] { selectRegion(true); })->setObjectName("select.rectangle");
+    select->addAction(tr("Ellipse Selection"), this, [this] { selectRegion(false); })->setObjectName("select.ellipse");
+    select->addAction(tr("Deselect"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})") == 0) { refreshImage(); refreshLayers(); } })->setObjectName("select.deselect");
+
+    imageMenu->addSeparator();
+    imageMenu->addAction(tr("Fill Foreground"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"fillForeground"})") == 0) refreshImage(); })->setObjectName("fill.foreground");
+    imageMenu->addAction(tr("Fill Background"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"fillBackground"})") == 0) refreshImage(); })->setObjectName("fill.background");
+    imageMenu->addAction(tr("Clear Selection"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"clearSelection"})") == 0) refreshImage(); })->setObjectName("fill.clear");
 
     // Brush palette: diameter/hardness/opacity sliders, a color button, and the
     // active-layer blend mode. Shared by the mouse paint path and smokes.
@@ -306,9 +327,11 @@ QJsonObject SessionWindow::sessionState() const {
     return QJsonDocument::fromJson(bytes).object();
 }
 
-bool SessionWindow::sendCommand(QJsonObject command) {
-    command.insert("version", 1);
-    const QByteArray bytes = QJsonDocument(command).toJson(QJsonDocument::Compact);
+bool SessionWindow::sendCommand(const QJsonObject &command) {
+    if (m_sessionHandle == 0) return false;
+    QJsonObject payload = command;
+    payload.insert("version", 1);
+    const QByteArray bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     const int result = compositor_session_command(m_sessionHandle,
         reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
     if (result != 0) statusBar()->showMessage(sessionState().value("error").toString(tr("Could not apply the operation.")), 5000);
@@ -328,6 +351,17 @@ void SessionWindow::refreshImage() {
     m_image = rendered;
     update();
     refreshLayers();
+}
+
+void SessionWindow::selectRegion(bool rectangle) {
+    QJsonObject command{{"action", rectangle ? "selectRectangle" : "selectEllipse"},
+                        {"x", 0}, {"y", 0}, {"width", m_image.width()}, {"height", m_image.height()}};
+    if (sendCommand(command)) refreshImage();
+}
+
+bool SessionWindow::setLayerFlag(const char *action, bool on) {
+    QJsonObject command{{"action", action}, {"enabled", on}};
+    return sendCommand(command);
 }
 
 void SessionWindow::refreshLayers() {
@@ -353,7 +387,13 @@ void SessionWindow::refreshLayers() {
     }
     if (selected >= 0) {
         m_layers->setCurrentRow(selected);
-        if (selected < layers.size()) m_opacity->setValue(qRound(layers.at(selected).toObject().value("opacity").toDouble(1) * 100));
+        if (selected < layers.size()) {
+            const QJsonObject active = layers.at(selected).toObject();
+            m_opacity->setValue(qRound(active.value("opacity").toDouble(1) * 100));
+            m_visibleCheck->setChecked(active.value("visible").toBool(true));
+            m_maskCheck->setEnabled(active.value("hasMask").toBool(false));
+            m_maskCheck->setChecked(active.value("hasMask").toBool(false) && active.value("maskEnabled").toBool(true));
+        }
     }
     m_syncingLayers = false;
 }

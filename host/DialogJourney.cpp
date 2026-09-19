@@ -16,6 +16,7 @@
 #include <QSlider>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QColor>
 #include <QDebug>
 #include <stdexcept>
 
@@ -144,6 +145,19 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
     }
 }
 
+// Count non-transparent pixels with a strong channel, i.e. pixels the compositor
+// actually painted (as opposed to the transparent canvas background).
+static int countPainted(const QImage &image) {
+    int colored = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            if (pixel.alpha() > 0 && (pixel.red() > 200 || pixel.green() > 200 || pixel.blue() > 200)) ++colored;
+        }
+    }
+    return colored;
+}
+
 // Brush palette + blend round-trip: the palette sliders and color button feed
 // brushBegin parameters through the C ABI, the blend combo drives setBlendMode,
 // and the painted stroke renders with the chosen color/size.
@@ -167,16 +181,23 @@ extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
 
         window.paintStroke(8, 8, 40, 40);
         const QImage painted = exported(window, temporary.filePath("brush.png"));
-        int colored = 0;
-        const QColor expected(255, 0, 0);
-        for (int y = 0; y < painted.height(); ++y) {
-            for (int x = 0; x < painted.width(); ++x) {
-                const QColor pixel = painted.pixelColor(x, y);
-                if (pixel.alpha() > 0 && (pixel.red() > 200 || pixel.green() > 200 || pixel.blue() > 200)) ++colored;
-            }
-        }
-        require(colored > 0, "palette stroke did not paint");
-        qInfo("Qt brush palette journey OK (diameter/hardness/opacity, color, blend, paint)");
+        require(countPainted(painted) > 0, "palette stroke did not paint");
+
+        auto *visible = window.findChild<QCheckBox *>("layer.visible");
+        require(visible, "visibility checkbox missing");
+        visible->setChecked(false); QApplication::processEvents();
+        require(!window.sessionState().value("layers").toArray().at(0).toObject().value("visible").toBool(true), "visibility toggle did not reach setVisible");
+        visible->setChecked(true); QApplication::processEvents();
+        require(window.sessionState().value("layers").toArray().at(0).toObject().value("visible").toBool(false) != false, "visibility re-enable did not reach setVisible");
+
+        auto *selectAll = window.findChild<QAction *>("select.rectangle");
+        auto *fill = window.findChild<QAction *>("fill.foreground");
+        require(selectAll && fill, "select/fill actions missing");
+        selectAll->trigger(); QApplication::processEvents();
+        fill->trigger(); QApplication::processEvents();
+        const QImage filled = exported(window, temporary.filePath("filled.png"));
+        require(countPainted(filled) > 0, "selection fill did not paint");
+        qInfo("Qt brush palette journey OK (diameter/hardness/opacity, color, blend, paint, visible, select, fill)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt brush palette journey failed: %s", e.what()); return 1;
