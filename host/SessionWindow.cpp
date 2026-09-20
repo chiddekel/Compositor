@@ -434,6 +434,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
 
     connect(m_layerModel, &QStandardItemModel::itemChanged, this, [this](QStandardItem *item) {
         if (m_syncingLayers || !item || m_sessionHandle == 0) return;
+        m_syncingLayers = true;
         if (item->column() == 0) {
             const QString id = item->data(Qt::UserRole).toString();
             const QString newName = item->text();
@@ -464,6 +465,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
                 refreshImage();
             }
         }
+        m_syncingLayers = false;
     });
 
     connect(m_opacity, &QSlider::valueChanged, this, &SessionWindow::setOpacityFromSlider);
@@ -700,7 +702,7 @@ void SessionWindow::refreshImage() {
     m_image = rendered;
     if (m_canvasWidget) m_canvasWidget->update();
     update();
-    refreshLayers();
+    QMetaObject::invokeMethod(this, [this] { refreshLayers(); }, Qt::QueuedConnection);
 }
 
 void SessionWindow::selectRegion(bool rectangle) {
