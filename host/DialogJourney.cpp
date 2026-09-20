@@ -11,7 +11,8 @@
 #include <QDoubleSpinBox>
 #include <QImageReader>
 #include <QJsonArray>
-#include <QListWidget>
+#include <QTreeView>
+#include <QStandardItemModel>
 #include <QPushButton>
 #include <QSlider>
 #include <QTemporaryDir>
@@ -204,17 +205,19 @@ extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
     }
 }
 
-// Layers dock journey: the QListWidget rows mirror the Swift state JSON, and the
+// Layers dock journey: the QTreeView hierarchical model mirrors the Swift state JSON, and the
 // Layer menu actions round-trip addLayer/duplicateLayer/deleteLayer/selectLayer/
-// setOpacity through the C ABI.
+// setOpacity/addGroup/masks through the C ABI.
 extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
     try {
         QTemporaryDir temporary;
         require(temporary.isValid(), "temporary directory failed");
         SessionWindow window; window.show(); QApplication::processEvents();
-        auto *list = window.findChild<QListWidget *>();
-        require(list != nullptr, "layers dock missing");
+        auto *tree = window.findChild<QTreeView *>();
+        require(tree != nullptr, "layers tree view missing");
+        auto *model = qobject_cast<QStandardItemModel *>(tree->model());
+        require(model != nullptr, "layers model missing");
         auto *opacity = window.findChild<QSlider *>();
         require(opacity != nullptr, "opacity slider missing");
         auto menuAction = [&](const QString &text) -> QAction * {
@@ -226,8 +229,19 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         const auto stateLayers = [&]() -> QJsonArray {
             return window.sessionState().value("layers").toArray();
         };
-        require(list->count() == stateLayers().size(), "dock rows do not match session layers");
-        const int opened = list->count();
+
+        auto countItems = [&](auto self, const QModelIndex &parent = QModelIndex()) -> int {
+            int total = 0;
+            const int rows = model->rowCount(parent);
+            total += rows;
+            for (int r = 0; r < rows; ++r) {
+                total += self(self, model->index(r, 0, parent));
+            }
+            return total;
+        };
+
+        require(countItems(countItems) == stateLayers().size(), "dock rows do not match session layers");
+        const int opened = countItems(countItems);
         require(opened == 1, "initial dock does not hold the brush layer");
         const QImage original = exported(window, temporary.filePath("view.png"));
 
@@ -235,12 +249,12 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         auto *duplicate = menuAction("Duplicate Layer"); require(duplicate, "Duplicate Layer action missing");
         auto *remove = menuAction("Delete Layer"); require(remove, "Delete Layer action missing");
         add->trigger();
-        require(stateLayers().size() == 2 && list->count() == 2, "New Layer did not add a dock row");
-        require(list->currentRow() == 1 && window.sessionState().value("activeLayerID").toString()
-            == stateLayers().at(list->currentRow()).toObject().value("id").toString(), "new layer not selected in the dock");
+        require(stateLayers().size() == 2 && countItems(countItems) == 2, "New Layer did not add a dock row");
+        require(tree->currentIndex().row() == 1 && window.sessionState().value("activeLayerID").toString()
+            == stateLayers().at(tree->currentIndex().row()).toObject().value("id").toString(), "new layer not selected in the dock");
         duplicate->trigger();
-        require(stateLayers().size() == 3 && list->count() == 3, "duplicate did not add a dock row");
-        list->setCurrentRow(1);
+        require(stateLayers().size() == 3 && countItems(countItems) == 3, "duplicate did not add a dock row");
+        tree->setCurrentIndex(model->index(1, 0));
         require(window.sessionState().value("activeLayerID").toString()
             == stateLayers().at(1).toObject().value("id").toString(), "row selection did not switch active layer");
         opacity->setValue(50);
@@ -251,9 +265,34 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         }
         require(set > 0.49 && set < 0.51, "opacity slider did not round-trip");
         remove->trigger();
-        require(stateLayers().size() == 2 && list->count() == 2, "delete did not remove a dock row");
+        require(stateLayers().size() == 2 && countItems(countItems) == 2, "delete did not remove a dock row");
+
+        // Group / Folder hierarchical verification
+        auto *addGroup = menuAction("New Folder / Group");
+        require(addGroup != nullptr, "New Folder / Group action missing");
+        addGroup->trigger();
+        require(countItems(countItems) == stateLayers().size(), "New Folder did not add a group row");
+        const QString grpActive = window.sessionState().value("activeLayerID").toString();
+        bool isGroup = false;
+        for (const QJsonValue &v : stateLayers()) {
+            if (v.toObject().value("id").toString() == grpActive) isGroup = v.toObject().value("isGroup").toBool();
+        }
+        require(isGroup, "active layer is not a group");
+
+        // Mask verification on a raster layer
+        tree->setCurrentIndex(model->index(0, 0));
+        auto *addMask = menuAction("Add Reveal Mask");
+        require(addMask != nullptr, "Add Reveal Mask action missing");
+        addMask->trigger();
+        const QString maskActive = window.sessionState().value("activeLayerID").toString();
+        bool hasMask = false;
+        for (const QJsonValue &v : stateLayers()) {
+            if (v.toObject().value("id").toString() == maskActive) hasMask = v.toObject().value("hasMask").toBool();
+        }
+        require(hasMask, "layer hasMask is false after Add Reveal Mask");
+
         require(!exported(window, temporary.filePath("after.png")).isNull(), "render after layer ops failed");
-        qInfo("Qt layers dock journey OK (add, duplicate, select, opacity, delete)");
+        qInfo("Qt layers dock journey OK (add, duplicate, select, opacity, delete, group, mask)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt layers dock journey failed: %s", e.what()); return 1;

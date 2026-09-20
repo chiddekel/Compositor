@@ -163,6 +163,8 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
             } else { sampling = .high }
             try s.resizeImage(width: width, height: height, resolution: command.value, sampling: sampling)
         case "addLayer": try s.addBlankLayer()
+        case "addGroup": s.addGroup()
+        case "groupSelectedLayers": s.groupSelectedLayers()
         case "selectLayer":
             guard let id = command.layerID else { throw EditorSession.Failure.invalidArgument }
             guard s.document?.layers.contains(where: { $0.id == id }) == true else { throw EditorSession.Failure.noLayer }

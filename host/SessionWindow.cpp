@@ -20,7 +20,12 @@
 #include <QPushButton>
 #include <QStatusBar>
 #include <QDockWidget>
-#include <QListWidget>
+#include <QTreeView>
+#include <QStandardItemModel>
+#include <QHeaderView>
+#include <QStyle>
+#include <QHBoxLayout>
+#include <QMap>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -164,6 +169,9 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     layer->addAction(tr("&New Layer"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) { refreshImage(); refreshLayers(); }
     });
+    layer->addAction(tr("New &Folder / Group"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addGroup"})") == 0) { refreshImage(); refreshLayers(); }
+    })->setObjectName("layer.addGroup");
     layer->addAction(tr("&Delete Layer"), QKeySequence::Delete, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteLayer"})") == 0) { refreshImage(); refreshLayers(); }
     });
@@ -212,11 +220,59 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     imageMenu->addAction(tr("Image Size…"), this, [this] { showSizeDialog(true); })->setObjectName("imageSize");
 
     auto *dock = new QDockWidget(tr("Layers"), this);
+    dock->setObjectName("dock.layers");
     auto *panel = new QWidget(dock);
     auto *layout = new QVBoxLayout(panel);
-    m_layers = new QListWidget(panel);
-    m_layers->setSelectionMode(QAbstractItemView::SingleSelection);
-    layout->addWidget(m_layers);
+
+    m_layersView = new QTreeView(panel);
+    m_layersView->setObjectName("layers.treeView");
+    m_layerModel = new QStandardItemModel(this);
+    m_layerModel->setHorizontalHeaderLabels({tr("Layer"), tr("Visible"), tr("Mask")});
+    m_layersView->setModel(m_layerModel);
+    m_layersView->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_layersView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_layersView->setUniformRowHeights(true);
+    m_layersView->setAnimated(true);
+    m_layersView->setAllColumnsShowFocus(true);
+    m_layersView->setRootIsDecorated(true);
+    m_layersView->header()->setStretchLastSection(false);
+    m_layersView->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_layersView->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_layersView->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    layout->addWidget(m_layersView);
+
+    auto *btnLayout = new QHBoxLayout();
+    auto *btnAddLayer = new QPushButton(tr("+ Layer"), panel);
+    btnAddLayer->setObjectName("layer.add");
+    btnAddLayer->setToolTip(tr("Add blank layer"));
+    auto *btnAddGroup = new QPushButton(tr("+ Folder"), panel);
+    btnAddGroup->setObjectName("layer.addGroup");
+    btnAddGroup->setToolTip(tr("Add new group/folder"));
+    auto *btnAddMask = new QPushButton(tr("+ Mask"), panel);
+    btnAddMask->setObjectName("layer.addMask");
+    btnAddMask->setToolTip(tr("Add reveal layer mask"));
+    auto *btnDelete = new QPushButton(tr("Delete"), panel);
+    btnDelete->setObjectName("layer.delete");
+    btnDelete->setToolTip(tr("Delete active layer or group"));
+    btnLayout->addWidget(btnAddLayer);
+    btnLayout->addWidget(btnAddGroup);
+    btnLayout->addWidget(btnAddMask);
+    btnLayout->addWidget(btnDelete);
+    layout->addLayout(btnLayout);
+
+    connect(btnAddLayer, &QPushButton::clicked, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) { refreshImage(); refreshLayers(); }
+    });
+    connect(btnAddGroup, &QPushButton::clicked, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addGroup"})") == 0) { refreshImage(); refreshLayers(); }
+    });
+    connect(btnAddMask, &QPushButton::clicked, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addRevealMask"})") == 0) { refreshImage(); refreshLayers(); }
+    });
+    connect(btnDelete, &QPushButton::clicked, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteLayer"})") == 0) { refreshImage(); refreshLayers(); }
+    });
+
     layout->addWidget(new QLabel(tr("Opacity"), panel));
     m_opacity = new QSlider(Qt::Horizontal, panel);
     m_opacity->setRange(0, 100);
@@ -230,7 +286,53 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     layout->addWidget(m_maskCheck);
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
-    connect(m_layers, &QListWidget::currentRowChanged, this, &SessionWindow::selectLayerRow);
+
+    connect(m_layersView->selectionModel(), &QItemSelectionModel::currentChanged,
+            this, [this](const QModelIndex &current, const QModelIndex &) {
+        if (m_syncingLayers || !current.isValid() || m_sessionHandle == 0) return;
+        const QModelIndex nameIndex = current.siblingAtColumn(0);
+        const QString id = nameIndex.data(Qt::UserRole).toString();
+        if (id.isEmpty()) return;
+        const QByteArray json = QString(R"({"version":1,"action":"selectLayer","layerID":"%1"})").arg(id).toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) {
+            refreshImage();
+        }
+    });
+
+    connect(m_layerModel, &QStandardItemModel::itemChanged, this, [this](QStandardItem *item) {
+        if (m_syncingLayers || !item || m_sessionHandle == 0) return;
+        if (item->column() == 0) {
+            const QString id = item->data(Qt::UserRole).toString();
+            const QString newName = item->text();
+            if (!id.isEmpty() && !newName.isEmpty()) {
+                QJsonObject selectCmd{{"action", "selectLayer"}, {"layerID", id}};
+                sendCommand(selectCmd);
+                QJsonObject renameCmd{{"action", "renameLayer"}, {"name", newName}};
+                if (sendCommand(renameCmd)) refreshImage();
+            }
+        } else if (item->column() == 1) {
+            const QModelIndex nameIndex = m_layerModel->index(item->row(), 0, item->parent() ? item->parent()->index() : QModelIndex());
+            const QString id = nameIndex.data(Qt::UserRole).toString();
+            const bool visible = (item->checkState() == Qt::Checked);
+            if (!id.isEmpty()) {
+                QJsonObject selectCmd{{"action", "selectLayer"}, {"layerID", id}};
+                sendCommand(selectCmd);
+                setLayerFlag("setVisible", visible);
+                refreshImage();
+            }
+        } else if (item->column() == 2) {
+            const QModelIndex nameIndex = m_layerModel->index(item->row(), 0, item->parent() ? item->parent()->index() : QModelIndex());
+            const QString id = nameIndex.data(Qt::UserRole).toString();
+            const bool enabled = (item->checkState() == Qt::Checked);
+            if (!id.isEmpty()) {
+                QJsonObject selectCmd{{"action", "selectLayer"}, {"layerID", id}};
+                sendCommand(selectCmd);
+                sendCommand({{"action", "setMaskEnabled"}, {"enabled", enabled}});
+                refreshImage();
+            }
+        }
+    });
+
     connect(m_opacity, &QSlider::valueChanged, this, &SessionWindow::setOpacityFromSlider);
     connect(m_visibleCheck, &QCheckBox::toggled, this, [this](bool on) { if (setLayerFlag("setVisible", on)) refreshImage(); });
     connect(m_maskCheck, &QCheckBox::toggled, this, [this](bool on) {
@@ -365,7 +467,7 @@ bool SessionWindow::setLayerFlag(const char *action, bool on) {
 }
 
 void SessionWindow::refreshLayers() {
-    if (!m_layers || m_sessionHandle == 0) return;
+    if (!m_layersView || !m_layerModel || m_sessionHandle == 0) return;
     const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
     if (size <= 0 || size > 4 * 1024 * 1024) return;
     std::vector<uint8_t> bytes(static_cast<size_t>(size));
@@ -374,34 +476,128 @@ void SessionWindow::refreshLayers() {
     if (!state.isObject()) return;
     const QJsonArray layers = state.object().value("layers").toArray();
     const QString active = state.object().value("activeLayerID").toString();
+
     m_syncingLayers = true;
-    m_layers->clear();
-    int selected = -1;
+    m_layerModel->clear();
+    m_layerModel->setHorizontalHeaderLabels({tr("Layer"), tr("Visible"), tr("Mask")});
+
+    struct LayerNode {
+        QList<QStandardItem *> items;
+        QString id;
+        QString parentId;
+        bool isGroup = false;
+        bool hasMask = false;
+        bool maskEnabled = false;
+        bool visible = true;
+        double opacity = 1.0;
+    };
+
+    QMap<QString, LayerNode> nodeMap;
+    QList<QString> order;
+
     for (int i = 0; i < layers.size(); ++i) {
         const QJsonObject layer = layers.at(i).toObject();
         const QString id = layer.value("id").toString();
         const QString name = layer.value("name").toString();
-        auto *item = new QListWidgetItem(layer.value("isGroup").toBool() ? "[Folder] " + name : name, m_layers);
-        item->setFlags(item->flags() | Qt::ItemIsEditable);
-        item->setData(Qt::UserRole, id);
-        if (id == active) selected = i;
+        const QString parentId = layer.value("parentID").toString();
+        const bool isGroup = layer.value("isGroup").toBool(false);
+        const bool visible = layer.value("visible").toBool(true);
+        const bool hasMask = layer.value("hasMask").toBool(false);
+        const bool maskEnabled = hasMask && layer.value("maskEnabled").toBool(true);
+        const double opacity = layer.value("opacity").toDouble(1.0);
+
+        auto *nameItem = new QStandardItem(name);
+        nameItem->setEditable(true);
+        nameItem->setData(id, Qt::UserRole);
+        nameItem->setData(isGroup, Qt::UserRole + 1);
+        nameItem->setData(hasMask, Qt::UserRole + 2);
+        nameItem->setData(maskEnabled, Qt::UserRole + 3);
+        nameItem->setData(parentId, Qt::UserRole + 4);
+
+        if (isGroup) {
+            nameItem->setIcon(style()->standardIcon(QStyle::SP_DirIcon));
+            nameItem->setToolTip(tr("Group / Folder"));
+        } else {
+            nameItem->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+            nameItem->setToolTip(tr("Raster Layer"));
+        }
+
+        auto *visItem = new QStandardItem();
+        visItem->setEditable(false);
+        visItem->setCheckable(true);
+        visItem->setCheckState(visible ? Qt::Checked : Qt::Unchecked);
+        visItem->setText(visible ? tr("Visible") : tr("Hidden"));
+
+        auto *maskItem = new QStandardItem();
+        maskItem->setEditable(false);
+        if (hasMask) {
+            maskItem->setCheckable(true);
+            maskItem->setCheckState(maskEnabled ? Qt::Checked : Qt::Unchecked);
+            maskItem->setText(maskEnabled ? tr("Mask: On") : tr("Mask: Off"));
+            maskItem->setToolTip(maskEnabled ? tr("Raster mask active") : tr("Raster mask disabled"));
+        } else {
+            maskItem->setCheckable(false);
+            maskItem->setText(QStringLiteral("—"));
+            maskItem->setEnabled(false);
+        }
+
+        LayerNode node;
+        node.items = {nameItem, visItem, maskItem};
+        node.id = id;
+        node.parentId = parentId;
+        node.isGroup = isGroup;
+        node.hasMask = hasMask;
+        node.maskEnabled = maskEnabled;
+        node.visible = visible;
+        node.opacity = opacity;
+
+        nodeMap.insert(id, node);
+        order.append(id);
     }
-    if (selected >= 0) {
-        m_layers->setCurrentRow(selected);
-        if (selected < layers.size()) {
-            const QJsonObject active = layers.at(selected).toObject();
-            m_opacity->setValue(qRound(active.value("opacity").toDouble(1) * 100));
-            m_visibleCheck->setChecked(active.value("visible").toBool(true));
-            m_maskCheck->setEnabled(active.value("hasMask").toBool(false));
-            m_maskCheck->setChecked(active.value("hasMask").toBool(false) && active.value("maskEnabled").toBool(true));
+
+    QModelIndex selectedIndex;
+    QJsonObject activeLayerObj;
+
+    for (const QString &id : order) {
+        const LayerNode &node = nodeMap[id];
+        if (!node.parentId.isEmpty() && nodeMap.contains(node.parentId)) {
+            QStandardItem *parentItem = nodeMap[node.parentId].items.at(0);
+            parentItem->appendRow(node.items);
+        } else {
+            m_layerModel->invisibleRootItem()->appendRow(node.items);
+        }
+
+        if (id == active) {
+            selectedIndex = node.items.at(0)->index();
+            activeLayerObj.insert("opacity", node.opacity);
+            activeLayerObj.insert("visible", node.visible);
+            activeLayerObj.insert("hasMask", node.hasMask);
+            activeLayerObj.insert("maskEnabled", node.maskEnabled);
         }
     }
+
+    m_layersView->expandAll();
+
+    if (selectedIndex.isValid()) {
+        m_layersView->setCurrentIndex(selectedIndex);
+        m_layersView->selectionModel()->select(selectedIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        m_layersView->scrollTo(selectedIndex);
+
+        m_opacity->setValue(qRound(activeLayerObj.value("opacity").toDouble(1.0) * 100));
+        m_visibleCheck->setChecked(activeLayerObj.value("visible").toBool(true));
+        m_maskCheck->setEnabled(activeLayerObj.value("hasMask").toBool(false));
+        m_maskCheck->setChecked(activeLayerObj.value("hasMask").toBool(false) && activeLayerObj.value("maskEnabled").toBool(true));
+    }
+
     m_syncingLayers = false;
 }
 
 void SessionWindow::selectLayerRow(int row) {
-    if (m_syncingLayers || row < 0 || !m_layers) return;
-    const QString id = m_layers->item(row)->data(Qt::UserRole).toString();
+    if (m_syncingLayers || row < 0 || !m_layerModel || !m_layersView) return;
+    if (row >= m_layerModel->rowCount()) return;
+    const QModelIndex idx = m_layerModel->index(row, 0);
+    if (!idx.isValid()) return;
+    const QString id = idx.data(Qt::UserRole).toString();
     const QByteArray json = QString(R"({"version":1,"action":"selectLayer","layerID":"%1"})").arg(id).toUtf8();
     if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
 }

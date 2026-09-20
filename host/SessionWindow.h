@@ -23,8 +23,9 @@
 #include <QPointF>
 #include <QJsonObject>
 
-class QListWidget;
-class QListWidgetItem;
+class QTreeView;
+class QStandardItemModel;
+class QStandardItem;
 class QSlider;
 class QComboBox;
 class QPushButton;
@@ -87,7 +88,8 @@ private:
     uint64_t m_sessionHandle = 0;
     bool m_painting = false;
     QString m_brushMode = "Paint";
-    QListWidget *m_layers = nullptr;
+    QTreeView *m_layersView = nullptr;
+    QStandardItemModel *m_layerModel = nullptr;
     QSlider *m_opacity = nullptr;
     QComboBox *m_blend = nullptr;
     QPushButton *m_brushColorButton = nullptr;
