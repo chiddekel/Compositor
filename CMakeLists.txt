@@ -166,18 +166,22 @@ target_link_libraries(CompositorCoreRef PUBLIC CompositorCoreAbi)
 # duplicate members from this project's own kernel archive, which stays in
 # the link line for its include path.
 
-if(COMPOSITOR_ENABLE_SKIA_GPU AND DEFINED ENV{FLATPAK_ID})
-    add_library(CompositorSkiaBridge STATIC linux/graphics/SkiaBridge.cpp)
-    target_include_directories(CompositorSkiaBridge
-        PUBLIC ${CMAKE_SOURCE_DIR}/include
-        PRIVATE ${Skia_INCLUDE_DIR})
-    target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB})
+find_package(Vulkan QUIET)
 
-    # Stage 0/5 DoD smoke: Raster surface round-trip + Vulkan loader check.
-    add_executable(test_skia_bridge tests/test_skia_bridge.cpp)
-    target_link_libraries(test_skia_bridge PRIVATE CompositorSkiaBridge)
-    add_test(NAME CompositorCore.SkiaBridge COMMAND test_skia_bridge)
+add_library(CompositorSkiaBridge STATIC linux/graphics/SkiaBridge.cpp)
+target_include_directories(CompositorSkiaBridge PUBLIC ${CMAKE_SOURCE_DIR}/include)
+if(DEFINED ENV{FLATPAK_ID} AND Skia_STATIC_LIB)
+    target_include_directories(CompositorSkiaBridge PRIVATE ${Skia_INCLUDE_DIR})
+    target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB})
 endif()
+if(Vulkan_FOUND)
+    target_link_libraries(CompositorSkiaBridge PUBLIC Vulkan::Vulkan)
+endif()
+
+# Stage 0/5 DoD smoke: Raster surface round-trip + Vulkan loader check.
+add_executable(test_skia_bridge tests/test_skia_bridge.cpp)
+target_link_libraries(test_skia_bridge PRIVATE CompositorSkiaBridge)
+add_test(NAME CompositorCore.SkiaBridge COMMAND test_skia_bridge)
 
 # Headless host journey test: open -> canonicalize -> filter -> save -> reopen.
 # Needs Qt6 (QImage codec); gated on Qt6_FOUND like the host app.
@@ -221,9 +225,7 @@ if(Qt6_FOUND)
         host/main.cpp
         host/MainWindow.cpp
         host/CanvasWidget.cpp
-        host/CanonicalBuffer.cpp
-        linux/ui/CanvasWidget.cpp
-        linux/ui/MainWindow.cpp)
+        host/CanonicalBuffer.cpp)
     # The host app is the ENG-2 composition root; the C kernels run in-process.
     # When the Swift static lib is linked it already embeds the kernel objects
     # (SwiftPM folds the C target into the library product), so it must come

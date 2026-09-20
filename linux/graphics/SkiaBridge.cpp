@@ -21,36 +21,42 @@
 #include <string.h>
 #include <iostream>
 
-// Include Skia headers — these exist only in the Flatpak /app layout.
-#ifdef __APPLE__
-// On macOS host we keep this file stubbed; the Flatpak build provides real Skia.
-#else
+// Include Skia headers — these exist in the Flatpak /app layout.
+#if defined(__has_include)
+#if __has_include(<skia/core/SkCanvas.h>)
+#define COMPOSITOR_HAS_SKIA 1
 #include <skia/core/SkCanvas.h>
 #include <skia/core/SkSurface.h>
 #include <skia/gpu/GrDirectContext.h>
 #include <skia/gpu/vk/GrVkBackendContext.h>
+#endif
+#if __has_include(<vulkan/vulkan.h>)
+#define COMPOSITOR_HAS_VULKAN 1
 #include <vulkan/vulkan.h>
+#endif
 #endif
 
 // ── CompRenderer ────────────────────────────────────────────────────────
 
 // Opaque handle owning one Skia backend context.
 struct CompRenderer {
-    // Raster backend: GrDirectContext for CPU-side rasterization.
-    // Vulkan backend: GrDirectContext wrapping a VkDevice + graphics queue.
+#if defined(COMPOSITOR_HAS_SKIA)
     class GrDirectContext* ctx = nullptr;
+#else
+    void* ctx = nullptr;
+#endif
 
-    // Vulkan-specific: device + queue + swapchain info.
+#if defined(COMPOSITOR_HAS_VULKAN)
     VkDevice vk_device = VK_NULL_HANDLE;
     VkQueue vk_queue = VK_NULL_HANDLE;
     VkFormat vk_format = VK_FORMAT_B8G8R8A8_UNORM;
+#endif
 
     // Raster-only: surface info (CPU-backed).
     bool is_raster = false;
 
-    // Constructor / destructor handled by create/close.
     CompRenderer() = default;
-    ~CompRenderer() { close(); }
+    ~CompRenderer() = default;
 };
 
 // ── Forward declarations ────────────────────────────────────────────────
@@ -77,20 +83,20 @@ CompRenderer *compositor_renderer_create(int force_raster, CompRendererKind *kin
 
     if (force_raster) {
         raster_device_create(r, 0, 0);
-        *kind_out = COMP_RENDERER_RASTER;
+        if (kind_out) *kind_out = COMP_RENDERER_RASTER;
         return r;
     }
 
     // Try Vulkan first.
     vulkan_device_create(r, force_raster);
     if (r->vk_device != VK_NULL_HANDLE) {
-        *kind_out = COMP_RENDERER_VULKAN;
+        if (kind_out) *kind_out = COMP_RENDERER_VULKAN;
         return r;
     }
 
     // Vulkan failed — fall back to Raster.
     raster_device_create(r, 0, 0);
-    *kind_out = COMP_RENDERER_RASTER;
+    if (kind_out) *kind_out = COMP_RENDERER_RASTER;
     return r;
 }
 
@@ -182,34 +188,33 @@ int compositor_skia_raster_surface(const uint8_t *src_rgba,
 // ── compositor_vulkan_enumerate_devices ────────────────────────────────
 
 int compositor_vulkan_enumerate_devices(void) {
-#ifdef __APPLE__
-    // Stub on macOS host.
-    return -1;
-#else
-    // Use the Vulkan loader to enumerate physical devices.
-    // Since we only have the loader available (no ICD bundled beyond the SDK),
-    // we call vkEnumeratePhysicalDevices with the instance from Skia's
-    // internal VkInstance if available, or return -1 if no ICD.
-    //
-    // Stage 0 DoD: "find the Vulkan loader and try to enumerate devices."
-    // If the Freedesktop Platform 26.08 ships with a compatible ICD (AMD/Intel
-    // Vulkan driver), this will return >= 1. On NVIDIA Flatpak or software
-    // rendering it may return 0 or -1.
-    //
-    // We deliberately do NOT create a VkDevice here — just enumerate.
+#if defined(COMPOSITOR_HAS_VULKAN)
+    VkApplicationInfo appInfo{};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "Compositor";
+    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_0;
+
+    VkInstanceCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+
     VkInstance instance = VK_NULL_HANDLE;
-    // Attempt to get a Vulkan instance — in practice the Flatpak SDK provides
-    // one via the layer/ICD chain. We use a minimal approach: just check if
-    // the loader is functional by trying to query device count.
-    //
-    // NOTE: This is a placeholder. A real implementation would create a
-    // Vulkan instance backed by the platform's ICD.
+    VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
+    if (res != VK_SUCCESS || instance == VK_NULL_HANDLE) {
+        return -1;
+    }
+
     uint32_t device_count = 0;
-    VkResult res = vkEnumeratePhysicalDevices(instance, &device_count);
-    if (res == VK_SUCCESS && device_count > 0) {
+    res = vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    vkDestroyInstance(instance, nullptr);
+
+    if (res == VK_SUCCESS) {
         return (int)device_count;
     }
-    return -1; // No ICD or loader unavailable
+    return -1;
+#else
+    return -1;
 #endif
 }
 
@@ -277,14 +282,15 @@ static void vulkan_device_create(CompRenderer* r, int force_raster) {
 }
 
 static void vulkan_device_destroy(CompRenderer* r) {
+#if defined(COMPOSITOR_HAS_VULKAN)
     if (r->vk_device != VK_NULL_HANDLE) {
         vkDestroyDevice(r->vk_device, nullptr);
         r->vk_device = VK_NULL_HANDLE;
     }
-    if (r->vk_queue != VK_NULL_HANDLE) {
-        vkDestroyQueue(r->vk_queue, nullptr);
-        r->vk_queue = VK_NULL_HANDLE;
-    }
+    r->vk_queue = VK_NULL_HANDLE;
+#else
+    (void)r;
+#endif
 }
 
 static int vulkan_render_rgba(CompRenderer* r,
