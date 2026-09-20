@@ -33,6 +33,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
+    app.setDesktopFileName("com.wonderassembly.Compositor");
 #if defined(COMPOSITOR_SKIA_BRIDGE)
     // Plan §6 startup: try Vulkan, fall back to Raster. The renderer backs
     // the Swift CGContextCompat shim; on any failure the Swift

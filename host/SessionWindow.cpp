@@ -10,6 +10,8 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QUrl>
 #include <QFileDialog>
 #include <QMenuBar>
@@ -151,15 +153,50 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     });
     edit->addSeparator();
     edit->addAction(tr("&Copy"), QKeySequence::Copy, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0) statusBar()->showMessage(tr("Copied selection."), 1500);
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0) {
+            if (!m_image.isNull()) {
+                QGuiApplication::clipboard()->setImage(m_image);
+            }
+            statusBar()->showMessage(tr("Copied to clipboard."), 1500);
+        }
     });
     edit->addAction(tr("Copy &Merged"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0) statusBar()->showMessage(tr("Copied merged selection."), 1500);
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0) {
+            if (!m_image.isNull()) {
+                QGuiApplication::clipboard()->setImage(m_image);
+            }
+            statusBar()->showMessage(tr("Copied merged to clipboard."), 1500);
+        }
     });
     edit->addAction(tr("Cu&t"), QKeySequence::Cut, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"cut"})") == 0) refreshImage();
     });
     edit->addAction(tr("&Paste"), QKeySequence::Paste, this, [this] {
+        const QClipboard *clipboard = QGuiApplication::clipboard();
+        const QMimeData *mime = clipboard ? clipboard->mimeData() : nullptr;
+        if (mime && mime->hasImage()) {
+            QImage img = qvariant_cast<QImage>(mime->imageData());
+            if (!img.isNull()) {
+                QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+                std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
+                const uint8_t *src = rgba.constBits();
+                for (size_t i = 0; i < premul.size(); i += 4) {
+                    uint8_t a = src[i + 3];
+                    premul[i] = (src[i] * a + 127) / 255;
+                    premul[i + 1] = (src[i + 1] * a + 127) / 255;
+                    premul[i + 2] = (src[i + 2] * a + 127) / 255;
+                    premul[i + 3] = a;
+                }
+                std::string name = "Pasted Layer";
+                if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
+                                                   rgba.width(), rgba.height(),
+                                                   reinterpret_cast<const uint8_t*>(name.data()), name.size(), 0) == 0) {
+                    refreshImage();
+                    refreshLayers();
+                    return;
+                }
+            }
+        }
         if (cmd(m_sessionHandle, R"({"version":1,"action":"paste"})") == 0) refreshImage();
     });
     edit->addAction(tr("Duplicate Layer"), this, [this] {
@@ -867,14 +904,41 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
 }
 
 void SessionWindow::dragEnterEvent(QDragEnterEvent *event) {
-    if (event->mimeData()->hasUrls()) event->acceptProposedAction();
+    if (event->mimeData()->hasUrls() || event->mimeData()->hasImage()) {
+        event->acceptProposedAction();
+    }
 }
 
 void SessionWindow::dropEvent(QDropEvent *event) {
-    for (const QUrl &url : event->mimeData()->urls()) {
-        if (url.isLocalFile() && importImage(url.toLocalFile())) {
-            event->acceptProposedAction();
-            return;
+    if (event->mimeData()->hasUrls()) {
+        for (const QUrl &url : event->mimeData()->urls()) {
+            if (url.isLocalFile() && importImage(url.toLocalFile())) {
+                event->acceptProposedAction();
+                return;
+            }
+        }
+    } else if (event->mimeData()->hasImage()) {
+        QImage img = qvariant_cast<QImage>(event->mimeData()->imageData());
+        if (!img.isNull()) {
+            QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+            std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
+            const uint8_t *src = rgba.constBits();
+            for (size_t i = 0; i < premul.size(); i += 4) {
+                uint8_t a = src[i + 3];
+                premul[i] = (src[i] * a + 127) / 255;
+                premul[i + 1] = (src[i + 1] * a + 127) / 255;
+                premul[i + 2] = (src[i + 2] * a + 127) / 255;
+                premul[i + 3] = a;
+            }
+            std::string name = "Dropped Layer";
+            if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
+                                               rgba.width(), rgba.height(),
+                                               reinterpret_cast<const uint8_t*>(name.data()), name.size(), 0) == 0) {
+                refreshImage();
+                refreshLayers();
+                event->acceptProposedAction();
+                return;
+            }
         }
     }
     event->ignore();
