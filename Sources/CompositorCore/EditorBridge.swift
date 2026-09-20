@@ -16,6 +16,7 @@ private struct EditorCommand: Decodable {
     var y: Double?
     var parameters: [String: Double]?
     var adjustment: LayerAdjustment?
+    var points: [[Double]]?
 }
 
 private struct EditorState: Encodable {
@@ -243,12 +244,50 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
         case "setMaskLinked":
             guard let linked = command.enabled else { throw EditorSession.Failure.invalidArgument }
             s.setLayerMaskLinked(linked)
+        case "moveLayer":
+            guard let dx = command.x, let dy = command.y, dx.isFinite, dy.isFinite else {
+                throw EditorSession.Failure.invalidArgument
+            }
+            try s.moveLayer(dx: CGFloat(dx), dy: CGFloat(dy))
         case "selectRectangle", "selectEllipse":
             let origin = try point()
             guard let width = command.width, let height = command.height,
                   (0...30_000).contains(width), (0...30_000).contains(height) else { throw EditorSession.Failure.invalidArgument }
             let rect = CGRect(origin: origin, size: CGSize(width: width, height: height))
             try s.setSelection(DocumentSelection(path: command.action == "selectEllipse" ? .ellipse(rect) : .rectangle(rect)))
+        case "selectLasso":
+            guard let ptList = command.points, ptList.count >= 3 else {
+                throw EditorSession.Failure.invalidArgument
+            }
+            let cgPoints = ptList.compactMap { arr -> CGPoint? in
+                guard arr.count == 2, arr[0].isFinite, arr[1].isFinite else { return nil }
+                return CGPoint(x: arr[0], y: arr[1])
+            }
+            guard cgPoints.count == ptList.count else { throw EditorSession.Failure.invalidArgument }
+            try s.setSelection(DocumentSelection(path: .polygon(cgPoints), antialiased: true))
+        case "magicWand":
+            let pt = try point()
+            var settings = WandSettings()
+            settings.tolerance = Int(number("tolerance", Double(settings.tolerance)))
+            settings.contiguous = number("contiguous", settings.contiguous ? 1 : 0) != 0
+            settings.sampleAllLayers = number("sampleAllLayers", settings.sampleAllLayers ? 1 : 0) != 0
+            let modeStr = command.kind ?? "New"
+            let mode = SelectionMode(rawValue: modeStr) ?? .replace
+            try s.magicWand(at: pt, settings: settings, mode: mode, antialiased: true)
+        case "distortBegin":
+            s.beginTransform()
+            s.beginDistort()
+        case "distortCommit":
+            guard let edit = s.transformEdit, let ptList = command.points, ptList.count == 4 else {
+                throw EditorSession.Failure.invalidArgument
+            }
+            let cgPoints = ptList.compactMap { arr -> CGPoint? in
+                guard arr.count == 2, arr[0].isFinite, arr[1].isFinite else { return nil }
+                return CGPoint(x: arr[0], y: arr[1])
+            }
+            guard cgPoints.count == 4 else { throw EditorSession.Failure.invalidArgument }
+            s.commitDistort(edit, corners: cgPoints)
+            s.transformEdit = nil
         case "brushBegin":
             var settings = BrushSettings()
             settings.diameter = number("diameter", 40)
@@ -256,7 +295,19 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
             settings.opacity = number("opacity", 1)
             settings.red = number("red", 0); settings.green = number("green", 0); settings.blue = number("blue", 0)
             settings.erasing = number("erasing", 0) != 0
-            try s.beginBrush(at: point(), settings: settings, mask: number("mask", 0) != 0)
+            settings.healing = number("healing", 0) != 0
+            if let healModeIdx = command.parameters?["healingMode"] {
+                let idx = Int(healModeIdx)
+                if (0..<SpotHealingMode.allCases.count).contains(idx) {
+                    settings.healingMode = SpotHealingMode.allCases[idx]
+                }
+            }
+            let cloneX = command.parameters?["cloneOffsetX"]
+            let cloneY = command.parameters?["cloneOffsetY"]
+            let cloneOffset = (cloneX != nil && cloneY != nil) ? CGSize(width: cloneX!, height: cloneY!) : nil
+            let sampleAll = number("sampleAllLayers", 0) != 0
+            try s.beginBrush(at: point(), settings: settings, mask: number("mask", 0) != 0,
+                             cloneOffset: cloneOffset, sampleAllLayers: sampleAll)
         case "brushMove": try s.continueBrush(at: point())
         case "brushEnd": try s.finishBrush()
         case "brushCancel": s.cancelBrush()

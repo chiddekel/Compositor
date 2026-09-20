@@ -397,4 +397,71 @@ final class SessionJourneyTests: XCTestCase {
         XCTAssertEqual(jsonBool(state(h), "busy"), false)
         compositorSessionClose(h)
     }
+
+    /// Stage 9: Complete Editing Tools Parity (Move, Marquee, Lasso, Magic Wand, Clone Stamp, Healing, Crop, Distort)
+    func testStage9EditingToolsJourney() throws {
+        let h = compositorSessionCreate()
+        XCTAssertNotEqual(h, 0)
+        defer { compositorSessionClose(h) }
+
+        // 1. Create 10x10 canvas and add a layer
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"new","width":10,"height":10}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addLayer"}"#), 0)
+
+        // 2. Paint initial pixel block
+        let paintCmd = #"{"version":1,"action":"brushBegin","x":2,"y":2,"parameters":{"diameter":3,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}}"#
+        XCTAssertEqual(cmd(h, paintCmd), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushMove","x":3,"y":3}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushEnd"}"#), 0)
+        XCTAssertEqual(jsonBool(state(h), "canUndo"), true)
+
+        // 3. Move Tool: moveLayer dx=2, dy=3
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"moveLayer","x":2,"y":3}"#), 0)
+        let st1 = state(h)
+        XCTAssertTrue(st1.contains("\"origin\":[2,3]"), "layer origin moved to [2,3]")
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"undo"}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"redo"}"#), 0)
+
+        // 4. Marquee Selection
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"selectRectangle","x":1,"y":1,"width":4,"height":4}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"deselect"}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"selectEllipse","x":2,"y":2,"width":5,"height":5}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"deselect"}"#), 0)
+
+        // 5. Lasso Selection (polygon)
+        let lassoCmd = #"{"version":1,"action":"selectLasso","points":[[1,1],[6,1],[6,6],[1,6]]}"#
+        XCTAssertEqual(cmd(h, lassoCmd), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"deselect"}"#), 0)
+
+        // 6. Magic Wand
+        let wandCmd = #"{"version":1,"action":"magicWand","x":3,"y":3,"kind":"New","parameters":{"tolerance":32,"contiguous":1,"sampleAllLayers":0}}"#
+        XCTAssertEqual(cmd(h, wandCmd), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"deselect"}"#), 0)
+
+        // 7. Clone Stamp (brushBegin with cloneOffsetX/Y)
+        let cloneCmd = #"{"version":1,"action":"brushBegin","x":5,"y":5,"parameters":{"diameter":3,"hardness":1,"opacity":1,"red":0,"green":0,"blue":0,"cloneOffsetX":-2,"cloneOffsetY":-2,"sampleAllLayers":0}}"#
+        XCTAssertEqual(cmd(h, cloneCmd), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushEnd"}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"undo"}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"redo"}"#), 0)
+
+        // 8. Spot Healing (brushBegin with healing: 1)
+        let healCmd = #"{"version":1,"action":"brushBegin","x":3,"y":3,"parameters":{"diameter":2,"hardness":1,"opacity":1,"red":0,"green":0,"blue":0,"healing":1,"healingMode":0}}"#
+        XCTAssertEqual(cmd(h, healCmd), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushEnd"}"#), 0)
+
+        // 9. Crop Canvas
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"cropCanvas","x":0,"y":0,"width":8,"height":8}"#), 0)
+        XCTAssertEqual(jsonInt(state(h), "width"), 8)
+        XCTAssertEqual(jsonInt(state(h), "height"), 8)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"undo"}"#), 0)
+        XCTAssertEqual(jsonInt(state(h), "width"), 10)
+        XCTAssertEqual(jsonInt(state(h), "height"), 10)
+
+        // 10. Distort
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"distortBegin"}"#), 0)
+        let distortCorners = #"{"version":1,"action":"distortCommit","points":[[1,1],[8,2],[7,8],[2,7]]}"#
+        XCTAssertEqual(cmd(h, distortCorners), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"undo"}"#), 0)
+    }
 }

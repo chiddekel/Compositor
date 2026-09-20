@@ -57,6 +57,22 @@ public:
     // same code path the mouse handlers use.
     void paintStroke(double x1, double y1, double x2, double y2);
 
+    enum class Tool {
+        Brush,
+        Eraser,
+        Move,
+        RectSelect,
+        EllipseSelect,
+        Lasso,
+        MagicWand,
+        CloneStamp,
+        SpotHealing,
+        Crop
+    };
+
+    void setTool(Tool tool);
+    Tool currentTool() const { return m_tool; }
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -87,6 +103,11 @@ private:
     QImage m_image;
     uint64_t m_sessionHandle = 0;
     bool m_painting = false;
+    Tool m_tool = Tool::Brush;
+    QPointF m_dragStart;
+    std::vector<QPointF> m_lassoPoints;
+    QPointF m_cloneSource = QPointF(0, 0);
+    bool m_hasCloneSource = false;
     QString m_brushMode = "Paint";
     QTreeView *m_layersView = nullptr;
     QStandardItemModel *m_layerModel = nullptr;

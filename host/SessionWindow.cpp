@@ -200,9 +200,31 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteMask"})") == 0) { refreshImage(); refreshLayers(); }
     });
     QMenu *tool = menuBar()->addMenu(tr("&Tool"));
-    tool->addAction(tr("Paint"), this, [this] { m_brushMode = "Paint"; });
-    tool->addAction(tr("Smudge"), this, [this] { m_brushMode = "Smudge"; });
-    tool->addAction(tr("Liquify"), this, [this] { m_brushMode = "Liquify"; });
+    auto *actMove = tool->addAction(tr("&Move Tool"), QKeySequence(Qt::Key_V), this, [this] { setTool(Tool::Move); });
+    actMove->setObjectName("tool.move");
+    auto *actBrush = tool->addAction(tr("&Brush"), QKeySequence(Qt::Key_B), this, [this] { setTool(Tool::Brush); });
+    actBrush->setObjectName("tool.brush");
+    auto *actEraser = tool->addAction(tr("&Eraser"), QKeySequence(Qt::Key_E), this, [this] { setTool(Tool::Eraser); });
+    actEraser->setObjectName("tool.eraser");
+    auto *actRect = tool->addAction(tr("&Rectangular Marquee"), QKeySequence(Qt::Key_M), this, [this] { setTool(Tool::RectSelect); });
+    actRect->setObjectName("tool.rectSelect");
+    auto *actEllipse = tool->addAction(tr("Elliptical &Marquee"), QKeySequence(Qt::SHIFT | Qt::Key_M), this, [this] { setTool(Tool::EllipseSelect); });
+    actEllipse->setObjectName("tool.ellipseSelect");
+    auto *actLasso = tool->addAction(tr("&Lasso"), QKeySequence(Qt::Key_L), this, [this] { setTool(Tool::Lasso); });
+    actLasso->setObjectName("tool.lasso");
+    auto *actWand = tool->addAction(tr("Magic &Wand"), QKeySequence(Qt::Key_W), this, [this] { setTool(Tool::MagicWand); });
+    actWand->setObjectName("tool.magicWand");
+    auto *actClone = tool->addAction(tr("&Clone Stamp"), QKeySequence(Qt::Key_S), this, [this] { setTool(Tool::CloneStamp); });
+    actClone->setObjectName("tool.cloneStamp");
+    auto *actHeal = tool->addAction(tr("Spot &Healing"), QKeySequence(Qt::Key_J), this, [this] { setTool(Tool::SpotHealing); });
+    actHeal->setObjectName("tool.spotHealing");
+    auto *actCrop = tool->addAction(tr("&Crop"), QKeySequence(Qt::Key_C), this, [this] { setTool(Tool::Crop); });
+    actCrop->setObjectName("tool.crop");
+
+    tool->addSeparator();
+    tool->addAction(tr("Paint"), this, [this] { m_brushMode = "Paint"; setTool(Tool::Brush); });
+    tool->addAction(tr("Smudge (Warp)"), this, [this] { m_brushMode = "Smudge"; setTool(Tool::Brush); });
+    tool->addAction(tr("Liquify (Warp)"), this, [this] { m_brushMode = "Liquify"; setTool(Tool::Brush); });
     QMenu *filter = menuBar()->addMenu(tr("&Filter"));
     for (const QString &kind : {QString("Gaussian Blur"), QString("Motion Blur"), QString("Add Noise"),
                                 QString("Lens Correction"), QString("Grain"), QString("Exposure")}) {
@@ -651,39 +673,193 @@ void SessionWindow::paintStroke(double x1, double y1, double x2, double y2) {
     if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(R"({"version":1,"action":"brushEnd"})"), std::strlen(R"({"version":1,"action":"brushEnd"})")) == 0) refreshImage();
 }
 
+void SessionWindow::setTool(Tool tool) {
+    m_tool = tool;
+    const char *names[] = {
+        "Brush", "Eraser", "Move", "Rect Marquee", "Ellipse Marquee",
+        "Lasso", "Magic Wand", "Clone Stamp", "Spot Healing", "Crop"
+    };
+    if (statusBar()) {
+        statusBar()->showMessage(tr("Tool: %1").arg(tr(names[static_cast<int>(tool)])), 2000);
+    }
+}
+
 void SessionWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || m_painting) return;
     const QPointF point = documentPoint(event->position());
-    const bool warp = m_brushMode != "Paint";
-    const QString json = warp
-        ? QString(R"({"version":1,"action":"warpBegin","kind":"%1","x":%2,"y":%3,"parameters":{"diameter":%4,"hardness":%5,"opacity":1}})").arg(m_brushMode).arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3)
-        : QString(R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":%6,"green":%7,"blue":%8,"erasing":0,"mask":0}})")
-        .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-        .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
-        .arg(m_brushColor.redF(), 0, 'f', 4).arg(m_brushColor.greenF(), 0, 'f', 4).arg(m_brushColor.blueF(), 0, 'f', 4);
-    const QByteArray bytes = json.toUtf8();
-    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+    m_dragStart = point;
+
+    switch (m_tool) {
+    case Tool::Move:
+    case Tool::RectSelect:
+    case Tool::EllipseSelect:
+    case Tool::Crop:
         m_painting = true;
-        refreshImage();
+        break;
+    case Tool::Lasso:
+        m_lassoPoints.clear();
+        m_lassoPoints.push_back(point);
+        m_painting = true;
+        break;
+    case Tool::MagicWand: {
+        const QString json = QString(R"({"version":1,"action":"magicWand","x":%1,"y":%2,"kind":"New","parameters":{"tolerance":32,"contiguous":1,"sampleAllLayers":0}})")
+            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
+        const QByteArray bytes = json.toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+            refreshImage();
+        }
+        break;
+    }
+    case Tool::CloneStamp: {
+        if (event->modifiers() & Qt::AltModifier) {
+            m_cloneSource = point;
+            m_hasCloneSource = true;
+            statusBar()->showMessage(tr("Clone Stamp source set to (%1, %2)").arg(qRound(point.x())).arg(qRound(point.y())), 2000);
+            return;
+        }
+        const double offX = m_hasCloneSource ? (m_cloneSource.x() - point.x()) : 0;
+        const double offY = m_hasCloneSource ? (m_cloneSource.y() - point.y()) : 0;
+        const QString json = QString(
+            R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":0,"green":0,"blue":0,"cloneOffsetX":%6,"cloneOffsetY":%7,"sampleAllLayers":0}})")
+            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
+            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
+            .arg(offX, 0, 'f', 4).arg(offY, 0, 'f', 4);
+        const QByteArray bytes = json.toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+            m_painting = true;
+            refreshImage();
+        }
+        break;
+    }
+    case Tool::SpotHealing: {
+        const QString json = QString(
+            R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":0,"green":0,"blue":0,"healing":1,"healingMode":0}})")
+            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
+            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3);
+        const QByteArray bytes = json.toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+            m_painting = true;
+            refreshImage();
+        }
+        break;
+    }
+    case Tool::Eraser:
+    case Tool::Brush: {
+        const bool warp = m_brushMode != "Paint";
+        const int erasing = (m_tool == Tool::Eraser) ? 1 : 0;
+        const QString json = warp
+            ? QString(R"({"version":1,"action":"warpBegin","kind":"%1","x":%2,"y":%3,"parameters":{"diameter":%4,"hardness":%5,"opacity":1}})")
+                .arg(m_brushMode).arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3)
+            : QString(R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":%6,"green":%7,"blue":%8,"erasing":%9,"mask":0}})")
+                .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
+                .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
+                .arg(m_brushColor.redF(), 0, 'f', 4).arg(m_brushColor.greenF(), 0, 'f', 4).arg(m_brushColor.blueF(), 0, 'f', 4).arg(erasing);
+        const QByteArray bytes = json.toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+            m_painting = true;
+            refreshImage();
+        }
+        break;
+    }
     }
 }
 
 void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
     if (!m_painting) return;
     const QPointF point = documentPoint(event->position());
-    const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3})")
-        .arg(m_brushMode == "Paint" ? "brushMove" : "warpMove")
-        .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
-    const QByteArray bytes = json.toUtf8();
-    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) refreshImage();
+    if (m_tool == Tool::Lasso) {
+        m_lassoPoints.push_back(point);
+    } else if (m_tool == Tool::Brush || m_tool == Tool::Eraser || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing) {
+        const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3})")
+            .arg(m_brushMode == "Paint" ? "brushMove" : "warpMove")
+            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
+        const QByteArray bytes = json.toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) refreshImage();
+    }
 }
 
 void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || !m_painting) return;
     m_painting = false;
-    const char *action = m_brushMode == "Paint" ? "brushEnd" : "warpEnd";
-    const QByteArray json = QString(R"({"version":1,"action":"%1"})").arg(action).toUtf8();
-    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
+    const QPointF point = documentPoint(event->position());
+
+    switch (m_tool) {
+    case Tool::Move: {
+        const double dx = point.x() - m_dragStart.x();
+        const double dy = point.y() - m_dragStart.y();
+        if (std::abs(dx) >= 0.5 || std::abs(dy) >= 0.5) {
+            const QString json = QString(R"({"version":1,"action":"moveLayer","x":%1,"y":%2})")
+                .arg(dx, 0, 'f', 2).arg(dy, 0, 'f', 2);
+            const QByteArray bytes = json.toUtf8();
+            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+                refreshImage();
+                refreshLayers();
+            }
+        }
+        break;
+    }
+    case Tool::RectSelect:
+    case Tool::EllipseSelect: {
+        const double x = std::min(m_dragStart.x(), point.x());
+        const double y = std::min(m_dragStart.y(), point.y());
+        const int w = qRound(std::abs(point.x() - m_dragStart.x()));
+        const int h = qRound(std::abs(point.y() - m_dragStart.y()));
+        if (w > 0 && h > 0) {
+            const char *action = (m_tool == Tool::RectSelect) ? "selectRectangle" : "selectEllipse";
+            const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3,"width":%4,"height":%5})")
+                .arg(action).arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h);
+            const QByteArray bytes = json.toUtf8();
+            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+                refreshImage();
+            }
+        }
+        break;
+    }
+    case Tool::Crop: {
+        const double x = std::max(0.0, std::min(m_dragStart.x(), point.x()));
+        const double y = std::max(0.0, std::min(m_dragStart.y(), point.y()));
+        const int w = qRound(std::abs(point.x() - m_dragStart.x()));
+        const int h = qRound(std::abs(point.y() - m_dragStart.y()));
+        if (w > 0 && h > 0) {
+            const QString json = QString(R"({"version":1,"action":"cropCanvas","x":%1,"y":%2,"width":%3,"height":%4})")
+                .arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h);
+            const QByteArray bytes = json.toUtf8();
+            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+                refreshImage();
+            }
+        }
+        break;
+    }
+    case Tool::Lasso: {
+        m_lassoPoints.push_back(point);
+        if (m_lassoPoints.size() >= 3) {
+            QString pts = "[";
+            for (size_t i = 0; i < m_lassoPoints.size(); ++i) {
+                if (i > 0) pts += ",";
+                pts += QString("[%1,%2]").arg(m_lassoPoints[i].x(), 0, 'f', 2).arg(m_lassoPoints[i].y(), 0, 'f', 2);
+            }
+            pts += "]";
+            const QString json = QString(R"({"version":1,"action":"selectLasso","points":%1})").arg(pts);
+            const QByteArray bytes = json.toUtf8();
+            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+                refreshImage();
+            }
+        }
+        m_lassoPoints.clear();
+        break;
+    }
+    case Tool::Brush:
+    case Tool::Eraser:
+    case Tool::CloneStamp:
+    case Tool::SpotHealing: {
+        const char *action = m_brushMode == "Paint" ? "brushEnd" : "warpEnd";
+        const QByteArray json = QString(R"({"version":1,"action":"%1"})").arg(action).toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
+        break;
+    }
+    case Tool::MagicWand:
+        break;
+    }
 }
 
 void SessionWindow::dragEnterEvent(QDragEnterEvent *event) {

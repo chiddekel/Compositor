@@ -363,7 +363,17 @@ func importImage(_ pixels: PortableImage, name: String, replacing: Bool) throws 
         try edit("Selection") { $0.selection = selection }
     }
 
-    func beginBrush(at point: CGPoint, settings: BrushSettings, mask: Bool = false) throws {
+    func moveLayer(dx: CGFloat, dy: CGFloat) throws {
+        try requireIdle()
+        guard let layer = activeLayer else { throw Failure.noLayer }
+        var t = layer.transform
+        t.origin.x += dx
+        t.origin.y += dy
+        try updateLayer(transform: t)
+    }
+
+    func beginBrush(at point: CGPoint, settings: BrushSettings, mask: Bool = false,
+                    cloneOffset: CGSize? = nil, sampleAllLayers: Bool = false) throws {
         try requireIdle()
         guard let doc = document, let layer = activeLayer, layer.isVisible, !layer.isGroup, layer.adjustment == nil,
               !mask || layer.mask != nil else { throw Failure.noLayer }
@@ -371,6 +381,14 @@ func importImage(_ pixels: PortableImage, name: String, replacing: Bool) throws 
               [settings.red, settings.green, settings.blue].allSatisfy({ (0...1).contains($0) }) else { throw Failure.invalidArgument }
         let stroke = try BrushStroke(layer: layer, mask: mask, settings: settings, canvas: doc.size, coverageComputer: coverageFactory())
         stroke.selectionClip = doc.selection?.clip(canvas: doc.size)
+        if let offset = cloneOffset {
+            let sampleImage: PortableImage? = sampleAllLayers
+                ? (try? DocumentRenderer(doc).render())
+                : (layer.asset?.image.pixels)
+            if let sampleImage {
+                stroke.clone = (image: sampleImage, offset: offset)
+            }
+        }
         try stroke.append(point)
         brushStroke = stroke
     }
@@ -422,6 +440,7 @@ func importImage(_ pixels: PortableImage, name: String, replacing: Bool) throws 
               let index = doc.layers.firstIndex(where: { $0.id == stroke.layer.id }) else { throw Failure.busy }
         defer { brushStroke = nil }
         try stroke.flush()
+        if stroke.settings.healing { try stroke.heal() }
         guard !stroke.patches.isEmpty else { return }
         let result = try stroke.paintSnapshot()
         guard result.transform.isValid else { throw ProjectError.invalid }
@@ -439,7 +458,8 @@ func importImage(_ pixels: PortableImage, name: String, replacing: Bool) throws 
             layer.transform = result.transform
             layer.shape = nil
         }
-        history.begin(stroke.isMask ? "Paint Mask" : stroke.settings.erasing ? "Erase" : "Brush Stroke", document: document, selection: activeLayerID)
+        let actionName = stroke.isMask ? "Paint Mask" : stroke.settings.erasing ? "Erase" : stroke.settings.healing ? "Spot Healing" : stroke.clone != nil ? "Clone Stamp" : "Brush Stroke"
+        history.begin(actionName, document: document, selection: activeLayerID)
         doc.layers[index] = layer
         document = doc
         history.end(document: doc, selection: activeLayerID)
