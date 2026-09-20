@@ -25,10 +25,22 @@
 #include "compositor_host_run.h"
 #include "SessionWindow.h"
 
+#if defined(COMPOSITOR_SKIA_BRIDGE)
+#include "SkiaBridge.h"
+#endif
+
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
+#if defined(COMPOSITOR_SKIA_BRIDGE)
+    // Plan §6 startup: try Vulkan, fall back to Raster. The renderer backs
+    // the Swift CGContextCompat shim; on any failure the Swift
+    // DocumentRenderer remains the ultimate fallback.
+    CompRendererKind kind = COMP_RENDERER_RASTER;
+    CompRenderer *renderer = compositor_renderer_create(0, &kind);
+    if (renderer) compositor_renderer_activate(renderer);
+#endif
     // SessionWindow (moc'd Q_OBJECT) drives the Swift core via compositor_session_*
     // and paints the composited RGBA — the architecture the Flatpak build ships.
     // The richer MainWindow (C-kernels Qt shell) is the C++-only build path's window.

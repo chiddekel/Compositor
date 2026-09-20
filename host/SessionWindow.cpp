@@ -382,6 +382,7 @@ void SessionWindow::refreshLayers() {
         const QString id = layer.value("id").toString();
         const QString name = layer.value("name").toString();
         auto *item = new QListWidgetItem(layer.value("isGroup").toBool() ? "[Folder] " + name : name, m_layers);
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
         item->setData(Qt::UserRole, id);
         if (id == active) selected = i;
     }
