@@ -17,7 +17,7 @@ runtime: org.kde.Platform
 runtime-version: '6.11'
 sdk: org.kde.Sdk
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.swift6//26.08
+  - org.freedesktop.Sdk.Extension.swift6
 
 # The app command is the Swift `@main` composition root (CompositorHostBootstrap),
 # NOT the C++ `compositor` target. A C++ main cannot bootstrap the Swift runtime

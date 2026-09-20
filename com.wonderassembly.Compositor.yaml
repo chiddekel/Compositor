@@ -31,7 +31,7 @@ sdk: org.kde.Sdk
 # extends Freedesktop 26.08, so the matching extension branch is 26.08
 # (provides Swift 6.3.3).
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.swift6//26.08
+  - org.freedesktop.Sdk.Extension.swift6
 
 command: compositor
 
