@@ -24,7 +24,7 @@ struct CompositorApp: App {
                 CommandGroup(replacing: .undoRedo) {
                     // Dialog text fields keep native text undo; document history
                     // is unavailable while an import or modal edit is active.
-                    if session.levels != nil || session.isProjectBusy || session.showsNewDocument || session.showsImporter || session.renamingLayerID != nil || session.transformEdit?.persistent == true {
+                    if session.textDraft != nil || session.levels != nil || session.isProjectBusy || session.showsNewDocument || session.showsImporter || session.renamingLayerID != nil || session.transformEdit?.persistent == true {
                         Button("Undo") {
                             if NSApp.keyWindow?.firstResponder is NSTextView {
                                 NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
@@ -168,14 +168,19 @@ struct CompositorApp: App {
                         if let id = session.activeLayerID { session.loadLayerSelection(layerID: id) }
                     }
                         .disabled(session.activeLayer?.asset == nil || !session.canEditSelection)
+                    Button("Subject") { Task { await session.selectSubject() } }
+                        .keyboardShortcut("a", modifiers: [.command, .option])
+                        .disabled(!session.canSelectSubject)
                     Button("Mask's Black Areas") {
                         if let id = session.activeLayerID { session.loadMaskSelection(layerID: id) }
                     }
                         .disabled(session.activeLayer?.mask == nil || !session.canEditSelection)
                     Divider()
-                    Button("Expand by \(session.selectionExpandAmount) px") { session.expandSelection(by: session.selectionExpandAmount) }
+                    Button("Expand…") { session.promptSelectionAmount(.expand) }
                         .disabled(!session.canModifySelection)
-                    Button("Contract by \(session.selectionContractAmount) px") { session.contractSelection(by: session.selectionContractAmount) }
+                    Button("Contract…") { session.promptSelectionAmount(.contract) }
+                        .disabled(!session.canModifySelection)
+                    Button("Feather…") { session.promptSelectionAmount(.feather) }
                         .disabled(!session.canModifySelection)
                 }
                 CommandMenu("Image") {
@@ -260,7 +265,7 @@ struct CompositorApp: App {
                             .disabled(!session.canTransform)
                     }
                     Divider()
-                    Button(session.isMaskSelected && session.activeLayer?.mask != nil ? "Delete Layer Mask" : session.selectedLayerIDs.count > 1 ? "Delete Layers" : "Delete Layer") {
+                    Button(session.selectedEffect != nil ? "Delete " + session.selectedEffect!.kind.rawValue : session.isMaskSelected && session.activeLayer?.mask != nil ? "Delete Layer Mask" : session.selectedLayerIDs.count > 1 ? "Delete Layers" : "Delete Layer") {
                         session.deleteLayerOrMask()
                     }
                         .disabled(!session.canEditLayers || session.activeLayer == nil)

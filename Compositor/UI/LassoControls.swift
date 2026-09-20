@@ -46,6 +46,19 @@ struct LassoControls: View {
             modifyControl("Contract", amount: $session.selectionContractAmount) {
                 session.contractSelection(by: session.selectionContractAmount)
             }
+            // Softens the selection's edge, as Select → Feather does.
+            HStack(spacing: 5) {
+                Button("Feather") { session.featherSelection(by: session.selectionFeatherAmount) }
+                    .disabled(!session.canModifySelection)
+                    .help("Fade the edge of the selection by this many pixels")
+                TextField("Feather", value: Binding(get: { Double(session.selectionFeatherAmount) },
+                                                    set: { session.selectionFeatherAmount = $0.isFinite ? Int(min(250, max(1, $0))) : 2 }),
+                          format: .number.precision(.fractionLength(0)))
+                    .frame(width: 48).textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing)
+                    .arrowSteps(value: { Double(session.selectionFeatherAmount) },
+                                change: { session.selectionFeatherAmount = Int(min(250, max(1, $0))) })
+                    .unitSuffix("px")
+            }
             Spacer(minLength: 0)
             if let selection = session.selection {
                 if selection.isEmpty { Text("Empty selection").foregroundStyle(.secondary) }
@@ -88,7 +101,7 @@ struct LassoControls: View {
 
     /// A button plus its pixel amount (1–500, default 1); both disabled without a selection.
     private func modifyControl(_ title: String, amount: Binding<Int>, action: @escaping () -> Void) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Button(title, action: action)
             TextField(title, value: Binding(get: { amount.wrappedValue },
                                             set: { amount.wrappedValue = min(500, max(1, $0)) }),
@@ -124,5 +137,63 @@ struct PolygonalLassoToolIcon: View {
             for part in [loop, knot, rope] { context.stroke(part, with: .foreground, style: style) }
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// Selection modifiers share the filter panels' floating window and control layout.
+struct SelectionAmountSheet: View {
+    let session: EditorSession
+    let operation: EditorSession.SelectionAmountOperation
+    @State private var input: String
+    @FocusState private var focused: Bool
+
+    init(session: EditorSession, operation: EditorSession.SelectionAmountOperation) {
+        self.session = session
+        self.operation = operation
+        let amount: Int
+        switch operation {
+        case .expand: amount = session.selectionExpandAmount
+        case .contract: amount = session.selectionContractAmount
+        case .feather: amount = session.selectionFeatherAmount
+        }
+        _input = State(initialValue: String(amount))
+    }
+
+    private var maximum: Int { operation == .feather ? 250 : 500 }
+    private var amount: Int? {
+        guard let value = Int(input.trimmingCharacters(in: .whitespacesAndNewlines)),
+              (1...maximum).contains(value) else { return nil }
+        return value
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Text("Amount").frame(minWidth: 60, alignment: .leading)
+                Slider(value: Binding(get: { Double(amount ?? 1) },
+                                      set: { input = String(Int($0.rounded())) }),
+                       in: 1...Double(maximum), step: 1)
+                TextField("Amount", text: $input)
+                    .frame(width: 56).textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing).focused($focused)
+                    .unitSuffix("px")
+            }
+            Text("Enter a whole number from 1 to \(maximum) px.")
+                .font(.callout).foregroundStyle(.secondary)
+                .opacity(amount == nil ? 1 : 0)
+            Divider()
+            HStack {
+                Button("Cancel") { session.selectionAmountOperation = nil }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("OK") {
+                    if let amount { session.confirmSelectionAmount(amount) }
+                }
+                .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                .disabled(amount == nil)
+            }
+        }
+        .padding(24).frame(width: 380).fixedSize()
+        .onAppear { focused = true }
     }
 }

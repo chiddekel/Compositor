@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 nonisolated enum LayerBlendMode: String, Codable, CaseIterable, Sendable {
-    case normal = "Normal", multiply = "Multiply", screen = "Screen", overlay = "Overlay"
+    case normal = "Normal", multiply = "Multiply", screen = "Screen", overlay = "Overlay", softLight = "Soft Light"
     case darken = "Darken", lighten = "Lighten", difference = "Difference"
     case colorDodge = "Color Dodge", colorBurn = "Color Burn"
     case hue = "Hue", saturation = "Saturation", color = "Color", luminosity = "Luminosity"
@@ -12,6 +12,7 @@ nonisolated enum LayerBlendMode: String, Codable, CaseIterable, Sendable {
         case .multiply: .multiply
         case .screen: .screen
         case .overlay: .overlay
+        case .softLight: .softLight
         case .darken: .darken
         case .lighten: .lighten
         case .difference: .difference

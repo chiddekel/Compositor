@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 
 /// A document-space selection outline, clipped to the canvas. `nil` on the document
 /// means no selection; a selection whose path is empty is an explicit empty selection,
@@ -6,6 +7,8 @@ import AppKit
 nonisolated struct DocumentSelection: Equatable, @unchecked Sendable {
     let path: CGPath
     var antialiased = true
+    /// How far the edge fades, in document pixels. 0 is a hard edge.
+    var feather: CGFloat = 0
     var isEmpty: Bool { path.isEmpty || path.boundingBoxOfPath.isNull || path.boundingBoxOfPath.isEmpty }
 
     /// Grayscale coverage at document resolution (white = selected), top-left origin.
@@ -13,30 +16,34 @@ nonisolated struct DocumentSelection: Equatable, @unchecked Sendable {
         let context = try BrushRaster.context(width: width, height: height, mask: true)
         context.setFillColor(gray: 0, alpha: 1)
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        context.setShouldAntialias(antialiased)
+        context.setShouldAntialias(antialiased || feather > 0)
         context.setFillColor(gray: 1, alpha: 1)
         context.addPath(path)
         context.fillPath(using: .winding)
         guard let image = context.makeImage() else { throw ExportError.render }
-        return image
+        guard feather > 0 else { return image }
+        // A feathered edge fades either side of the outline, as Photoshop's does.
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        let soft = CIImage(cgImage: image).clampedToExtent().applyingGaussianBlur(sigma: feather / 2).cropped(to: extent)
+        return try PixelAdjust.render(soft, width: width, height: height, isMask: true)
     }
 }
 
 extension DocumentSelection {
+    /// Four Gaussian standard deviations retain the visible falloff outside the outline.
+    var coverageBounds: CGRect {
+        path.boundingBoxOfPath.insetBy(dx: -ceil(feather * 2), dy: -ceil(feather * 2))
+    }
+
     /// Coverage for just the selected region of the canvas, ready to clip edits.
     func clip(canvas size: CGSize) throws -> SelectionClip {
-        let region = path.boundingBoxOfPath.insetBy(dx: -1, dy: -1).integral
+        let region = coverageBounds.insetBy(dx: -1, dy: -1).integral
             .intersection(CGRect(origin: .zero, size: size))
         guard !isEmpty, !region.isNull, region.width >= 1, region.height >= 1 else { return SelectionClip(rect: .zero, coverage: nil) }
-        let context = try BrushRaster.context(width: Int(region.width), height: Int(region.height), mask: true)
-        context.setFillColor(gray: 0, alpha: 1)
-        context.fill(CGRect(origin: .zero, size: region.size))
-        context.translateBy(x: -region.minX, y: -region.minY)
-        context.setShouldAntialias(antialiased)
-        context.setFillColor(gray: 1, alpha: 1)
-        context.addPath(path)
-        context.fillPath(using: .winding)
-        guard let image = context.makeImage() else { throw ExportError.render }
+        var translation = CGAffineTransform(translationX: -region.minX, y: -region.minY)
+        guard let localPath = path.copy(using: &translation) else { throw ExportError.render }
+        let local = DocumentSelection(path: localPath, antialiased: antialiased, feather: feather)
+        let image = try local.coverage(width: Int(region.width), height: Int(region.height))
         return SelectionClip(rect: region, coverage: image)
     }
 }
@@ -254,7 +261,7 @@ extension EditorSession {
         guard let origin = selectionMoveOrigin else { return }
         var shift = CGAffineTransform(translationX: offset.width.rounded(), y: offset.height.rounded())
         guard let path = origin.path.copy(using: &shift) else { return }
-        document?.selection = DocumentSelection(path: path, antialiased: origin.antialiased)
+        document?.selection = DocumentSelection(path: path, antialiased: origin.antialiased, feather: origin.feather)
     }
 
     func endSelectionMove() {
@@ -273,12 +280,43 @@ extension EditorSession {
     /// Expand / Contract need a non-empty selection to work on.
     var canModifySelection: Bool { selection?.isEmpty == false && canEditSelection && lassoDraft == nil }
 
+    enum SelectionAmountOperation: String {
+        case expand = "Expand", contract = "Contract", feather = "Feather"
+    }
+
+    /// Menu commands ask for an amount; the tool header applies its input directly.
+    func promptSelectionAmount(_ operation: SelectionAmountOperation) {
+        guard canModifySelection else { return }
+        selectionAmountOperation = operation
+    }
+
+    func confirmSelectionAmount(_ amount: Int) {
+        guard let operation = selectionAmountOperation,
+              (1...(operation == .feather ? 250 : 500)).contains(amount) else { return }
+        selectionAmountOperation = nil
+        switch operation {
+        case .expand: selectionExpandAmount = amount; expandSelection(by: amount)
+        case .contract: selectionContractAmount = amount; contractSelection(by: amount)
+        case .feather: selectionFeatherAmount = amount; featherSelection(by: amount)
+        }
+    }
+
     /// Grows the outline by `amount` pixels with rounded corners (Photoshop's Expand), clipped to the canvas.
     func expandSelection(by amount: Int) { resizeSelection(by: CGFloat(amount), name: "Expand Selection") }
 
     /// Shrinks the outline by `amount` pixels, including away from the canvas edges.
     /// Contracting past the middle leaves an explicit empty selection.
     func contractSelection(by amount: Int) { resizeSelection(by: -CGFloat(amount), name: "Contract Selection") }
+
+    /// Softens the current selection's edge by `amount` pixels, as Select → Modify → Feather does. Applying it
+    /// again softens further, the way Expand and Contract stack up.
+    func featherSelection(by amount: Int) {
+        guard canModifySelection, let current = selection, amount > 0 else { return }
+        // Two soft edges together spread a little less than their sum, as blurs do.
+        let softened = (current.feather * current.feather + CGFloat(amount) * CGFloat(amount)).squareRoot()
+        setSelection(DocumentSelection(path: current.path, antialiased: current.antialiased,
+                                       feather: min(250, softened)), name: "Feather Selection")
+    }
 
     private func resizeSelection(by delta: CGFloat, name: String) {
         guard let document, let current = selection, canModifySelection, delta != 0, abs(delta) <= 500 else { return }
@@ -288,7 +326,7 @@ extension EditorSession {
             ? current.path.union(band, using: .winding)
                 .intersection(CGPath(rect: CGRect(origin: .zero, size: document.size), transform: nil), using: .winding)
             : current.path.subtracting(band, using: .winding)
-        setSelection(DocumentSelection(path: result, antialiased: current.antialiased), name: name)
+        setSelection(DocumentSelection(path: result, antialiased: current.antialiased, feather: current.feather), name: name)
     }
 
     func selectAll() {
@@ -304,7 +342,7 @@ extension EditorSession {
     func invertSelection() {
         guard let document, let current = selection else { return }
         let canvas = CGPath(rect: CGRect(origin: .zero, size: document.size), transform: nil)
-        setSelection(DocumentSelection(path: canvas.subtracting(current.path, using: .winding), antialiased: current.antialiased),
+        setSelection(DocumentSelection(path: canvas.subtracting(current.path, using: .winding), antialiased: current.antialiased, feather: current.feather),
                      name: "Inverse")
     }
 }
