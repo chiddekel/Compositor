@@ -183,6 +183,18 @@ add_executable(test_skia_bridge tests/test_skia_bridge.cpp)
 target_link_libraries(test_skia_bridge PRIVATE CompositorSkiaBridge)
 add_test(NAME CompositorCore.SkiaBridge COMMAND test_skia_bridge)
 
+# Stage 10: Selected OpenCV Operations / Inpainting / Guided Filter bridge
+add_library(CompositorOpenCVBridge STATIC linux/graphics/OpenCVBridge.cpp)
+target_include_directories(CompositorOpenCVBridge PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/Compositor/Rendering)
+target_link_libraries(CompositorOpenCVBridge PUBLIC CompositorKernels)
+if(OpenCV_FOUND)
+    target_link_libraries(CompositorOpenCVBridge PUBLIC ${OpenCV_LIBS})
+endif()
+
+add_executable(test_opencv_bridge tests/test_opencv_bridge.cpp)
+target_link_libraries(test_opencv_bridge PRIVATE CompositorOpenCVBridge)
+add_test(NAME CompositorCore.OpenCVBridge COMMAND test_opencv_bridge)
+
 # Headless host journey test: open -> canonicalize -> filter -> save -> reopen.
 # Needs Qt6 (QImage codec); gated on Qt6_FOUND like the host app.
 if(Qt6_FOUND)

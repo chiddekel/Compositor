@@ -345,6 +345,9 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
             try s.finishAdjustmentEditing(commit: true)
         case "adjustmentCancel":
             try s.finishAdjustmentEditing(commit: false)
+        case "contentFill":
+            try s.beginFilter(.contentAwareFill, settings: filterSettings())
+            try s.commitFilter()
         default: entry.error = "Unknown command: \(command.action)"; return -1
         }
         entry.error = nil

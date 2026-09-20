@@ -165,6 +165,10 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     edit->addAction(tr("Duplicate Layer"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"duplicateLayer"})") == 0) { refreshImage(); refreshLayers(); }
     });
+    edit->addSeparator();
+    edit->addAction(tr("Content-Aware &Fill"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"contentFill"})") == 0) refreshImage();
+    })->setObjectName("edit.contentFill");
     QMenu *layer = menuBar()->addMenu(tr("&Layer"));
     layer->addAction(tr("&New Layer"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) { refreshImage(); refreshLayers(); }
