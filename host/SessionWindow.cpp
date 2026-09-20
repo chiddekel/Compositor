@@ -42,6 +42,8 @@
 #include <QJsonArray>
 #include <QFileInfo>
 #include <QDir>
+#include <QToolBar>
+#include <QActionGroup>
 
 #include <cstdint>
 #include <cstring>
@@ -100,11 +102,57 @@ static QImage renderToQImage(uint64_t h, int width, int height) {
     return QImage();
 }
 
+class SessionCanvasWidget : public QWidget {
+public:
+    explicit SessionCanvasWidget(SessionWindow *window) : QWidget(window), m_window(window) {
+        setFocusPolicy(Qt::StrongFocus);
+        setMouseTracking(true);
+        setAcceptDrops(true);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        m_window->canvasPaintEvent(event, this);
+    }
+    void mousePressEvent(QMouseEvent *event) override {
+        m_window->canvasMousePressEvent(event, this);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        m_window->canvasMouseMoveEvent(event, this);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        m_window->canvasMouseReleaseEvent(event, this);
+    }
+    void tabletEvent(QTabletEvent *event) override {
+        m_window->canvasTabletEvent(event, this);
+    }
+    void dragEnterEvent(QDragEnterEvent *event) override {
+        m_window->canvasDragEnterEvent(event, this);
+    }
+    void dropEvent(QDropEvent *event) override {
+        m_window->canvasDropEvent(event, this);
+    }
+private:
+    SessionWindow *m_window;
+};
+
 SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("Compositor");
-    resize(320, 240);
+    resize(1200, 800);
     setAcceptDrops(true);
     m_tabletHandler = std::make_unique<PressureModulatedTabletHandler>();
+
+    // Central canvas widget:
+    m_canvasWidget = new SessionCanvasWidget(this);
+    setCentralWidget(m_canvasWidget);
+
+    auto *toolsBar = addToolBar(tr("Tools"));
+    toolsBar->setObjectName("toolbar.tools");
+    toolsBar->setMovable(false);
+    toolsBar->setOrientation(Qt::Vertical);
+    addToolBar(Qt::LeftToolBarArea, toolsBar);
+    auto *toolGroup = new QActionGroup(this);
+    toolGroup->setExclusive(true);
 
     // Drive the Swift editor core through the C ABI: create a canvas, paint a red
     // stroke, render, and hold the composited RGBA as a QImage for paintEvent.
@@ -256,26 +304,29 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"removeBackground"})") == 0) { refreshImage(); refreshLayers(); }
     })->setObjectName("layer.removeBackground");
     QMenu *tool = menuBar()->addMenu(tr("&Tool"));
-    auto *actMove = tool->addAction(tr("&Move Tool"), QKeySequence(Qt::Key_V), this, [this] { setTool(Tool::Move); });
-    actMove->setObjectName("tool.move");
-    auto *actBrush = tool->addAction(tr("&Brush"), QKeySequence(Qt::Key_B), this, [this] { setTool(Tool::Brush); });
-    actBrush->setObjectName("tool.brush");
-    auto *actEraser = tool->addAction(tr("&Eraser"), QKeySequence(Qt::Key_E), this, [this] { setTool(Tool::Eraser); });
-    actEraser->setObjectName("tool.eraser");
-    auto *actRect = tool->addAction(tr("&Rectangular Marquee"), QKeySequence(Qt::Key_M), this, [this] { setTool(Tool::RectSelect); });
-    actRect->setObjectName("tool.rectSelect");
-    auto *actEllipse = tool->addAction(tr("Elliptical &Marquee"), QKeySequence(Qt::SHIFT | Qt::Key_M), this, [this] { setTool(Tool::EllipseSelect); });
-    actEllipse->setObjectName("tool.ellipseSelect");
-    auto *actLasso = tool->addAction(tr("&Lasso"), QKeySequence(Qt::Key_L), this, [this] { setTool(Tool::Lasso); });
-    actLasso->setObjectName("tool.lasso");
-    auto *actWand = tool->addAction(tr("Magic &Wand"), QKeySequence(Qt::Key_W), this, [this] { setTool(Tool::MagicWand); });
-    actWand->setObjectName("tool.magicWand");
-    auto *actClone = tool->addAction(tr("&Clone Stamp"), QKeySequence(Qt::Key_S), this, [this] { setTool(Tool::CloneStamp); });
-    actClone->setObjectName("tool.cloneStamp");
-    auto *actHeal = tool->addAction(tr("Spot &Healing"), QKeySequence(Qt::Key_J), this, [this] { setTool(Tool::SpotHealing); });
-    actHeal->setObjectName("tool.spotHealing");
-    auto *actCrop = tool->addAction(tr("&Crop"), QKeySequence(Qt::Key_C), this, [this] { setTool(Tool::Crop); });
-    actCrop->setObjectName("tool.crop");
+    auto addToolAct = [&](const QString &title, QKeySequence shortcut, Tool t, const char *objName) {
+        auto *act = tool->addAction(title, shortcut, this, [this, t] { setTool(t); });
+        act->setObjectName(objName);
+        act->setCheckable(true);
+        toolGroup->addAction(act);
+        toolsBar->addAction(act);
+        m_toolActions[t] = act;
+        if (t == Tool::Brush) act->setChecked(true);
+        return act;
+    };
+
+    auto *actMove = addToolAct(tr("&Move Tool"), QKeySequence(Qt::Key_V), Tool::Move, "tool.move");
+    auto *actBrush = addToolAct(tr("&Brush"), QKeySequence(Qt::Key_B), Tool::Brush, "tool.brush");
+    auto *actEraser = addToolAct(tr("&Eraser"), QKeySequence(Qt::Key_E), Tool::Eraser, "tool.eraser");
+    toolsBar->addSeparator();
+    auto *actRect = addToolAct(tr("&Rectangular Marquee"), QKeySequence(Qt::Key_M), Tool::RectSelect, "tool.rectSelect");
+    auto *actEllipse = addToolAct(tr("Elliptical &Marquee"), QKeySequence(Qt::SHIFT | Qt::Key_M), Tool::EllipseSelect, "tool.ellipseSelect");
+    auto *actLasso = addToolAct(tr("&Lasso"), QKeySequence(Qt::Key_L), Tool::Lasso, "tool.lasso");
+    auto *actWand = addToolAct(tr("Magic &Wand"), QKeySequence(Qt::Key_W), Tool::MagicWand, "tool.magicWand");
+    toolsBar->addSeparator();
+    auto *actClone = addToolAct(tr("&Clone Stamp"), QKeySequence(Qt::Key_S), Tool::CloneStamp, "tool.cloneStamp");
+    auto *actHeal = addToolAct(tr("Spot &Healing"), QKeySequence(Qt::Key_J), Tool::SpotHealing, "tool.spotHealing");
+    auto *actCrop = addToolAct(tr("&Crop"), QKeySequence(Qt::Key_C), Tool::Crop, "tool.crop");
 
     tool->addSeparator();
     tool->addAction(tr("Paint"), this, [this] { m_brushMode = "Paint"; setTool(Tool::Brush); });
@@ -362,6 +413,10 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     m_maskCheck->setObjectName("layer.mask");
     layout->addWidget(m_visibleCheck);
     layout->addWidget(m_maskCheck);
+    dock->setMinimumWidth(260);
+    dock->setMaximumWidth(320);
+    panel->setMinimumWidth(260);
+    panel->setMaximumWidth(320);
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
@@ -435,6 +490,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     auto *brushLayout = new QVBoxLayout(brushPanel);
     m_brushColorButton = new QPushButton(tr("Red"), brushPanel);
     m_brushColorButton->setObjectName("brush.color");
+    m_brushColorButton->setFixedHeight(28);
     m_brushColorButton->setStyleSheet("background-color: red;");
     brushLayout->addWidget(m_brushColorButton);
     brushLayout->addWidget(new QLabel(tr("Diameter"), brushPanel));
@@ -460,8 +516,13 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     m_blend->setObjectName("blend.mode");
     for (const QString &mode : blendModes()) m_blend->addItem(mode);
     brushLayout->addWidget(m_blend);
+    brushDock->setMinimumWidth(260);
+    brushDock->setMaximumWidth(320);
+    brushPanel->setMinimumWidth(260);
+    brushPanel->setMaximumWidth(320);
     brushDock->setWidget(brushPanel);
     addDockWidget(Qt::RightDockWidgetArea, brushDock);
+    splitDockWidget(dock, brushDock, Qt::Vertical);
     connect(m_brushColorButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
     connect(m_brushDiameterSlider, &QSlider::valueChanged, this, &SessionWindow::setBrushDiameter);
     connect(m_brushHardnessSlider, &QSlider::valueChanged, this, &SessionWindow::setBrushHardness);
@@ -475,28 +536,136 @@ SessionWindow::~SessionWindow() {
     if (m_sessionHandle != 0) compositor_session_close(m_sessionHandle);
 }
 
-void SessionWindow::paintEvent(QPaintEvent *event) {
-    Q_UNUSED(event);
-    QPainter p(this);
-    if (!m_image.isNull()) {
-        const QSize scaled = m_image.size().scaled(size(), Qt::KeepAspectRatio);
-        const QRect target((width() - scaled.width()) / 2, (height() - scaled.height()) / 2,
-                           scaled.width(), scaled.height());
-        p.fillRect(rect(), Qt::black);
-        p.drawImage(target, m_image);
-    } else {
-        p.fillRect(rect(), Qt::black);
+QRectF SessionWindow::canvasTargetRect() const {
+    if (m_image.isNull()) return QRectF();
+    const QSize canvasSize = m_canvasWidget ? m_canvasWidget->size() : size();
+    const int pad = 24;
+    const int maxW = std::max(10, canvasSize.width() - pad * 2);
+    const int maxH = std::max(10, canvasSize.height() - pad * 2);
+    double scale = std::min(static_cast<double>(maxW) / m_image.width(),
+                            static_cast<double>(maxH) / m_image.height());
+    if (m_image.width() <= 128 && m_image.height() <= 128) {
+        int intScale = std::max(1, static_cast<int>(scale));
+        scale = intScale;
     }
+    const double displayW = m_image.width() * scale;
+    const double displayH = m_image.height() * scale;
+    return QRectF((canvasSize.width() - displayW) / 2.0, (canvasSize.height() - displayH) / 2.0,
+                  displayW, displayH);
+}
+
+QPointF SessionWindow::documentToCanvasPoint(const QPointF &docPoint) const {
+    const QRectF target = canvasTargetRect();
+    if (m_image.isNull() || target.width() <= 0 || target.height() <= 0) return docPoint;
+    return QPointF(target.left() + docPoint.x() * target.width() / m_image.width(),
+                   target.top() + docPoint.y() * target.height() / m_image.height());
 }
 
 QPointF SessionWindow::documentPoint(const QPointF &windowPoint) const {
     if (m_image.isNull()) return QPointF();
-    const QSize scaled = m_image.size().scaled(size(), Qt::KeepAspectRatio);
-    const QRectF target((width() - scaled.width()) / 2.0, (height() - scaled.height()) / 2.0,
-                       scaled.width(), scaled.height());
+    const QRectF target = canvasTargetRect();
+    if (target.width() <= 0 || target.height() <= 0) return QPointF();
     const QPointF local = windowPoint - target.topLeft();
     return QPointF(local.x() * m_image.width() / target.width(),
                    local.y() * m_image.height() / target.height());
+}
+
+void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
+    Q_UNUSED(event);
+    QPainter p(canvas);
+    // Dark professional neutral workspace background
+    p.fillRect(canvas->rect(), QColor(0x24, 0x25, 0x28));
+
+    if (m_image.isNull()) return;
+
+    const QRectF target = canvasTargetRect();
+    const QRect targetI = target.toRect();
+
+    // Subtle drop shadow around document canvas
+    p.fillRect(targetI.adjusted(2, 2, 4, 4), QColor(0, 0, 0, 90));
+
+    // Transparent checkerboard pattern
+    static QPixmap checker;
+    if (checker.isNull()) {
+        QImage chk(16, 16, QImage::Format_RGB32);
+        QPainter cp(&chk);
+        cp.fillRect(0, 0, 8, 8, QColor(0xee, 0xee, 0xee));
+        cp.fillRect(8, 8, 8, 8, QColor(0xee, 0xee, 0xee));
+        cp.fillRect(8, 0, 8, 8, QColor(0xcc, 0xcc, 0xcc));
+        cp.fillRect(0, 8, 8, 8, QColor(0xcc, 0xcc, 0xcc));
+        checker = QPixmap::fromImage(chk);
+    }
+    p.drawTiledPixmap(targetI, checker);
+
+    if (target.width() >= m_image.width()) {
+        p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    } else {
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    }
+    p.drawImage(target, m_image);
+
+    // Canvas border outline
+    p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
+    p.drawRect(targetI.adjusted(0, 0, -1, -1));
+
+    // Interactive drag feedback (selection / crop marquee)
+    if (m_painting && (m_tool == Tool::RectSelect || m_tool == Tool::EllipseSelect || m_tool == Tool::Crop)) {
+        const QPointF startCanvas = documentToCanvasPoint(m_dragStart);
+        const QPointF currentCanvas = documentToCanvasPoint(m_currentPoint);
+        QRectF selRect(startCanvas, currentCanvas);
+        selRect = selRect.normalized();
+        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
+        if (m_tool == Tool::EllipseSelect) {
+            p.drawEllipse(selRect);
+        } else {
+            p.drawRect(selRect);
+        }
+    }
+}
+
+void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    m_currentPoint = documentPoint(event->position());
+    mousePressEvent(event);
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    m_currentPoint = documentPoint(event->position());
+    mouseMoveEvent(event);
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    m_currentPoint = documentPoint(event->position());
+    mouseReleaseEvent(event);
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::canvasTabletEvent(QTabletEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    tabletEvent(event);
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    dragEnterEvent(event);
+}
+
+void SessionWindow::canvasDropEvent(QDropEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    dropEvent(event);
+}
+
+void SessionWindow::paintEvent(QPaintEvent *event) {
+    if (m_canvasWidget) {
+        QMainWindow::paintEvent(event);
+    } else {
+        canvasPaintEvent(event, this);
+    }
 }
 
 QJsonObject SessionWindow::sessionState() const {
@@ -529,6 +698,7 @@ void SessionWindow::refreshImage() {
     rendered.setDotsPerMeterX(dpm);
     rendered.setDotsPerMeterY(dpm);
     m_image = rendered;
+    if (m_canvasWidget) m_canvasWidget->update();
     update();
     refreshLayers();
 }
@@ -731,6 +901,9 @@ void SessionWindow::paintStroke(double x1, double y1, double x2, double y2) {
 
 void SessionWindow::setTool(Tool tool) {
     m_tool = tool;
+    if (m_toolActions.contains(tool) && !m_toolActions[tool]->isChecked()) {
+        m_toolActions[tool]->setChecked(true);
+    }
     const char *names[] = {
         "Brush", "Eraser", "Move", "Rect Marquee", "Ellipse Marquee",
         "Lasso", "Magic Wand", "Clone Stamp", "Spot Healing", "Crop"

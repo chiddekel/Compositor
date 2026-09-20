@@ -32,10 +32,13 @@ class QPushButton;
 class QCheckBox;
 class QMenu;
 class QColor;
+class QAction;
 #include <vector>
 #include <memory>
+#include <QMap>
 
 class ITabletHandler;
+class SessionCanvasWidget;
 
 class SessionWindow : public QMainWindow {
     Q_OBJECT
@@ -87,6 +90,17 @@ protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
 
+    friend class SessionCanvasWidget;
+    void canvasPaintEvent(QPaintEvent *event, QWidget *canvas);
+    void canvasMousePressEvent(QMouseEvent *event, QWidget *canvas);
+    void canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas);
+    void canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas);
+    void canvasTabletEvent(QTabletEvent *event, QWidget *canvas);
+    void canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas);
+    void canvasDropEvent(QDropEvent *event, QWidget *canvas);
+    QRectF canvasTargetRect() const;
+    QPointF documentToCanvasPoint(const QPointF &docPoint) const;
+
 private:
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
@@ -106,11 +120,13 @@ private:
     QStringList blendModes() const;
     bool setLayerFlag(const char *action, bool on);
     void selectRegion(bool rectangle);
+    QWidget *m_canvasWidget = nullptr;
     QImage m_image;
     uint64_t m_sessionHandle = 0;
     bool m_painting = false;
     Tool m_tool = Tool::Brush;
     QPointF m_dragStart;
+    QPointF m_currentPoint;
     std::vector<QPointF> m_lassoPoints;
     QPointF m_cloneSource = QPointF(0, 0);
     bool m_hasCloneSource = false;
@@ -130,5 +146,6 @@ private:
     int m_brushHardness = 100;
     int m_brushOpacity = 100;
     bool m_syncingLayers = false;
+    QMap<Tool, QAction *> m_toolActions;
     std::unique_ptr<ITabletHandler> m_tabletHandler;
 };
