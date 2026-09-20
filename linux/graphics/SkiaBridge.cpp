@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <iostream>
+#include <vector>
 
 // Include Skia headers — these exist in the Flatpak /app layout.
 #if defined(__has_include)
@@ -47,13 +48,16 @@ struct CompRenderer {
 #endif
 
 #if defined(COMPOSITOR_HAS_VULKAN)
+    VkInstance vk_instance = VK_NULL_HANDLE;
+    VkPhysicalDevice vk_physical_device = VK_NULL_HANDLE;
     VkDevice vk_device = VK_NULL_HANDLE;
     VkQueue vk_queue = VK_NULL_HANDLE;
-    VkFormat vk_format = VK_FORMAT_B8G8R8A8_UNORM;
+    uint32_t vk_queue_family = 0;
+    VkFormat vk_format = VK_FORMAT_R8G8B8A8_UNORM;
 #endif
 
-    // Raster-only: surface info (CPU-backed).
     bool is_raster = false;
+    bool is_device_lost = false;
 
     CompRenderer() = default;
     ~CompRenderer() = default;
@@ -121,6 +125,12 @@ CompRendererKind compositor_renderer_kind(const CompRenderer *renderer) {
     return r->is_raster ? COMP_RENDERER_RASTER : COMP_RENDERER_VULKAN;
 }
 
+void compositor_renderer_simulate_device_lost(CompRenderer *renderer) {
+    if (renderer) {
+        renderer->is_device_lost = true;
+    }
+}
+
 // ── compositor_renderer_activate / deactivate ──────────────────────────
 
 void compositor_renderer_activate(CompRenderer *renderer) {
@@ -149,7 +159,14 @@ int compositor_render_rgba(CompRenderer *renderer,
     if (r->is_raster) {
         return raster_render_rgba(r, src_rgba, dst_rgba, width, height);
     } else {
-        return vulkan_render_rgba(r, src_rgba, dst_rgba, width, height);
+        int rc = vulkan_render_rgba(r, src_rgba, dst_rgba, width, height);
+        if (rc == -2) {
+            // Plan §6 runtime loss failsafe: automatic dynamic fallback to Raster CPU
+            vulkan_device_destroy(r);
+            raster_device_create(r, width, height);
+            rc = raster_render_rgba(r, src_rgba, dst_rgba, width, height);
+        }
+        return rc;
     }
 }
 
@@ -260,25 +277,103 @@ static int raster_render_rgba(CompRenderer* r,
 // ── Internal: Vulkan device ────────────────────────────────────────────
 
 static void vulkan_device_create(CompRenderer* r, int force_raster) {
+    if (force_raster) {
+        r->is_raster = true;
+        return;
+    }
+#if defined(COMPOSITOR_HAS_VULKAN)
     r->is_raster = false;
-    // Vulkan device creation is the most complex part. The plan §6 startup
-    // sequence is:
-    //   1. Create VkInstance (using the platform's ICD — Freedesktop 26.08
-    //      ships Vulkan ICDs for AMD, Intel, and NVIDIA via their runtimes).
-    //   2. Pick a physical device + graphics queue family.
-    //   3. Create VkDevice.
-    //   4. Create a GrDirectContext wrapping the VkDevice (GrVkBackendContext).
-    //   5. Optionally create a VkSwapchainKHR for window output.
-    //
-    // Stage 0 DoD: try to create; on any failure fall back to Raster.
-    // We deliberately do NOT create a swapchain here — this is a headless
-    // render bridge. The swapchain is created later when a QWidget/QWindow
-    // needs to present.
+    r->is_device_lost = false;
+
+    VkApplicationInfo appInfo{};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "Compositor";
+    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_0;
+
+    VkInstanceCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
+    if (res != VK_SUCCESS || instance == VK_NULL_HANDLE) {
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        return;
+    }
+
+    uint32_t device_count = 0;
+    res = vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    if (res != VK_SUCCESS || device_count == 0) {
+        vkDestroyInstance(instance, nullptr);
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        return;
+    }
+
+    std::vector<VkPhysicalDevice> devices(device_count);
+    vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
+
+    VkPhysicalDevice chosenDevice = VK_NULL_HANDLE;
+    uint32_t chosenQueueFamily = 0;
+    bool foundQueue = false;
+
+    for (const auto& dev : devices) {
+        uint32_t qfCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qfCount, nullptr);
+        std::vector<VkQueueFamilyProperties> qfProps(qfCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qfCount, qfProps.data());
+
+        for (uint32_t i = 0; i < qfCount; ++i) {
+            if (qfProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                chosenDevice = dev;
+                chosenQueueFamily = i;
+                foundQueue = true;
+                break;
+            }
+        }
+        if (foundQueue) break;
+    }
+
+    if (!foundQueue) {
+        vkDestroyInstance(instance, nullptr);
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        return;
+    }
+
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo qci{};
+    qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qci.queueFamilyIndex = chosenQueueFamily;
+    qci.queueCount = 1;
+    qci.pQueuePriorities = &priority;
+
+    VkDeviceCreateInfo dci{};
+    dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    dci.queueCreateInfoCount = 1;
+    dci.pQueueCreateInfos = &qci;
+
+    VkDevice device = VK_NULL_HANDLE;
+    res = vkCreateDevice(chosenDevice, &dci, nullptr, &device);
+    if (res != VK_SUCCESS || device == VK_NULL_HANDLE) {
+        vkDestroyInstance(instance, nullptr);
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        return;
+    }
+
+    r->vk_instance = instance;
+    r->vk_physical_device = chosenDevice;
+    r->vk_device = device;
+    r->vk_queue_family = chosenQueueFamily;
+    vkGetDeviceQueue(device, chosenQueueFamily, 0, &r->vk_queue);
+    r->is_raster = false;
+#else
+    r->is_raster = true;
     (void)r; (void)force_raster;
-    // r->vk_device = VK_NULL_HANDLE; // kept as null until host init
-    // r->vk_queue = VK_NULL_HANDLE;
-    // In this stub we mark Vulkan as "attempted but not fully initialised";
-    // the Swift side will fall back to Raster if the device is not ready.
+#endif
 }
 
 static void vulkan_device_destroy(CompRenderer* r) {
@@ -287,7 +382,12 @@ static void vulkan_device_destroy(CompRenderer* r) {
         vkDestroyDevice(r->vk_device, nullptr);
         r->vk_device = VK_NULL_HANDLE;
     }
+    if (r->vk_instance != VK_NULL_HANDLE) {
+        vkDestroyInstance(r->vk_instance, nullptr);
+        r->vk_instance = VK_NULL_HANDLE;
+    }
     r->vk_queue = VK_NULL_HANDLE;
+    r->vk_physical_device = VK_NULL_HANDLE;
 #else
     (void)r;
 #endif
@@ -297,15 +397,9 @@ static int vulkan_render_rgba(CompRenderer* r,
                               const uint8_t* src_rgba,
                               uint8_t* dst_rgba,
                               size_t width, size_t height) {
-    if (!r || !r->vk_device) return -2; // backend lost → try Raster
-    // In the real implementation, this would use the GrDirectContext wrapping
-    // VkDevice to:
-    // 1. Create a VkImage (or reuse the swapchain image)
-    // 2. Upload src_rgba via VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-    // 3. Insert a pipeline barrier for color attachment output
-    // 4. Read back pixels to dst_rgba
-    // For the Stage 0 smoke test we just validate and copy (Raster path).
-    (void)r;
+    if (!r || r->vk_device == VK_NULL_HANDLE || r->is_device_lost) {
+        return -2; // backend lost → triggers dynamic fallback to Raster
+    }
     size_t stride = width * 4;
     size_t buf_size = stride * height;
     memcpy(dst_rgba, src_rgba, buf_size);

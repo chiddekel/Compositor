@@ -82,12 +82,65 @@ static int test_render_rgba_source_over() {
     return 0;
 }
 
+static int test_vulkan_device_creation_and_device_lost_fallback() {
+    CompRendererKind kind = COMP_RENDERER_RASTER;
+    CompRenderer *r = compositor_renderer_create(0, &kind);
+    if (!r) {
+        std::fprintf(stderr, "compositor_renderer_create(0) failed\n");
+        return 1;
+    }
+    std::printf("Created renderer with kind=%d\n", static_cast<int>(kind));
+
+    const size_t w = 2, h = 2;
+    uint8_t src[w * h * 4] = {10, 20, 30, 255, 40, 50, 60, 255,
+                              70, 80, 90, 255, 100, 110, 120, 255};
+    uint8_t dst[w * h * 4] = {0};
+    int rc = compositor_render_rgba(r, src, dst, w, h);
+    if (rc != 0) {
+        std::fprintf(stderr, "compositor_render_rgba failed rc=%d\n", rc);
+        compositor_renderer_close(r);
+        return 1;
+    }
+    if (std::memcmp(src, dst, sizeof(src)) != 0) {
+        std::fprintf(stderr, "compositor_render_rgba output mismatch\n");
+        compositor_renderer_close(r);
+        return 1;
+    }
+
+    // If backend was Vulkan, simulate loss and verify seamless dynamic fallback to Raster CPU.
+    if (kind == COMP_RENDERER_VULKAN) {
+        compositor_renderer_simulate_device_lost(r);
+        std::memset(dst, 0, sizeof(dst));
+        rc = compositor_render_rgba(r, src, dst, w, h);
+        if (rc != 0) {
+            std::fprintf(stderr, "compositor_render_rgba after device_lost failed rc=%d\n", rc);
+            compositor_renderer_close(r);
+            return 1;
+        }
+        if (std::memcmp(src, dst, sizeof(src)) != 0) {
+            std::fprintf(stderr, "compositor_render_rgba fallback output mismatch\n");
+            compositor_renderer_close(r);
+            return 1;
+        }
+        if (compositor_renderer_kind(r) != COMP_RENDERER_RASTER) {
+            std::fprintf(stderr, "expected RASTER after device lost fallback\n");
+            compositor_renderer_close(r);
+            return 1;
+        }
+        std::printf("Device loss fallback to Raster CPU verified successfully\n");
+    }
+
+    compositor_renderer_close(r);
+    return 0;
+}
+
 int main() {
     int failures = 0;
     failures += test_raster_surface_identity();
     failures += test_renderer_factory_raster();
     failures += test_vulkan_enumerate_no_crash();
     failures += test_render_rgba_source_over();
+    failures += test_vulkan_device_creation_and_device_lost_fallback();
     if (failures) {
         std::fprintf(stderr, "SkiaBridge smoke: %d FAILURE(S)\n", failures);
         return 1;

@@ -53,6 +53,7 @@ typedef enum {
 CompRenderer *compositor_renderer_create(int force_raster, CompRendererKind *kind_out);
 void compositor_renderer_close(CompRenderer *renderer);
 CompRendererKind compositor_renderer_kind(const CompRenderer *renderer);
+void compositor_renderer_simulate_device_lost(CompRenderer *renderer);
 
 /*
  * Activate `renderer` as the Swift CoreGraphicsCompat backend. After this
