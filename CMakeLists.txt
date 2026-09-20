@@ -29,40 +29,14 @@ set(CMAKE_AUTOMOC ON)
 # the build refuses to use a host-system Qt. See com.wonderassembly.Compositor.yaml.
 option(COMPOSITOR_BUILD_HOST OFF)
 
-# Header-only ABI contract, consumed by the shim and tests.
-add_library(CompositorCoreAbi INTERFACE)
-target_include_directories(CompositorCoreAbi INTERFACE ${CMAKE_SOURCE_DIR}/include)
+# ── VENDORED DEPENDENCIES (Flatpak) ──────────────────────────────────────
+# When building inside a Flatpak, the Freedesktop SDK installs Skia, OpenCV,
+# and Qt6 to /app. The manifest sets COMPOSITOR_REQUIRE_VENDORED_DEPS=ON so
+# these modules are REQUIRED and fail-fast if missing. The minimal Swift+Qt
+# Flatpak build sets it OFF to de-risk the Swift toolchain first.
+option(COMPOSITOR_REQUIRE_VENDORED_DEPS OFF)
 
-# Portable C pixel kernels (file-map "Keep" tier): reused verbatim from the
-# macOS source tree. COMPOSITOR_PORTABLE turns on the ENG-17 canonical-buffer
-# entry asserts; macOS/Xcode never defines it, so the asserts are no-ops there
-# and legacy padded-stride callers keep working.
-add_library(CompositorKernels STATIC
-    Compositor/Rendering/AdjustPixels.c
-    Compositor/Rendering/BrushPixels.c
-    Compositor/Rendering/ContentFill.c
-    Compositor/Rendering/HealPixels.c
-    Compositor/Rendering/LensPixels.c
-    Compositor/Rendering/LevelsPixels.c
-    Compositor/Rendering/NoisePixels.c
-    Compositor/Rendering/WandPixels.c
-    Compositor/Rendering/CompositorKernelAssert.c)
-target_include_directories(CompositorKernels PUBLIC ${CMAKE_SOURCE_DIR}/Compositor/Rendering)
-target_compile_definitions(CompositorKernels PUBLIC COMPOSITOR_PORTABLE)
-# libm is part of glibc bundled in the Freedesktop runtime, not a separately
-# installed host library, so this is not a host-system dependency.
-target_link_libraries(CompositorKernels PUBLIC m)
-
-# Thin C++ wrapper over the C ABI.
-add_library(CompositorCoreShim STATIC shim/CompositorCoreShim.cpp)
-target_link_libraries(CompositorCoreShim PUBLIC CompositorCoreAbi)
-
-# C reference implementation — TEST STAND-IN for the Swift @_cdecl export.
-# Never linked into production; only the test executable consumes it.
-add_library(CompositorCoreRef STATIC tests/ref/compositor_composite_over.c)
-target_link_libraries(CompositorCoreRef PUBLIC CompositorCoreAbi)
-
-# ---- ENG-2: Qt6 Widgets host shell / composition root ---------------------
+# ── QT6 ────────────────────────────────────────────────────────────────
 # Qt6 must come from the Flatpak SDK (KDE 6.10), never the host system. The
 # previous bare `find_package(Qt6 ... QUIET)` silently picked up the host's
 # installed Qt6. Behavior now:
@@ -84,26 +58,31 @@ else()
     endif()
 endif()
 
-# Vendored Skia (static, no cmake config) + OpenCV (cmake config) under /app.
-# Wired now to prove the manifest modules install correctly; no target links
-# them yet in the MVP (the C kernels + QImage do the pixel/codec work). The
-# Skia compositing and OpenCV named-op backends plug in here later.
-# COMPOSITOR_REQUIRE_VENDORED_DEPS=ON (the full Flatpak manifest) makes these
-# REQUIRED so a build that omits the Skia/OpenCV modules fails fast. The minimal
-# Swift+Qt Flatpak build sets it OFF to de-risk the Swift toolchain first.
-# Only required inside a Flatpak build (where the manifest installed them to /app);
-# skipped on the host so the Qt-independent kernel + ABI tests still build.
-option(COMPOSITOR_REQUIRE_VENDORED_DEPS OFF)
+# ── SKIA (Flatpak vendored) ────────────────────────────────────────────
+# Vendored Skia static library under /app, built with
+#   skia_use_vulkan=true  (plan §6 Stage 5/8).
+# Required when COMPOSITOR_REQUIRE_VENDORED_DEPS is ON and we're in a Flatpak.
 if(DEFINED ENV{FLATPAK_ID} AND COMPOSITOR_REQUIRE_VENDORED_DEPS)
     find_path(Skia_INCLUDE_DIR NAMES SkCanvas.h PATHS /app/include/skia REQUIRED)
     find_library(Skia_STATIC_LIB NAMES skia PATHS /app/lib REQUIRED)
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+    # Verify Skia was built with Vulkan enabled
+    if(NOT SKIA_STATIC_LIB MATCHES ".*vulkan.*")
+        message(WARNING "Skia library found but may not have Vulkan enabled; "
+                  "Vulkan backend will be unavailable.")
+    endif()
 endif()
 
+# ── OPENCV (Flatpak vendored) ──────────────────────────────────────────
+# OpenCV 4.14.0 minimal modules (core + imgproc) under /app, required when
+# COMPOSITOR_REQUIRE_VENDORED_DEPS is ON and we're in a Flatpak.
+if(DEFINED ENV{FLATPAK_ID} AND COMPOSITOR_REQUIRE_VENDORED_DEPS)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc PATHS /app)
+endif()
+
+# ── SWIFT CORE LINK ────────────────────────────────────────────────────
 # Prebuilt Swift static lib (libCompositorCore.a), built by SwiftPM in the
 # Flatpak manifest build-commands with --static-swift-stdlib so the Swift
 # runtime is bundled. Passed in via -DCompositorCore_SWIFT_STATIC_LIB=<path>.
-# The Swift core exposes its callables via @_cdecl (the C ABI seam, ENG-1).
 set(COMPOSITOR_CORE_LINK "")
 if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
     add_library(CompositorCoreSwift STATIC IMPORTED)
@@ -149,15 +128,56 @@ if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
     endif()
 endif()
 
-enable_testing()
+# ── ABI Library ────────────────────────────────────────────────────────
+add_library(CompositorCoreAbi INTERFACE)
+target_include_directories(CompositorCoreAbi INTERFACE ${CMAKE_SOURCE_DIR}/include)
 
-add_executable(test_composite_over tests/test_composite_over.cpp)
-target_link_libraries(test_composite_over PRIVATE CompositorCoreShim CompositorCoreRef)
-add_test(NAME CompositorCore.Abi COMMAND test_composite_over)
+# ── Portable C pixel kernels (file-map "Keep" tier) ───────────────────
+add_library(CompositorKernels STATIC
+    Compositor/Rendering/AdjustPixels.c
+    Compositor/Rendering/BrushPixels.c
+    Compositor/Rendering/ContentFill.c
+    Compositor/Rendering/HealPixels.c
+    Compositor/Rendering/LensPixels.c
+    Compositor/Rendering/LevelsPixels.c
+    Compositor/Rendering/NoisePixels.c
+    Compositor/Rendering/WandPixels.c
+    Compositor/Rendering/CompositorKernelAssert.c)
+target_include_directories(CompositorKernels PUBLIC ${CMAKE_SOURCE_DIR}/Compositor/Rendering)
+target_compile_definitions(CompositorKernels PUBLIC COMPOSITOR_PORTABLE)
+# libm is part of glibc bundled in the Freedesktop runtime, not a separately
+# installed host library, so this is not a host-system dependency.
+target_link_libraries(CompositorKernels PUBLIC m)
 
-add_executable(test_kernels tests/test_kernels.cpp)
-target_link_libraries(test_kernels PRIVATE CompositorKernels)
-add_test(NAME CompositorCore.Kernels COMMAND test_kernels)
+# ── Thin C++ wrapper over the C ABI. ───────────────────────────────────
+add_library(CompositorCoreShim STATIC shim/CompositorCoreShim.cpp)
+target_link_libraries(CompositorCoreShim PUBLIC CompositorCoreAbi)
+
+# ── C reference implementation — TEST STAND-IN for the Swift @_cdecl export. ─────
+# Never linked into production; only the test executable consumes it.
+add_library(CompositorCoreRef STATIC tests/ref/compositor_composite_over.c)
+target_link_libraries(CompositorCoreRef PUBLIC CompositorCoreAbi)
+
+# ── ENG-2: Qt6 Widgets host shell / composition root ───────────────────
+# The host app is the ENG-2 composition root; the C kernels run in-process.
+# When the Swift static lib is linked it already embeds the kernel objects
+# (SwiftPM folds the C target into the library product), so it must come
+# FIRST: with the kernel symbols already defined, ld never extracts the
+# duplicate members from this project's own kernel archive, which stays in
+# the link line for its include path.
+
+if(COMPOSITOR_ENABLE_SKIA_GPU AND DEFINED ENV{FLATPAK_ID})
+    add_library(CompositorSkiaBridge STATIC linux/graphics/SkiaBridge.cpp)
+    target_include_directories(CompositorSkiaBridge
+        PUBLIC ${CMAKE_SOURCE_DIR}/include
+        PRIVATE ${Skia_INCLUDE_DIR})
+    target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB})
+
+    # Stage 0/5 DoD smoke: Raster surface round-trip + Vulkan loader check.
+    add_executable(test_skia_bridge tests/test_skia_bridge.cpp)
+    target_link_libraries(test_skia_bridge PRIVATE CompositorSkiaBridge)
+    add_test(NAME CompositorCore.SkiaBridge COMMAND test_skia_bridge)
+endif()
 
 # Headless host journey test: open -> canonicalize -> filter -> save -> reopen.
 # Needs Qt6 (QImage codec); gated on Qt6_FOUND like the host app.
@@ -201,7 +221,9 @@ if(Qt6_FOUND)
         host/main.cpp
         host/MainWindow.cpp
         host/CanvasWidget.cpp
-        host/CanonicalBuffer.cpp)
+        host/CanonicalBuffer.cpp
+        linux/ui/CanvasWidget.cpp
+        linux/ui/MainWindow.cpp)
     # The host app is the ENG-2 composition root; the C kernels run in-process.
     # When the Swift static lib is linked it already embeds the kernel objects
     # (SwiftPM folds the C target into the library product), so it must come
@@ -221,4 +243,19 @@ if(Qt6_FOUND)
     add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
     target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets)
+    if(COMPOSITOR_ENABLE_SKIA_GPU AND DEFINED ENV{FLATPAK_ID})
+        target_compile_definitions(CompositorHostRun PRIVATE COMPOSITOR_SKIA_BRIDGE=1)
+        target_link_libraries(CompositorHostRun PUBLIC CompositorSkiaBridge)
+    endif()
 endif()
+
+# ── Tests ──────────────────────────────────────────────────────────────
+enable_testing()
+
+add_executable(test_composite_over tests/test_composite_over.cpp)
+target_link_libraries(test_composite_over PRIVATE CompositorCoreShim CompositorCoreRef)
+add_test(NAME CompositorCore.Abi COMMAND test_composite_over)
+
+add_executable(test_kernels tests/test_kernels.cpp)
+target_link_libraries(test_kernels PRIVATE CompositorKernels)
+add_test(NAME CompositorCore.Kernels COMMAND test_kernels)

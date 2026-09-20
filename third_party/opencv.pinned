@@ -10,9 +10,9 @@
 #        CMake opts live in the manifest module config-opts.
 
 name:    opencv
-version: 4.10.0
-url:     https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz
-sha256:  b2171af5be6b26f7a06b1229948bbb2bdaa74fcf5cd097e0af6378fce50a6eb9
+version: 4.14.0
+url:     https://github.com/opencv/opencv/archive/refs/tags/4.14.0.tar.gz
+sha256:  ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e
 cmake_summary: |
   -DBUILD_LIST=core,imgproc -DBUILD_SHARED_LIBS=OFF
   -DBUILD_ZLIB=ON -DBUILD_PNG=ON -DBUILD_JPEG=ON

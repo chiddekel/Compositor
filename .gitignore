@@ -33,3 +33,5 @@ BUILD_PLAN.md
 .flatpak-builder/
 build-dir/
 build-flatpak/
+build-flatpak-minimal/
+linux/build/
