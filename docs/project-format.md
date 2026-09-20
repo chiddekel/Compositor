@@ -1,14 +1,14 @@
-# Compositor project format, versions 1–6
+# Compositor project format, versions 1–7
 
-A `.comp` file is a macOS document package containing `manifest.json` and an `images/` directory of `<layer UUID>.png` assets.
+A `.comp` project is a directory package containing `manifest.json` and an `images/` directory of `<layer UUID>.png` assets. macOS presents the directory as a document package. The Linux host uses the same Codable manifest and asset names through Qt codecs.
 
-The manifest identifies `com.compositor.project`, version `6` for new saves (versions `1`–`5` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
+The manifest identifies `com.compositor.project`, version `7` for new saves (versions `1`–`6` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
 
-Embedded PNGs preserve source pixels and transparency; transforms remain separate. Projects survive moving or deleting imported source photos. Saving uses a coordinated atomic package replacement. Unsupported versions, invalid metadata, missing assets, unsafe paths, and oversized data are rejected before replacing the live document.
+Embedded PNGs preserve source pixels and transparency; transforms remain separate. Projects survive moving or deleting imported source photos. The macOS implementation saves using coordinated atomic package replacement. Linux validates manifest data through the Swift ABI, writes PNG assets under `images/`, stages a sibling package, and replaces the destination only after all assets encode successfully. Both paths reject unsupported versions, invalid metadata, missing assets, unsafe paths, and oversized data before replacing the live document.
 
 Limits: 30,000 pixels per canvas/image side, 100 million total source pixels, 10,000 layers, 4 MiB manifest, 512 MiB per encoded asset. See `ProjectStore.swift` for validation.
 
-Undo history and viewport are session-only. Opening fits the canvas, restores selection, and starts with clean history. Future editable features must extend the schema and round-trip tests. PNG export is a flattened derivative and does not mark project edits saved.
+Undo history, pixel selections, and viewport are session-only. Opening fits the canvas, restores the active layer, and starts with clean history. Future editable features must extend the schema and round-trip tests. PNG export is a flattened derivative and does not mark project edits saved.
 
 Image Size adds optional `resolution` (pixels/inch, 1–9600). Older manifests without it default to 72. This additive field retains version 1 compatibility. Both PNG and JPEG exports include document resolution metadata. Resampling stores the new layer pixels and bounds; undo retains the prior sources only during the current session.
 
@@ -26,10 +26,26 @@ UI terminology: these alpha links are clipping masks. Option-click assigns the l
 
 Version 6 allows `maskFile` and `maskEnabled` on group records. A folder has no image, so its mask covers the folder's own transform rectangle (the canvas size when the folder was created); Image Size resamples it through that transform, and Canvas Size and Crop preserve its pixels, exactly as for layer masks. Groups are pass-through, so an enabled folder mask multiplies the coverage of every descendant layer, together with that layer's own mask and any enclosing folders' masks; clipping-mask coverage is unaffected. Files declaring versions 1–5 cannot give a group a mask, and older app builds reject v6.
 
-### Editable text
+Version 7 adds `adjustment` to non-group records without an `imageFile`. Its `kind` is `Hue/Saturation`, `Levels`, `Curves`, `Exposure`, `Gradient Map`, or `Grain`. The payload contains the corresponding settings. The legacy hue/saturation/lightness/colorize fields remain readable; optional `hsvSettings` takes precedence when present. Optional `exposureSettings`, `gradientMapSettings`, and `grainSettings` default to their identity settings. Adjustment records are rejected in versions 1–6. They retain the layer's placement, appearance, and mask metadata.
 
-Pixel layer records may include optional `text` metadata: content, PostScript font name, font size in pixels, RGB color, alignment, tracking, line spacing and optional `boxSize` paragraph bounds. Text wraps inside these bounds; changing them reflows the text without scaling the font. The PNG remains the display and export fallback. Older readers ignore this metadata. Transforms, duplication, masks and canvas-size changes preserve it; destructive pixel operations rasterize text and omit the metadata on the next save. Missing fonts use the system font when edited, while the saved PNG preserves the original appearance until then.
+Current records also support these additive fields:
 
-### Layer effects
+| Field | Meaning and default |
+|---|---|
+| `maskPlacement` | A transform locating a mask independently in document coordinates; omitted means the mask covers its layer's grid. Requires `maskFile` and a valid transform. |
+| `maskLinked` | Whether moving the layer also carries the mask; omitted means `true`. A disabled mask retains its placement, linking state, and pixels. |
+| `shape` | Optional raster-backed editable shape metadata: `kind` (`Rectangle` or `Ellipse`), `red`, `green`, `blue`, and `cornerRadius` in document pixels. Rounded rectangles use `Rectangle` with a nonzero radius. |
 
-An optional `effects` record contains independent `stroke` and `shadow` records. Each supports optional `enabled` visibility (missing means visible); hidden effects keep all parameters and remain listed under their layer. Stroke size supports 0–500 layer pixels. Effects, including their visibility, are saved and participate in document undo. Canvas previews run on a serial background worker with a shared pixel budget; exports render the full-resolution effects.
+A shape still embeds an ordinary image. Loading associates its style with that image; painting or filtering replaces the image and ends the editable-shape association. Canvas resizing keeps the association; image resizing rasterizes it and drops the shape field. These fields are additive within the current schema; the validator does not impose a separate version gate on shape metadata or mask placement/linking.
+
+| Version | Required reader capability |
+|---|---|
+| 1 | Canvas, raster/blank layers, separate transforms, optional resolution |
+| 2 | Layer hierarchy and groups |
+| 3 | Per-layer opacity and blend modes |
+| 4 | Raster layer masks |
+| 5 | Live alpha links (`maskSourceID`) |
+| 6 | Folder masks |
+| 7 | Adjustment layers |
+
+The schema sources are `Sources/CompositorCore/Document/ProjectStore.swift`, `ProjectLayerRecord.swift`, `LayerAdjustment.swift`, and `LayerShape.swift`. `ProjectManifestTests` exercises supported versions and manifest round trips; `ResizeExecutionTests` exercises snapshot mapping, missing-asset rejection, v7 settings/shape/mask metadata round trips, and canvas/image resize preservation. `CompositorHostBootstrap --io-smoke` exercises PNG/JPEG export plus package asset save/reopen through Qt.

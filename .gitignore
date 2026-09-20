@@ -1,6 +1,12 @@
 # Build output
 dist/
 build/
+build-cmake/
+build-sdk/
+build-qt/
+build-host/
+build-swift/
+.build/
 DerivedData/
 *.xcarchive
 *.dmg
@@ -22,3 +28,10 @@ xcuserdata/
 # Claude Code settings personal to this machine
 .claude/settings.local.json
 BUILD_PLAN.md
+
+# Flatpak build artifacts (sources are fetched by flatpak-builder at build time)
+.flatpak-builder/
+build-dir/
+build-flatpak/
+build-flatpak-minimal/
+linux/build/

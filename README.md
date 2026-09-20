@@ -64,6 +64,59 @@ Because it’s open source, you can download the Xcode project and add, remove, 
 
 Open `Compositor.xcodeproj` and run the **Compositor** scheme.
 
+### Linux (Flatpak)
+
+The Linux port builds entirely inside the Flatpak SDK sandbox — it never links
+the build host's installed system libraries. Qt6 comes from the KDE SDK (6.10),
+Swift from the `swift6` SDK extension (Freedesktop 25.08 branch, Swift 6.3.3), and
+Skia + OpenCV are vendored as pinned Flatpak modules compiled into `/app`.
+
+Install the runtime, SDK, and Swift extension (one-time):
+
+```
+flatpak install --user flathub \
+    org.kde.Platform//6.10 org.kde.Sdk//6.10 \
+    org.freedesktop.Sdk.Extension.swift6//25.08
+```
+
+Build and install the app:
+
+```
+flatpak-builder --user --install --force-clean build-dir \
+    com.wonderassembly.Compositor.yaml
+```
+
+Run:
+
+```
+flatpak run com.wonderassembly.Compositor
+```
+
+Headless smoke test (no display):
+
+```
+QT_QPA_PLATFORM=offscreen flatpak run com.wonderassembly.Compositor --help
+```
+
+Local development (build from the working tree inside the sandbox):
+
+```
+flatpak-builder --run build-dir com.wonderassembly.Compositor.yaml bash
+# inside the sandbox:
+export PATH=/usr/lib/sdk/swift6/bin:$PATH
+swift build -c release --static-swift-stdlib
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/app \
+    -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+    -DOpenCV_DIR=/app/lib/cmake/opencv4 \
+    -DCompositorCore_SWIFT_STATIC_LIB=$PWD/.build/release/libCompositorCore.a
+cmake --build build
+QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+```
+
+The Skia and OpenCV source archives are not committed to the repo; `flatpak-builder`
+fetches and verifies them (pinned `sha256` in the manifest) at build time.
+Provenance records live in `third_party/skia.pinned` and `third_party/opencv.pinned`.
+
 ## Releasing
 
 `scripts/release.sh` builds a Release version, signs it with Developer ID, notarizes and staples it, and packages it into `dist/Compositor-<version>.dmg`.

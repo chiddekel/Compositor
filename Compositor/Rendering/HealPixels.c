@@ -1,4 +1,5 @@
 #include "HealPixels.h"
+#include "CompositorKernels.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +7,7 @@
 enum { OUTSIDE = 0, RING = 1, HOLE = 2 };
 
 void heal_coverage_bounds(const uint8_t *gray, size_t width, size_t height, size_t stride, long bounds[4]) {
+    COMPOSITOR_REQUIRE_CANONICAL_GRAY(stride, width);
     long x0 = (long)width, y0 = (long)height, x1 = 0, y1 = 0;
     for (size_t y = 0; y < height; ++y) {
         const uint8_t *row = gray + y * stride;
@@ -114,6 +116,7 @@ static void heal_solve(float *value, const uint8_t *role, long w, long h, int de
 
 int spot_heal(uint8_t *rgba, const uint8_t *coverage, size_t width, size_t height, size_t stride,
               float opacity, int mode, uint32_t seed) {
+    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
     long W = (long)width, H = (long)height;
     long bounds[4];
     heal_coverage_bounds(coverage, width, height, width, bounds);
