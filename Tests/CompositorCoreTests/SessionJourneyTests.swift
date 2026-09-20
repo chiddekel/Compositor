@@ -464,4 +464,115 @@ final class SessionJourneyTests: XCTestCase {
         XCTAssertEqual(cmd(h, distortCorners), 0)
         XCTAssertEqual(cmd(h, #"{"version":1,"action":"undo"}"#), 0)
     }
+
+    /// Stage 12: Remove Background / Smart Matte parity + SOLID Interface Segregation & Dependency Inversion verification.
+    func testStage12ParityAndSOLIDInterfacesJourney() throws {
+        let h = compositorSessionCreate()
+        defer { compositorSessionClose(h) }
+
+        // Create canvas 16x16 and add layer
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"new","width":16,"height":16}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"addLayer"}"#), 0)
+
+        // Paint a solid subject in the center
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushBegin","x":8,"y":8,"parameters":{"diameter":8,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}}"#), 0)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"brushEnd"}"#), 0)
+
+        // 1. Remove Background command installs non-destructive layer mask
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"removeBackground"}"#), 0)
+        var s = state(h)
+        XCTAssertTrue(s.contains(#""hasMask":true"#), "removeBackground installed a layer mask")
+
+        // 2. Undo removes the mask, redo reinstalls it
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"undo"}"#), 0)
+        s = state(h)
+        XCTAssertTrue(s.contains(#""hasMask":false"#), "undo removes the generated mask")
+
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"redo"}"#), 0)
+        s = state(h)
+        XCTAssertTrue(s.contains(#""hasMask":true"#), "redo restores the generated mask")
+
+        // 3. Smart Matte command with parameters (refineEdges, matteContrast)
+        XCTAssertEqual(cmd(h, #"{"version":1,"action":"smartMatte","parameters":{"refineEdges":2,"matteContrast":50}}"#), 0)
+
+        // 4. SOLID: Interface Segregation Principle (ISP) verification
+        // Verify that EditorSession can be held and driven through segregated role interfaces:
+        let session = EditorSession()
+        try session.createDocument(width: 8, height: 8)
+        try session.addBlankLayer()
+
+        // As LayerManipulating
+        let layerOps: LayerManipulating = session
+        XCTAssertNotNil(layerOps.activeLayerID)
+        XCTAssertTrue(layerOps.canEditLayers)
+        try layerOps.moveLayer(dx: 1, dy: 1)
+        layerOps.flipLayers(horizontally: true)
+
+        // As MaskManipulating
+        let maskOps: MaskManipulating = session
+        maskOps.addLayerMask(revealing: true)
+        maskOps.invertLayerMask()
+        maskOps.setLayerMaskEnabled(false)
+        maskOps.setLayerMaskLinked(false)
+
+        // As BrushPainting
+        let brushOps: BrushPainting = session
+        try brushOps.beginBrush(at: CGPoint(x: 4, y: 4), settings: BrushSettings(), mask: false, cloneOffset: nil, sampleAllLayers: false)
+        try brushOps.continueBrush(at: CGPoint(x: 5, y: 5))
+        try brushOps.finishBrush()
+
+        // As CanvasOperations
+        let canvasOps: CanvasOperations = session
+        try canvasOps.resizeCanvas(width: 12, height: 12, anchor: 4, fill: nil)
+
+        // As SubjectMatteOperations
+        let matteOps: SubjectMatteOperations = session
+        try matteOps.removeBackground(settings: FilterSettings())
+
+        // 5. SOLID: Dependency Inversion Principle (DIP) verification
+        // Test custom mock segmenter and refiner injection into SubjectRemovalService
+        struct MockSegmenter: ForegroundSegmenter {
+            func segmentForeground(in image: PortableImage, selection: SelectionClip?, pixelToDocument: CGAffineTransform) throws -> MaskBuffer {
+                var buf = MaskBuffer(width: image.width, height: image.height)
+                for y in 0..<(image.height / 2) {
+                    for x in 0..<image.width {
+                        buf[x, y] = 255
+                    }
+                }
+                return buf
+            }
+        }
+
+        struct MockRefiner: MatteRefiner {
+            func refine(mask: MaskBuffer, guide: PortableImage, radius: Double, limit: CGFloat) throws -> MaskBuffer {
+                var inverted = MaskBuffer(width: mask.width, height: mask.height)
+                for i in 0..<(mask.width * mask.height) {
+                    inverted.bytes[i] = 255 - mask.bytes[i]
+                }
+                return inverted
+            }
+        }
+
+        let oldSegmenter = SubjectRemovalService.shared.segmenter
+        let oldRefiner = SubjectRemovalService.shared.refiner
+        SubjectRemovalService.shared.segmenter = MockSegmenter()
+        SubjectRemovalService.shared.refiner = MockRefiner()
+        defer {
+            SubjectRemovalService.shared.segmenter = oldSegmenter
+            SubjectRemovalService.shared.refiner = oldRefiner
+        }
+
+        let testImage = PortableImage(PixelBuffer(width: 4, height: 4))
+        let segMask = try SubjectRemovalService.shared.subjectMask(image: testImage, under: nil, requireModel: true)
+        XCTAssertEqual(segMask[0, 0], 255, "Custom injected segmenter provided foreground coverage")
+        XCTAssertEqual(segMask[0, 3], 0, "Custom injected segmenter provided background coverage")
+
+        var advSettings = FilterSettings()
+        advSettings.backgroundQuality = .advanced
+        advSettings.refineEdges = 5
+        advSettings.matteContrast = 0
+        let refinedMask = try SubjectRemovalService.shared.subjectMask(image: testImage, under: nil, settings: advSettings, requireModel: true)
+        XCTAssertEqual(refinedMask[0, 0], 0, "Custom injected refiner inverted foreground")
+        XCTAssertEqual(refinedMask[0, 3], 255, "Custom injected refiner inverted background")
+    }
 }

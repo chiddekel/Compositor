@@ -677,4 +677,29 @@ func importImage(_ pixels: PortableImage, name: String, replacing: Bool) throws 
         if let parent = group.parentID { collapsedGroupIDs.remove(parent) }
         endEdit()
     }
+
+    func removeBackground(settings: FilterSettings = FilterSettings()) throws {
+        guard canEditLayers, let doc = document,
+              let index = doc.layers.firstIndex(where: { $0.id == activeLayerID }),
+              !doc.layers[index].isGroup, let layerAsset = doc.layers[index].asset else {
+            throw Failure.noLayer
+        }
+        let layer = doc.layers[index]
+        let guide = layerAsset.image.pixels
+        let maskBuffer = try SubjectRemoval.subjectMask(
+            image: guide,
+            under: layer.mask?.enabledImage?.pixels,
+            selection: doc.selection?.clip(canvas: doc.size),
+            pixelToDocument: BrushRaster.pixelToDocument(layer.transform, width: guide.width, height: guide.height),
+            settings: settings,
+            requireModel: false
+        )
+        let maskImage = PortableImage(maskBuffer)
+        let maskAsset = try LayerMask.asset(from: maskImage)
+        beginEdit("Remove Background")
+        var next = doc
+        next.layers[index].mask = LayerMask(asset: maskAsset)
+        replaceCurrentDocument(next)
+        endEdit()
+    }
 }

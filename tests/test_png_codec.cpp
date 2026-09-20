@@ -91,6 +91,8 @@ int main(int argc, char *argv[]) {
     QList<QByteArray> fmts = QImageReader::supportedImageFormats();
     CHECK(fmts.contains("png"), "QImageReader supports png");
     CHECK(fmts.contains("jpg") || fmts.contains("jpeg"), "QImageReader supports jpeg");
+    CHECK(fmts.contains("tiff") || fmts.contains("tif"), "QImageReader supports tiff");
+    CHECK(fmts.contains("webp"), "QImageReader supports webp");
     QList<QByteArray> mimes = QImageReader::supportedMimeTypes();
     CHECK(mimes.contains("image/png"), "QImageReader mime image/png");
 
@@ -109,6 +111,33 @@ int main(int argc, char *argv[]) {
     CHECK(!loadedJPG.isNull() && loadedJPG.width() == w && loadedJPG.height() == h,
           "JPEG dimensions preserved");
 
-    if (g_failures == 0) std::printf("png codec round-trip OK (RGBA8888 byte-identical, %d bytes)\n", w * h * 4);
+    // --- TIFF round-trip (Stage 12 parity) ---
+    QTemporaryFile tif(QDir::tempPath() + "/comp_codec_XXXXXX.tiff");
+    CHECK(tif.open(), "open tiff temp");
+    const QString tifPath = tif.fileName();
+    tif.close();
+    QImageWriter wTIF(tifPath, "TIFF");
+    CHECK(wTIF.write(img), "QImageWriter TIFF write");
+    QImageReader rTIF(tifPath);
+    CHECK(rTIF.canRead(), "QImageReader TIFF canRead");
+    QImage loadedTIF = rTIF.read();
+    CHECK(!loadedTIF.isNull() && loadedTIF.width() == w && loadedTIF.height() == h,
+          "TIFF dimensions preserved");
+
+    // --- WebP round-trip (Stage 12 parity) ---
+    QTemporaryFile webp(QDir::tempPath() + "/comp_codec_XXXXXX.webp");
+    CHECK(webp.open(), "open webp temp");
+    const QString webpPath = webp.fileName();
+    webp.close();
+    QImageWriter wWebP(webpPath, "WEBP");
+    wWebP.setQuality(90);
+    CHECK(wWebP.write(img), "QImageWriter WebP write");
+    QImageReader rWebP(webpPath);
+    CHECK(rWebP.canRead(), "QImageReader WebP canRead");
+    QImage loadedWebP = rWebP.read();
+    CHECK(!loadedWebP.isNull() && loadedWebP.width() == w && loadedWebP.height() == h,
+          "WebP dimensions preserved");
+
+    if (g_failures == 0) std::printf("image codecs round-trip OK (PNG, JPEG, TIFF, WebP, %d bytes)\n", w * h * 4);
     return g_failures == 0 ? 0 : 1;
 }

@@ -348,6 +348,12 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
         case "contentFill":
             try s.beginFilter(.contentAwareFill, settings: filterSettings())
             try s.commitFilter()
+        case "removeBackground", "smartMatte":
+            var settings = filterSettings()
+            if let refEdges = command.parameters?["refineEdges"] { settings.refineEdges = refEdges }
+            if let contrast = command.parameters?["matteContrast"] { settings.matteContrast = contrast }
+            if let shift = command.parameters?["shiftEdge"] { settings.shiftEdge = shift }
+            try s.removeBackground(settings: settings)
         default: entry.error = "Unknown command: \(command.action)"; return -1
         }
         entry.error = nil

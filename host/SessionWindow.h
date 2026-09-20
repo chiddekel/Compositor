@@ -33,6 +33,9 @@ class QCheckBox;
 class QMenu;
 class QColor;
 #include <vector>
+#include <memory>
+
+class ITabletHandler;
 
 class SessionWindow : public QMainWindow {
     Q_OBJECT
@@ -44,6 +47,8 @@ public:
     // File operations (IO milestone)
     bool exportPNG(const QString &path);
     bool exportJPEG(const QString &path, int quality = 85);
+    bool exportTIFF(const QString &path);
+    bool exportWebP(const QString &path, int quality = 85);
     bool importImage(const QString &path);
     bool saveProject(const QString &path);
     bool loadProject(const QString &path);
@@ -78,6 +83,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void tabletEvent(QTabletEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
 
@@ -124,4 +130,5 @@ private:
     int m_brushHardness = 100;
     int m_brushOpacity = 100;
     bool m_syncingLayers = false;
+    std::unique_ptr<ITabletHandler> m_tabletHandler;
 };

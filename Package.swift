@@ -89,7 +89,7 @@ let package = Package(
             name: "HostRun",
             dependencies: [],
             path: "host",
-            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "moc_SessionWindow.cpp"],
+            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "moc_SessionWindow.cpp"],
             cxxSettings: [
                 .unsafeFlags([
                     "-I/usr/include/QtWidgets",

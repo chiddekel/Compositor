@@ -89,7 +89,8 @@ nonisolated enum PixelFilter {
         case .grain:
             image = try settings.grain.apply(job.image, unitsPerPixel: 1 / job.scale, seed: job.seed)
         case .removeBackground:
-            throw FilterError.modelMissing
+            image = try SubjectRemoval.run(job.image, settings: settings, selection: job.selection,
+                                           pixelToDocument: job.mapping, requireModel: true)
         case .contentAwareFill:
             image = try ContentFill.run(job)
         case .gaussianBlur:

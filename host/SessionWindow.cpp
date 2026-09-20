@@ -3,10 +3,13 @@
 // codecs (IO milestone: file-map "IO / codec mapping" tier).
 
 #include "SessionWindow.h"
+#include "ImageExporters.h"
+#include "TabletHandler.h"
 
 #include <QPainter>
 #include <QPaintEvent>
 #include <QMouseEvent>
+#include <QTabletEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
@@ -101,6 +104,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("Compositor");
     resize(320, 240);
     setAcceptDrops(true);
+    m_tabletHandler = std::make_unique<PressureModulatedTabletHandler>();
 
     // Drive the Swift editor core through the C ABI: create a canvas, paint a red
     // stroke, render, and hold the composited RGBA as a QImage for paintEvent.
@@ -140,6 +144,14 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     file->addAction(tr("Export &JPEG..."), this, [this] {
         const QString path = QFileDialog::getSaveFileName(this, tr("Export JPEG"), QString(), tr("JPEG (*.jpg *.jpeg)"));
         if (!path.isEmpty() && !exportJPEG(path)) QMessageBox::warning(this, tr("Export failed"), tr("Could not export JPEG."));
+    });
+    file->addAction(tr("Export &TIFF..."), this, [this] {
+        const QString path = QFileDialog::getSaveFileName(this, tr("Export TIFF"), QString(), tr("TIFF (*.tiff *.tif)"));
+        if (!path.isEmpty() && !exportTIFF(path)) QMessageBox::warning(this, tr("Export failed"), tr("Could not export TIFF."));
+    });
+    file->addAction(tr("Export &WebP..."), this, [this] {
+        const QString path = QFileDialog::getSaveFileName(this, tr("Export WebP"), QString(), tr("WebP (*.webp)"));
+        if (!path.isEmpty() && !exportWebP(path)) QMessageBox::warning(this, tr("Export failed"), tr("Could not export WebP."));
     });
     file->addSeparator();
     file->addAction(tr("&Quit"), QKeySequence::Quit, this, &QWidget::close);
@@ -240,6 +252,9 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     layer->addAction(tr("Delete Mask"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteMask"})") == 0) { refreshImage(); refreshLayers(); }
     });
+    layer->addAction(tr("Remove &Background"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"removeBackground"})") == 0) { refreshImage(); refreshLayers(); }
+    })->setObjectName("layer.removeBackground");
     QMenu *tool = menuBar()->addMenu(tr("&Tool"));
     auto *actMove = tool->addAction(tr("&Move Tool"), QKeySequence(Qt::Key_V), this, [this] { setTool(Tool::Move); });
     actMove->setObjectName("tool.move");
@@ -903,6 +918,42 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     }
 }
 
+void SessionWindow::tabletEvent(QTabletEvent *event) {
+    const QPointF point = documentPoint(event->position());
+    if (m_tool == Tool::Brush || m_tool == Tool::Eraser) {
+        switch (event->type()) {
+        case QEvent::TabletPress:
+            if (m_tabletHandler && m_tabletHandler->handleTabletPress(event, m_sessionHandle, point, m_brushDiameter,
+                                                                      m_brushHardness, m_brushOpacity, m_brushColor,
+                                                                      m_tool == Tool::Eraser)) {
+                m_painting = true;
+                refreshImage();
+                event->accept();
+                return;
+            }
+            break;
+        case QEvent::TabletMove:
+            if (m_tabletHandler && m_tabletHandler->handleTabletMove(event, m_sessionHandle, point, m_painting)) {
+                refreshImage();
+                event->accept();
+                return;
+            }
+            break;
+        case QEvent::TabletRelease:
+            if (m_tabletHandler && m_tabletHandler->handleTabletRelease(event, m_sessionHandle, m_painting)) {
+                m_painting = false;
+                refreshImage();
+                event->accept();
+                return;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    event->ignore();
+}
+
 void SessionWindow::dragEnterEvent(QDragEnterEvent *event) {
     if (event->mimeData()->hasUrls() || event->mimeData()->hasImage()) {
         event->acceptProposedAction();
@@ -946,37 +997,32 @@ void SessionWindow::dropEvent(QDropEvent *event) {
 
 // IO milestone: Export flattened canvas as PNG using Qt's QImageWriter
 // (replaces macOS CGImageDestination/ImageIO).
+// IO milestone: Export flattened canvas as PNG via IImageExporter interface (SOLID)
 bool SessionWindow::exportPNG(const QString &path) {
     if (m_sessionHandle == 0 || m_image.isNull()) return false;
-
-    QImageWriter writer(path, "PNG");
-    // The core emits premultiplied RGBA; QImageWriter expects straight alpha.
-    // QImageWriter preserves straight alpha correctly for PNG.
-    if (!writer.write(m_image)) return false;
-
-    // Verify round-trip (byte-identical for straight-alpha PNG)
-    QImageReader reader(path);
-    QImage reimported = reader.read();
-    return !reimported.isNull() && reimported.size() == m_image.size();
+    auto exporter = ImageExporterRegistry::instance().exporterForFormat("png");
+    return exporter && exporter->exportImage(m_image, path);
 }
 
-// IO milestone: Export flattened canvas as JPEG using Qt's QImageWriter
-// (replaces macOS CGImageDestination with kCGImageDestinationLossyCompressionQuality).
+// IO milestone: Export flattened canvas as JPEG via IImageExporter interface (SOLID)
 bool SessionWindow::exportJPEG(const QString &path, int quality) {
     if (m_sessionHandle == 0 || m_image.isNull()) return false;
+    auto exporter = ImageExporterRegistry::instance().exporterForFormat("jpeg");
+    return exporter && exporter->exportImage(m_image, path, quality);
+}
 
-    // JPEG doesn't support alpha; composite over white background (matches macOS ImageExporter).
-    QImage flattened(m_image.size(), QImage::Format_RGB888);
-    QPainter painter(&flattened);
-    painter.fillRect(flattened.rect(), Qt::white);
-    painter.drawImage(0, 0, m_image);
-    painter.end();
-    flattened.setDotsPerMeterX(m_image.dotsPerMeterX());
-    flattened.setDotsPerMeterY(m_image.dotsPerMeterY());
+// Parity milestone: Export flattened canvas as TIFF via IImageExporter interface (SOLID)
+bool SessionWindow::exportTIFF(const QString &path) {
+    if (m_sessionHandle == 0 || m_image.isNull()) return false;
+    auto exporter = ImageExporterRegistry::instance().exporterForFormat("tiff");
+    return exporter && exporter->exportImage(m_image, path);
+}
 
-    QImageWriter writer(path, "JPEG");
-    writer.setQuality(qBound(0, quality, 100));
-    return writer.write(flattened);
+// Parity milestone: Export flattened canvas as WebP via IImageExporter interface (SOLID)
+bool SessionWindow::exportWebP(const QString &path, int quality) {
+    if (m_sessionHandle == 0 || m_image.isNull()) return false;
+    auto exporter = ImageExporterRegistry::instance().exporterForFormat("webp");
+    return exporter && exporter->exportImage(m_image, path, quality);
 }
 
 // IO milestone: Import image using Qt's QImageReader

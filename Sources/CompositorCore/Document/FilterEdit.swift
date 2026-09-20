@@ -168,6 +168,23 @@ final class FilterEdit {
             return false
         }
         var layer = document.layers[index]
+        if kind == .removeBackground {
+            let maskBuffer = try SubjectRemoval.subjectMask(
+                image: original.image.pixels,
+                under: layer.mask?.enabledImage?.pixels,
+                selection: selection,
+                pixelToDocument: BrushRaster.pixelToDocument(placed, width: source.width, height: source.height),
+                settings: settings,
+                requireModel: true
+            )
+            let maskAsset = try LayerMask.asset(from: PortableImage(maskBuffer))
+            layer.mask = LayerMask(asset: maskAsset)
+            history.begin(kind.rawValue, document: document, selection: activeLayerID)
+            document.layers[index] = layer
+            history.end(document: document, selection: activeLayerID)
+            cancel()
+            return true
+        }
         if let owned = layer.mask, owned.placement == nil,
            owned.asset.image.width > 1 || owned.asset.image.height > 1, placed != transform {
             // Carry onto the FINAL trimmed grid, including a disabled mask so
