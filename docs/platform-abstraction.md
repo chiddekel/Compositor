@@ -6,7 +6,7 @@ and Linux Qt/Skia implementations are interchangeable (and test doubles are triv
 
 | Concern | macOS original | Interface | Linux implementation |
 |---|---|---|---|
-| 2D raster drawing | CoreGraphics `CGContext` | `CoreGraphicsCompat` shim (`CompCanvas` C ABI) | Skia raster / Vulkan |
+| 2D raster drawing | CoreGraphics `CGContext` | `CanvasBackend` / `CanvasBackendFactory` (`CanvasBackends.factories`, tried in order, pure-Swift fallback last) | `SkiaCanvasBackend` (Skia C ABI); Vulkan / OpenCV / test doubles plug in the same way |
 | Brush coverage GPU | Metal | `BrushCoverageComputing` (Swift) | Vulkan compute, CPU fallback |
 | Foreground segmentation | Vision | `ForegroundSegmenter`, `MatteRefiner` (Swift) | OpenCV bridge |
 | Image codecs | ImageIO | `IImageExporter` (C++) | Qt image plugins |

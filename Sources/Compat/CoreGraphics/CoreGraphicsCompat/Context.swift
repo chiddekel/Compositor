@@ -1,7 +1,7 @@
 // CoreGraphicsCompat/Context.swift — CGContext shim over the Skia render-device bridge.
 //
 // Plan §3, §4, §5: CoreGraphics CGContext compatibility class.
-// Wraps the Skia Canvas C ABI (CompCanvas) via CompCanvasBridge.
+// Draws through a `CanvasBackend` (Skia by default; see CanvasBackend.swift), with pure-Swift fallbacks.
 // If the Skia bridge is unavailable or fails, falls back gracefully to pure-Swift rendering.
 
 import Foundation
@@ -21,7 +21,8 @@ public final class CGContext: @unchecked Sendable {
 
     private let pixelData: UnsafeMutablePointer<UInt8>
     private let pixelCount: Int
-    private var rawCanvas: OpaquePointer?
+    /// The rasterizer drawing into `pixelData`; nil when no backend can serve this context (Swift fallbacks then run).
+    private var canvas: CanvasBackend?
     private let render: CompRenderFn?
     private var externalData: UnsafeMutableRawPointer?
     private var externalBytesPerRow: Int = 0
@@ -86,15 +87,11 @@ public final class CGContext: @unchecked Sendable {
     }
 
     private func makeCanvas() {
-        if let create = SkiaContextABI.createEx {
-            rawCanvas = create(pixelData, width, height, bytesPerRow, format == .gray ? 1 : 0)
-        } else if format == .rgba, let create = CompCanvasBridge.shared.createCanvas {
-            rawCanvas = create(pixelData, width, height, bytesPerRow)
-        }
+        canvas = CanvasBackends.make(pixels: pixelData, width: width, height: height, bytesPerRow: bytesPerRow, format: format)
         // The flip lives below the visible CTM: user space is y-up, memory rows still run top-down.
-        if isYUp, let raw = rawCanvas {
-            CompCanvasBridge.shared.translate?(raw, 0, Float(height))
-            CompCanvasBridge.shared.scale?(raw, 1, -1)
+        if isYUp {
+            canvas?.translate(0, Float(height))
+            canvas?.scale(1, -1)
         }
     }
 
@@ -137,15 +134,11 @@ public final class CGContext: @unchecked Sendable {
         }
         self.pixelData = ptr
 
-        if let create = CompCanvasBridge.shared.createCanvas {
-            self.rawCanvas = create(self.pixelData, w, h, w * 4)
-        }
+        self.canvas = CanvasBackends.make(pixels: ptr, width: w, height: h, bytesPerRow: w * 4, format: .rgba)
     }
 
     deinit {
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.destroyCanvas?(raw)
-        }
+        canvas = nil   // the backend must stop drawing before its pixel memory goes
         syncToExternalData()
         pixelData.deallocate()
     }
@@ -166,71 +159,53 @@ public final class CGContext: @unchecked Sendable {
 
     public func saveGState() {
         stateStack.append(state)
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.save?(raw)
-        }
+        canvas?.save()
     }
 
     public func restoreGState() {
         guard let prev = stateStack.popLast() else { return }
         state = prev
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.restore?(raw)
-        }
+        canvas?.restore()
     }
 
     public func setAlpha(_ alpha: CGFloat) {
         state.alpha = alpha
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.setAlpha?(raw, Float(alpha))
-        }
+        canvas?.setAlpha(Float(alpha))
     }
 
     public func setBlendMode(_ mode: CGBlendMode) {
         state.blendMode = mode
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.setBlendMode?(raw, mode.rawValue)
-        }
+        canvas?.setBlendMode(mode.rawValue)
     }
 
     public var interpolationQuality: CGInterpolationQuality {
         get { state.interpolationQuality }
         set {
             state.interpolationQuality = newValue
-            if let raw = rawCanvas {
-                CompCanvasBridge.shared.setInterpolationQuality?(raw, mapQuality(newValue))
-            }
+            canvas?.setInterpolationQuality(mapQuality(newValue))
         }
     }
 
     public func setShouldAntialias(_ antialias: Bool) {
         state.shouldAntialias = antialias
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.setAntialias?(raw, antialias ? 1 : 0)
-        }
+        canvas?.setAntialias(antialias)
     }
 
     // MARK: - Transforms
 
     public func translateBy(x: CGFloat, y: CGFloat) {
         state.ctm = state.ctm.translatedBy(x: x, y: y)
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.translate?(raw, Float(x), Float(y))
-        }
+        canvas?.translate(Float(x), Float(y))
     }
 
     public func scaleBy(x sx: CGFloat, y sy: CGFloat) {
         state.ctm = state.ctm.scaledBy(x: sx, y: sy)
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.scale?(raw, Float(sx), Float(sy))
-        }
+        canvas?.scale(Float(sx), Float(sy))
     }
 
     public func rotate(by radians: CGFloat) {
         state.ctm = state.ctm.rotated(by: radians)
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.rotate?(raw, Float(radians))
-        }
+        canvas?.rotate(Float(radians))
     }
 
     /// Apple's Swift name for `concatCTM`.
@@ -241,36 +216,22 @@ public final class CGContext: @unchecked Sendable {
 
     public func concatCTM(_ transform: CGAffineTransform) {
         state.ctm = state.ctm.concatenating(transform)
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.concat?(raw, Float(transform.a), Float(transform.b),
-                                           Float(transform.c), Float(transform.d),
-                                           Float(transform.tx), Float(transform.ty))
-        }
+        canvas?.concat(transform)
     }
 
     public var userSpaceToDeviceSpaceTransform: CGAffineTransform {
         if isYUp { return state.ctm }   // the y flip is below the visible CTM, as in CoreGraphics
-        if let raw = rawCanvas, let getCTM = CompCanvasBridge.shared.getCTM {
-            var a: Float = 1, b: Float = 0, c: Float = 0, d: Float = 1, tx: Float = 0, ty: Float = 0
-            getCTM(raw, &a, &b, &c, &d, &tx, &ty)
-            return CGAffineTransform(a: CGFloat(a), b: CGFloat(b), c: CGFloat(c), d: CGFloat(d),
-                                     tx: CGFloat(tx), ty: CGFloat(ty))
-        }
-        return state.ctm
+        return canvas?.totalMatrix ?? state.ctm
     }
 
     // MARK: - Clipping
 
     public func clip(to rect: CGRect) {
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.clipRect?(raw, Float(rect.minX), Float(rect.minY),
-                                             Float(rect.width), Float(rect.height),
-                                             state.shouldAntialias ? 1 : 0)
-        }
+        canvas?.clip(rect: rect, antialias: state.shouldAntialias)
     }
 
     public func clip(to rect: CGRect, mask: CGImage) {
-        if let raw = rawCanvas {
+        if let canvas {
             let pImg = mask.portableImage
             var bytes = pImg.bytes
             if isYUp {
@@ -280,30 +241,18 @@ public final class CGContext: @unchecked Sendable {
                 for y in 0..<pImg.height { flipped.replaceSubrange((y * row)..<((y + 1) * row), with: bytes[((pImg.height - 1 - y) * row)..<((pImg.height - y) * row)]) }
                 bytes = flipped
             }
-            bytes.withUnsafeBufferPointer { ptr in
-                CompCanvasBridge.shared.clipMask?(raw, ptr.baseAddress!, pImg.width, pImg.height,
-                                                 pImg.bytesPerRow, Float(rect.minX), Float(rect.minY),
-                                                 Float(rect.width), Float(rect.height),
-                                                 mask.isGrayPlane ? 1 : 0)
-            }
+            canvas.clip(mask: bytes, width: pImg.width, height: pImg.height, stride: pImg.bytesPerRow, rect: rect,
+                        isGray: mask.isGrayPlane)
         }
     }
 
     public func clip(using rule: CGPathFillRule = .winding) {
-        if let raw = rawCanvas, let clipPath = CompCanvasBridge.shared.clipPath,
-           let path = SkiaPathABI.make(currentPath.segments) {
-            clipPath(raw, path, rule == .evenOdd ? 1 : 0, state.shouldAntialias ? 1 : 0)
-            SkiaPathABI.destroy?(path)
-        }
+        canvas?.clip(path: currentPath.segments, evenOdd: rule == .evenOdd, antialias: state.shouldAntialias)
         currentPath = CGMutablePath()
     }
 
     public var boundingBoxOfClipPath: CGRect {
-        if let raw = rawCanvas, let getClip = CompCanvasBridge.shared.getClipBounds {
-            var x: Float = 0, y: Float = 0, w: Float = 0, h: Float = 0
-            getClip(raw, &x, &y, &w, &h)
-            return CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(w), height: CGFloat(h))
-        }
+        if let bounds = canvas?.clipBounds, !bounds.isNull { return bounds }
         return CGRect(x: 0, y: 0, width: width, height: height)
     }
 
@@ -374,13 +323,10 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func fill(_ rect: CGRect) {
-        if let raw = rawCanvas, !state.shouldAntialias, fillsThroughClip {
-            fillHardEdged(rect, on: raw)
-        } else if let raw = rawCanvas {
-            let c = state.fillColor
-            CompCanvasBridge.shared.fillRect?(raw, Float(rect.minX), Float(rect.minY),
-                                             Float(rect.width), Float(rect.height),
-                                             Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
+        if let canvas, !state.shouldAntialias, fillsThroughClip {
+            fillHardEdged(rect, on: canvas)
+        } else if let canvas {
+            canvas.fill(rect: rect, color: state.fillColor)
         } else {
             fillSwift(rect, color: state.fillColor)
         }
@@ -395,24 +341,12 @@ public final class CGContext: @unchecked Sendable {
         return abs(t.b) > 1e-9 || abs(t.c) > 1e-9
     }
 
-    private func fillHardEdged(_ rect: CGRect, on raw: OpaquePointer) {
-        let bridge = CompCanvasBridge.shared
-        guard let clipPath = bridge.clipPath, let save = bridge.save, let restore = bridge.restore,
-              let path = SkiaPathABI.make(CGPath(rect: rect).segments) else {
-            let c = state.fillColor
-            bridge.fillRect?(raw, Float(rect.minX), Float(rect.minY), Float(rect.width), Float(rect.height),
-                             Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
-            return
-        }
-        save(raw)
-        clipPath(raw, path, 0, 0)
-        SkiaPathABI.destroy?(path)
+    private func fillHardEdged(_ rect: CGRect, on canvas: CanvasBackend) {
+        canvas.save()
+        canvas.clip(path: CGPath(rect: rect).segments, evenOdd: false, antialias: false)
         // Everything the clip leaves is the rect: fill a rect that covers all of it.
-        let c = state.fillColor
-        let visible = boundingBoxOfClipPath.insetBy(dx: -2, dy: -2)
-        bridge.fillRect?(raw, Float(visible.minX), Float(visible.minY), Float(visible.width), Float(visible.height),
-                         Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
-        restore(raw)
+        canvas.fill(rect: boundingBoxOfClipPath.insetBy(dx: -2, dy: -2), color: state.fillColor)
+        canvas.restore()
     }
 
     public func fillPath(using rule: CGPathFillRule = .winding) {
@@ -424,9 +358,8 @@ public final class CGContext: @unchecked Sendable {
     /// Fills `path` (user space) with the current fill colour, honouring the clip, alpha and blend mode.
     public func fill(_ path: CGPath, rule: CGPathFillRule = .winding) {
         let c = state.fillColor
-        if let raw = rawCanvas, let fillFn = SkiaPathABI.fillPath, let sk = SkiaPathABI.make(path.segments) {
-            fillFn(raw, sk, rule == .evenOdd ? 1 : 0, Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
-            SkiaPathABI.destroy?(sk)
+        if let canvas {
+            canvas.fill(path: path.segments, evenOdd: rule == .evenOdd, color: c)
             return
         }
         fillPathSwift(path, rule: rule, color: c)
@@ -450,10 +383,9 @@ public final class CGContext: @unchecked Sendable {
     /// Strokes `path` (user space) with the current stroke colour, width, cap, join and miter limit.
     public func stroke(_ path: CGPath) {
         let c = state.strokeColor
-        if let raw = rawCanvas, let strokeFn = SkiaPathABI.strokePath, let sk = SkiaPathABI.make(path.segments) {
-            strokeFn(raw, sk, Float(state.lineWidth), state.lineCap.rawValue, state.lineJoin.rawValue,
-                     Float(state.miterLimit), Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
-            SkiaPathABI.destroy?(sk)
+        if let canvas {
+            canvas.stroke(path: path.segments, width: Float(state.lineWidth), cap: state.lineCap.rawValue,
+                          join: state.lineJoin.rawValue, miterLimit: Float(state.miterLimit), color: c)
             return
         }
         let outline = path.copy(strokingWithWidth: state.lineWidth, lineCap: state.lineCap,
@@ -470,19 +402,13 @@ public final class CGContext: @unchecked Sendable {
 
     public func drawLinearGradient(_ gradient: CGGradient, start: CGPoint, end: CGPoint,
                                    options: CGGradientDrawingOptions) {
-        guard let raw = rawCanvas, let draw = SkiaPathABI.linearGradient else { return }
-        let colors = gradient.packedColors, locations = gradient.packedLocations
-        draw(raw, Float(start.x), Float(start.y), Float(end.x), Float(end.y),
-             colors, locations, locations.count, Int32(options.rawValue))
+        canvas?.linearGradient(gradient, from: start, to: end, options: Int32(options.rawValue))
     }
 
     public func drawRadialGradient(_ gradient: CGGradient, startCenter: CGPoint, startRadius: CGFloat,
                                    endCenter: CGPoint, endRadius: CGFloat, options: CGGradientDrawingOptions) {
-        guard let raw = rawCanvas, let draw = SkiaPathABI.radialGradient else { return }
-        let colors = gradient.packedColors, locations = gradient.packedLocations
-        draw(raw, Float(startCenter.x), Float(startCenter.y), Float(startRadius),
-             Float(endCenter.x), Float(endCenter.y), Float(endRadius),
-             colors, locations, locations.count, Int32(options.rawValue))
+        canvas?.radialGradient(gradient, from: startCenter, startRadius: Float(startRadius), to: endCenter,
+                               endRadius: Float(endRadius), options: Int32(options.rawValue))
     }
 
     public func strokeEllipse(in rect: CGRect) {
@@ -490,9 +416,8 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func clear(_ rect: CGRect) {
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.clear?(raw, Float(rect.minX), Float(rect.minY),
-                                          Float(rect.width), Float(rect.height))
+        if let canvas {
+            canvas.clear(rect: rect)
         } else {
             clearSwift(rect)
         }
@@ -501,7 +426,7 @@ public final class CGContext: @unchecked Sendable {
     // MARK: - Drawing Images
 
     public func draw(_ image: CGImage, in rect: CGRect, opacity: Double = 1) {
-        if let raw = rawCanvas {
+        if let canvas {
             // The canvas already holds setAlpha's graphics state. Pass only the per-draw
             // opacity; multiplying here as well would square the context alpha in Skia.
             // In y-up user space an image's first row sits at the rect's top edge (max y): draw it through a local flip.
@@ -509,10 +434,10 @@ public final class CGContext: @unchecked Sendable {
                 saveGState()
                 translateBy(x: rect.minX, y: rect.maxY)
                 scaleBy(x: 1, y: -1)
-                drawRaw(raw, image, in: CGRect(x: 0, y: 0, width: rect.width, height: rect.height), opacity: opacity)
+                drawRaw(canvas, image, in: CGRect(x: 0, y: 0, width: rect.width, height: rect.height), opacity: opacity)
                 restoreGState()
             } else {
-                drawRaw(raw, image, in: rect, opacity: opacity)
+                drawRaw(canvas, image, in: rect, opacity: opacity)
             }
             return
         }
@@ -534,22 +459,10 @@ public final class CGContext: @unchecked Sendable {
         drawSwift(image.portableImage, in: rect, opacity: finalOpacity)
     }
 
-    private func drawRaw(_ raw: OpaquePointer, _ image: CGImage, in rect: CGRect, opacity: Double) {
-        let pImg = image.portableImage
-        let sourceFormat: Int32 = image.isGrayPlane ? 1 : 0
-        pImg.bytes.withUnsafeBufferPointer { ptr in
-            if let drawEx = SkiaContextABI.drawImageEx {
-                drawEx(raw, ptr.baseAddress!, pImg.width, pImg.height, pImg.bytesPerRow, sourceFormat,
-                       Float(rect.minX), Float(rect.minY), Float(rect.width), Float(rect.height),
-                       Float(opacity), state.blendMode.rawValue, mapQuality(state.interpolationQuality))
-            } else if !image.isGrayPlane {
-                CompCanvasBridge.shared.drawImageRect?(raw, ptr.baseAddress!, pImg.width, pImg.height,
-                                                      pImg.bytesPerRow, Float(rect.minX), Float(rect.minY),
-                                                      Float(rect.width), Float(rect.height),
-                                                      Float(opacity), state.blendMode.rawValue,
-                                                      mapQuality(state.interpolationQuality))
-            }
-        }
+    /// `opacity` is the caller's own; the context's alpha is applied by the backend from its tracked state.
+    private func drawRaw(_ canvas: CanvasBackend, _ image: CGImage, in rect: CGRect, opacity: Double) {
+        canvas.draw(image: image.portableImage, isGray: image.isGrayPlane, in: rect, opacity: Float(opacity),
+                    blendMode: state.blendMode.rawValue, quality: mapQuality(state.interpolationQuality))
     }
 
     public func draw(_ image: PortableImage, in rect: CGRect, opacity: Double = 1) {
@@ -560,15 +473,11 @@ public final class CGContext: @unchecked Sendable {
 
     public func beginTransparencyLayer(auxiliaryInfo: [AnyHashable: Any]? = nil) {
         saveGState()
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.beginTransparencyLayer?(raw, Float(state.alpha))
-        }
+        canvas?.beginLayer(alpha: Float(state.alpha))
     }
 
     public func endTransparencyLayer() {
-        if let raw = rawCanvas {
-            CompCanvasBridge.shared.endTransparencyLayer?(raw)
-        }
+        canvas?.endLayer()
         restoreGState()
     }
 
