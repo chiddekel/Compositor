@@ -111,7 +111,11 @@ public final class NSTrackingArea {
     /// A bitmap sized for this view's rect at the window's backing scale, to draw into with `cacheDisplay`.
     open func bitmapImageRepForCachingDisplay(in rect: CGRect) -> NSBitmapImageRep? {
         let w = max(1, Int((rect.width * backingScaleFactor).rounded(.up))), h = max(1, Int((rect.height * backingScaleFactor).rounded(.up)))
-        return NSBitmapImageRep(context: CGContext(width: w, height: h))
+        // A real Core Graphics bitmap context: origin bottom-left, so images draw upright in a non-flipped view.
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        return NSBitmapImageRep(context: ctx)
     }
     /// Renders the view into `rep` by running its `draw(_:)` with the rep's context current, in the view's own
     /// coordinates: y-up for regular views, y-down for flipped ones (the context itself is top-left based).
@@ -122,8 +126,9 @@ public final class NSTrackingArea {
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: isFlipped)
         ctx.saveGState()
         ctx.scaleBy(x: backingScaleFactor, y: backingScaleFactor)
+        // The bitmap context is y-up like Core Graphics's, so a flipped view flips it back to its own y-down space.
+        if isFlipped { ctx.translateBy(x: 0, y: rect.height); ctx.scaleBy(x: 1, y: -1) }
         ctx.translateBy(x: -rect.minX, y: -rect.minY)
-        if !isFlipped { ctx.translateBy(x: 0, y: rect.maxY); ctx.scaleBy(x: 1, y: -1); ctx.translateBy(x: 0, y: -rect.minY) }
         viewWillDraw()
         draw(rect)
         for child in subviews where !child.isHidden {

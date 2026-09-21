@@ -11,6 +11,7 @@
 // This host has no Swift toolchain; `swift build` is run in the SDK.
 
 import PackageDescription
+import Foundation
 
 let package = Package(
     name: "Compositor",
@@ -154,8 +155,7 @@ let package = Package(
             exclude: ["SliderSnapTests.swift", "FloatingPanelTests.swift", "CanvasThumbnailTests.swift",
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
-                      "BlendShortcutTests.swift", "TransformPressTests.swift", "DistortTests.swift",
-                      "FilterTests.swift", "LayerAppearanceTests.swift", "TiledLayerTests.swift"],
+                      "BlendShortcutTests.swift", "TransformPressTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
@@ -193,7 +193,9 @@ let package = Package(
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB",
                 ]),
             ],
-            linkerSettings: [.linkedLibrary("heif")]   // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif
+            // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
+            // the link follows the same condition.
+            linkerSettings: FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : []
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",

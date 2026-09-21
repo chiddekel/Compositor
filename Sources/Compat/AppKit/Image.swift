@@ -29,7 +29,10 @@ open class NSImage: @unchecked Sendable {
     public convenience init(size: CGSize, flipped: Bool, drawingHandler: (CGRect) -> Bool) {
         self.init(size: size)
         let w = max(1, Int(size.width)), h = max(1, Int(size.height))
-        let ctx = CGContext(width: w, height: h)
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        if flipped { ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 1, y: -1) }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: flipped)
         _ = drawingHandler(CGRect(origin: .zero, size: size))

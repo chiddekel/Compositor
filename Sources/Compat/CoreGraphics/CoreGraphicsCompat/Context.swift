@@ -374,7 +374,9 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func fill(_ rect: CGRect) {
-        if let raw = rawCanvas {
+        if let raw = rawCanvas, !state.shouldAntialias, fillsThroughClip {
+            fillHardEdged(rect, on: raw)
+        } else if let raw = rawCanvas {
             let c = state.fillColor
             CompCanvasBridge.shared.fillRect?(raw, Float(rect.minX), Float(rect.minY),
                                              Float(rect.width), Float(rect.height),
@@ -382,6 +384,35 @@ public final class CGContext: @unchecked Sendable {
         } else {
             fillSwift(rect, color: state.fillColor)
         }
+    }
+
+    /// A hard-edged rect fill under a rotated or skewed transform. Skia rounds an aliased fill's edge differently from an
+    /// aliased clip's, and Core Graphics does not: a fill and a clip to the same rect cover the same pixels. Code that
+    /// clears a region and then draws into a clip of it (upstream's tiled renderer) depends on that, or a seam pixel is
+    /// drawn without having been cleared. Filling through a clip built from the same path as `clip(to:)` restores it.
+    private var fillsThroughClip: Bool {
+        let t = userSpaceToDeviceSpaceTransform
+        return abs(t.b) > 1e-9 || abs(t.c) > 1e-9
+    }
+
+    private func fillHardEdged(_ rect: CGRect, on raw: OpaquePointer) {
+        let bridge = CompCanvasBridge.shared
+        guard let clipPath = bridge.clipPath, let save = bridge.save, let restore = bridge.restore,
+              let path = SkiaPathABI.make(CGPath(rect: rect).segments) else {
+            let c = state.fillColor
+            bridge.fillRect?(raw, Float(rect.minX), Float(rect.minY), Float(rect.width), Float(rect.height),
+                             Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
+            return
+        }
+        save(raw)
+        clipPath(raw, path, 0, 0)
+        SkiaPathABI.destroy?(path)
+        // Everything the clip leaves is the rect: fill a rect that covers all of it.
+        let c = state.fillColor
+        let visible = boundingBoxOfClipPath.insetBy(dx: -2, dy: -2)
+        bridge.fillRect?(raw, Float(visible.minX), Float(visible.minY), Float(visible.width), Float(visible.height),
+                         Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
+        restore(raw)
     }
 
     public func fillPath(using rule: CGPathFillRule = .winding) {

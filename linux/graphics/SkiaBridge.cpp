@@ -41,6 +41,7 @@
 #include "include/core/SkPathUtils.h"
 #include "include/core/SkPathIter.h"
 #include "include/core/SkRRect.h"
+#include "include/core/SkRegion.h"
 #include "include/pathops/SkPathOps.h"
 #include "include/effects/SkGradient.h"
 #elif __has_include(<skia/core/SkCanvas.h>)
@@ -60,6 +61,7 @@
 #include <skia/core/SkPathUtils.h>
 #include <skia/core/SkPathIter.h>
 #include <skia/core/SkRRect.h>
+#include <skia/core/SkRegion.h>
 #include <skia/pathops/SkPathOps.h>
 #include <skia/effects/SkGradient.h>
 #endif
@@ -695,6 +697,19 @@ void compositor_canvas_clip_path(CompCanvas *canvas, const CompPath *path, int e
 #if defined(COMPOSITOR_HAS_SKIA)
     if (!canvas || !canvas->canvas || !path) return;
     SkPath p = path->get_path(even_odd != 0);
+    const SkMatrix m = canvas->canvas->getTotalMatrix();
+    if (antialias == 0 && !m.rectStaysRect()) {
+        // A hard-edged clip under a rotation or skew is rasterized once, against the whole surface, and applied as a
+        // pixel region. Left to Skia, the pixels on an edge depend on what is already clipped (it trims the edge to
+        // the current clip first, which shifts its fixed-point rounding), so the same path clips a different pixel
+        // at a tie the second time. Core Graphics has one answer per path; this gives Skia one too.
+        SkPath device = p.makeTransform(m);
+        SkRegion whole(SkIRect::MakeWH(static_cast<int>(canvas->width), static_cast<int>(canvas->height)));
+        SkRegion region;
+        region.setPath(device, whole);
+        canvas->canvas->clipRegion(region, SkClipOp::kIntersect);
+        return;
+    }
     canvas->canvas->clipPath(p, SkClipOp::kIntersect, antialias != 0);
 #else
     (void)canvas; (void)path; (void)even_odd; (void)antialias;

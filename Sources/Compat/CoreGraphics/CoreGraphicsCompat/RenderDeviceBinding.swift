@@ -107,9 +107,8 @@ public final class CompCanvasBridge: @unchecked Sendable {
         #if canImport(Glibc)
         let candidates = [
             ProcessInfo.processInfo.environment["COMPOSITOR_SKIA_BRIDGE"] ?? "",
-            "build-cmake/libCompositorSkiaBridge.so",
-            "./build-cmake/libCompositorSkiaBridge.so",
-            "./libCompositorSkiaBridge.so",
+            // Bare name: the system loader's search path only. Never the working directory, where a stray
+            // library would be picked up.
             "libCompositorSkiaBridge.so",
             "/app/lib/libCompositorSkiaBridge.so"
         ]

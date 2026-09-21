@@ -56,13 +56,13 @@ public enum ImageCodecRegistry {
     static let gif: ImageCodecBackend = PortableGIFEncoder()
 
     /// Without a host-registered backend, look for the Qt codec library (`COMPOSITOR_IMAGEIO_BACKEND`, then the
-    /// usual build/install locations) once, the way the Skia bridge is found.
+    /// system loader path and the Flatpak install) once, the way the Skia bridge is found.
     private static let autoloaded: Bool = {
         guard host == nil else { return false }
         #if canImport(Glibc)
         let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
-        let candidates = [env, "build-cmake/libCompositorQtImageIO.so", "./libCompositorQtImageIO.so",
-                          "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"]
+        // Environment override, the system loader's path, or the Flatpak install: never the working directory.
+        let candidates = [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"]
         typealias Functions = @convention(c) (UnsafeMutablePointer<CompositorImageDecodeFn?>?, UnsafeMutablePointer<CompositorImageEncodeFn?>?) -> Int32
         for path in candidates where !path.isEmpty {
             guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_imageio_functions") else { continue }
