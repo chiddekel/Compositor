@@ -131,7 +131,7 @@ nonisolated enum MagicWand {
         let edgeCount = loops.reduce(0) { $0 + $1.count }
         guard edgeCount <= edgeLimit else { throw Failure.tooDetailed }
         guard edgeCount >= 3 else { return nil }
-        return .polygon(loops.flatMap { $0 })
+        return .contours(loops)
     }
 }
 
@@ -189,7 +189,7 @@ extension EditorSession {
     /// boolean operations are exchanged for per-pixel coverage combine over the two
     /// paths' union bounding box, then a re-outline back to a path. Subtract from no
     /// selection selects nothing new, so nothing changes.
-    private func applySelection(_ path: PortablePath, mode: SelectionMode,
+    func applySelection(_ path: PortablePath, mode: SelectionMode,
                                 antialiased: Bool, name: String) throws {
         guard let doc = document else { return }
         let newMask = DocumentSelection(path: path, antialiased: antialiased)
@@ -225,11 +225,11 @@ extension EditorSession {
     }
 
     /// Re-traces a coverage mask to a selection path, shifted back to document space.
-    private func selection(from mask: MaskBuffer, rect: CGRect, antialiased: Bool) -> DocumentSelection {
+    func selection(from mask: MaskBuffer, rect: CGRect, antialiased: Bool) -> DocumentSelection {
         let loops = MaskTracing.outline(grid: mask.bytes, width: mask.width, height: mask.height,
                                         channels: 1, offset: 0) { $0 >= 128 }
         guard !loops.isEmpty else { return DocumentSelection(path: .polygon([]), antialiased: antialiased) }
-        let points = loops.flatMap { $0 }.map { CGPoint(x: $0.x + rect.minX, y: $0.y + rect.minY) }
-        return DocumentSelection(path: .polygon(points), antialiased: antialiased)
+        let shifted = loops.map { loop in loop.map { CGPoint(x: $0.x + rect.minX, y: $0.y + rect.minY) } }
+        return DocumentSelection(path: .contours(shifted), antialiased: antialiased)
     }
 }

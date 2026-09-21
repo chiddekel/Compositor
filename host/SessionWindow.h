@@ -211,6 +211,12 @@ private:
     int m_transformHandle = -1;  // -1 none, 0-7 resize (TL,T,TR,R,BR,B,BL,L), 8 rotate, 9 move body
     LayerGeometry m_transformStart;
     LayerGeometry m_transformDraft;
+    // Selection tools: combine mode (New/Add/Subtract) and lasso style.
+    QString m_selectionMode = "New";
+    bool m_polygonalLasso = false;
+    bool m_polyActive = false;
+    qint64 m_lastPolyClick = 0;
+    void commitLassoSelection();
     void syncTransformFields();
     void applyTransformFields(int changedField);
     int hitTestTransformHandle(const QPointF &canvasPoint) const;

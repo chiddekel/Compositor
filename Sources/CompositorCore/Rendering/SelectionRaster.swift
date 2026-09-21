@@ -15,18 +15,27 @@ extension PortablePath {
             let y = max(0, abs(point.y - rect.midY) - (rect.height / 2 - r))
             return x * x + y * y <= r * r
         case .polygon(let points):
-            guard points.count >= 3 else { return false }
+            return PortablePath.loopContains(points, point)
+        case .contours(let loops):
+            // Even-odd across loops: a point inside an odd number of loops is selected.
             var inside = false
-            var previous = points.last!
-            for current in points {
-                if (current.y > point.y) != (previous.y > point.y),
-                   point.x < (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y) + current.x {
-                    inside.toggle()
-                }
-                previous = current
-            }
+            for loop in loops where PortablePath.loopContains(loop, point) { inside.toggle() }
             return inside
         }
+    }
+
+    fileprivate static func loopContains(_ points: [CGPoint], _ point: CGPoint) -> Bool {
+        guard points.count >= 3 else { return false }
+        var inside = false
+        var previous = points.last!
+        for current in points {
+            if (current.y > point.y) != (previous.y > point.y),
+               point.x < (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y) + current.x {
+                inside.toggle()
+            }
+            previous = current
+        }
+        return inside
     }
 }
 

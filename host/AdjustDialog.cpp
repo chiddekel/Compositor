@@ -18,6 +18,8 @@
 #include <QSlider>
 #include <QSignalBlocker>
 #include <cmath>
+#include <algorithm>
+#include <functional>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTimer>
@@ -194,6 +196,82 @@ private:
     }
     std::vector<double> m_bins;
     double m_b = 0, m_g = 1, m_w = 255;
+    int m_drag = -1;
+};
+
+
+// Curves graph: drag points, click to add, double-click a point to remove it.
+class CurveEditor : public QWidget {
+public:
+    std::function<void(const std::vector<QPointF> &)> onChange;
+    explicit CurveEditor(QWidget *parent = nullptr) : QWidget(parent) { setFixedSize(260, 260); setCursor(Qt::CrossCursor); }
+    void setPoints(const std::vector<QPointF> &pts) { m_pts = pts; update(); }
+protected:
+    QRectF area() const { return QRectF(6, 6, width() - 12, height() - 12); }
+    QPointF toWidget(const QPointF &pt) const { return QPointF(area().left() + pt.x() / 255.0 * area().width(), area().bottom() - pt.y() / 255.0 * area().height()); }
+    QPointF toValue(const QPointF &w) const {
+        return QPointF(qBound(0.0, (w.x() - area().left()) / area().width() * 255.0, 255.0),
+                       qBound(0.0, (area().bottom() - w.y()) / area().height() * 255.0, 255.0));
+    }
+    int hit(const QPointF &w) const {
+        for (int i = 0; i < int(m_pts.size()); ++i) if (QLineF(w, toWidget(m_pts[i])).length() <= 8) return i;
+        return -1;
+    }
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = area();
+        p.fillRect(r, QColor(0x14, 0x14, 0x16));
+        p.setPen(QPen(QColor(0x2e, 0x2e, 0x32), 1));
+        for (int i = 1; i < 4; ++i) {
+            p.drawLine(QPointF(r.left() + r.width() * i / 4, r.top()), QPointF(r.left() + r.width() * i / 4, r.bottom()));
+            p.drawLine(QPointF(r.left(), r.top() + r.height() * i / 4), QPointF(r.right(), r.top() + r.height() * i / 4));
+        }
+        p.setPen(QPen(QColor(0x44, 0x44, 0x4a), 1, Qt::DashLine));
+        p.drawLine(r.bottomLeft(), r.topRight());
+        std::vector<QPointF> sorted = m_pts;
+        std::sort(sorted.begin(), sorted.end(), [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+        if (sorted.size() >= 2) {
+            // Catmull-Rom style smoothing through the points for display.
+            QPainterPath path;
+            path.moveTo(toWidget(sorted.front()));
+            for (size_t i = 0; i + 1 < sorted.size(); ++i) {
+                const QPointF p0 = toWidget(sorted[i == 0 ? 0 : i - 1]), p1 = toWidget(sorted[i]), p2 = toWidget(sorted[i + 1]),
+                              p3 = toWidget(sorted[i + 2 < sorted.size() ? i + 2 : i + 1]);
+                path.cubicTo(p1 + (p2 - p0) / 6.0, p2 - (p3 - p1) / 6.0, p2);
+            }
+            p.setPen(QPen(QColor(0xf2, 0xf2, 0xf5), 1.6)); p.setBrush(Qt::NoBrush);
+            p.drawPath(path);
+        }
+        for (size_t i = 0; i < m_pts.size(); ++i) {
+            p.setPen(QPen(QColor(0x10, 0x10, 0x12), 1.4));
+            p.setBrush(int(i) == m_drag ? QColor(0x0a, 0x84, 0xff) : QColor(0xf2, 0xf2, 0xf5));
+            p.drawEllipse(toWidget(m_pts[i]), 4.5, 4.5);
+        }
+    }
+    void mousePressEvent(QMouseEvent *e) override {
+        m_drag = hit(e->position());
+        if (m_drag < 0) {
+            m_pts.push_back(toValue(e->position()));
+            m_drag = int(m_pts.size()) - 1;
+        }
+        emitChange();
+    }
+    void mouseMoveEvent(QMouseEvent *e) override {
+        if (m_drag < 0 || !(e->buttons() & Qt::LeftButton)) return;
+        QPointF v = toValue(e->position());
+        v.setX(std::round(v.x() * 10) / 10.0); v.setY(std::round(v.y() * 10) / 10.0);
+        m_pts[m_drag] = v;
+        emitChange();
+    }
+    void mouseReleaseEvent(QMouseEvent *) override { m_drag = -1; update(); }
+    void mouseDoubleClickEvent(QMouseEvent *e) override {
+        const int i = hit(e->position());
+        if (i >= 0 && m_pts.size() > 2) { m_pts.erase(m_pts.begin() + i); m_drag = -1; emitChange(); }
+    }
+private:
+    void emitChange() { update(); if (onChange) onChange(m_pts); }
+    std::vector<QPointF> m_pts;
     int m_drag = -1;
 };
 
@@ -381,65 +459,80 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, 
         channel->setObjectName("channel"); channel->setAccessibleName("Channel");
         channel->addItems({"RGB", "Red", "Green", "Blue"});
         form->addRow(tr("&Channel"), channel);
+        auto *graph = new CurveEditor(this);
+        graph->setObjectName("curveGraph");
+        extras->addWidget(graph, 0, Qt::AlignHCenter);
         auto *table = new QTableWidget(2, 2, this);
         table->setObjectName("points"); table->setAccessibleName("Points");
         table->setHorizontalHeaderLabels({tr("Input"), tr("Output")});
         table->setAcceptDrops(false);
+        table->setMaximumHeight(110);
         extras->addWidget(table);
         auto *rowButtons = new QHBoxLayout;
         auto *addBtn = new QPushButton(tr("Add"), this), *delBtn = new QPushButton(tr("Delete"), this),
              *resetBtn = new QPushButton(tr("Reset channel"), this);
-        rowButtons->addWidget(addBtn); rowButtons->addWidget(delBtn); rowButtons->addWidget(resetBtn);
+        rowButtons->addWidget(addBtn); rowButtons->addWidget(delBtn); rowButtons->addStretch(); rowButtons->addWidget(resetBtn);
         extras->addLayout(rowButtons);
         auto channels = std::make_shared<QJsonArray>(curveChannelsIdentity());
-        auto reload = [=](int index) {
-            const QJsonArray points = channels->at(index).toArray();
-            table->setRowCount(points.size());
-            for (int i = 0; i < points.size(); ++i) {
-                auto *x = new QDoubleSpinBox(table), *y = new QDoubleSpinBox(table);
-                x->setRange(0, 255); y->setRange(0, 255); x->setDecimals(1); y->setDecimals(1); x->setKeyboardTracking(false); y->setKeyboardTracking(false);
-                x->setValue(points.at(i).toObject().value("x").toDouble());
-                y->setValue(points.at(i).toObject().value("y").toDouble());
-                table->setCellWidget(i, 0, x); table->setCellWidget(i, 1, y);
-            }
-        };
-        auto sync = [=] {
-            QJsonArray points;
+        auto syncing = std::make_shared<bool>(false);
+        auto pointsFromTable = [=] {
+            std::vector<QPointF> pts;
             for (int i = 0; i < table->rowCount(); ++i) {
                 auto *x = qobject_cast<QDoubleSpinBox *>(table->cellWidget(i, 0));
                 auto *y = qobject_cast<QDoubleSpinBox *>(table->cellWidget(i, 1));
-                points.append(QJsonObject{{"x", x->value()}, {"y", y->value()}});
+                if (x && y) pts.push_back(QPointF(x->value(), y->value()));
             }
+            return pts;
+        };
+        // sync: table -> model + graph + debounced preview.
+        std::shared_ptr<std::function<void()>> sync = std::make_shared<std::function<void()>>();
+        auto addRow = [=](int row, double xv, double yv) {
+            auto *x = new QDoubleSpinBox(table), *y = new QDoubleSpinBox(table);
+            x->setRange(0, 255); y->setRange(0, 255); x->setDecimals(1); y->setDecimals(1);
+            x->setKeyboardTracking(false); y->setKeyboardTracking(false);
+            x->setValue(xv); y->setValue(yv);
+            table->setCellWidget(row, 0, x); table->setCellWidget(row, 1, y);
+            connect(x, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) { if (!*syncing) (*sync)(); });
+            connect(y, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) { if (!*syncing) (*sync)(); });
+        };
+        auto populate = [=](const std::vector<QPointF> &pts) {
+            *syncing = true;
+            table->setRowCount(int(pts.size()));
+            for (int i = 0; i < int(pts.size()); ++i) addRow(i, pts[i].x(), pts[i].y());
+            *syncing = false;
+        };
+        *sync = [=] {
+            const std::vector<QPointF> pts = pointsFromTable();
+            QJsonArray points;
+            for (const QPointF &pt : pts) points.append(QJsonObject{{"x", pt.x()}, {"y", pt.y()}});
             channels->replace(channel->currentIndex(), points);
             adjustment->insert("curves", QJsonObject{{"channel", channel->currentText()}, {"channels", *channels}});
+            graph->setPoints(pts);
             debounce->start();
         };
+        auto reload = [=](int index) {
+            std::vector<QPointF> pts;
+            for (const QJsonValue &v : channels->at(index).toArray()) pts.push_back(QPointF(v.toObject().value("x").toDouble(), v.toObject().value("y").toDouble()));
+            populate(pts);
+            graph->setPoints(pts);
+        };
+        graph->onChange = [=](const std::vector<QPointF> &pts) { populate(pts); (*sync)(); };
         reload(channel->currentIndex());
-        auto anyChanged = [=] { for (int i = 0; i < table->rowCount(); ++i) {
-            auto *x = qobject_cast<QDoubleSpinBox *>(table->cellWidget(i, 0));
-            auto *y = qobject_cast<QDoubleSpinBox *>(table->cellWidget(i, 1));
-            connect(x, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) { sync(); });
-            connect(y, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) { sync(); });
-        } };
-        anyChanged();
-        connect(channel, qOverload<int>(&QComboBox::currentIndexChanged), this, [=](int index) { reload(index); anyChanged(); });
+        connect(channel, qOverload<int>(&QComboBox::currentIndexChanged), this, [=](int index) { reload(index); });
         connect(addBtn, &QPushButton::clicked, this, [=] {
-            int row = table->rowCount();
-            table->setRowCount(row + 1);
-            auto *x = new QDoubleSpinBox(table), *y = new QDoubleSpinBox(table);
-            x->setRange(0, 255); y->setRange(0, 255); x->setDecimals(1); y->setDecimals(1); x->setKeyboardTracking(false); y->setKeyboardTracking(false);
-            x->setValue(255); y->setValue(255);
-            table->setCellWidget(row, 0, x); table->setCellWidget(row, 1, y);
-            connect(x, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) { sync(); });
-            connect(y, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) { sync(); });
-            sync();
+            std::vector<QPointF> pts = pointsFromTable();
+            pts.push_back(QPointF(255, 255));
+            populate(pts); (*sync)();
         });
         connect(delBtn, &QPushButton::clicked, this, [=] {
             if (table->rowCount() <= 2) return;
-            table->removeRow(table->currentRow() < 0 ? table->rowCount() - 1 : table->currentRow());
-            sync();
+            std::vector<QPointF> pts = pointsFromTable();
+            pts.erase(pts.begin() + (table->currentRow() < 0 ? int(pts.size()) - 1 : table->currentRow()));
+            populate(pts); (*sync)();
         });
-        connect(resetBtn, &QPushButton::clicked, this, [=] { reload(channel->currentIndex()); sync(); });
+        connect(resetBtn, &QPushButton::clicked, this, [=] {
+            populate({QPointF(0, 0), QPointF(255, 255)}); (*sync)();
+        });
     }
     if (kind == "Exposure") {
         auto *exposure = new QDoubleSpinBox(this), *offset = new QDoubleSpinBox(this), *gamma = new QDoubleSpinBox(this);

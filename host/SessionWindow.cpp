@@ -651,6 +651,85 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
+    // Floating "Adjustments" palette: one row per adjustment, opens its sheet.
+    {
+        auto *adjDock = new QDockWidget(tr("Adjustments"), this);
+        adjDock->setObjectName("dock.adjustments");
+        adjDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetMovable);
+        auto *body = new QWidget(adjDock);
+        auto *rows = new QVBoxLayout(body);
+        rows->setContentsMargins(6, 6, 6, 8);
+        rows->setSpacing(2);
+        auto adjustmentIcon = [](int kind) {
+            QPixmap pm(48, 48);
+            pm.fill(Qt::transparent);
+            QPainter g(&pm);
+            g.setRenderHint(QPainter::Antialiasing, true);
+            const QColor ink(0xc8, 0xc8, 0xce);
+            g.setPen(QPen(ink, 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            g.setBrush(Qt::NoBrush);
+            switch (kind) {
+            case 0:  // Hue/Saturation: half-filled disc
+                g.drawEllipse(QPointF(24, 24), 15, 15);
+                g.setBrush(ink);
+                { QPainterPath half; half.moveTo(24, 9); half.arcTo(QRectF(9, 9, 30, 30), 90, -180); half.closeSubpath(); g.drawPath(half); }
+                break;
+            case 1:  // Levels: two sliders
+                g.drawLine(8, 17, 40, 17); g.drawLine(8, 31, 40, 31);
+                g.setBrush(QColor(0x1e, 0x1e, 0x20)); g.drawEllipse(QPointF(29, 17), 4, 4); g.drawEllipse(QPointF(18, 31), 4, 4);
+                break;
+            case 2:  // Curves
+                { QPainterPath c; c.moveTo(8, 40); c.cubicTo(20, 40, 24, 10, 40, 8); g.drawPath(c); g.setBrush(ink); g.drawEllipse(QPointF(8, 40), 3, 3); g.drawEllipse(QPointF(40, 8), 3, 3); }
+                break;
+            case 3:  // Exposure: plus/minus in a circle
+                g.drawEllipse(QPointF(24, 24), 15, 15);
+                g.drawLine(24, 15, 24, 25); g.drawLine(19, 20, 29, 20); g.drawLine(19, 31, 29, 31);
+                break;
+            case 4:  // Grain: dot lattice
+                g.setPen(Qt::NoPen); g.setBrush(ink);
+                for (int ix = 0; ix < 4; ++ix) for (int iy = 0; iy < 4; ++iy) g.drawEllipse(QPointF(10 + ix * 9.3, 10 + iy * 9.3), 1.8, 1.8);
+                break;
+            default:  // Gradient Map: palette blob
+                g.drawEllipse(QPointF(24, 24), 15, 15);
+                g.setPen(Qt::NoPen); g.setBrush(ink);
+                g.drawEllipse(QPointF(18, 19), 2.4, 2.4); g.drawEllipse(QPointF(28, 18), 2.4, 2.4);
+                g.drawEllipse(QPointF(16, 28), 2.4, 2.4); g.drawEllipse(QPointF(27, 30), 2.4, 2.4);
+                break;
+            }
+            pm.setDevicePixelRatio(2.0);
+            return QIcon(pm);
+        };
+        const QStringList kinds = {"Hue/Saturation", "Levels", "Curves", "Exposure", "Grain", "Gradient Map"};
+        for (int i = 0; i < kinds.size(); ++i) {
+            const QString kind = kinds.at(i);
+            auto *row = new QToolButton(body);
+            row->setObjectName("adjustments." + kind);
+            row->setText(kind);
+            row->setIcon(adjustmentIcon(i));
+            row->setIconSize(QSize(24, 24));
+            row->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            row->setAutoRaise(true);
+            row->setCursor(Qt::PointingHandCursor);
+            row->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            row->setMinimumHeight(38);
+            row->setStyleSheet("QToolButton { text-align: left; padding: 4px 8px; font-size: 13px; color: #e6e6ea; border: none; border-radius: 6px; }"
+                               "QToolButton:hover { background: #2c2d31; }");
+            connect(row, &QToolButton::clicked, this, [this, kind] { showAdjustDialog(kind); });
+            rows->addWidget(row);
+        }
+        rows->addStretch();
+        adjDock->setWidget(body);
+        adjDock->setMinimumWidth(220);
+        addDockWidget(Qt::RightDockWidgetArea, adjDock);
+        adjDock->setFloating(true);
+        adjDock->hide();
+        QAction *toggle = adjDock->toggleViewAction();
+        toggle->setText(tr("Adjustments Panel"));
+        toggle->setObjectName("view.adjustmentsPanel");
+        viewMenu->addSeparator();
+        viewMenu->addAction(toggle);
+    }
+
     connect(m_layersView->selectionModel(), &QItemSelectionModel::currentChanged,
             this, [this](const QModelIndex &current, const QModelIndex &) {
         if (m_syncingLayers || !current.isValid() || m_sessionHandle == 0) return;
@@ -713,7 +792,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     select->addAction(tr("Deselect"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})") == 0) { refreshImage(); refreshLayers(); } })->setObjectName("select.deselect");
 
     imageMenu->addSeparator();
-    imageMenu->addAction(tr("Fill Foreground"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"fillForeground"})") == 0) refreshImage(); })->setObjectName("fill.foreground");
+    imageMenu->addAction(tr("Fill Foreground"), this, [this] { if (sendCommand({{"action", "fillForeground"}, {"parameters", QJsonObject{{"red", m_brushColor.redF()}, {"green", m_brushColor.greenF()}, {"blue", m_brushColor.blueF()}}}})) refreshImage(); })->setObjectName("fill.foreground");
     imageMenu->addAction(tr("Fill Background"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"fillBackground"})") == 0) refreshImage(); })->setObjectName("fill.background");
     imageMenu->addAction(tr("Clear Selection"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"clearSelection"})") == 0) refreshImage(); })->setObjectName("fill.clear");
 
@@ -830,6 +909,21 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     p.drawRect(targetI.adjusted(0, 0, -1, -1));
 
     drawTransformControls(p);
+
+    if (m_tool == Tool::Lasso && !m_lassoPoints.empty()) {
+        QPolygonF outline;
+        for (const QPointF &pt : m_lassoPoints) outline << documentToCanvasPoint(pt);
+        if (m_polygonalLasso && m_polyActive) outline << documentToCanvasPoint(m_currentPoint);
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
+        p.drawPolyline(outline);
+        if (m_polygonalLasso) {
+            p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1)); p.setBrush(Qt::white);
+            for (const QPointF &pt : m_lassoPoints) p.drawRect(QRectF(documentToCanvasPoint(pt) - QPointF(3, 3), QSizeF(6, 6)));
+        }
+        p.restore();
+    }
 
     // Interactive drag feedback (selection / crop marquee)
     if (m_painting && (m_tool == Tool::RectSelect || m_tool == Tool::EllipseSelect || m_tool == Tool::Crop)) {
@@ -1227,14 +1321,36 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
     case Tool::Crop:
         m_painting = true;
         break;
-    case Tool::Lasso:
-        m_lassoPoints.clear();
-        m_lassoPoints.push_back(point);
-        m_painting = true;
+    case Tool::Lasso: {
+        if (!m_polygonalLasso) {
+            m_lassoPoints.clear();
+            m_lassoPoints.push_back(point);
+            m_painting = true;
+            break;
+        }
+        // Polygonal: each click adds a vertex; a double-click or a click on the first vertex closes it.
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (!m_polyActive) {
+            m_lassoPoints.clear();
+            m_lassoPoints.push_back(point);
+            m_polyActive = true;
+        } else {
+            const QPointF first = documentToCanvasPoint(m_lassoPoints.front());
+            const bool onFirst = QLineF(first, event->position()).length() <= 7.0;
+            const bool doubleClick = now - m_lastPolyClick < 350 && QLineF(documentToCanvasPoint(m_lassoPoints.back()), event->position()).length() <= 6.0;
+            if ((onFirst || doubleClick) && m_lassoPoints.size() >= 3) {
+                commitLassoSelection();
+                m_polyActive = false;
+            } else if (!doubleClick) {
+                m_lassoPoints.push_back(point);
+            }
+        }
+        m_lastPolyClick = now;
         break;
+    }
     case Tool::MagicWand: {
-        const QString json = QString(R"({"version":1,"action":"magicWand","x":%1,"y":%2,"kind":"New","parameters":{"tolerance":32,"contiguous":1,"sampleAllLayers":0}})")
-            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
+        const QString json = QString(R"({"version":1,"action":"magicWand","x":%1,"y":%2,"kind":"%3","parameters":{"tolerance":32,"contiguous":1,"sampleAllLayers":0}})")
+            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_selectionMode);
         const QByteArray bytes = json.toUtf8();
         if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
             refreshImage();
@@ -1314,6 +1430,16 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
     }
 }
 
+void SessionWindow::commitLassoSelection() {
+    if (m_lassoPoints.size() >= 3) {
+        QJsonArray pts;
+        for (const QPointF &pt : m_lassoPoints) pts.append(QJsonArray{pt.x(), pt.y()});
+        if (sendCommand({{"action", "selectLasso"}, {"points", pts}, {"kind", m_selectionMode}})) refreshImage();
+    }
+    m_lassoPoints.clear();
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
 void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || !m_painting) return;
     m_painting = false;
@@ -1339,8 +1465,8 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         const int h = qRound(std::abs(point.y() - m_dragStart.y()));
         if (w > 0 && h > 0) {
             const char *action = (m_tool == Tool::RectSelect) ? "selectRectangle" : "selectEllipse";
-            const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3,"width":%4,"height":%5})")
-                .arg(action).arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h);
+            const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3,"width":%4,"height":%5,"kind":"%6"})")
+                .arg(action).arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h).arg(m_selectionMode);
             const QByteArray bytes = json.toUtf8();
             if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
                 refreshImage();
@@ -1365,20 +1491,7 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     }
     case Tool::Lasso: {
         m_lassoPoints.push_back(point);
-        if (m_lassoPoints.size() >= 3) {
-            QString pts = "[";
-            for (size_t i = 0; i < m_lassoPoints.size(); ++i) {
-                if (i > 0) pts += ",";
-                pts += QString("[%1,%2]").arg(m_lassoPoints[i].x(), 0, 'f', 2).arg(m_lassoPoints[i].y(), 0, 'f', 2);
-            }
-            pts += "]";
-            const QString json = QString(R"({"version":1,"action":"selectLasso","points":%1})").arg(pts);
-            const QByteArray bytes = json.toUtf8();
-            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-                refreshImage();
-            }
-        }
-        m_lassoPoints.clear();
+        commitLassoSelection();
         break;
     }
     case Tool::Brush:
@@ -2522,8 +2635,40 @@ void SessionWindow::setupOptionsBar() {
         btnEllipse->setStyleSheet(pillActive);
         setTool(Tool::EllipseSelect);
     });
-    layoutSelect->addWidget(btnRect);
-    layoutSelect->addWidget(btnEllipse);
+    auto *marqueeGroup = new QWidget(pageSelect);
+    marqueeGroup->setObjectName("select.marqueeGroup");
+    auto *marqueeLayout = new QHBoxLayout(marqueeGroup);
+    marqueeLayout->setContentsMargins(0, 0, 0, 0);
+    marqueeLayout->setSpacing(8);
+    marqueeLayout->addWidget(btnRect);
+    marqueeLayout->addWidget(btnEllipse);
+    layoutSelect->addWidget(marqueeGroup);
+
+    auto *lassoGroup = new QWidget(pageSelect);
+    lassoGroup->setObjectName("select.lassoGroup");
+    auto *lassoLayout = new QHBoxLayout(lassoGroup);
+    lassoLayout->setContentsMargins(0, 0, 0, 0);
+    lassoLayout->setSpacing(8);
+    auto *btnFreehand = new QPushButton(tr("Freehand"), lassoGroup);
+    btnFreehand->setObjectName("select.freehand");
+    btnFreehand->setStyleSheet(pillActive);
+    auto *btnPolygonal = new QPushButton(tr("Polygonal"), lassoGroup);
+    btnPolygonal->setObjectName("select.polygonal");
+    btnPolygonal->setStyleSheet(pillInactive);
+    connect(btnFreehand, &QPushButton::clicked, this, [this, btnFreehand, btnPolygonal, pillActive, pillInactive] {
+        m_polygonalLasso = false; m_polyActive = false; m_lassoPoints.clear();
+        btnFreehand->setStyleSheet(pillActive); btnPolygonal->setStyleSheet(pillInactive);
+        if (m_canvasWidget) m_canvasWidget->update();
+    });
+    connect(btnPolygonal, &QPushButton::clicked, this, [this, btnFreehand, btnPolygonal, pillActive, pillInactive] {
+        m_polygonalLasso = true; m_polyActive = false; m_lassoPoints.clear();
+        btnFreehand->setStyleSheet(pillInactive); btnPolygonal->setStyleSheet(pillActive);
+        if (m_canvasWidget) m_canvasWidget->update();
+    });
+    lassoLayout->addWidget(btnFreehand);
+    lassoLayout->addWidget(btnPolygonal);
+    layoutSelect->addWidget(lassoGroup);
+    lassoGroup->hide();
 
     auto *btnNewSel = new QPushButton(tr("New"), pageSelect);
     btnNewSel->setStyleSheet(pillActive);
@@ -2531,13 +2676,16 @@ void SessionWindow::setupOptionsBar() {
     btnAddSel->setStyleSheet(pillInactive);
     auto *btnSubSel = new QPushButton(tr("Subtract"), pageSelect);
     btnSubSel->setStyleSheet(pillInactive);
-    connect(btnNewSel, &QPushButton::clicked, this, [btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+    connect(btnNewSel, &QPushButton::clicked, this, [this, btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+        m_selectionMode = "New";
         btnNewSel->setStyleSheet(pillActive); btnAddSel->setStyleSheet(pillInactive); btnSubSel->setStyleSheet(pillInactive);
     });
-    connect(btnAddSel, &QPushButton::clicked, this, [btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+    connect(btnAddSel, &QPushButton::clicked, this, [this, btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+        m_selectionMode = "Add";
         btnNewSel->setStyleSheet(pillInactive); btnAddSel->setStyleSheet(pillActive); btnSubSel->setStyleSheet(pillInactive);
     });
-    connect(btnSubSel, &QPushButton::clicked, this, [btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+    connect(btnSubSel, &QPushButton::clicked, this, [this, btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+        m_selectionMode = "Subtract";
         btnNewSel->setStyleSheet(pillInactive); btnAddSel->setStyleSheet(pillInactive); btnSubSel->setStyleSheet(pillActive);
     });
     layoutSelect->addWidget(btnNewSel);
@@ -2559,8 +2707,7 @@ void SessionWindow::setupOptionsBar() {
     spinExpand->setStyleSheet(spinStyle);
     layoutSelect->addWidget(spinExpand);
     connect(btnExpand, &QPushButton::clicked, this, [this, spinExpand] {
-        cmd(m_sessionHandle, QString(R"({"version":1,"action":"expandSelection","amount":%1})").arg(spinExpand->value()).toUtf8().constData());
-        refreshImage();
+        if (sendCommand({{"action", "expandSelection"}, {"parameters", QJsonObject{{"amount", spinExpand->value()}}}})) refreshImage();
     });
 
     auto *btnContract = new QPushButton(tr("Contract"), pageSelect);
@@ -2574,8 +2721,7 @@ void SessionWindow::setupOptionsBar() {
     spinContract->setStyleSheet(spinStyle);
     layoutSelect->addWidget(spinContract);
     connect(btnContract, &QPushButton::clicked, this, [this, spinContract] {
-        cmd(m_sessionHandle, QString(R"({"version":1,"action":"contractSelection","amount":%1})").arg(spinContract->value()).toUtf8().constData());
-        refreshImage();
+        if (sendCommand({{"action", "contractSelection"}, {"parameters", QJsonObject{{"amount", spinContract->value()}}}})) refreshImage();
     });
 
     auto *btnDeselect = new QPushButton(tr("Deselect"), pageSelect);
@@ -2704,9 +2850,13 @@ void SessionWindow::updateOptionsBar() {
     }
     case Tool::RectSelect:
     case Tool::EllipseSelect:
-    case Tool::Lasso:
+    case Tool::Lasso: {
         m_optionsStack->setCurrentIndex(2);
+        auto *page = m_optionsStack->widget(2);
+        if (auto *g = page->findChild<QWidget *>("select.marqueeGroup")) g->setVisible(m_tool != Tool::Lasso);
+        if (auto *g = page->findChild<QWidget *>("select.lassoGroup")) g->setVisible(m_tool == Tool::Lasso);
         break;
+    }
     case Tool::MagicWand:
         m_optionsStack->setCurrentIndex(3);
         break;

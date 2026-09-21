@@ -231,8 +231,11 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
         case "cut": s.cutSelection()
         case "duplicateLayer": s.duplicateActiveLayer()
         case "layerViaCopy": s.layerViaCopy()
-        case "fillForeground": s.fillSelection(with: .foreground)
-        case "fillBackground": s.fillSelection(with: .background)
+        case "fillForeground", "fillBackground":
+            let source: EditorSession.FillSource = command.action == "fillForeground" ? .foreground : .background
+            let color = (p["red"] != nil || p["green"] != nil || p["blue"] != nil)
+                ? (red: number("red", 0), green: number("green", 0), blue: number("blue", 0)) : nil
+            s.fillSelection(with: source, color: color)
         case "clearSelection": s.clearSelectedPixels()
         case "addRevealMask": s.addLayerMask(revealing: true)
         case "addHideMask": s.addLayerMask(revealing: false)
@@ -254,7 +257,12 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
             guard let width = command.width, let height = command.height,
                   (0...30_000).contains(width), (0...30_000).contains(height) else { throw EditorSession.Failure.invalidArgument }
             let rect = CGRect(origin: origin, size: CGSize(width: width, height: height))
-            try s.setSelection(DocumentSelection(path: command.action == "selectEllipse" ? .ellipse(rect) : .rectangle(rect)))
+            let path: PortablePath = command.action == "selectEllipse" ? .ellipse(rect) : .rectangle(rect)
+            let mode = SelectionMode(rawValue: command.kind ?? "New") ?? .replace
+            if mode == .replace { try s.setSelection(DocumentSelection(path: path)) }
+            else { try s.applySelection(path, mode: mode, antialiased: true, name: "Selection") }
+        case "expandSelection": try s.expandSelection(by: Int(number("amount", 1)))
+        case "contractSelection": try s.contractSelection(by: Int(number("amount", 1)))
         case "selectLasso":
             guard let ptList = command.points, ptList.count >= 3 else {
                 throw EditorSession.Failure.invalidArgument
@@ -264,7 +272,9 @@ public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UIn
                 return CGPoint(x: arr[0], y: arr[1])
             }
             guard cgPoints.count == ptList.count else { throw EditorSession.Failure.invalidArgument }
-            try s.setSelection(DocumentSelection(path: .polygon(cgPoints), antialiased: true))
+            let lassoMode = SelectionMode(rawValue: command.kind ?? "New") ?? .replace
+            if lassoMode == .replace { try s.setSelection(DocumentSelection(path: .polygon(cgPoints), antialiased: true)) }
+            else { try s.applySelection(.polygon(cgPoints), mode: lassoMode, antialiased: true, name: "Selection") }
         case "magicWand":
             let pt = try point()
             var settings = WandSettings()

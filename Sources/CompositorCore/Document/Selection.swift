@@ -31,18 +31,17 @@ nonisolated enum PortablePath: Equatable, @unchecked Sendable {
     case ellipse(CGRect)
     case roundedRect(CGRect, cornerRadius: CGFloat)
     case polygon([CGPoint])
+    /// Several closed loops filled even-odd, so separate regions stay separate and holes stay holes.
+    case contours([[CGPoint]])
 
     /// The path's bounding box in document pixels.
     var boundingBox: CGRect {
         switch self {
         case .rectangle(let r), .ellipse(let r), .roundedRect(let r, _): return r
         case .polygon(let points):
-            guard let first = points.first else { return .null }
-            var minX = first.x, minY = first.y, maxX = first.x, maxY = first.y
-            for p in points.dropFirst() {
-                minX = min(minX, p.x); minY = min(minY, p.y); maxX = max(maxX, p.x); maxY = max(maxY, p.y)
-            }
-            return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+            return PortablePath.bounds(of: points)
+        case .contours(let loops):
+            return PortablePath.bounds(of: loops.flatMap { $0 })
         }
     }
 
@@ -50,7 +49,17 @@ nonisolated enum PortablePath: Equatable, @unchecked Sendable {
         switch self {
         case .rectangle(let r), .ellipse(let r), .roundedRect(let r, _): return r.isNull || r.isEmpty
         case .polygon(let points): return points.isEmpty
+        case .contours(let loops): return loops.allSatisfy { $0.isEmpty }
         }
+    }
+
+    private static func bounds(of points: [CGPoint]) -> CGRect {
+        guard let first = points.first else { return .null }
+        var minX = first.x, minY = first.y, maxX = first.x, maxY = first.y
+        for p in points.dropFirst() {
+            minX = min(minX, p.x); minY = min(minY, p.y); maxX = max(maxX, p.x); maxY = max(maxY, p.y)
+        }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     /// The path transformed by `transform`. Matches CoreGraphics `CGPath.copy(using:)`
@@ -65,6 +74,7 @@ nonisolated enum PortablePath: Equatable, @unchecked Sendable {
         case .ellipse(let r): return .ellipse(r.applying(transform))
         case .roundedRect(let r, let radius): return .roundedRect(r.applying(transform), cornerRadius: radius)
         case .polygon(let points): return .polygon(points.map { $0.applying(transform) })
+        case .contours(let loops): return .contours(loops.map { $0.map { $0.applying(transform) } })
         }
     }
 

@@ -26,6 +26,7 @@
 #include "EditorDialogs.h"
 #include "ColorPickerDialog.h"
 #include <cmath>
+#include <QDockWidget>
 #include <vector>
 #include <QJsonObject>
 #include "SessionWindow.h"
@@ -64,6 +65,14 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         const QString dialogKind = qEnvironmentVariable("COMPOSITOR_GRAB_DIALOG");
         if (!dialogKind.isEmpty()) {
             QDialog *dialog = nullptr;
+            if (dialogKind == "AdjustmentsPanel") {
+                if (auto *dock = window.findChild<QDockWidget *>("dock.adjustments")) {
+                    dock->show();
+                    for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                    dock->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".dialog.png");
+                }
+                return 0;
+            }
             if (dialogKind == "ColorPicker") {
                 dialog = new ColorPickerDialog(QColor(0xFA, 0x75, 0x27), QStringLiteral("Color Picker (Foreground Color)"), &window);
             } else {

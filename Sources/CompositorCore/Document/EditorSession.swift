@@ -359,8 +359,8 @@ func importImage(_ pixels: PortableImage, name: String, replacing: Bool) throws 
         }
     }
 
-    func setSelection(_ selection: DocumentSelection?) throws {
-        try edit("Selection") { $0.selection = selection }
+    func setSelection(_ selection: DocumentSelection?, name: String = "Selection") throws {
+        try edit(name) { $0.selection = selection }
     }
 
     func moveLayer(dx: CGFloat, dy: CGFloat) throws {

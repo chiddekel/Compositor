@@ -399,6 +399,68 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
             require(window.sessionState().value("canUndo").toBool(), "transform edits left no history entry");
         }
 
+        // Selection tools: New/Add combine modes, Expand, polygonal lasso.
+        {
+            SessionWindow w3; w3.resize(1200, 800); w3.show(); QApplication::processEvents();
+            QWidget *canvas = w3.centralWidget();
+            const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
+            const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
+            auto at = [&](double dx, double dy) { return origin + QPointF(dx * scale, dy * scale); };
+            auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+                QMouseEvent ev(type, pos, canvas->mapToGlobal(pos), button, buttons, Qt::NoModifier);
+                QApplication::sendEvent(canvas, &ev);
+            };
+            auto drag = [&](QPointF from, QPointF to) {
+                send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+                send(QEvent::MouseMove, (from + to) / 2, Qt::NoButton, Qt::LeftButton);
+                send(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
+                send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+                QApplication::processEvents();
+            };
+            auto click = [&](QPointF pos) {
+                send(QEvent::MouseButtonPress, pos, Qt::LeftButton, Qt::LeftButton);
+                send(QEvent::MouseButtonRelease, pos, Qt::LeftButton, Qt::NoButton);
+                QApplication::processEvents();
+            };
+            auto button = [&](const QString &text) -> QPushButton * {
+                for (auto *b : w3.findChildren<QPushButton *>()) if (b->text() == text) return b;
+                require(false, "options button missing"); return nullptr;
+            };
+            QImage baseline = exported(w3, temporary.filePath("baseline.png"));
+            auto fillAndExport = [&](const char *file) {
+                baseline = exported(w3, temporary.filePath("baseline.png"));
+                for (QAction *action : w3.findChildren<QAction *>()) if (action->objectName() == "fill.foreground") action->trigger();
+                QApplication::processEvents();
+                return exported(w3, temporary.filePath(file));
+            };
+            // A pixel counts as filled when the fill changed it relative to the pre-fill render.
+            auto filled = [&](const QImage &img, int x, int y) { return img.pixelColor(x, y) != baseline.pixelColor(x, y); };
+
+            w3.setTool(SessionWindow::Tool::RectSelect); QApplication::processEvents();
+            drag(at(30, 4), at(44, 18));
+            button("Add")->click();
+            drag(at(4, 34), at(18, 48));
+            const QImage combined = fillAndExport("combined.png");
+            require(filled(combined, 36, 10) && filled(combined, 10, 40), "Add mode did not keep both rectangles");
+            require(!filled(combined, 30, 30) && !filled(combined, 22, 24), "Add mode filled the gap between rectangles");
+            button("New")->click();
+
+            // Expand: a fresh 8px square grows by 6px on each side.
+            w3.setTool(SessionWindow::Tool::RectSelect); QApplication::processEvents();
+            drag(at(50, 4), at(58, 12));   // 8x8 at (50,4)
+            for (auto *spin : w3.findChildren<QSpinBox *>()) if (spin->suffix() == " px" && spin->value() == 1 && spin->width() <= 60 && spin->isEnabledTo(spin->window())) { spin->setValue(6); break; }
+            button("Expand")->click(); QApplication::processEvents();
+            const QImage grown = fillAndExport("grown.png");
+            require(filled(grown, 46, 8) && filled(grown, 55, 8), "Expand did not grow the selection");
+
+            // Polygonal lasso: three clicks and a click on the first vertex close the triangle.
+            w3.setTool(SessionWindow::Tool::Lasso); QApplication::processEvents();
+            button("Polygonal")->click();
+            click(at(44, 30)); click(at(54, 30)); click(at(54, 54)); click(at(44, 30));
+            const QImage polygon = fillAndExport("polygon.png");
+            require(filled(polygon, 52, 40), "polygonal lasso selection was not applied");
+        }
+
         qInfo("Qt layers dock journey OK (add, duplicate, select, opacity, delete, multi-delete, group, mask)");
         return 0;
     } catch (const std::exception &e) {
