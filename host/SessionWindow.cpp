@@ -5,6 +5,7 @@
 #include "SessionWindow.h"
 #include "ImageExporters.h"
 #include "TabletHandler.h"
+#include "LayerItemDelegate.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -56,6 +57,9 @@
 #include <QLineEdit>
 #include <QButtonGroup>
 #include <QFrame>
+#include <QToolButton>
+#include <QMenu>
+#include <QPixmap>
 #include <QWheelEvent>
 
 #include <cstdint>
@@ -528,18 +532,26 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     m_layersView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_layersView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_layersView->setUniformRowHeights(true);
-    m_layersView->setAnimated(true);
+    m_layersView->setAnimated(false);
     m_layersView->setAllColumnsShowFocus(true);
-    m_layersView->setRootIsDecorated(true);
+    m_layersView->setRootIsDecorated(false);
+    m_layersView->setIndentation(18);
+    m_layersView->setHeaderHidden(true);
+    m_layersView->setMouseTracking(true);
+    m_layersView->setFrameShape(QFrame::NoFrame);
+    m_layersView->setItemDelegateForColumn(0, new LayerItemDelegate(m_layersView));
     m_layersView->header()->setStretchLastSection(false);
     m_layersView->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_layersView->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_layersView->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    // Visibility / mask state stays in the model (columns 1-2) but is drawn by
+    // the row delegate (eye icon, mask badge) instead of as separate columns.
+    m_layersView->setColumnHidden(1, true);
+    m_layersView->setColumnHidden(2, true);
     layout->addWidget(m_layersView, 1);
 
     auto *checksLayout = new QHBoxLayout();
     m_visibleCheck = new QCheckBox(tr("Visible"), panel);
     m_visibleCheck->setObjectName("layer.visible");
+    m_visibleCheck->setVisible(false);  // superseded by the eye icon in each row; kept for automation
     m_maskCheck = new QCheckBox(tr("Mask enabled"), panel);
     m_maskCheck->setObjectName("layer.mask");
     checksLayout->addWidget(m_visibleCheck);
@@ -547,36 +559,87 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     checksLayout->addStretch();
     layout->addLayout(checksLayout);
 
+    // Bottom icon bar: add layer, folder, mask, adjustment, delete.
+    auto glyph = [](int kind) {
+        QPixmap pm(40, 40);
+        pm.fill(Qt::transparent);
+        QPainter g(&pm);
+        g.setRenderHint(QPainter::Antialiasing, true);
+        g.setPen(QPen(QColor(0xb4, 0xb4, 0xba), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        g.setBrush(Qt::NoBrush);
+        switch (kind) {
+        case 0:  // add layer
+            g.drawRoundedRect(QRectF(8, 8, 24, 24), 4, 4);
+            g.drawLine(20, 14, 20, 26); g.drawLine(14, 20, 26, 20);
+            break;
+        case 1:  // folder
+            g.drawRoundedRect(QRectF(7, 13, 26, 18), 3, 3);
+            g.drawLine(8, 13, 8, 10); g.drawLine(8, 10, 16, 10); g.drawLine(16, 10, 19, 13);
+            break;
+        case 2:  // mask
+            g.drawRoundedRect(QRectF(8, 8, 24, 24), 4, 4);
+            g.setBrush(QColor(0xb4, 0xb4, 0xba));
+            g.drawEllipse(QPointF(20, 20), 6, 6);
+            break;
+        case 3:  // adjustment
+            g.drawEllipse(QPointF(20, 20), 12, 12);
+            g.setBrush(QColor(0xb4, 0xb4, 0xba));
+            { QPainterPath half; half.moveTo(20, 8); half.arcTo(QRectF(8, 8, 24, 24), 90, -180); half.closeSubpath(); g.drawPath(half); }
+            break;
+        default:  // trash
+            g.drawLine(11, 12, 29, 12); g.drawLine(16, 12, 16, 9); g.drawLine(16, 9, 24, 9); g.drawLine(24, 9, 24, 12);
+            g.drawRoundedRect(QRectF(13, 12, 14, 19), 2, 2);
+            g.drawLine(18, 17, 18, 26); g.drawLine(22, 17, 22, 26);
+            break;
+        }
+        pm.setDevicePixelRatio(2.0);
+        return QIcon(pm.scaled(40, 40));
+    };
+    auto makeIconButton = [&](int kind, const QString &name, const QString &tip) {
+        auto *button = new QToolButton(panel);
+        button->setObjectName(name);
+        button->setToolTip(tip);
+        button->setAccessibleName(tip);
+        button->setIcon(glyph(kind));
+        button->setIconSize(QSize(20, 20));
+        button->setAutoRaise(true);
+        button->setFixedSize(30, 28);
+        button->setCursor(Qt::PointingHandCursor);
+        return button;
+    };
     auto *btnLayout = new QHBoxLayout();
-    btnLayout->setSpacing(4);
-    auto *btnAddLayer = new QPushButton(tr("+ Layer"), panel);
-    btnAddLayer->setObjectName("layer.add");
-    btnAddLayer->setToolTip(tr("Add blank layer"));
-    auto *btnAddGroup = new QPushButton(tr("+ Folder"), panel);
-    btnAddGroup->setObjectName("layer.addGroup");
-    btnAddGroup->setToolTip(tr("Add new group/folder"));
-    auto *btnAddMask = new QPushButton(tr("+ Mask"), panel);
-    btnAddMask->setObjectName("layer.addMask");
-    btnAddMask->setToolTip(tr("Add reveal layer mask"));
-    auto *btnDelete = new QPushButton(tr("Delete"), panel);
-    btnDelete->setObjectName("layer.delete");
-    btnDelete->setToolTip(tr("Delete active layer or group"));
+    btnLayout->setContentsMargins(0, 4, 0, 0);
+    btnLayout->setSpacing(6);
+    auto *btnAddLayer = makeIconButton(0, "layer.add", tr("Add blank layer"));
+    auto *btnAddGroup = makeIconButton(1, "layer.addGroup", tr("Add new group/folder"));
+    auto *btnAddMask = makeIconButton(2, "layer.addMask", tr("Add reveal layer mask"));
+    auto *btnAdjustment = makeIconButton(3, "layer.addAdjustment", tr("Add adjustment layer"));
+    auto *btnDelete = makeIconButton(4, "layer.delete", tr("Delete active layer or group"));
+    auto *adjustmentMenu = new QMenu(btnAdjustment);
+    for (const QString &kind : {QString("Hue/Saturation"), QString("Levels"), QString("Curves"),
+                                QString("Exposure"), QString("Grain"), QString("Gradient Map")}) {
+        adjustmentMenu->addAction(kind, this, [this, kind] { showAdjustDialog(kind); });
+    }
+    btnAdjustment->setMenu(adjustmentMenu);
+    btnAdjustment->setPopupMode(QToolButton::InstantPopup);
     btnLayout->addWidget(btnAddLayer);
     btnLayout->addWidget(btnAddGroup);
     btnLayout->addWidget(btnAddMask);
+    btnLayout->addWidget(btnAdjustment);
+    btnLayout->addStretch();
     btnLayout->addWidget(btnDelete);
     layout->addLayout(btnLayout);
 
-    connect(btnAddLayer, &QPushButton::clicked, this, [this] {
+    connect(btnAddLayer, &QToolButton::clicked, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) { refreshImage(); refreshLayers(); }
     });
-    connect(btnAddGroup, &QPushButton::clicked, this, [this] {
+    connect(btnAddGroup, &QToolButton::clicked, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addGroup"})") == 0) { refreshImage(); refreshLayers(); }
     });
-    connect(btnAddMask, &QPushButton::clicked, this, [this] {
+    connect(btnAddMask, &QToolButton::clicked, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addRevealMask"})") == 0) { refreshImage(); refreshLayers(); }
     });
-    connect(btnDelete, &QPushButton::clicked, this, [this] {
+    connect(btnDelete, &QToolButton::clicked, this, [this] {
         deleteSelectedLayers();
     });
 
@@ -902,11 +965,30 @@ void SessionWindow::refreshLayers() {
         nameItem->setData(parentId, Qt::UserRole + 4);
 
         if (isGroup) {
-            nameItem->setIcon(style()->standardIcon(QStyle::SP_DirIcon));
+            nameItem->setData(tr("Folder"), LayerItemDelegate::SubtitleRole);
             nameItem->setToolTip(tr("Group / Folder"));
         } else {
-            nameItem->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
             nameItem->setToolTip(tr("Raster Layer"));
+            const QByteArray idBytes = id.toUtf8();
+            size_t assetW = 0, assetH = 0;
+            const int64_t assetBytes = compositor_session_export_layer(
+                m_sessionHandle, reinterpret_cast<const uint8_t *>(idBytes.constData()), idBytes.size(), 0,
+                nullptr, 0, &assetW, &assetH);
+            if (assetBytes > 0 && assetW > 0 && assetH > 0 && layers.size() <= 64
+                && static_cast<size_t>(assetBytes) == assetW * assetH * 4) {
+                nameItem->setData(tr("%1 × %2 px").arg(assetW).arg(assetH), LayerItemDelegate::SubtitleRole);
+                std::vector<uint8_t> pixels(static_cast<size_t>(assetBytes));
+                if (compositor_session_export_layer(m_sessionHandle, reinterpret_cast<const uint8_t *>(idBytes.constData()),
+                                                    idBytes.size(), 0, pixels.data(), pixels.size(), &assetW, &assetH) == assetBytes) {
+                    const QImage full(pixels.data(), static_cast<int>(assetW), static_cast<int>(assetH),
+                                      static_cast<qsizetype>(assetW * 4), QImage::Format_RGBA8888_Premultiplied);
+                    nameItem->setData(QPixmap::fromImage(full.scaled(72, 72, Qt::KeepAspectRatio, Qt::FastTransformation)),
+                                      LayerItemDelegate::ThumbnailRole);
+                }
+            } else {
+                nameItem->setData(tr("%1 × %2 px").arg(state.object().value("width").toInt()).arg(state.object().value("height").toInt()),
+                                  LayerItemDelegate::SubtitleRole);
+            }
         }
 
         auto *visItem = new QStandardItem();
@@ -964,6 +1046,8 @@ void SessionWindow::refreshLayers() {
     }
 
     m_layersView->expandAll();
+    m_layersView->setColumnHidden(1, true);
+    m_layersView->setColumnHidden(2, true);
 
     if (m_layerCountLabel) {
         m_layerCountLabel->setText(QString::number(order.size()));
@@ -979,6 +1063,7 @@ void SessionWindow::refreshLayers() {
         if (m_opacityLabel) m_opacityLabel->setText(QString("%1 %").arg(opVal));
         m_visibleCheck->setChecked(activeLayerObj.value("visible").toBool(true));
         m_maskCheck->setEnabled(activeLayerObj.value("hasMask").toBool(false));
+        m_maskCheck->setVisible(activeLayerObj.value("hasMask").toBool(false));
         m_maskCheck->setChecked(activeLayerObj.value("hasMask").toBool(false) && activeLayerObj.value("maskEnabled").toBool(true));
     }
 
@@ -1766,23 +1851,11 @@ void SessionWindow::applyDarkTheme() {
             background-color: #1a1a1c;
             alternate-background-color: #202023;
             color: #dcdce0;
-            border: 1px solid #28282c;
-            border-radius: 4px;
-            selection-background-color: #38393e;
+            border: none;
+            outline: 0;
+            selection-background-color: #3a3b3f;
             selection-color: #ffffff;
             show-decoration-selected: 1;
-            padding: 2px;
-        }
-        QTreeView::item {
-            padding: 4px 2px;
-            border-radius: 3px;
-        }
-        QTreeView::item:hover {
-            background-color: #28292d;
-        }
-        QTreeView::item:selected {
-            background-color: #38393e;
-            color: #ffffff;
         }
         QHeaderView::section {
             background-color: #1e1e20;
