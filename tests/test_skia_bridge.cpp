@@ -34,6 +34,14 @@ static int test_raster_surface_identity() {
     return 0;
 }
 
+static int test_skia_available() {
+    if (!compositor_skia_available()) {
+        std::fprintf(stderr, "expected compositor_skia_available() == 1\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int test_renderer_factory_raster() {
     CompRendererKind kind = COMP_RENDERER_VULKAN;
     CompRenderer *r = compositor_renderer_create(1, &kind);
@@ -44,6 +52,12 @@ static int test_renderer_factory_raster() {
         return 1;
     }
     if (compositor_renderer_kind(r) != COMP_RENDERER_RASTER) {
+        compositor_renderer_close(r);
+        return 1;
+    }
+    if (compositor_renderer_last_executed(r) != COMP_RENDERER_RASTER) {
+        std::fprintf(stderr, "expected last_executed RASTER, got %d\n",
+                     compositor_renderer_last_executed(r));
         compositor_renderer_close(r);
         return 1;
     }
@@ -142,6 +156,13 @@ static int test_vulkan_device_creation_and_device_lost_fallback() {
         compositor_renderer_close(r);
         return 1;
     }
+    // Vulkan falls back to Raster until Stage 8, so last_executed must be RASTER.
+    if (compositor_renderer_last_executed(r) != COMP_RENDERER_RASTER) {
+        std::fprintf(stderr, "expected last_executed RASTER, got %d\n",
+                     compositor_renderer_last_executed(r));
+        compositor_renderer_close(r);
+        return 1;
+    }
 
     // If backend was Vulkan, simulate loss and verify seamless dynamic fallback to Raster CPU.
     if (kind == COMP_RENDERER_VULKAN) {
@@ -163,6 +184,11 @@ static int test_vulkan_device_creation_and_device_lost_fallback() {
             compositor_renderer_close(r);
             return 1;
         }
+        if (compositor_renderer_last_executed(r) != COMP_RENDERER_RASTER) {
+            std::fprintf(stderr, "expected last_executed RASTER after device lost fallback\n");
+            compositor_renderer_close(r);
+            return 1;
+        }
         std::printf("Device loss fallback to Raster CPU verified successfully\n");
     }
 
@@ -171,7 +197,12 @@ static int test_vulkan_device_creation_and_device_lost_fallback() {
 }
 
 int main() {
+    if (!compositor_skia_available()) {
+        std::printf("Skia unavailable, skipping bridge tests (exit 77)\n");
+        return 77;
+    }
     int failures = 0;
+    failures += test_skia_available();
     failures += test_raster_surface_identity();
     failures += test_renderer_factory_raster();
     failures += test_vulkan_enumerate_no_crash();

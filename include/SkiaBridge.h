@@ -14,7 +14,7 @@
  *     - A backend that cannot initialize returns NULL; the caller uses
  *       the existing pure-Swift DocumentRenderer as the ultimate fallback.
  *
- * Status codes: 0 success, -1 invalid argument, -2 backend lost (try Raster).
+ * Status codes: 0 success, -1 invalid argument, -2 backend lost (try Raster), -3 no Skia compiled in.
  *
  * This header is the only Skia-facing C surface. Swift never imports Skia
  * or Qt headers; C++ never imports Swift types. The boundary is POD + C.
@@ -41,6 +41,12 @@ typedef enum {
 } CompRendererKind;
 
 /*
+ * Query whether Skia is compiled in. Returns 1 if Skia is available, 0 if not.
+ * When 0, render calls return status -3.
+ */
+int compositor_skia_available(void);
+
+/*
  * Create a render device. Try Vulkan first (plan §6 startup). On any
  * failure (no device, no queue family, bad ICD, device lost, no /dev/dri),
  * fall back to Raster. kind_out receives the chosen backend. Returns NULL
@@ -53,6 +59,7 @@ typedef enum {
 CompRenderer *compositor_renderer_create(int force_raster, CompRendererKind *kind_out);
 void compositor_renderer_close(CompRenderer *renderer);
 CompRendererKind compositor_renderer_kind(const CompRenderer *renderer);
+CompRendererKind compositor_renderer_last_executed(const CompRenderer *renderer);
 void compositor_renderer_simulate_device_lost(CompRenderer *renderer);
 
 /*

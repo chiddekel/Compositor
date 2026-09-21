@@ -22,14 +22,26 @@
 #include <iostream>
 #include <vector>
 
-// Include Skia headers — these exist in the Flatpak /app layout.
+// Include Skia headers — search in Skia source include/core layout or system /app layout.
 #if defined(__has_include)
-#if __has_include(<skia/core/SkCanvas.h>)
+#if __has_include("include/core/SkCanvas.h")
+#define COMPOSITOR_HAS_SKIA 1
+#include "include/core/SkCanvas.h"
+#include "include/core/SkSurface.h"
+#include "include/core/SkImage.h"
+#include "include/core/SkPixmap.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkBlendMode.h"
+#include "include/core/SkSamplingOptions.h"
+#elif __has_include(<skia/core/SkCanvas.h>)
 #define COMPOSITOR_HAS_SKIA 1
 #include <skia/core/SkCanvas.h>
 #include <skia/core/SkSurface.h>
-#include <skia/gpu/GrDirectContext.h>
-#include <skia/gpu/vk/GrVkBackendContext.h>
+#include <skia/core/SkImage.h>
+#include <skia/core/SkPixmap.h>
+#include <skia/core/SkPaint.h>
+#include <skia/core/SkBlendMode.h>
+#include <skia/core/SkSamplingOptions.h>
 #endif
 #if __has_include(<vulkan/vulkan.h>)
 #define COMPOSITOR_HAS_VULKAN 1
@@ -41,11 +53,7 @@
 
 // Opaque handle owning one Skia backend context.
 struct CompRenderer {
-#if defined(COMPOSITOR_HAS_SKIA)
-    class GrDirectContext* ctx = nullptr;
-#else
     void* ctx = nullptr;
-#endif
 
 #if defined(COMPOSITOR_HAS_VULKAN)
     VkInstance vk_instance = VK_NULL_HANDLE;
@@ -58,6 +66,7 @@ struct CompRenderer {
 
     bool is_raster = false;
     bool is_device_lost = false;
+    CompRendererKind last_executed = COMP_RENDERER_RASTER;
 
     CompRenderer() = default;
     ~CompRenderer() = default;
@@ -79,10 +88,25 @@ static int vulkan_render_rgba(CompRenderer* r,
                               uint8_t* dst_rgba,
                               size_t width, size_t height);
 
+// ── Availability and Kind Queries ──────────────────────────────────────
+
+int compositor_skia_available(void) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+CompRendererKind compositor_renderer_last_executed(const CompRenderer *renderer) {
+    if (!renderer) return COMP_RENDERER_RASTER;
+    return renderer->last_executed;
+}
+
 // ── compositor_renderer_create ─────────────────────────────────────────
 
 CompRenderer *compositor_renderer_create(int force_raster, CompRendererKind *kind_out) {
-    CompRenderer* r = (CompRenderer*)calloc(1, sizeof(CompRenderer));
+    CompRenderer* r = new (std::nothrow) CompRenderer();
     if (!r) return nullptr;
 
     if (force_raster) {
@@ -114,7 +138,7 @@ void compositor_renderer_close(CompRenderer *renderer) {
     } else {
         vulkan_device_destroy(r);
     }
-    free(r);
+    delete r;
 }
 
 // ── compositor_renderer_kind ───────────────────────────────────────────
@@ -155,6 +179,9 @@ int compositor_render_rgba(CompRenderer *renderer,
     if (!renderer || !src_rgba || !dst_rgba) return -1;
     if (width == 0 || height == 0) return -1;
 
+#if !defined(COMPOSITOR_HAS_SKIA)
+    return -3;
+#else
     CompRenderer* r = (CompRenderer*)renderer;
     if (r->is_raster) {
         return raster_render_rgba(r, src_rgba, dst_rgba, width, height);
@@ -163,11 +190,12 @@ int compositor_render_rgba(CompRenderer *renderer,
         if (rc == -2) {
             // Plan §6 runtime loss failsafe: automatic dynamic fallback to Raster CPU
             vulkan_device_destroy(r);
-            raster_device_create(r, width, height);
+            raster_device_create(r, static_cast<int>(width), static_cast<int>(height));
             rc = raster_render_rgba(r, src_rgba, dst_rgba, width, height);
         }
         return rc;
     }
+#endif
 }
 
 // ── compositor_skia_raster_surface ─────────────────────────────────────
@@ -178,26 +206,28 @@ int compositor_skia_raster_surface(const uint8_t *src_rgba,
     if (!src_rgba || !dst_rgba) return -1;
     if (width == 0 || height == 0) return -1;
 
-    // Create a temporary raster context, write src, read back dst.
-    // This is a smoke test for the Stage 0 DoD: prove Skia can ingest and
-    // emit the canonical buffer format.
-
-    // Use GrDirectContext for raster (CPU) backend.
-    // In a full build this would use SkSurfaces::Raster; here we create a
-    // minimal GrDirectContext with a backing buffer.
-#ifdef __APPLE__
-    // Stub on macOS host — not reachable without Flatpak /app Skia.
-    return -1;
+#if !defined(COMPOSITOR_HAS_SKIA)
+    return -3;
 #else
-    // Allocate scratch buffers.
-    size_t stride = width * 4;
-    size_t buf_size = stride * height;
+    const size_t stride = width * 4;
+    SkImageInfo info = SkImageInfo::Make(static_cast<int>(width),
+                                         static_cast<int>(height),
+                                         kRGBA_8888_SkColorType,
+                                         kPremul_SkAlphaType);
 
-    // Simulate: write src into a temporary, then read back dst.
-    // The real implementation would use Skia's GrDirectContext->drawImageRect
-    // and GrDirectContext->readPixels.
-    // For the Stage 0 smoke test we just validate the format and copy.
-    memcpy(dst_rgba, src_rgba, buf_size);
+    SkPixmap srcPixmap(info, src_rgba, stride);
+    sk_sp<SkImage> srcImage = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
+    if (!srcImage) return -1;
+
+    sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, dst_rgba, stride);
+    if (!surface) return -1;
+
+    SkCanvas* canvas = surface->getCanvas();
+    if (!canvas) return -1;
+
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrcOver);
+    canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
     return 0;
 #endif
 }
@@ -238,22 +268,12 @@ int compositor_vulkan_enumerate_devices(void) {
 // ── Internal: raster device ────────────────────────────────────────────
 
 static void raster_device_create(CompRenderer* r, int width, int height) {
-    r->is_raster = true;
-    // Create a GrDirectContext with a CPU-backed surface (Raster).
-    // Skia's GrDirectContext does not require a GPU; it can rasterize on CPU.
-    // The actual GrDirectContext creation is deferred to the host instantiation
-    // because we need a GrDirectContext that owns a SkSurface with backend
-    // = kRaster. This file only provides the C ABI wrappers; the GrDirectContext
-    // object is owned by the host (CompositorHostRun) and passed via the
-    // CompRenderer handle.
     (void)width; (void)height;
-    // r->ctx = GrDirectContext::MakeRenderTarget(nullptr, SkImageInfo::MakeN32Premul(width, height), nullptr);
-    // For now the context pointer is left as nullptr; the actual backend
-    // initialization happens in the host's C++ setup code (plan §6 Stage 5).
+    r->is_raster = true;
+    r->last_executed = COMP_RENDERER_RASTER;
 }
 
 static void raster_device_destroy(CompRenderer* r) {
-    // r->ctx is managed by the host; just null the flags.
     r->is_raster = false;
 }
 
@@ -262,16 +282,34 @@ static int raster_render_rgba(CompRenderer* r,
                               uint8_t* dst_rgba,
                               size_t width, size_t height) {
     if (!r || !r->is_raster) return -1;
-    // In the real implementation, this would use the GrDirectContext to:
-    // 1. Create a SkSurface with Raster backend
-    // 2. Draw the source image into it
-    // 3. Read back the premultiplied RGBA8 result into dst_rgba
-    // For the Stage 0 smoke test we just validate and copy.
-    (void)r;
-    size_t stride = width * 4;
-    size_t buf_size = stride * height;
-    memcpy(dst_rgba, src_rgba, buf_size);
+    if (!src_rgba || !dst_rgba) return -1;
+    if (width == 0 || height == 0) return -1;
+
+#if defined(COMPOSITOR_HAS_SKIA)
+    r->last_executed = COMP_RENDERER_RASTER;
+    const size_t stride = width * 4;
+    SkImageInfo info = SkImageInfo::Make(static_cast<int>(width),
+                                         static_cast<int>(height),
+                                         kRGBA_8888_SkColorType,
+                                         kPremul_SkAlphaType);
+
+    SkPixmap srcPixmap(info, src_rgba, stride);
+    sk_sp<SkImage> srcImage = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
+    if (!srcImage) return -1;
+
+    sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, dst_rgba, stride);
+    if (!surface) return -1;
+
+    SkCanvas* canvas = surface->getCanvas();
+    if (!canvas) return -1;
+
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrcOver);
+    canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
     return 0;
+#else
+    return -3;
+#endif
 }
 
 // ── Internal: Vulkan device ────────────────────────────────────────────
@@ -279,11 +317,13 @@ static int raster_render_rgba(CompRenderer* r,
 static void vulkan_device_create(CompRenderer* r, int force_raster) {
     if (force_raster) {
         r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
         return;
     }
 #if defined(COMPOSITOR_HAS_VULKAN)
     r->is_raster = false;
     r->is_device_lost = false;
+    r->last_executed = COMP_RENDERER_VULKAN;
 
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -300,6 +340,7 @@ static void vulkan_device_create(CompRenderer* r, int force_raster) {
     if (res != VK_SUCCESS || instance == VK_NULL_HANDLE) {
         r->vk_device = VK_NULL_HANDLE;
         r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
         return;
     }
 
@@ -309,6 +350,7 @@ static void vulkan_device_create(CompRenderer* r, int force_raster) {
         vkDestroyInstance(instance, nullptr);
         r->vk_device = VK_NULL_HANDLE;
         r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
         return;
     }
 
@@ -340,6 +382,7 @@ static void vulkan_device_create(CompRenderer* r, int force_raster) {
         vkDestroyInstance(instance, nullptr);
         r->vk_device = VK_NULL_HANDLE;
         r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
         return;
     }
 
@@ -361,6 +404,7 @@ static void vulkan_device_create(CompRenderer* r, int force_raster) {
         vkDestroyInstance(instance, nullptr);
         r->vk_device = VK_NULL_HANDLE;
         r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
         return;
     }
 
@@ -370,8 +414,10 @@ static void vulkan_device_create(CompRenderer* r, int force_raster) {
     r->vk_queue_family = chosenQueueFamily;
     vkGetDeviceQueue(device, chosenQueueFamily, 0, &r->vk_queue);
     r->is_raster = false;
+    r->last_executed = COMP_RENDERER_VULKAN;
 #else
     r->is_raster = true;
+    r->last_executed = COMP_RENDERER_RASTER;
     (void)r; (void)force_raster;
 #endif
 }
@@ -397,11 +443,8 @@ static int vulkan_render_rgba(CompRenderer* r,
                               const uint8_t* src_rgba,
                               uint8_t* dst_rgba,
                               size_t width, size_t height) {
-    if (!r || r->vk_device == VK_NULL_HANDLE || r->is_device_lost) {
-        return -2; // backend lost → triggers dynamic fallback to Raster
-    }
-    size_t stride = width * 4;
-    size_t buf_size = stride * height;
-    memcpy(dst_rgba, src_rgba, buf_size);
-    return 0;
+    (void)r; (void)src_rgba; (void)dst_rgba; (void)width; (void)height;
+    // Stage 8 will implement Vulkan rendering via Skia GrDirectContext.
+    // Until then, return -2 to trigger dynamic fallback to Raster.
+    return -2;
 }

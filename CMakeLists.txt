@@ -58,17 +58,28 @@ else()
     endif()
 endif()
 
-# ── SKIA (Flatpak vendored) ────────────────────────────────────────────
-# Vendored Skia static library under /app, built with
-#   skia_use_vulkan=true  (plan §6 Stage 5/8).
-# Required when COMPOSITOR_REQUIRE_VENDORED_DEPS is ON and we're in a Flatpak.
-if(DEFINED ENV{FLATPAK_ID} AND COMPOSITOR_REQUIRE_VENDORED_DEPS)
+# ── SKIA ───────────────────────────────────────────────────────────────
+# Skia root and static library. Defaults to local build/skia-src if present,
+# or /app (Flatpak SDK), or user-provided cache variables.
+set(COMPOSITOR_SKIA_ROOT "${CMAKE_SOURCE_DIR}/build/skia-src"
+    CACHE PATH "Root directory of Skia source/includes")
+set(COMPOSITOR_SKIA_LIB "${CMAKE_SOURCE_DIR}/build/skia-src/out/Raster/libskia.a"
+    CACHE FILEPATH "Path to Skia static library (libskia.a)")
+
+if(EXISTS "${COMPOSITOR_SKIA_ROOT}/include/core/SkCanvas.h" AND EXISTS "${COMPOSITOR_SKIA_LIB}")
+    set(Skia_FOUND TRUE)
+    set(Skia_INCLUDE_DIR "${COMPOSITOR_SKIA_ROOT}")
+    set(Skia_STATIC_LIB "${COMPOSITOR_SKIA_LIB}")
+elseif(DEFINED ENV{FLATPAK_ID} AND COMPOSITOR_REQUIRE_VENDORED_DEPS)
     find_path(Skia_INCLUDE_DIR NAMES SkCanvas.h PATHS /app/include/skia REQUIRED)
     find_library(Skia_STATIC_LIB NAMES skia PATHS /app/lib REQUIRED)
     # Verify Skia was built with Vulkan enabled
     if(NOT SKIA_STATIC_LIB MATCHES ".*vulkan.*")
         message(WARNING "Skia library found but may not have Vulkan enabled; "
                   "Vulkan backend will be unavailable.")
+    endif()
+    if(Skia_INCLUDE_DIR AND Skia_STATIC_LIB)
+        set(Skia_FOUND TRUE)
     endif()
 endif()
 
@@ -170,9 +181,9 @@ find_package(Vulkan QUIET)
 
 add_library(CompositorSkiaBridge STATIC linux/graphics/SkiaBridge.cpp)
 target_include_directories(CompositorSkiaBridge PUBLIC ${CMAKE_SOURCE_DIR}/include)
-if(DEFINED ENV{FLATPAK_ID} AND Skia_STATIC_LIB)
+if(Skia_FOUND)
     target_include_directories(CompositorSkiaBridge PRIVATE ${Skia_INCLUDE_DIR})
-    target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB})
+    target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB} pthread dl)
 endif()
 if(Vulkan_FOUND)
     target_link_libraries(CompositorSkiaBridge PUBLIC Vulkan::Vulkan)
@@ -182,6 +193,7 @@ endif()
 add_executable(test_skia_bridge tests/test_skia_bridge.cpp)
 target_link_libraries(test_skia_bridge PRIVATE CompositorSkiaBridge)
 add_test(NAME CompositorCore.SkiaBridge COMMAND test_skia_bridge)
+set_tests_properties(CompositorCore.SkiaBridge PROPERTIES SKIP_RETURN_CODE 77)
 
 # Stage 10: Selected OpenCV Operations / Inpainting / Guided Filter bridge
 add_library(CompositorOpenCVBridge STATIC linux/graphics/OpenCVBridge.cpp)
