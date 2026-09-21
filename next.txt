@@ -29,3 +29,9 @@ Date: 2026-09-21
 ## Remaining Future Milestones (Non-Blocking)
 - Direct GrDirectContext Vulkan presentation in SkiaBridge (currently falls back to Skia Raster)
 - Extended import codecs (HEIC/TIFF) once libheif/libtiff sandboxed decoders are pinned
+
+## UI/UX Parity (2026-09-21)
+- Layers panel: eye toggle, thumbnails, size subtitles, icon action bar, top-first order — DONE
+- Move/Transform: X/Y/W/H/Angle bound to layer, on-canvas handles, auto-select — DONE
+- Adjust dialogs: Levels histogram, Hue/Sat range bars, slider rows; foreground colour picker — DONE
+- Remaining: floating Adjustments panel, Curves graph editor, Levels sample/auto buttons
