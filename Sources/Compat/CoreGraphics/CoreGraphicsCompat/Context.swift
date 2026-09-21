@@ -257,7 +257,7 @@ public final class CGContext: @unchecked Sendable {
     public func setLineDash(phase: CGFloat, lengths: [CGFloat]) { state.dashPhase = phase; state.dashLengths = lengths }
 
     /// The colour space of the backing bitmap (sRGB, premultiplied RGBA).
-    public var colorSpace: CGColorSpace { .srgbSpace }
+    public var colorSpace: CGColorSpace? { .srgbSpace }
 
     public func drawPath(using mode: CGPathDrawingMode) {
         let path = currentPath

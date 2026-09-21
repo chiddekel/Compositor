@@ -35,7 +35,7 @@ final class AppKitCompatTests: XCTestCase {
         XCTAssertEqual(board.data(forType: .png), Data([1, 2, 3]))
     }
 
-    func testAlertAndPanelsAreInjectable() {
+    @MainActor func testAlertAndPanelsAreInjectable() {
         let alert = NSAlert()
         alert.addButton(withTitle: "Bake"); alert.addButton(withTitle: "Cancel")
         XCTAssertEqual(alert.runModal(), .alertFirstButtonReturn, "headless default presses the first button")

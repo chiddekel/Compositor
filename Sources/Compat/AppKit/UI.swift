@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 // UI types the model layer names. They are inert containers; anything interactive is an injectable hook
 // so the Qt host (or a test) supplies the behaviour.
 
-open class NSResponder {}
+@MainActor open class NSResponder {}
 open class NSView: NSResponder, @unchecked Sendable {
     public var frame: CGRect
     public var bounds: CGRect { CGRect(origin: .zero, size: frame.size) }
@@ -35,7 +35,7 @@ public typealias NSModalResponse = NSApplication.ModalResponse
 
 /// Model code asks questions through alerts; the host installs `handler` (Qt message box). Headless default:
 /// choose the first button, like pressing Return.
-open class NSAlert {
+@MainActor open class NSAlert {
     public var messageText = ""
     public var informativeText = ""
     public private(set) var buttonTitles: [String] = []
@@ -45,7 +45,7 @@ open class NSAlert {
     public func runModal() -> NSApplication.ModalResponse { Self.handler?(self) ?? .alertFirstButtonReturn }
 }
 
-open class NSSavePanel {
+@MainActor open class NSSavePanel {
     public var allowedContentTypes: [UTType] = []
     public var nameFieldStringValue = ""
     public var url: URL?

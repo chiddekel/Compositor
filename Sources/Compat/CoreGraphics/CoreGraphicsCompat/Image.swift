@@ -53,13 +53,13 @@ public struct CGDataProviderDirectCallbacks {
     public var version: UInt32
     public var getBytePointer: (@convention(c) (UnsafeMutableRawPointer?) -> UnsafeRawPointer?)?
     public var releaseBytePointer: (@convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?) -> Void)?
-    public var getBytesAtPosition: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, off_t, Int) -> Int)?
+    public var getBytesAtPosition: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer, off_t, Int) -> Int)?
     public var releaseInfo: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?
 
     public init(version: UInt32 = 0,
                 getBytePointer: (@convention(c) (UnsafeMutableRawPointer?) -> UnsafeRawPointer?)? = nil,
                 releaseBytePointer: (@convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?) -> Void)? = nil,
-                getBytesAtPosition: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, off_t, Int) -> Int)? = nil,
+                getBytesAtPosition: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer, off_t, Int) -> Int)? = nil,
                 releaseInfo: (@convention(c) (UnsafeMutableRawPointer?) -> Void)? = nil) {
         self.version = version
         self.getBytePointer = getBytePointer
@@ -76,7 +76,9 @@ public final class CGDataProvider: @unchecked Sendable {
         self.data = data
     }
 
-    public init(data: Data) {
+    /// Failable like Apple's `CGDataProvider(data:)` (which returns nil for an unusable CFData).
+    public init?(data: Data) {
+        guard !data.isEmpty else { return nil }
         self.data = [UInt8](data)
     }
 
@@ -86,7 +88,7 @@ public final class CGDataProvider: @unchecked Sendable {
         let cb = callbacks.pointee
         if let getBytes = cb.getBytesAtPosition {
             _ = buffer.withUnsafeMutableBytes { rawBuf in
-                getBytes(directInfo, rawBuf.baseAddress, 0, Int(size))
+                getBytes(directInfo, rawBuf.baseAddress!, 0, Int(size))
             }
         } else if let getBytePtr = cb.getBytePointer, let src = getBytePtr(directInfo) {
             _ = buffer.withUnsafeMutableBytes { dst in
@@ -107,13 +109,15 @@ public final class CGImage: @unchecked Sendable {
     public let bytesPerRow: Int
     public let bitsPerComponent: Int
     public let bitsPerPixel: Int
-    public let colorSpace: CGColorSpace
+    let space: CGColorSpace
+    /// Optional like Apple's: a mask or unmanaged image may have none.
+    public var colorSpace: CGColorSpace? { space }
     public let alphaInfo: CGImageAlphaInfo
     public let bitmapInfo: CGBitmapInfo
     public let portableImage: PortableImage
 
     public var bytes: [UInt8] { portableImage.bytes }
-    public var isMask: Bool { colorSpace.model == .monochrome || alphaInfo == .only }
+    public var isMask: Bool { space.model == .monochrome || alphaInfo == .only }
 
     public init(_ portableImage: PortableImage) {
         self.width = portableImage.width
@@ -121,7 +125,7 @@ public final class CGImage: @unchecked Sendable {
         self.bytesPerRow = portableImage.bytesPerRow
         self.bitsPerComponent = 8
         self.bitsPerPixel = portableImage.kind == .rgba ? 32 : 8
-        self.colorSpace = portableImage.kind == .rgba ? .srgbSpace : .deviceGraySpace
+        self.space = portableImage.kind == .rgba ? .srgbSpace : .deviceGraySpace
         self.alphaInfo = portableImage.kind == .rgba ? .premultipliedLast : .none
         self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue)
         self.portableImage = portableImage
@@ -152,7 +156,7 @@ public final class CGImage: @unchecked Sendable {
         self.bytesPerRow = bytesPerRow
         self.bitsPerComponent = bitsPerComponent
         self.bitsPerPixel = bitsPerPixel
-        self.colorSpace = space
+        self.space = space
         self.alphaInfo = CGImageAlphaInfo(rawValue: bitmapInfo.rawValue & CGBitmapInfo.alphaInfoMask.rawValue) ?? .premultipliedLast
         self.bitmapInfo = bitmapInfo
 

@@ -127,7 +127,7 @@ enum SkiaPathABI {
 
 // MARK: - CGPath
 
-public class CGPath: @unchecked Sendable {
+public class CGPath: @unchecked Sendable, Hashable {
     var segments: [PathSegment]
 
     init(segments: [PathSegment]) { self.segments = segments }
@@ -151,6 +151,20 @@ public class CGPath: @unchecked Sendable {
         segments = []
         Self.appendRoundedRect(rect, cornerWidth: cornerWidth, cornerHeight: cornerHeight, to: &segments)
         if let t = transform?.pointee, t != .identity { segments = Self.transformed(segments, t) }
+    }
+
+    // Value equality of the outline, as Apple's `CFEqual` on paths.
+    public static func == (lhs: CGPath, rhs: CGPath) -> Bool { lhs.segments == rhs.segments }
+    public func hash(into hasher: inout Hasher) {
+        for s in segments {
+            switch s {
+            case .move(let p): hasher.combine(0); hasher.combine(p.x); hasher.combine(p.y)
+            case .line(let p): hasher.combine(1); hasher.combine(p.x); hasher.combine(p.y)
+            case .quad(let c, let p): hasher.combine(2); hasher.combine(c.x); hasher.combine(c.y); hasher.combine(p.x); hasher.combine(p.y)
+            case .cubic(let a, let b, let p): hasher.combine(3); hasher.combine(a.x); hasher.combine(a.y); hasher.combine(b.x); hasher.combine(b.y); hasher.combine(p.x); hasher.combine(p.y)
+            case .close: hasher.combine(4)
+            }
+        }
     }
 
     // MARK: Queries

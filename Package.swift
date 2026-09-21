@@ -77,6 +77,13 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "ImageIO", dependencies: ["CoreGraphics", "Accelerate", "UniformTypeIdentifiers"],
                 path: "Sources/Compat/ImageIO", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "Vision", dependencies: ["CoreGraphics", "CoreVideo"], path: "Sources/Compat/Vision",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "SwiftUI", dependencies: ["CoreGraphics"], path: "Sources/Compat/SwiftUI",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo"], path: "Sources/Compat/CoreImage",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO"],
@@ -94,7 +101,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CompositorCoreTests",
-            dependencies: ["CompositorCore", "AppKit", "FoundationCompat", "UniformTypeIdentifiers", "Accelerate", "ImageIO"],
+            dependencies: ["CompositorCore", "AppKit", "FoundationCompat", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision"],
             path: "Tests/CompositorCoreTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift
