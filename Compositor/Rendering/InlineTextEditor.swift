@@ -7,6 +7,7 @@ final class CanvasTextView: NSTextView {
     private let textUndo = UndoManager()
     override var undoManager: UndoManager? { textUndo }
     override func keyDown(with event: NSEvent) {
+        guard let event = ShortcutSettings.shared.textEvent(event) else { return }
         if event.keyCode == 53 { editor?.canvas?.session.cancelText(); return }
         // Option with the arrows sets spacing, as in Photoshop: left and right the tracking, up and down the
         // leading. Shift makes each step ten.
@@ -42,6 +43,15 @@ final class InlineTextEditor: NSView, NSTextViewDelegate {
     private var logicalSize = CGSize(width: 360, height: 160)
     private var handleSize: CGFloat = 6
     private var shownTransform: LayerTransform?
+    private struct Geometry: Equatable {
+        let transform: LayerTransform
+        let logicalSize: CGSize
+        let anchor: CGPoint
+        let scale: CGFloat
+    }
+    private var shownGeometry: Geometry?
+    private var measuredStyle: LayerTextStyle?
+    private var measuredSize: CGSize = .zero
     private var resize: (handle: Int, draft: TextDraft, transform: LayerTransform, start: CGPoint)?
     /// The transform the editor is actually showing. Point text grows as it is typed, so this is not always the
     /// draft's own transform, and a resize has to start from what is on screen or the text jumps.
@@ -85,7 +95,15 @@ final class InlineTextEditor: NSView, NSTextViewDelegate {
         let style = draft.style
         let layer = document.layers.first { $0.id == draft.layerID }
         // Point text has no box: it is as big as what has been typed, growing as it is typed.
-        logicalSize = style.boxSize ?? EditorSession.textBoxSize(style)
+        if let boxSize = style.boxSize {
+            logicalSize = boxSize
+        } else {
+            if measuredStyle != style {
+                measuredSize = EditorSession.textBoxSize(style)
+                measuredStyle = style
+            }
+            logicalSize = measuredSize
+        }
         var transform = draft.transform ?? LayerTransform(origin: draft.origin, size: logicalSize)
         // Point text already on a layer grows as it is typed too, keeping whatever scale the layer was given.
         if style.boxSize == nil, draft.transform != nil, let asset = layer?.asset, asset.image.width > 0 {
@@ -100,24 +118,30 @@ final class InlineTextEditor: NSView, NSTextViewDelegate {
         }
         shownTransform = transform
         let scale = canvas.session.viewport.pointsPerPixel
-        // AppKit's frame rotation participates in both drawing and event-coordinate conversion.
-        frameRotation = 0
-        frame = CGRect(origin: canvas.session.viewport.viewPoint(from: transform.point(.zero), documentSize: document.size),
-                       size: CGSize(width: transform.size.width * scale, height: transform.size.height * scale))
-        bounds = CGRect(origin: .zero, size: logicalSize)
-        // The canvas is flipped, so a positive frame rotation turns the editor clockwise on screen, the way a layer's
-        // own rotation is measured. Negating it turned the editor the opposite way from the text it is editing.
-        frameRotation = transform.rotation
-        // Rotating a flipped NSView can move its logical origin. Keep the layer's top-left pinned.
         let anchor = canvas.session.viewport.viewPoint(from: transform.point(.zero), documentSize: document.size)
-        let actual = convert(CGPoint.zero, to: canvas)
-        setFrameOrigin(CGPoint(x: frame.origin.x + anchor.x - actual.x, y: frame.origin.y + anchor.y - actual.y))
-        let padding = LayerTextStyle.padding
-        textView.frame = bounds.insetBy(dx: padding, dy: padding)
-        // Mirroring belongs to the text surface, leaving resize handles in their logical order.
-        mirror = (transform.flipX, transform.flipY)
-        applyMirror()
-        handleSize = max(2, 6 / max(0.01, scale * transform.size.width / logicalSize.width))
+        let geometry = Geometry(transform: transform, logicalSize: logicalSize, anchor: anchor, scale: scale)
+        if fresh || shownGeometry != geometry {
+            // AppKit's frame rotation participates in both drawing and event-coordinate conversion.
+            frameRotation = 0
+            frame = CGRect(origin: canvas.session.viewport.viewPoint(from: transform.point(.zero), documentSize: document.size),
+                           size: CGSize(width: transform.size.width * scale, height: transform.size.height * scale))
+            bounds = CGRect(origin: .zero, size: logicalSize)
+            // The canvas is flipped, so a positive frame rotation turns the editor clockwise on screen, the way a layer's
+            // own rotation is measured. Negating it turned the editor the opposite way from the text it is editing.
+            frameRotation = transform.rotation
+            // Rotating a flipped NSView can move its logical origin. Keep the layer's top-left pinned.
+            let actual = convert(CGPoint.zero, to: canvas)
+            setFrameOrigin(CGPoint(x: frame.origin.x + anchor.x - actual.x, y: frame.origin.y + anchor.y - actual.y))
+            let padding = LayerTextStyle.padding
+            let textFrame = bounds.insetBy(dx: padding, dy: padding)
+            if textView.frame != textFrame { textView.frame = textFrame }
+            // Mirroring belongs to the text surface, leaving resize handles in their logical order.
+            mirror = (transform.flipX, transform.flipY)
+            applyMirror()
+            handleSize = max(2, 6 / max(0.01, scale * transform.size.width / logicalSize.width))
+            shownGeometry = geometry
+            needsDisplay = true
+        }
         if shownStyle != style {
             synchronizing = true
             let selection = textView.selectedRange()
@@ -132,9 +156,9 @@ final class InlineTextEditor: NSView, NSTextViewDelegate {
             textView.insertionPointColor = (attributes[.foregroundColor] as? NSColor) ?? .white
             shownStyle = style
             synchronizing = false
+            needsDisplay = true
         }
-        needsDisplay = true
-        isHidden = false
+        if isHidden { isHidden = false }
         if fresh {
             textView.undoManager?.removeAllActions()
             DispatchQueue.main.async { [weak self] in
@@ -150,6 +174,9 @@ final class InlineTextEditor: NSView, NSTextViewDelegate {
         draft.style.content = textView.string
         shownStyle = draft.style
         session.textDraft = draft
+        // NSTextView draws the changed glyphs itself. Refresh the box's overflow marker
+        // without resetting the text container's geometry on every keystroke.
+        needsDisplay = true
     }
     func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
         textView.string.utf16.count - affectedCharRange.length + (replacementString?.utf16.count ?? 0) <= 100_000
@@ -166,7 +193,7 @@ final class InlineTextEditor: NSView, NSTextViewDelegate {
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         guard mirror.x || mirror.y else {
-            layer.setAffineTransform(.identity)
+            if !layer.affineTransform().isIdentity { layer.setAffineTransform(.identity) }
             return
         }
         // Placed by hand: until AppKit has laid this view out, the text surface's layer is still positioned in the
