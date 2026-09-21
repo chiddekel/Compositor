@@ -32,7 +32,8 @@ func compositor_compat_current_render_fn() -> CompRenderFn? {
 
 // MARK: - Canvas C ABI Bridge
 
-public final class CompCanvasBridge: @unchecked Sendable {
+/// The dlopen binding behind `SkiaCanvasBackend`. Internal on purpose: everything else reaches Skia through `CanvasBackend`.
+final class CompCanvasBridge: @unchecked Sendable {
     public static let shared = CompCanvasBridge()
 
     public typealias CreateCanvasFn = @convention(c) (UnsafeMutablePointer<UInt8>?, Int, Int, Int) -> OpaquePointer?

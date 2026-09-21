@@ -5,6 +5,7 @@
 // projects, exports and tests round-trip. A backend that does not know a format returns nil.
 
 import Foundation
+import CompatSupport
 #if canImport(Glibc)
 import Glibc
 #endif
@@ -46,7 +47,15 @@ public extension ImageCodecBackend {
 
 public enum ImageCodecRegistry {
     /// Tried first; falls through to the portable codec when it does not handle a format.
-    nonisolated(unsafe) public static var host: ImageCodecBackend?
+    public static let hostSlot = ServiceSlot<ImageCodecBackend>()
+    public static var host: ImageCodecBackend? {
+        get { hostSlot.installedValue }
+        set { hostSlot.install(newValue) }
+    }
+    /// Runs `body` with `codec` as the host backend (nil: only the portable codecs), then restores the previous one.
+    public static func withHost<Result>(_ codec: ImageCodecBackend?, _ body: () throws -> Result) rethrows -> Result {
+        try hostSlot.withOverride(codec, body)
+    }
     public static let portable: ImageCodecBackend = PortablePNGCodec()
 
     static var backends: [ImageCodecBackend] {

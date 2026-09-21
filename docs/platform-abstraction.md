@@ -51,3 +51,19 @@ the injected storage root.
   The next SRP step is extracting the layers panel, options bar and tool controllers.
 - `MainWindow` (the C++-only build path's shell) still calls `QFileDialog`/`QMessageBox`
   directly.
+
+## Replaceable services inside the Apple-API layer (`CompatSupport.ServiceSlot`)
+
+Upstream's unmodified code cannot take a service through an initialiser, so each compat module keeps its seam in a
+`ServiceSlot<Interface>` instead of a bare global: the host `install`s an implementation at start-up, tests use
+`withOverride` (restored afterwards, even on throw), and an optional fallback supplies the built-in one.
+
+| Seam | Interface | Slot accessors |
+|---|---|---|
+| 2D rasterizer | `CanvasBackend` / `CanvasBackendFactory` | `CanvasBackends.factories`, `withFactories` |
+| Image codecs (ImageIO) | `ImageCodecBackend` | `ImageCodecRegistry.host`, `withHost` |
+| Clipboard | `NSPasteboard.Backend` | `NSPasteboard.backend`, `withBackend` |
+| Foreground segmentation (Vision) | `ForegroundSegmentationBackend` | `ForegroundSegmentationRegistry.backend`, `withBackend` |
+
+`CompCanvasBridge` (the Skia dlopen binding) is internal to `SkiaCanvasBackend`. Event-style hooks (alert and panel
+handlers, `onBeep`, cursor changes) stay closures: they are one-way notifications, not services with a lifetime.

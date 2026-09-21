@@ -9,6 +9,7 @@
 @_exported import CoreGraphics
 @_exported import CoreVideo
 import Foundation
+import CompatSupport
 
 public enum CGImagePropertyOrientation: UInt32, Sendable {
     case up = 1, upMirrored, down, downMirrored, leftMirrored, right, rightMirrored, left
@@ -33,9 +34,17 @@ public protocol ForegroundSegmentationBackend: AnyObject {
 }
 
 public enum ForegroundSegmentationRegistry {
-    nonisolated(unsafe) public static var backend: ForegroundSegmentationBackend?
     public static let classical: ForegroundSegmentationBackend = ClassicalForegroundSegmenter()
-    static var active: ForegroundSegmentationBackend { backend ?? classical }
+    /// The installed segmenter, falling back to the classical one when the host installs none.
+    public static let slot = ServiceSlot<ForegroundSegmentationBackend>(fallback: { classical })
+    public static var backend: ForegroundSegmentationBackend? {
+        get { slot.installedValue }
+        set { slot.install(newValue) }
+    }
+    static var active: ForegroundSegmentationBackend { slot.current ?? classical }
+    public static func withBackend<Result>(_ backend: ForegroundSegmentationBackend?, _ body: () throws -> Result) rethrows -> Result {
+        try slot.withOverride(backend, body)
+    }
 }
 
 /// C hook: `labels` (width*height bytes) is filled by the callee; `instanceCount` receives the number of instances.

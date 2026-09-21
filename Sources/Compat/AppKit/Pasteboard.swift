@@ -1,4 +1,5 @@
 import Foundation
+import CompatSupport
 import UniformTypeIdentifiers
 
 /// General pasteboard. In-process store with Apple's change-count semantics; the host can mirror it to the desktop
@@ -22,7 +23,15 @@ public final class NSPasteboard: @unchecked Sendable {
         func read() -> [PasteboardType: Data]
     }
 
-    nonisolated(unsafe) public static var backend: Backend?
+    public static let backendSlot = ServiceSlot<Backend>()
+    public static var backend: Backend? {
+        get { backendSlot.installedValue }
+        set { backendSlot.install(newValue) }
+    }
+    /// Runs `body` with `backend` as the clipboard the general pasteboard mirrors, then restores the previous one.
+    public static func withBackend<Result>(_ backend: Backend?, _ body: () throws -> Result) rethrows -> Result {
+        try backendSlot.withOverride(backend, body)
+    }
     public static let general = NSPasteboard()
 
     private var items: [PasteboardType: Data] = [:]

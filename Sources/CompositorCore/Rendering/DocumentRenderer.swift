@@ -140,7 +140,7 @@ final class DocumentRenderer {
         let rendererEnv = ProcessInfo.processInfo.environment["COMPOSITOR_RENDERER"]?.lowercased()
         let forceSwift = rendererEnv == "swift"
         let forceSkia = rendererEnv == "skia"
-        let useSkia = forceSkia || (!forceSwift && CompCanvasBridge.shared.isAvailable)
+        let useSkia = forceSkia || (!forceSwift && CanvasBackends.isAvailable)
 
         if useSkia && source.width == destination.width && source.height == destination.height {
             CompatBootstrap.install()

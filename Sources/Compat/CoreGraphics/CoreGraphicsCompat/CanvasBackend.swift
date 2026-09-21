@@ -7,6 +7,7 @@
 // `CGContext` keeps. Depends only on Foundation types: no Skia, Qt or Vulkan leaks through this interface.
 
 import Foundation
+import CompatSupport
 
 /// One drawable surface over caller-owned pixel memory. Coordinates are in the backend's own user space; `CGContext`
 /// applies Core Graphics's orientation on top with `translate`/`scale` before drawing.
@@ -53,21 +54,29 @@ public protocol CanvasBackend: AnyObject {
 /// Creates backends over a context's pixel memory. Return nil when this backend cannot serve the request.
 public protocol CanvasBackendFactory {
     var name: String { get }
+    /// A cheap check that this backend can start at all (its library is loaded, its device exists).
+    var isAvailable: Bool { get }
     func makeCanvas(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int, bytesPerRow: Int,
                     format: CGContext.PixelFormat) -> CanvasBackend?
 }
 
 /// The ordered list of backends a new `CGContext` tries. The default is Skia; hosts and tests install their own.
 public enum CanvasBackends {
-    nonisolated(unsafe) public static var factories: [CanvasBackendFactory] = [SkiaCanvasFactory()]
+    public static let slot = ServiceSlot<[CanvasBackendFactory]>(fallback: { [SkiaCanvasFactory()] })
+
+    /// The backends a new context tries, in order.
+    public static var factories: [CanvasBackendFactory] {
+        get { slot.current ?? [] }
+        set { slot.install(newValue) }
+    }
+
+    /// Runs `body` with these backends (e.g. a recording double, or none to force the pure-Swift paths).
+    public static func withFactories<Result>(_ factories: [CanvasBackendFactory], _ body: () throws -> Result) rethrows -> Result {
+        try slot.withOverride(factories, body)
+    }
 
     /// True when at least one backend can draw; callers that would otherwise fall back to pure Swift ask this.
-    public static var isAvailable: Bool {
-        var probe: UInt8 = 0
-        return withUnsafeMutablePointer(to: &probe) { pixel in
-            factories.contains { $0.makeCanvas(pixels: pixel, width: 1, height: 1, bytesPerRow: 4, format: .rgba) != nil }
-        }
-    }
+    public static var isAvailable: Bool { factories.contains { $0.isAvailable } }
 
     static func make(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int, bytesPerRow: Int,
                      format: CGContext.PixelFormat) -> CanvasBackend? {

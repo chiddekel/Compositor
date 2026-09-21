@@ -67,18 +67,22 @@ let package = Package(
         // It must not depend on any document/domain type (see docs/upstream-shim-worklist.md).
         .target(
             name: "CoreGraphics",
+            dependencies: ["CompatSupport"],
             path: "Sources/Compat/CoreGraphics",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])]
         ),
+        // ServiceSlot: the one mechanism the compat modules use to expose a replaceable implementation (install / override).
+        .target(name: "CompatSupport", path: "Sources/Compat/CompatSupport",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // Foundation gaps (FileWrapper, NSFileCoordinator, security-scoped URLs), UTType and the headless AppKit
         // surface upstream's model code touches. Each is one Apple framework (interface segregation).
         .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers"], path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Accelerate", path: "Sources/Compat/Accelerate",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "ImageIO", dependencies: ["CoreGraphics", "Accelerate", "UniformTypeIdentifiers"],
+        .target(name: "ImageIO", dependencies: ["CoreGraphics", "Accelerate", "UniformTypeIdentifiers", "CompatSupport"],
                 path: "Sources/Compat/ImageIO", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "Vision", dependencies: ["CoreGraphics", "CoreVideo"], path: "Sources/Compat/Vision",
+        .target(name: "Vision", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport"], path: "Sources/Compat/Vision",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "SwiftUI", dependencies: ["CoreGraphics", "AppKit"], path: "Sources/Compat/SwiftUI",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -87,7 +91,7 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO"],
+        .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO", "CompatSupport"],
                 path: "Sources/Compat/AppKit", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(
             name: "CompositorCore",

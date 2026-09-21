@@ -5,6 +5,7 @@ import Foundation
 
 struct SkiaCanvasFactory: CanvasBackendFactory {
     var name: String { "skia" }
+    var isAvailable: Bool { CompCanvasBridge.shared.isAvailable }
 
     func makeCanvas(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int, bytesPerRow: Int,
                     format: CGContext.PixelFormat) -> CanvasBackend? {

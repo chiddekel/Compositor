@@ -1,6 +1,9 @@
 import XCTest
 import CoreGraphics
 @testable import CoreGraphics
+import CompatSupport
+import ImageIO
+import AppKit
 
 /// A backend that only records what `CGContext` asks of it: proof the context depends on the protocol, not on Skia.
 private final class RecordingCanvas: CanvasBackend, @unchecked Sendable {
@@ -35,45 +38,101 @@ private final class RecordingCanvas: CanvasBackend, @unchecked Sendable {
 private struct FixedFactory: CanvasBackendFactory {
     let canvas: CanvasBackend?
     var name: String { "fixed" }
+    var isAvailable: Bool { canvas != nil }
     func makeCanvas(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int, bytesPerRow: Int, format: CGContext.PixelFormat) -> CanvasBackend? { canvas }
 }
 
 final class CanvasBackendTests: XCTestCase {
-    private var saved: [CanvasBackendFactory] = []
-    override func setUp() { saved = CanvasBackends.factories }
-    override func tearDown() { CanvasBackends.factories = saved }
 
     func testContextDrawsThroughWhicheverBackendIsInstalled() {
         let recorder = RecordingCanvas()
-        CanvasBackends.factories = [FixedFactory(canvas: recorder)]
-        let context = CGContext(width: 10, height: 10)
-        context.saveGState()
-        context.setAlpha(0.5)
-        context.fill(CGRect(x: 1, y: 2, width: 3, height: 4))
-        context.clip(to: CGRect(x: 0, y: 0, width: 5, height: 5))
-        context.restoreGState()
+        CanvasBackends.withFactories([FixedFactory(canvas: recorder)]) {
+            let context = CGContext(width: 10, height: 10)
+            context.saveGState()
+            context.setAlpha(0.5)
+            context.fill(CGRect(x: 1, y: 2, width: 3, height: 4))
+            context.clip(to: CGRect(x: 0, y: 0, width: 5, height: 5))
+            context.restoreGState()
+        }
         XCTAssertEqual(recorder.calls, ["save", "alpha 0.5", "fillRect 1,2,3,4", "clipRect 5x5", "restore"])
     }
 
     func testAppleStyleContextFlipsOnTheBackendBelowTheVisibleTransform() {
         let recorder = RecordingCanvas()
-        CanvasBackends.factories = [FixedFactory(canvas: recorder)]
-        let context = CGContext(data: nil, width: 4, height: 6, bitsPerComponent: 8, bytesPerRow: 16,
-                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        XCTAssertEqual(recorder.calls, ["translate 0.0 6.0", "scale 1.0 -1.0"])
-        XCTAssertEqual(context.ctm, .identity, "the y flip is below the visible CTM")
+        CanvasBackends.withFactories([FixedFactory(canvas: recorder)]) {
+            let context = CGContext(data: nil, width: 4, height: 6, bitsPerComponent: 8, bytesPerRow: 16,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            XCTAssertEqual(recorder.calls, ["translate 0.0 6.0", "scale 1.0 -1.0"])
+            XCTAssertEqual(context.ctm, .identity, "the y flip is below the visible CTM")
+        }
     }
 
     func testBackendsAreTriedInOrderAndAnEmptyListFallsBackToSwift() {
         let recorder = RecordingCanvas()
-        CanvasBackends.factories = [FixedFactory(canvas: nil), FixedFactory(canvas: recorder)]
-        _ = CGContext(width: 4, height: 4).saveGState()
-        XCTAssertEqual(recorder.calls, ["save"], "the first factory declined, the second served")
+        CanvasBackends.withFactories([FixedFactory(canvas: nil), FixedFactory(canvas: recorder)]) {
+            CGContext(width: 4, height: 4).saveGState()
+            XCTAssertEqual(recorder.calls, ["save"], "the first factory declined, the second served")
+        }
+        CanvasBackends.withFactories([]) {
+            let bare = CGContext(width: 4, height: 4)
+            bare.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+            bare.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+            XCTAssertEqual(bare.buffer[0, 0].0, 255, "with no backend the pure-Swift path still paints")
+            XCTAssertFalse(CanvasBackends.isAvailable)
+        }
+    }
+}
 
-        CanvasBackends.factories = []
-        let bare = CGContext(width: 4, height: 4)
-        bare.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
-        bare.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
-        XCTAssertEqual(bare.buffer[0, 0].0, 255, "with no backend the pure-Swift path still paints")
+final class ServiceSlotTests: XCTestCase {
+    private protocol Greeter: AnyObject { var word: String { get } }
+    private final class Fixed: Greeter { let word: String; init(_ word: String) { self.word = word } }
+
+    func testFallbackInstallAndScopedOverride() {
+        let slot = ServiceSlot<Greeter>(fallback: { Fixed("built-in") })
+        XCTAssertEqual(slot.current?.word, "built-in")
+        XCTAssertNil(slot.installedValue)
+        slot.install(Fixed("host"))
+        XCTAssertEqual(slot.current?.word, "host")
+        slot.withOverride(Fixed("test")) { XCTAssertEqual(slot.current?.word, "test") }
+        XCTAssertEqual(slot.current?.word, "host", "the override restores what was installed")
+        slot.install(nil)
+        XCTAssertEqual(slot.current?.word, "built-in")
+    }
+
+    func testOverrideRestoresEvenWhenTheBodyThrows() {
+        struct Boom: Error {}
+        let slot = ServiceSlot<Greeter>()
+        slot.install(Fixed("host"))
+        XCTAssertThrowsError(try slot.withOverride(Fixed("test")) { throw Boom() })
+        XCTAssertEqual(slot.current?.word, "host")
+    }
+}
+
+final class CompatSeamOverrideTests: XCTestCase {
+    private final class NullCodec: ImageCodecBackend {
+        func identify(_ data: Data) -> ImageInfo? { nil }
+        func decode(_ data: Data) -> CGImage? { nil }
+        func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?) -> Data? { nil }
+    }
+    private final class MemoryClipboard: NSPasteboard.Backend {
+        var stored: [NSPasteboard.PasteboardType: Data] = [:]
+        func write(_ items: [NSPasteboard.PasteboardType: Data]) { stored = items }
+        func read() -> [NSPasteboard.PasteboardType: Data] { stored }
+    }
+
+    func testCodecAndClipboardSeamsAreOverridableAndRestored() {
+        let before = ImageCodecRegistry.host
+        let codec = NullCodec()
+        ImageCodecRegistry.withHost(codec) { XCTAssertTrue(ImageCodecRegistry.host === codec) }
+        XCTAssertTrue(ImageCodecRegistry.host === before)
+
+        let clipboard = MemoryClipboard()
+        NSPasteboard.withBackend(clipboard) {
+            let board = NSPasteboard.general
+            board.clearContents()
+            board.setData(Data([1, 2, 3]), forType: .png)
+            XCTAssertEqual(clipboard.stored[.png], Data([1, 2, 3]))
+        }
+        XCTAssertNil(NSPasteboard.backend)
     }
 }
