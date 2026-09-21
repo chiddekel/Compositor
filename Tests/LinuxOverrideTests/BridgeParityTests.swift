@@ -193,6 +193,46 @@ struct BridgeParityTests {
         await checkRendered("copy paste", [rect, cmd("copy"), cmd("paste")])
     }
 
+    @Test func brushWandAndFilters() async {
+        let stroke = [cmd("brushBegin", #""x":8,"y":8,"parameters":{"diameter":10,"hardness":1,"red":1,"green":0,"blue":0}"#),
+                      cmd("brushMove", #""x":20,"y":14"#), cmd("brushMove", #""x":30,"y":22"#), cmd("brushEnd")]
+        await checkRendered("brush", stroke, tolerance: 2)
+        await checkRendered("erase", [cmd("brushBegin", #""x":5,"y":15,"parameters":{"diameter":12,"erasing":1}"#), cmd("brushMove", #""x":30,"y":15"#), cmd("brushEnd")], tolerance: 2)
+        await checkRendered("brush cancel", [cmd("brushBegin", #""x":8,"y":8,"parameters":{"diameter":10}"#), cmd("brushMove", #""x":20,"y":14"#), cmd("brushCancel")])
+        await checkRendered("wand", [cmd("magicWand", #""x":5,"y":5,"parameters":{"tolerance":40}"#), cmd("fillForeground", #""parameters":{"red":0,"green":1,"blue":0}"#)])
+        await checkRendered("filter cancel", [cmd("filterBegin", #""kind":"Gaussian Blur","parameters":{"radius":3}"#), cmd("filterCancel")])
+    }
+
+    /// Painting black on a reveal mask hides only the stroke. (The fork's soft mask stroke hid about 80% of the image, so
+    /// this is checked against upstream alone: transparent pixels near the stroke, the far corner untouched.)
+    @Test func maskStrokeHidesOnlyTheStroke() async throws {
+        let w = 40, h = 30
+        let side = upstreamSide()
+        _ = side.importPixels(pattern(w, h), w, h, true)
+        for step in [cmd("addRevealMask"), cmd("brushBegin", #""x":10,"y":10,"parameters":{"diameter":14,"hardness":0.3,"mask":1}"#),
+                     cmd("brushMove", #""x":26,"y":18"#), cmd("brushEnd")] { #expect(await side.send(step) == 0) }
+        let pixels = side.render()
+        let hidden = stride(from: 3, to: pixels.count, by: 4).filter { pixels[$0] == 0 }.count
+        #expect((100...450).contains(hidden), "\(hidden) pixels hidden")
+        #expect(pixels[((28 * w) + 38) * 4 + 3] != 0, "the far corner is untouched")
+        #expect(pixels[((14 * w) + 18) * 4 + 3] == 0, "the middle of the stroke is hidden")
+    }
+
+    /// Gaussian blur grows the layer by the blur's reach. The fork grew it by less (4 px at radius 2), upstream by 3 sigma
+    /// (6 px), and upstream is the target, so this checks upstream on its own: the layer grew, the canvas did not, and
+    /// pixels changed.
+    @Test func gaussianBlurFollowsUpstream() async throws {
+        let w = 40, h = 30
+        let side = upstreamSide(), untouched = upstreamSide()
+        for s in [side, untouched] { _ = s.importPixels(pattern(w, h), w, h, true) }
+        for step in [cmd("filterBegin", #""kind":"Gaussian Blur","parameters":{"radius":2}"#), cmd("filterCommit")] { #expect(await side.send(step) == 0) }
+        let layer = try #require((side.state()["layers"] as? [[String: Any]])?.first)
+        let size = try #require((layer["transform"] as? [String: Any])?["size"] as? [Double])
+        #expect(size == [51, 42], "layer grows by 3 sigma each side")
+        #expect(side.state()["width"] as? Int == w && side.state()["height"] as? Int == h)
+        #expect(side.render() != untouched.render())
+    }
+
     /// Upstream's cut is copy then clear (Cmd-X). The fork's differed (it cropped the layer to the selection), so cut is
     /// checked against upstream's own copy + clear rather than against the fork.
     @Test func cutIsCopyThenClear() async throws {
@@ -235,6 +275,7 @@ struct BridgeParityTests {
 
     @Test func unsupportedCommandsAreReportedNotIgnored() async {
         let editor = UpstreamEditor()
-        #expect(await editor.commandAsync(Data(cmd("brushBegin").utf8)) == -7)
+        #expect(await editor.commandAsync(Data(cmd("resizeCanvas", #""width":10,"height":10"#).utf8)) == -7)
     }
 }
+

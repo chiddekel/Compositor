@@ -81,7 +81,8 @@ final class UpstreamEditor {
         "addRevealMask", "addHideMask", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
         "selectRectangle", "selectEllipse", "selectLasso", "deselect", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
-        "duplicateLayer", "layerViaCopy",
+        "duplicateLayer", "layerViaCopy", "brushBegin", "brushMove", "brushEnd", "brushCancel", "magicWand",
+        "filterBegin", "filterPreview", "filterCommit", "filterCancel",
     ]
 
     /// Synchronous entry for the C ABI (called from the Qt main thread): runs `commandAsync`, pumping the run loop while
@@ -178,6 +179,47 @@ final class UpstreamEditor {
         case "paste": s.paste()
         case "duplicateLayer": s.duplicateActiveLayer()
         case "layerViaCopy": s.layerViaCopy()
+        case "brushBegin":
+            let p = command.parameters ?? [:]
+            guard s.document != nil, let point = point(command) else { return fail(-1, "invalid brush start") }
+            // Healing and clone need their own tool state; not mapped yet.
+            guard (p["healing"] ?? 0) == 0, p["cloneOffsetX"] == nil else { return fail(-7, "healing and clone stamp are not supported by the upstream bridge yet") }
+            s.selectTool(.brush)
+            var settings = BrushSettings()
+            settings.diameter = p["diameter"] ?? 40; settings.hardness = p["hardness"] ?? 1; settings.opacity = p["opacity"] ?? 1
+            settings.red = p["red"] ?? 0; settings.green = p["green"] ?? 0; settings.blue = p["blue"] ?? 0
+            s.brushSettings = settings
+            s.brushMode = (p["erasing"] ?? 0) != 0 ? .erase : .paint
+            s.isMaskSelected = (p["mask"] ?? 0) != 0
+            // A mask stroke paints white (reveal) or black (hide): upstream keeps that choice as the mask palette.
+            if s.isMaskSelected { s.maskPaintWhite = (0.2126 * settings.red + 0.7152 * settings.green + 0.0722 * settings.blue) > 0.5 }
+            s.beginBrush(at: point)
+        case "brushMove":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            s.continueBrush(at: point)
+        case "brushEnd": await s.finishBrush()
+        case "brushCancel": s.cancelBrush()
+        case "magicWand":
+            guard s.document != nil, let point = point(command) else { return fail(-1, "invalid point") }
+            let p = command.parameters ?? [:]
+            var settings = WandSettings()
+            settings.tolerance = Int(p["tolerance"] ?? Double(settings.tolerance))
+            settings.contiguous = (p["contiguous"] ?? (settings.contiguous ? 1 : 0)) != 0
+            settings.sampleAllLayers = (p["sampleAllLayers"] ?? (settings.sampleAllLayers ? 1 : 0)) != 0
+            s.wandSettings = settings
+            await s.magicWand(at: point, mode: SelectionMode(rawValue: command.kind ?? "New") ?? .replace)
+        case "filterBegin":
+            guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
+            s.beginFilter(kind)
+            guard s.filterEdit != nil else { return fail(-5, "filter could not start") }
+            s.updateFilter(filterSettings(command, s.filterSettings), preview: true)
+        case "filterPreview":
+            guard s.filterEdit != nil else { return fail(-1, "no filter in progress") }
+            s.updateFilter(filterSettings(command, s.filterEdit?.settings ?? s.filterSettings), preview: s.filterEdit?.preview ?? true)
+        case "filterCommit":
+            guard s.filterEdit != nil else { return fail(-1, "no filter in progress") }
+            await s.commitFilter()
+        case "filterCancel": s.cancelFilter()
         default:
             return fail(-7, "Unsupported by the upstream bridge yet: \(command.action)")
         }
@@ -186,6 +228,25 @@ final class UpstreamEditor {
     }
 
     private func fail(_ code: Int32, _ message: String) -> Int32 { error = message; return code }
+
+    private func point(_ command: Command) -> CGPoint? {
+        guard let x = command.x, let y = command.y, x.isFinite, y.isFinite, abs(x) <= 1_000_000, abs(y) <= 1_000_000 else { return nil }
+        return CGPoint(x: x, y: y)
+    }
+
+    /// The command's parameters laid over the settings the edit already has, as the fork's bridge did.
+    private func filterSettings(_ command: Command, _ current: FilterSettings) -> FilterSettings {
+        let p = command.parameters ?? [:]
+        var settings = current
+        settings.radius = p["radius"] ?? settings.radius
+        settings.distance = p["distance"] ?? settings.distance
+        settings.angle = p["angle"] ?? settings.angle
+        settings.amount = p["amount"] ?? settings.amount
+        settings.distortion = p["distortion"] ?? settings.distortion
+        settings.gaussian = (p["gaussian"] ?? (settings.gaussian ? 1 : 0)) != 0
+        settings.monochromatic = (p["monochromatic"] ?? (settings.monochromatic ? 1 : 0)) != 0
+        return settings
+    }
 
     private func select(_ path: CGPath, mode: SelectionMode) {
         if mode == .replace { session.setSelection(DocumentSelection(path: path), name: "Select") }
