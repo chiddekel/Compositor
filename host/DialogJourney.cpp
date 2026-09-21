@@ -12,7 +12,10 @@
 #include <QImageReader>
 #include <QLabel>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QTreeView>
+#include <QSpinBox>
+#include <QMouseEvent>
 #include <QStandardItemModel>
 #include <QPushButton>
 #include <QSlider>
@@ -293,13 +296,14 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         auto *remove = menuAction("Delete Layer"); require(remove, "Delete Layer action missing");
         add->trigger();
         require(stateLayers().size() == 2 && countItems(countItems) == 2, "New Layer did not add a dock row");
-        require(tree->currentIndex().row() == 1 && window.sessionState().value("activeLayerID").toString()
-            == stateLayers().at(tree->currentIndex().row()).toObject().value("id").toString(), "new layer not selected in the dock");
+        // The dock lists the top layer first; the document array is bottom-first.
+        require(tree->currentIndex().row() == 0 && window.sessionState().value("activeLayerID").toString()
+            == stateLayers().at(stateLayers().size() - 1 - tree->currentIndex().row()).toObject().value("id").toString(), "new layer not selected in the dock");
         duplicate->trigger();
         require(stateLayers().size() == 3 && countItems(countItems) == 3, "duplicate did not add a dock row");
         tree->setCurrentIndex(model->index(1, 0));
         require(window.sessionState().value("activeLayerID").toString()
-            == stateLayers().at(1).toObject().value("id").toString(), "row selection did not switch active layer");
+            == stateLayers().at(stateLayers().size() - 2).toObject().value("id").toString(), "row selection did not switch active layer");
         opacity->setValue(50);
         const QString active = window.sessionState().value("activeLayerID").toString();
         double set = -1;
@@ -335,7 +339,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         require(isGroup, "active layer is not a group");
 
         // Mask verification on a raster layer
-        tree->setCurrentIndex(model->index(0, 0));
+        tree->setCurrentIndex(model->index(model->rowCount() - 1, 0));  // bottom raster layer
         auto *addMask = menuAction("Add Reveal Mask");
         require(addMask != nullptr, "Add Reveal Mask action missing");
         addMask->trigger();
@@ -347,6 +351,54 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         require(hasMask, "layer hasMask is false after Add Reveal Mask");
 
         require(!exported(window, temporary.filePath("after.png")).isNull(), "render after layer ops failed");
+        // Move / Transform: X/Y/W/H fields, Link, handle resize, body drag, panel order.
+        {
+            SessionWindow w2; w2.resize(1200, 800); w2.show(); QApplication::processEvents();
+            w2.setTool(SessionWindow::Tool::Move); QApplication::processEvents();
+            auto spin = [&](const char *name) { auto *s = w2.findChild<QSpinBox *>(name); require(s, "transform spin missing"); return s; };
+            const auto geometry = [&]() {
+                const QJsonObject layer = w2.sessionState().value("layers").toArray().at(0).toObject();
+                const QJsonObject t = layer.value("transform").toObject();
+                auto pair = [](const QJsonValue &v, const char *a, const char *b) {
+                    if (v.isArray()) return QPointF(v.toArray().at(0).toDouble(), v.toArray().at(1).toDouble());
+                    return QPointF(v.toObject().value(a).toDouble(), v.toObject().value(b).toDouble());
+                };
+                const QPointF o = pair(t.value("origin"), "x", "y"), z = pair(t.value("size"), "width", "height");
+                return QRectF(o.x(), o.y(), z.x(), z.y());
+            };
+            // The startup brush stroke leaves a 56x56 layer inside the 64x64 document.
+            require(geometry().size() == QSizeF(56, 56), "unexpected initial layer size");
+            require(spin("transform.w")->value() == 56 && spin("transform.h")->value() == 56, "W/H fields do not mirror the layer");
+            spin("transform.w")->setValue(32); QApplication::processEvents();
+            require(geometry().size() == QSizeF(32, 32), "linked W edit did not resize the layer to 32x32");
+            require(spin("transform.h")->value() == 32, "linked H field did not follow W");
+            spin("transform.x")->setValue(6); QApplication::processEvents();
+            require(qRound(geometry().x()) == 6, "X field did not move the layer");
+            spin("transform.x")->setValue(0); QApplication::processEvents();
+
+            QWidget *canvas = w2.centralWidget();
+            const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
+            const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
+            auto at = [&](double dx, double dy) { return origin + QPointF(dx * scale, dy * scale); };
+            auto drag = [&](QPointF from, QPointF to) {
+                auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+                    QMouseEvent ev(type, pos, canvas->mapToGlobal(pos), button, buttons, Qt::NoModifier);
+                    QApplication::sendEvent(canvas, &ev);
+                };
+                send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+                send(QEvent::MouseMove, (from + to) / 2, Qt::NoButton, Qt::LeftButton);
+                send(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
+                send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+                QApplication::processEvents();
+            };
+            drag(at(32, 32), at(48, 40));  // bottom-right handle, linked => uniform 1.5x
+            require(geometry().size() == QSizeF(48, 48), "corner handle drag did not resize uniformly");
+            require(spin("transform.w")->value() == 48, "fields did not refresh after handle drag");
+            drag(at(20, 20), at(24, 25));  // body drag
+            require(qRound(geometry().x()) == 4 && qRound(geometry().y()) == 5, "body drag did not move the layer");
+            require(window.sessionState().value("canUndo").toBool(), "transform edits left no history entry");
+        }
+
         qInfo("Qt layers dock journey OK (add, duplicate, select, opacity, delete, multi-delete, group, mask)");
         return 0;
     } catch (const std::exception &e) {

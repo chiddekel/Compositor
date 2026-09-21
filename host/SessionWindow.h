@@ -37,6 +37,8 @@ class QStackedWidget;
 class QTabBar;
 class QLabel;
 class QToolBar;
+class QSpinBox;
+class QPainter;
 #include <vector>
 #include <memory>
 #include <QMap>
@@ -187,4 +189,32 @@ private:
     QLabel *m_statusProfileLabel = nullptr;
     QLabel *m_statusHintsLabel = nullptr;
     double m_zoomLevel = 0.0;
+
+    // Move / Transform tool state. Geometry is in document pixels; rotation in degrees.
+public:
+    struct LayerGeometry {
+        QString id;
+        double x = 0, y = 0, w = 0, h = 0, rotation = 0;
+        bool valid = false, isGroup = false, visible = true;
+    };
+private:
+    LayerGeometry m_activeGeometry;
+    std::vector<LayerGeometry> m_layerGeometries;  // document order, bottom first
+    QSpinBox *m_xSpin = nullptr;
+    QSpinBox *m_ySpin = nullptr;
+    QSpinBox *m_wSpin = nullptr;
+    QSpinBox *m_hSpin = nullptr;
+    QSpinBox *m_angleSpin = nullptr;
+    QCheckBox *m_linkCheck = nullptr;
+    QCheckBox *m_autoSelectCheck = nullptr;
+    QCheckBox *m_showControlsCheck = nullptr;
+    int m_transformHandle = -1;  // -1 none, 0-7 resize (TL,T,TR,R,BR,B,BL,L), 8 rotate, 9 move body
+    LayerGeometry m_transformStart;
+    LayerGeometry m_transformDraft;
+    void syncTransformFields();
+    void applyTransformFields(int changedField);
+    int hitTestTransformHandle(const QPointF &canvasPoint) const;
+    void drawTransformControls(QPainter &painter) const;
+    void previewGeometry(const LayerGeometry &geometry);
+    LayerGeometry draggedGeometry(const QPointF &documentPoint, Qt::KeyboardModifiers modifiers) const;
 };

@@ -732,6 +732,25 @@ SessionWindow::~SessionWindow() {
     if (m_sessionHandle != 0) compositor_session_close(m_sessionHandle);
 }
 
+namespace {
+constexpr double kPi = 3.14159265358979323846;
+const QPointF kHandleUnits[8] = {{0, 0}, {0.5, 0}, {1, 0}, {1, 0.5}, {1, 1}, {0.5, 1}, {0, 1}, {0, 0.5}};
+
+QPointF geometryPoint(const SessionWindow::LayerGeometry &g, const QPointF &unit) {
+    const double r = g.rotation * kPi / 180.0;
+    const double lx = (unit.x() - 0.5) * g.w, ly = (unit.y() - 0.5) * g.h;
+    return QPointF(g.x + g.w / 2 + lx * std::cos(r) - ly * std::sin(r),
+                   g.y + g.h / 2 + lx * std::sin(r) + ly * std::cos(r));
+}
+
+bool geometryContains(const SessionWindow::LayerGeometry &g, const QPointF &p) {
+    const double r = g.rotation * kPi / 180.0;
+    const double x = p.x() - (g.x + g.w / 2), y = p.y() - (g.y + g.h / 2);
+    return std::abs(x * std::cos(r) + y * std::sin(r)) <= g.w / 2
+        && std::abs(-x * std::sin(r) + y * std::cos(r)) <= g.h / 2;
+}
+}  // namespace
+
 QRectF SessionWindow::canvasTargetRect() const {
     if (m_image.isNull()) return QRectF();
     const QSize canvasSize = m_canvasWidget ? m_canvasWidget->size() : size();
@@ -808,6 +827,8 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     // Canvas border outline
     p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
     p.drawRect(targetI.adjusted(0, 0, -1, -1));
+
+    drawTransformControls(p);
 
     // Interactive drag feedback (selection / crop marquee)
     if (m_painting && (m_tool == Tool::RectSelect || m_tool == Tool::EllipseSelect || m_tool == Tool::Crop)) {
@@ -927,6 +948,30 @@ void SessionWindow::refreshLayers() {
     const QJsonArray layers = state.object().value("layers").toArray();
     const QString active = state.object().value("activeLayerID").toString();
 
+    m_layerGeometries.clear();
+    m_activeGeometry = LayerGeometry();
+    for (const QJsonValue &value : layers) {
+        const QJsonObject layer = value.toObject();
+        const QJsonObject t = layer.value("transform").toObject();
+        LayerGeometry g;
+        g.id = layer.value("id").toString();
+        g.isGroup = layer.value("isGroup").toBool(false);
+        g.visible = layer.value("visible").toBool(true);
+        // Foundation encodes CGPoint/CGSize as [a, b]; accept keyed objects as well.
+        auto pair = [](const QJsonValue &v, const char *k0, const char *k1) {
+            if (v.isArray()) return QPointF(v.toArray().at(0).toDouble(), v.toArray().at(1).toDouble());
+            return QPointF(v.toObject().value(k0).toDouble(), v.toObject().value(k1).toDouble());
+        };
+        const QPointF origin = pair(t.value("origin"), "x", "y");
+        const QPointF extent = pair(t.value("size"), "width", "height");
+        g.x = origin.x(); g.y = origin.y(); g.w = extent.x(); g.h = extent.y();
+        g.rotation = t.value("rotation").toDouble();
+        g.valid = !g.isGroup && g.w >= 1 && g.h >= 1;
+        m_layerGeometries.push_back(g);
+        if (g.id == active) m_activeGeometry = g;
+    }
+    syncTransformFields();
+
     m_syncingLayers = true;
     m_layerModel->clear();
     m_layerModel->setHorizontalHeaderLabels({tr("Layer"), tr("Visible"), tr("Mask")});
@@ -1027,7 +1072,9 @@ void SessionWindow::refreshLayers() {
     QModelIndex selectedIndex;
     QJsonObject activeLayerObj;
 
-    for (const QString &id : order) {
+    // The document array is bottom-first; the panel lists the top layer first.
+    for (auto it = order.crbegin(); it != order.crend(); ++it) {
+        const QString &id = *it;
         const LayerNode &node = nodeMap[id];
         if (!node.parentId.isEmpty() && nodeMap.contains(node.parentId)) {
             QStandardItem *parentItem = nodeMap[node.parentId].items.at(0);
@@ -1145,7 +1192,35 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
     m_dragStart = point;
 
     switch (m_tool) {
-    case Tool::Move:
+    case Tool::Move: {
+        m_transformHandle = -1;
+        m_transformDraft = LayerGeometry();
+        // Auto Select: pick the topmost visible layer under the cursor unless a
+        // handle of the current layer was grabbed.
+        const int handle = hitTestTransformHandle(event->position());
+        if (handle < 0 && m_autoSelectCheck && m_autoSelectCheck->isChecked()) {
+            const bool insideActive = m_activeGeometry.valid && geometryContains(m_activeGeometry, point);
+            for (auto it = m_layerGeometries.crbegin(); it != m_layerGeometries.crend(); ++it) {
+                if (!it->valid || !it->visible || !geometryContains(*it, point)) continue;
+                if (!insideActive || it->id != m_activeGeometry.id) {
+                    if (!insideActive && sendCommand({{"action", "selectLayer"}, {"layerID", it->id}})) {
+                        refreshImage();
+                        refreshLayers();
+                    }
+                }
+                break;
+            }
+        }
+        if (m_activeGeometry.valid) {
+            m_transformHandle = handle >= 0 ? handle : (geometryContains(m_activeGeometry, point) ? 9 : -1);
+        }
+        if (m_transformHandle >= 0) {
+            m_transformStart = m_activeGeometry;
+            sendCommand({{"action", "transformBegin"}});
+        }
+        m_painting = true;
+        break;
+    }
     case Tool::RectSelect:
     case Tool::EllipseSelect:
     case Tool::Crop:
@@ -1222,7 +1297,12 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
 void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
     if (!m_painting) return;
     const QPointF point = documentPoint(event->position());
-    if (m_tool == Tool::Lasso) {
+    if (m_tool == Tool::Move) {
+        if (m_transformHandle >= 0) {
+            m_transformDraft = draggedGeometry(point, event->modifiers());
+            previewGeometry(m_transformDraft);
+        }
+    } else if (m_tool == Tool::Lasso) {
         m_lassoPoints.push_back(point);
     } else if (m_tool == Tool::Brush || m_tool == Tool::Eraser || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing) {
         const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3})")
@@ -1240,16 +1320,13 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
 
     switch (m_tool) {
     case Tool::Move: {
-        const double dx = point.x() - m_dragStart.x();
-        const double dy = point.y() - m_dragStart.y();
-        if (std::abs(dx) >= 0.5 || std::abs(dy) >= 0.5) {
-            const QString json = QString(R"({"version":1,"action":"moveLayer","x":%1,"y":%2})")
-                .arg(dx, 0, 'f', 2).arg(dy, 0, 'f', 2);
-            const QByteArray bytes = json.toUtf8();
-            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-                refreshImage();
-                refreshLayers();
-            }
+        if (m_transformHandle >= 0) {
+            if (m_transformDraft.valid) sendCommand({{"action", "transformCommit"}});
+            else sendCommand({{"action", "transformCancel"}});
+            m_transformHandle = -1;
+            m_transformDraft = LayerGeometry();
+            refreshImage();
+            refreshLayers();
         }
         break;
     }
@@ -1746,6 +1823,140 @@ void SessionWindow::closeEvent(QCloseEvent *event) {
     QMainWindow::closeEvent(event);
 }
 
+// ---- Move / Transform tool ---------------------------------------------------
+
+
+void SessionWindow::syncTransformFields() {
+    if (!m_xSpin) return;
+    const bool enabled = m_activeGeometry.valid;
+    for (QSpinBox *spin : {m_xSpin, m_ySpin, m_wSpin, m_hSpin, m_angleSpin}) {
+        const QSignalBlocker blocker(spin);
+        spin->setEnabled(enabled);
+    }
+    if (!enabled) return;
+    const QSignalBlocker bx(m_xSpin), by(m_ySpin), bw(m_wSpin), bh(m_hSpin), ba(m_angleSpin);
+    m_xSpin->setValue(qRound(m_activeGeometry.x));
+    m_ySpin->setValue(qRound(m_activeGeometry.y));
+    m_wSpin->setValue(qRound(m_activeGeometry.w));
+    m_hSpin->setValue(qRound(m_activeGeometry.h));
+    m_angleSpin->setValue(qRound(m_activeGeometry.rotation));
+}
+
+void SessionWindow::applyTransformFields(int changedField) {
+    if (m_syncingLayers || !m_activeGeometry.valid || m_sessionHandle == 0) return;
+    LayerGeometry next = m_activeGeometry;
+    next.x = m_xSpin->value();
+    next.y = m_ySpin->value();
+    next.rotation = m_angleSpin->value();
+    if (changedField == 2 || changedField == 3) {
+        const double aspect = m_activeGeometry.w / std::max(1.0, m_activeGeometry.h);
+        if (m_linkCheck && m_linkCheck->isChecked()) {
+            if (changedField == 2) { next.w = m_wSpin->value(); next.h = std::max(1.0, std::round(next.w / aspect)); }
+            else { next.h = m_hSpin->value(); next.w = std::max(1.0, std::round(next.h * aspect)); }
+        } else {
+            next.w = m_wSpin->value();
+            next.h = m_hSpin->value();
+        }
+    }
+    const QJsonObject command{{"action", "transform"}, {"parameters", QJsonObject{
+        {"x", next.x}, {"y", next.y}, {"width", next.w}, {"height", next.h}, {"rotation", next.rotation}}}};
+    if (sendCommand(command)) { refreshImage(); refreshLayers(); }
+}
+
+int SessionWindow::hitTestTransformHandle(const QPointF &canvasPoint) const {
+    if (!m_activeGeometry.valid) return -1;
+    const LayerGeometry &g = m_activeGeometry;
+    const double reach = 8.0;
+    const QPointF top = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0)));
+    const QPointF center = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0.5)));
+    QPointF outward = top - center;
+    const double length = std::hypot(outward.x(), outward.y());
+    if (length > 0) outward /= length;
+    if (QLineF(canvasPoint, top + outward * 26.0).length() <= reach) return 8;
+    for (int i = 0; i < 8; ++i) {
+        if (QLineF(canvasPoint, documentToCanvasPoint(geometryPoint(g, kHandleUnits[i]))).length() <= reach) return i;
+    }
+    return -1;
+}
+
+void SessionWindow::drawTransformControls(QPainter &p) const {
+    if (m_tool != Tool::Move || !m_activeGeometry.valid || !m_showControlsCheck || !m_showControlsCheck->isChecked()) return;
+    const LayerGeometry &g = (m_transformHandle >= 0 && m_transformDraft.valid) ? m_transformDraft : m_activeGeometry;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPolygonF outline;
+    for (const QPointF &corner : {QPointF(0, 0), QPointF(1, 0), QPointF(1, 1), QPointF(0, 1)}) {
+        outline << documentToCanvasPoint(geometryPoint(g, corner));
+    }
+    p.setPen(QPen(QColor(0xf2, 0xf2, 0xf5), 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawPolygon(outline);
+    const QPointF top = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0)));
+    const QPointF center = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0.5)));
+    QPointF outward = top - center;
+    const double length = std::hypot(outward.x(), outward.y());
+    if (length > 0) outward /= length;
+    const QPointF rotateHandle = top + outward * 26.0;
+    p.drawLine(top, rotateHandle);
+    p.setBrush(QColor(0xf2, 0xf2, 0xf5));
+    p.drawEllipse(rotateHandle, 3.5, 3.5);
+    p.setBrush(QColor(0xff, 0xff, 0xff));
+    p.setPen(QPen(QColor(0x50, 0x50, 0x58), 1));
+    for (const QPointF &unit : kHandleUnits) {
+        const QPointF c = documentToCanvasPoint(geometryPoint(g, unit));
+        p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8));
+    }
+    p.restore();
+}
+
+void SessionWindow::previewGeometry(const LayerGeometry &g) {
+    const QJsonObject command{{"action", "transformPreview"}, {"parameters", QJsonObject{
+        {"x", g.x}, {"y", g.y}, {"width", g.w}, {"height", g.h}, {"rotation", g.rotation}}}};
+    if (sendCommand(command)) refreshImage();
+}
+
+SessionWindow::LayerGeometry SessionWindow::draggedGeometry(const QPointF &point, Qt::KeyboardModifiers modifiers) const {
+    LayerGeometry g = m_transformStart;
+    const double r = g.rotation * kPi / 180.0;
+    if (m_transformHandle == 9) {
+        g.x += point.x() - m_dragStart.x();
+        g.y += point.y() - m_dragStart.y();
+        return g;
+    }
+    const QPointF c0(g.x + g.w / 2, g.y + g.h / 2);
+    if (m_transformHandle == 8) {
+        double degrees = std::atan2(point.y() - c0.y(), point.x() - c0.x()) * 180.0 / kPi + 90.0;
+        if (modifiers & Qt::ShiftModifier) degrees = std::round(degrees / 15.0) * 15.0;
+        while (degrees > 180.0) degrees -= 360.0;
+        while (degrees <= -180.0) degrees += 360.0;
+        g.rotation = degrees;
+        return g;
+    }
+    // Resize in the layer's own (rotated) frame around the opposite edge / corner.
+    const QPointF unit = kHandleUnits[m_transformHandle];
+    const double dx = point.x() - c0.x(), dy = point.y() - c0.y();
+    const QPointF local(dx * std::cos(r) + dy * std::sin(r), -dx * std::sin(r) + dy * std::cos(r));
+    const bool moveX = unit.x() != 0.5, moveY = unit.y() != 0.5;
+    const double signX = unit.x() > 0.5 ? 1.0 : -1.0, signY = unit.y() > 0.5 ? 1.0 : -1.0;
+    const double anchorX = moveX ? -signX * g.w / 2 : 0, anchorY = moveY ? -signY * g.h / 2 : 0;
+    double newW = moveX ? std::max(1.0, signX * (local.x() - anchorX)) : g.w;
+    double newH = moveY ? std::max(1.0, signY * (local.y() - anchorY)) : g.h;
+    const bool corner = moveX && moveY;
+    if (corner && ((m_linkCheck && m_linkCheck->isChecked()) != bool(modifiers & Qt::ShiftModifier))) {
+        const double scale = std::max(newW / g.w, newH / g.h);
+        newW = std::max(1.0, g.w * scale);
+        newH = std::max(1.0, g.h * scale);
+    }
+    const double cx = moveX ? anchorX + signX * newW / 2 : 0;
+    const double cy = moveY ? anchorY + signY * newH / 2 : 0;
+    const QPointF center(c0.x() + cx * std::cos(r) - cy * std::sin(r), c0.y() + cx * std::sin(r) + cy * std::cos(r));
+    g.w = std::round(newW);
+    g.h = std::round(newH);
+    g.x = center.x() - g.w / 2;
+    g.y = center.y() - g.h / 2;
+    return g;
+}
+
 void SessionWindow::applyDarkTheme() {
     const QString qss = QString::fromUtf8(R"(
         QMainWindow {
@@ -2081,6 +2292,7 @@ void SessionWindow::setupOptionsBar() {
     auto *chkAutoSelect = new QCheckBox(tr("Auto Select"), pageMove);
     chkAutoSelect->setObjectName("transformAutoSelect");
     chkAutoSelect->setChecked(true);
+    m_autoSelectCheck = chkAutoSelect;
     layoutMove->addWidget(chkAutoSelect);
 
     auto *chkIgnoreTrans = new QCheckBox(tr("Ignore Transparent Pixels"), pageMove);
@@ -2088,6 +2300,9 @@ void SessionWindow::setupOptionsBar() {
 
     auto *chkShowControls = new QCheckBox(tr("Show Controls"), pageMove);
     chkShowControls->setChecked(true);
+    chkShowControls->setObjectName("transformShowControls");
+    m_showControlsCheck = chkShowControls;
+    connect(chkShowControls, &QCheckBox::toggled, this, [this] { if (m_canvasWidget) m_canvasWidget->update(); });
     layoutMove->addWidget(chkShowControls);
 
     auto addCoordBox = [&](const QString &label, int defVal) {
@@ -2102,25 +2317,43 @@ void SessionWindow::setupOptionsBar() {
         layoutMove->addWidget(spin);
         return spin;
     };
-    addCoordBox("X", 0);
-    addCoordBox("Y", 0);
-    addCoordBox("W", 512);
-    addCoordBox("H", 512);
+    m_xSpin = addCoordBox("X", 0);
+    m_ySpin = addCoordBox("Y", 0);
+    m_wSpin = addCoordBox("W", 512);
+    m_hSpin = addCoordBox("H", 512);
+    m_xSpin->setObjectName("transform.x");
+    m_ySpin->setObjectName("transform.y");
+    m_wSpin->setObjectName("transform.w");
+    m_hSpin->setObjectName("transform.h");
+    m_wSpin->setRange(1, 30000);
+    m_hSpin->setRange(1, 30000);
+    m_xSpin->setRange(-30000, 30000);
+    m_ySpin->setRange(-30000, 30000);
+    m_xSpin->setFixedWidth(64); m_ySpin->setFixedWidth(64); m_wSpin->setFixedWidth(64); m_hSpin->setFixedWidth(64);
 
     auto *chkLink = new QCheckBox(tr("Link"), pageMove);
     chkLink->setChecked(true);
+    chkLink->setObjectName("transformLink");
+    m_linkCheck = chkLink;
     layoutMove->addWidget(chkLink);
 
     auto *lblAngle = new QLabel(tr("Angle"), pageMove);
     lblAngle->setStyleSheet(labelStyle);
     layoutMove->addWidget(lblAngle);
     auto *spinAngle = new QSpinBox(pageMove);
+    spinAngle->setObjectName("transform.angle");
+    m_angleSpin = spinAngle;
     spinAngle->setRange(-360, 360);
     spinAngle->setValue(0);
     spinAngle->setSuffix(QString::fromUtf8("°"));
     spinAngle->setFixedWidth(50);
     spinAngle->setStyleSheet(spinStyle);
     layoutMove->addWidget(spinAngle);
+    for (QSpinBox *spin : {m_xSpin, m_ySpin, m_wSpin, m_hSpin, m_angleSpin}) {
+        const int field = spin == m_xSpin ? 0 : spin == m_ySpin ? 1 : spin == m_wSpin ? 2 : spin == m_hSpin ? 3 : 4;
+        spin->setKeyboardTracking(false);
+        connect(spin, &QSpinBox::valueChanged, this, [this, field] { applyTransformFields(field); });
+    }
 
     layoutMove->addStretch();
     m_optionsStack->addWidget(pageMove);
@@ -2520,16 +2753,12 @@ void SessionWindow::updateStatusTelemetry() {
         statusBar()->addPermanentWidget(m_statusHintsLabel);
     }
 
+    // Same rect the canvas draws into, so the readout always matches what is on screen.
     double effectiveZoom = 1.0;
-    if (m_zoomLevel > 0.0) {
+    if (!m_image.isNull() && m_canvasWidget) {
+        effectiveZoom = canvasTargetRect().width() / m_image.width();
+    } else if (m_zoomLevel > 0.0) {
         effectiveZoom = m_zoomLevel;
-    } else if (!m_image.isNull()) {
-        const QSize canvasSize = m_canvasWidget ? m_canvasWidget->size() : size();
-        const int pad = 24;
-        const int maxW = std::max(10, canvasSize.width() - pad * 2);
-        const int maxH = std::max(10, canvasSize.height() - pad * 2);
-        effectiveZoom = std::min(static_cast<double>(maxW) / m_image.width(),
-                                 static_cast<double>(maxH) / m_image.height());
     }
     m_statusZoomLabel->setText(QString("%1%").arg(effectiveZoom * 100.0, 0, 'f', 1));
 
