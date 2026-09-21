@@ -167,4 +167,53 @@ final class ProjectManifestTests: XCTestCase {
         let m = validManifest(layers: [adj])
         XCTAssertThrowsError(try ProjectStore.validate(m))
     }
+
+    // MARK: - EditorSession.importManifest Hardening
+
+    func testImportManifestReconstructsDocumentAndLayers() throws {
+        let session = EditorSession()
+        let docID = UUID(), l1ID = UUID(), l2ID = UUID()
+        let l1 = ProjectLayerRecord(id: l1ID, name: "Background", isVisible: true,
+            transform: LayerTransform(origin: .zero, size: CGSize(width: 200, height: 100)),
+            imageFile: "\(l1ID.uuidString).png", opacity: 0.8, blendMode: .multiply)
+        let l2 = ProjectLayerRecord(id: l2ID, name: "Overlay", isVisible: false,
+            transform: LayerTransform(origin: CGPoint(x: 10, y: 10), size: CGSize(width: 50, height: 50)),
+            imageFile: "\(l2ID.uuidString).png", opacity: 1.0, blendMode: .screen)
+        let manifest = ProjectManifest(format: "com.compositor.project", version: 7, colorSpace: "sRGB",
+                                       resolution: 144, documentID: docID, width: 200, height: 100,
+                                       activeLayerID: l1ID, layers: [l1, l2])
+        try session.importManifest(manifest)
+
+        XCTAssertEqual(session.document?.id, docID)
+        XCTAssertEqual(session.document?.width, 200)
+        XCTAssertEqual(session.document?.height, 100)
+        XCTAssertEqual(session.document?.resolution, 144)
+        XCTAssertEqual(session.activeLayerID, l1ID)
+        XCTAssertEqual(session.document?.layers.count, 2)
+        XCTAssertEqual(session.document?.layers[0].name, "Background")
+        XCTAssertEqual(session.document?.layers[0].opacity, 0.8)
+        XCTAssertEqual(session.document?.layers[0].blendMode, .multiply)
+        XCTAssertEqual(session.document?.layers[1].name, "Overlay")
+        XCTAssertFalse(session.document?.layers[1].isVisible ?? true)
+    }
+
+    func testImportManifestRejectsOversizedTotalPixels() {
+        let session = EditorSession()
+        // 20,000 * 20,000 = 400,000,000 pixels > 100,000,000 limit
+        let manifest = ProjectManifest(format: "com.compositor.project", version: 7, colorSpace: "sRGB",
+                                       resolution: 72, documentID: UUID(), width: 20_000, height: 20_000,
+                                       activeLayerID: nil, layers: [])
+        XCTAssertThrowsError(try session.importManifest(manifest)) { error in
+            guard case ProjectError.tooLarge? = error as? ProjectError else {
+                return XCTFail("expected ProjectError.tooLarge, got \(error)")
+            }
+        }
+    }
+
+    func testImportManifestRejectsCorruptedManifest() {
+        let session = EditorSession()
+        var corrupted = validManifest()
+        corrupted.format = "corrupted.format"
+        XCTAssertThrowsError(try session.importManifest(corrupted))
+    }
 }
