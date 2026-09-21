@@ -63,7 +63,7 @@ public func compositorCompositeOver(
 }
 
 @inlinable
-internal func clampU8(_ value: Float) -> UInt8 {
+public func clampU8(_ value: Float) -> UInt8 {
     if value.isNaN { return 0 }
     if value <= 0 { return 0 }
     if value >= 255 { return 255 }

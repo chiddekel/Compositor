@@ -128,22 +128,3 @@ public enum CGBlendMode: Int32, Sendable, CaseIterable {
     case plusLighter = 27
 }
 
-extension LayerBlendMode {
-    public var cgMode: CGBlendMode {
-        switch self {
-        case .normal: return .normal
-        case .multiply: return .multiply
-        case .screen: return .screen
-        case .overlay: return .overlay
-        case .darken: return .darken
-        case .lighten: return .lighten
-        case .difference: return .difference
-        case .colorDodge: return .colorDodge
-        case .colorBurn: return .colorBurn
-        case .hue: return .hue
-        case .saturation: return .saturation
-        case .color: return .color
-        case .luminosity: return .luminosity
-        }
-    }
-}

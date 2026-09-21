@@ -143,6 +143,7 @@ final class DocumentRenderer {
         let useSkia = forceSkia || (!forceSwift && CompCanvasBridge.shared.isAvailable)
 
         if useSkia && source.width == destination.width && source.height == destination.height {
+            CompatBootstrap.install()
             let ctx = CGContext(buffer: destination)
             ctx.setBlendMode(mode.cgMode)
             ctx.draw(PortableImage(source), in: CGRect(x: 0, y: 0, width: CGFloat(source.width), height: CGFloat(source.height)))

@@ -7,6 +7,8 @@ import XCTest
 @testable import CompositorCore
 
 final class CoreGraphicsCompatTests: XCTestCase {
+    override class func setUp() { CompatBootstrap.install() }
+
 
     private func makeRedImage(_ w: Int, _ h: Int) -> PortableImage {
         var buf = PixelBuffer(width: w, height: h)

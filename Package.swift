@@ -61,9 +61,17 @@ let package = Package(
                 .define("COMPOSITOR_PORTABLE"),
             ]
         ),
+        // Apple CoreGraphics API surface for Linux (CGContext/CGImage/CGPath/... over Skia, pure-Swift failsafe).
+        // Named exactly like the Apple framework so upstream macOS sources compile with `import CoreGraphics`.
+        // It must not depend on any document/domain type (see docs/upstream-shim-worklist.md).
+        .target(
+            name: "CoreGraphics",
+            path: "Sources/Compat/CoreGraphics",
+            swiftSettings: [.unsafeFlags(["-swift-version", "5"])]
+        ),
         .target(
             name: "CompositorCore",
-            dependencies: ["CompositorKernels", "CompositorBrushBackend"],
+            dependencies: ["CoreGraphics", "CompositorKernels", "CompositorBrushBackend"],
             path: "Sources/CompositorCore",
             swiftSettings: [
                 // ENG-12 provisional decision: Swift 5 language mode for the

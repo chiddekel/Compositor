@@ -398,13 +398,15 @@ public final class CGContext: @unchecked Sendable {
         }
     }
 
+    /// Pure-Swift software drawing used when no render device is bound. The compat module has no knowledge of
+    /// the document domain, so whoever links a renderer installs it (see `CompositorCore.installSoftwareRasterizer`).
+    public typealias SoftwareDraw = (_ image: PortableImage, _ rect: CGRect, _ opacity: Double, _ into: inout PixelBuffer) -> Void
+    nonisolated(unsafe) public static var softwareDraw: SoftwareDraw?
+
     private func drawSwift(_ image: PortableImage, in rect: CGRect, opacity: Double) {
+        guard let softwareDraw = CGContext.softwareDraw else { return }
         var tempBuffer = self.buffer
-        let raster = RasterImage(image)
-        let placement = LayerTransform(origin: rect.origin, size: rect.size, sampling: .smooth)
-        LayerRenderer.draw(raster, transform: placement,
-                           center: CGPoint(x: rect.midX, y: rect.midY),
-                           opacity: opacity, into: &tempBuffer)
+        softwareDraw(image, rect, opacity, &tempBuffer)
         _ = tempBuffer.bytes.withUnsafeBufferPointer { srcPtr in
             memcpy(self.pixelData, srcPtr.baseAddress!, pixelCount)
         }

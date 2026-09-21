@@ -163,7 +163,7 @@ public struct PortableImage: Equatable {
                              bytesPerRow: cw * bytesPerPixel, bytes: out)
     }
 
-    init(width: Int, height: Int, kind: Kind, bytesPerRow: Int, bytes: [UInt8]) {
+    public init(width: Int, height: Int, kind: Kind, bytesPerRow: Int, bytes: [UInt8]) {
         self.width = width; self.height = height; self.kind = kind
         self.bytesPerRow = bytesPerRow; self.bytes = bytes
     }
