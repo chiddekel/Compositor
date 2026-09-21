@@ -1,8 +1,8 @@
 import SwiftUI
+import AppKit
 
 struct TypeControls: View {
     @Bindable var session: EditorSession
-    private static let fonts = NSFontManager.shared.availableFonts.sorted()
     private func value<T>(_ key: WritableKeyPath<LayerTextStyle, T>) -> Binding<T> {
         Binding(get: { session.currentTextStyle[keyPath: key] }, set: { value in
             session.changeTextStyle { $0[keyPath: key] = value }
@@ -18,9 +18,8 @@ struct TypeControls: View {
             Text("Type").font(ToolHeaderStyle.titleFont)
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
-                    Picker("Font", selection: value(\.fontName)) {
-                        ForEach(Array(Set(Self.fonts + [session.currentTextStyle.fontName])).sorted(), id: \.self) { Text($0).tag($0) }
-                    }.labelsHidden().frame(width: 185).help("Font face, including bold and italic variants")
+                    TypeFontPicker(fontName: value(\.fontName))
+                        .frame(width: 210).help("Font face, including bold and italic variants")
                     TextField("Size", value: number(\.fontSize), format: .number).frame(width: 52).unitSuffix("px")
                         .arrowSteps(value: { Double(session.currentTextStyle.fontSize) },
                                     change: { stepped in session.changeTextStyle { $0.fontSize = CGFloat(min(2000, max(1, stepped))) } })
@@ -79,5 +78,78 @@ struct TypeControls: View {
         }
         .textFieldStyle(.roundedBorder).padding(.horizontal, 18).toolHeaderBar()
         .disabled(session.document == nil || session.showsBusy)
+    }
+}
+
+/// Keep the installed-font catalog out of SwiftUI's per-keystroke view updates.
+/// The closed control needs only the current name; populate its menu on demand.
+private struct TypeFontPicker: NSViewRepresentable {
+    @Binding var fontName: String
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeCoordinator() -> Coordinator { Coordinator(fontName: $fontName) }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = FixedWidthPopUpButton(frame: .zero, pullsDown: false)
+        button.addItem(withTitle: fontName)
+        button.borderShape = .capsule
+        // A long font name is cut off at its end rather than widening the control or scrolling its start away.
+        button.cell?.lineBreakMode = .byTruncatingTail
+        button.cell?.usesSingleLineMode = true
+        button.cell?.alignment = .left
+        button.setAccessibilityLabel("Font")
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.choose(_:))
+        button.menu?.delegate = context.coordinator
+        context.coordinator.button = button
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        context.coordinator.fontName = $fontName
+        button.isEnabled = isEnabled
+        guard !context.coordinator.tracking, button.titleOfSelectedItem != fontName else { return }
+        if button.item(withTitle: fontName) == nil { button.addItem(withTitle: fontName) }
+        button.selectItem(withTitle: fontName)
+    }
+
+    static func dismantleNSView(_ button: NSPopUpButton, coordinator: Coordinator) {
+        button.menu?.delegate = nil
+        button.target = nil
+    }
+
+    /// The font list holds names of every length; the control keeps whatever width it is given, so choosing a long
+    /// name can't stretch it — or leave it stretched once a short one is chosen again.
+    final class FixedWidthPopUpButton: NSPopUpButton {
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: super.intrinsicContentSize.height)
+        }
+    }
+
+    final class Coordinator: NSObject, NSMenuDelegate {
+        var fontName: Binding<String>
+        weak var button: NSPopUpButton?
+        var tracking = false
+        private var loaded = false
+
+        init(fontName: Binding<String>) { self.fontName = fontName }
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            guard !loaded, let button else { return }
+            let selected = fontName.wrappedValue
+            let names = Array(Set(NSFontManager.shared.availableFonts + [selected])).sorted()
+            button.removeAllItems()
+            button.addItems(withTitles: names)
+            button.selectItem(withTitle: selected)
+            loaded = true
+        }
+
+        func menuWillOpen(_ menu: NSMenu) { tracking = true }
+        func menuDidClose(_ menu: NSMenu) { tracking = false }
+
+        @objc func choose(_ button: NSPopUpButton) {
+            guard let selected = button.titleOfSelectedItem, selected != fontName.wrappedValue else { return }
+            fontName.wrappedValue = selected
+        }
     }
 }
