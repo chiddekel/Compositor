@@ -56,6 +56,19 @@ public:
     bool saveProject(const QString &path);
     bool loadProject(const QString &path);
 
+    // Command Palette (Ctrl+Shift+P / F1)
+    void showCommandPalette();
+
+    // Layer Multi-Selection (R22)
+    void deleteSelectedLayers();
+
+    // Crash-Recovery Autosave (R61)
+    bool performAutosave();
+    bool hasAutosaveRecovery() const;
+    bool recoverAutosave();
+    void clearAutosave();
+    QString autosaveDirectory() const;
+
     // Snapshot of the Swift editor core's state JSON (test hook: reads the same
     // bytes the dock renders, through the real C ABI).
     QJsonObject sessionState() const;
@@ -89,6 +102,7 @@ protected:
     void tabletEvent(QTabletEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 
     friend class SessionCanvasWidget;
     void canvasPaintEvent(QPaintEvent *event, QWidget *canvas);
@@ -148,4 +162,5 @@ private:
     bool m_syncingLayers = false;
     QMap<Tool, QAction *> m_toolActions;
     std::unique_ptr<ITabletHandler> m_tabletHandler;
+    QTimer *m_autosaveTimer = nullptr;
 };

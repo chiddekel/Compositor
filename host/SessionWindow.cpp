@@ -44,6 +44,10 @@
 #include <QDir>
 #include <QToolBar>
 #include <QActionGroup>
+#include <QTimer>
+#include <QStandardPaths>
+#include <QDateTime>
+#include <QCloseEvent>
 
 #include <cstdint>
 #include <cstring>
@@ -262,10 +266,17 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     edit->addAction(tr("Duplicate Layer"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"duplicateLayer"})") == 0) { refreshImage(); refreshLayers(); }
     });
-    edit->addSeparator();
     edit->addAction(tr("Content-Aware &Fill"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"contentFill"})") == 0) refreshImage();
     })->setObjectName("edit.contentFill");
+    edit->addSeparator();
+    auto *cmdPaletteAction = new QAction(tr("&Command Palette..."), this);
+    cmdPaletteAction->setObjectName("commandPalette");
+    cmdPaletteAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P), QKeySequence(Qt::Key_F1)});
+    connect(cmdPaletteAction, &QAction::triggered, this, [this] { showCommandPalette(); });
+    addAction(cmdPaletteAction);
+    edit->addAction(cmdPaletteAction);
+
     QMenu *layer = menuBar()->addMenu(tr("&Layer"));
     layer->addAction(tr("&New Layer"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) { refreshImage(); refreshLayers(); }
@@ -274,7 +285,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addGroup"})") == 0) { refreshImage(); refreshLayers(); }
     })->setObjectName("layer.addGroup");
     layer->addAction(tr("&Delete Layer"), QKeySequence::Delete, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteLayer"})") == 0) { refreshImage(); refreshLayers(); }
+        deleteSelectedLayers();
     });
     layer->addAction(tr("Flip Layer &Horizontal"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"flipLayer","horizontally":true})") == 0) { refreshImage(); refreshLayers(); }
@@ -358,7 +369,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     m_layerModel = new QStandardItemModel(this);
     m_layerModel->setHorizontalHeaderLabels({tr("Layer"), tr("Visible"), tr("Mask")});
     m_layersView->setModel(m_layerModel);
-    m_layersView->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_layersView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_layersView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_layersView->setUniformRowHeights(true);
     m_layersView->setAnimated(true);
@@ -399,7 +410,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addRevealMask"})") == 0) { refreshImage(); refreshLayers(); }
     });
     connect(btnDelete, &QPushButton::clicked, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteLayer"})") == 0) { refreshImage(); refreshLayers(); }
+        deleteSelectedLayers();
     });
 
     layout->addWidget(new QLabel(tr("Opacity"), panel));
@@ -532,6 +543,12 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_blend, &QComboBox::currentIndexChanged, this, &SessionWindow::setBlendModeFromCombo);
 
     statusBar()->showMessage(tr("Drag on canvas to paint."));
+
+    m_autosaveTimer = new QTimer(this);
+    m_autosaveTimer->setObjectName("autosaveTimer");
+    m_autosaveTimer->setInterval(60000);
+    connect(m_autosaveTimer, &QTimer::timeout, this, [this] { performAutosave(); });
+    m_autosaveTimer->start();
 }
 
 SessionWindow::~SessionWindow() {
@@ -1318,6 +1335,7 @@ bool SessionWindow::saveProject(const QString &path) {
         return false;
     }
     if (QFileInfo::exists(backupPath)) backup.removeRecursively();
+    if (!path.endsWith("autosave.comp")) clearAutosave();
     return true;
 }
 
@@ -1434,4 +1452,89 @@ bool SessionWindow::loadProject(const QString &path) {
     m_image = rendered;
     refreshImage();
     return true;
+}
+
+void SessionWindow::deleteSelectedLayers() {
+    if (m_sessionHandle == 0 || !m_layersView || !m_layerModel) return;
+    const QModelIndexList selectedRows = m_layersView->selectionModel()->selectedRows();
+    if (selectedRows.isEmpty()) {
+        sendCommand({{"action", "deleteLayer"}});
+        refreshImage();
+        refreshLayers();
+        return;
+    }
+
+    QStringList ids;
+    for (const QModelIndex &idx : selectedRows) {
+        const QString id = idx.data(Qt::UserRole).toString();
+        if (!id.isEmpty()) {
+            ids.append(id);
+        }
+    }
+
+    for (const QString &id : ids) {
+        sendCommand({{"action", "selectLayer"}, {"layerID", id}});
+        sendCommand({{"action", "deleteLayer"}});
+    }
+    refreshImage();
+    refreshLayers();
+}
+
+QString SessionWindow::autosaveDirectory() const {
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (dir.isEmpty()) {
+        dir = QDir::tempPath() + "/Compositor";
+    }
+    return dir + "/recovery";
+}
+
+bool SessionWindow::hasAutosaveRecovery() const {
+    const QString recoveryDir = autosaveDirectory();
+    const QString manifestPath = recoveryDir + "/autosave.comp/manifest.json";
+    return QFileInfo::exists(manifestPath);
+}
+
+bool SessionWindow::performAutosave() {
+    if (m_sessionHandle == 0) return false;
+    const auto state = sessionState();
+    if (!state.value("modified").toBool(false)) return false;
+
+    const QString recoveryDir = autosaveDirectory();
+    QDir dir(recoveryDir);
+    if (!dir.exists() && !dir.mkpath(".")) return false;
+
+    const QString packagePath = recoveryDir + "/autosave.comp";
+    if (!saveProject(packagePath)) return false;
+
+    QJsonObject infoObj{
+        {"savedAt", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+        {"width", state.value("width").toInt()},
+        {"height", state.value("height").toInt()}
+    };
+    QFile infoFile(recoveryDir + "/autosave.info");
+    if (infoFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        infoFile.write(QJsonDocument(infoObj).toJson(QJsonDocument::Indented));
+        infoFile.close();
+    }
+    return true;
+}
+
+bool SessionWindow::recoverAutosave() {
+    if (!hasAutosaveRecovery()) return false;
+    const QString packagePath = autosaveDirectory() + "/autosave.comp";
+    return loadProject(packagePath);
+}
+
+void SessionWindow::clearAutosave() {
+    const QString recoveryDir = autosaveDirectory();
+    QDir package(recoveryDir + "/autosave.comp");
+    if (package.exists()) {
+        package.removeRecursively();
+    }
+    QFile::remove(recoveryDir + "/autosave.info");
+}
+
+void SessionWindow::closeEvent(QCloseEvent *event) {
+    clearAutosave();
+    QMainWindow::closeEvent(event);
 }

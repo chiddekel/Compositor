@@ -16,6 +16,8 @@
 #include <QStandardItemModel>
 #include <QPushButton>
 #include <QSlider>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QColor>
@@ -144,9 +146,22 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
                 });
             });
             require(adjustError.isEmpty(), qPrintable(kind + ": " + adjustError));
-            undo(window); // drop the sheet the dialog added (cancel keeps the new layer)
-            require(exported(window, path) == original, "adjust undo did not restore source");
+            // Discard Cancelled New Adjustment Sheet (R26): rejection automatically rolled back the sheet
+            require(exported(window, path) == original, "adjust discard did not restore source");
         }
+
+        // Command Palette (Ctrl+Shift+P / F1)
+        modal(window, "commandPalette", [&](QDialog *dialog) {
+            auto *filter = dialog->findChild<QLineEdit *>("commandPalette.filter");
+            auto *list = dialog->findChild<QListWidget *>("commandPalette.list");
+            require(filter != nullptr, "command palette filter input missing");
+            require(list != nullptr, "command palette list missing");
+            require(list->count() > 0, "command palette list is empty");
+            filter->setText("Canvas");
+            require(list->count() > 0, "command palette search for 'Canvas' returned no items");
+            dialog->reject();
+        });
+
         modal(window, "imageSize", [&](QDialog *dialog) {
             dialog->findChild<QCheckBox *>("resample")->setChecked(false);
             number(dialog, "resolution")->setValue(300);
@@ -157,7 +172,17 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
         const QImage reopened = exported(window, path);
         require(reopened == original, "reopen after dialog changed pixels");
         require(qAbs(reopened.dotsPerMeterX() - qRound(300 / 0.0254)) <= 1, "reopened project lost export resolution");
-        qInfo("Qt dialog journey OK (resize, resolution, cancel, preview, commit, undo, save/reopen)");
+
+        // Crash-Recovery Autosave (R61)
+        window.clearAutosave();
+        require(!window.hasAutosaveRecovery(), "unexpected autosave recovery state before edit");
+        window.paintStroke(10, 10, 20, 20);
+        require(window.performAutosave(), "performAutosave failed on dirty document");
+        require(window.hasAutosaveRecovery(), "hasAutosaveRecovery false after performAutosave");
+        require(window.recoverAutosave(), "recoverAutosave failed");
+        window.clearAutosave();
+        require(!window.hasAutosaveRecovery(), "hasAutosaveRecovery true after clearAutosave");
+        qInfo("Qt dialog journey OK (resize, resolution, cancel, preview, commit, undo, command palette, autosave, save/reopen)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt dialog journey failed: %s", e.what()); return 1;
@@ -285,6 +310,18 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         remove->trigger();
         require(stateLayers().size() == 2 && countItems(countItems) == 2, "delete did not remove a dock row");
 
+        // Multi-selection layer deletion (ExtendedSelection)
+        add->trigger();
+        add->trigger();
+        const int beforeMulti = countItems(countItems);
+        require(beforeMulti >= 4, "failed to add layers for multi-selection test");
+        tree->selectionModel()->clearSelection();
+        tree->selectionModel()->select(model->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        tree->selectionModel()->select(model->index(1, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        require(tree->selectionModel()->selectedRows().size() == 2, "failed to select two rows");
+        remove->trigger();
+        require(countItems(countItems) == beforeMulti - 2, "multi-selection delete failed to delete both layers");
+
         // Group / Folder hierarchical verification
         auto *addGroup = menuAction("New Folder / Group");
         require(addGroup != nullptr, "New Folder / Group action missing");
@@ -310,7 +347,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         require(hasMask, "layer hasMask is false after Add Reveal Mask");
 
         require(!exported(window, temporary.filePath("after.png")).isNull(), "render after layer ops failed");
-        qInfo("Qt layers dock journey OK (add, duplicate, select, opacity, delete, group, mask)");
+        qInfo("Qt layers dock journey OK (add, duplicate, select, opacity, delete, multi-delete, group, mask)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt layers dock journey failed: %s", e.what()); return 1;
