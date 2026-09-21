@@ -155,7 +155,7 @@ let package = Package(
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
                       "BlendShortcutTests.swift", "TransformPressTests.swift", "DistortTests.swift",
-                      "FilterTests.swift", "LayerAppearanceTests.swift"],
+                      "FilterTests.swift", "LayerAppearanceTests.swift", "TiledLayerTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
