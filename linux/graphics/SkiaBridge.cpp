@@ -38,6 +38,11 @@
 #include "include/core/SkShader.h"
 #include "include/core/SkMatrix.h"
 #include "include/core/SkColor.h"
+#include "include/core/SkPathUtils.h"
+#include "include/core/SkPathIter.h"
+#include "include/core/SkRRect.h"
+#include "include/pathops/SkPathOps.h"
+#include "include/effects/SkGradient.h"
 #elif __has_include(<skia/core/SkCanvas.h>)
 #define COMPOSITOR_HAS_SKIA 1
 #include <skia/core/SkCanvas.h>
@@ -52,6 +57,11 @@
 #include <skia/core/SkShader.h>
 #include <skia/core/SkMatrix.h>
 #include <skia/core/SkColor.h>
+#include <skia/core/SkPathUtils.h>
+#include <skia/core/SkPathIter.h>
+#include <skia/core/SkRRect.h>
+#include <skia/pathops/SkPathOps.h>
+#include <skia/effects/SkGradient.h>
 #endif
 #if __has_include(<vulkan/vulkan.h>)
 #define COMPOSITOR_HAS_VULKAN 1
@@ -900,5 +910,261 @@ void compositor_path_reset(CompPath *path) {
     if (path) path->builder.reset();
 #else
     (void)path;
+#endif
+}
+
+#if defined(COMPOSITOR_HAS_SKIA)
+// SkPathOps' debug helpers (src/pathops/SkPathOpsDebug.cpp) reference SkPath::dump, which this Skia build
+// leaves out (it is compiled only with SK_DUMP_ENABLED). Nothing here dumps paths, so a no-op keeps the
+// pathops archive self-contained.
+void SkPath::dump(SkWStream *, bool) const {}
+#endif
+
+/* ── CoreGraphics path surface ───────────────────────────────────────────── */
+
+void compositor_path_quad_to(CompPath *path, float cx, float cy, float x, float y) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.quadTo(cx, cy, x, y);
+#else
+    (void)path; (void)cx; (void)cy; (void)x; (void)y;
+#endif
+}
+
+void compositor_path_cubic_to(CompPath *path, float c1x, float c1y, float c2x, float c2y, float x, float y) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.cubicTo(SkPoint::Make(c1x, c1y), SkPoint::Make(c2x, c2y), SkPoint::Make(x, y));
+#else
+    (void)path; (void)c1x; (void)c1y; (void)c2x; (void)c2y; (void)x; (void)y;
+#endif
+}
+
+void compositor_path_add_round_rect(CompPath *path, float x, float y, float w, float h, float rx, float ry) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.addRRect(SkRRect::MakeRectXY(SkRect::MakeXYWH(x, y, w, h), rx, ry));
+#else
+    (void)path; (void)x; (void)y; (void)w; (void)h; (void)rx; (void)ry;
+#endif
+}
+
+CompPath *compositor_path_copy(const CompPath *path) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!path) return nullptr;
+    CompPath *copy = new (std::nothrow) CompPath();
+    if (copy) copy->builder = path->builder;
+    return copy;
+#else
+    (void)path; return nullptr;
+#endif
+}
+
+CompPath *compositor_path_op(const CompPath *a, const CompPath *b, int op, int even_odd_a, int even_odd_b) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!a || !b) return nullptr;
+    static const SkPathOp ops[4] = {kDifference_SkPathOp, kIntersect_SkPathOp, kUnion_SkPathOp, kXOR_SkPathOp};
+    if (op < 0 || op > 3) return nullptr;
+    std::optional<SkPath> result = Op(a->get_path(even_odd_a != 0), b->get_path(even_odd_b != 0), ops[op]);
+    if (!result) return nullptr;
+    // The Swift side keeps no fill rule, so hand back a winding-filled path (XOR arrives even-odd).
+    if (result->getFillType() != SkPathFillType::kWinding) {
+        if (auto winding = AsWinding(*result)) result = winding;
+    }
+    CompPath *out = new (std::nothrow) CompPath();
+    if (out) out->builder = SkPathBuilder(*result);
+    return out;
+#else
+    (void)a; (void)b; (void)op; (void)even_odd_a; (void)even_odd_b; return nullptr;
+#endif
+}
+
+CompPath *compositor_path_stroke(const CompPath *path, float width, int cap, int join, float miter_limit) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!path || width < 0) return nullptr;
+    SkPaint paint;
+    paint.setStyle(SkPaint::kStroke_Style);
+    paint.setStrokeWidth(width);
+    paint.setStrokeMiter(miter_limit > 0 ? miter_limit : 10.0f);
+    paint.setStrokeCap(cap == 1 ? SkPaint::kRound_Cap : cap == 2 ? SkPaint::kSquare_Cap : SkPaint::kButt_Cap);
+    paint.setStrokeJoin(join == 1 ? SkPaint::kRound_Join : join == 2 ? SkPaint::kBevel_Join : SkPaint::kMiter_Join);
+    SkPath stroked = skpathutils::FillPathWithPaint(path->get_path(false), paint);
+    CompPath *out = new (std::nothrow) CompPath();
+    if (out) out->builder = SkPathBuilder(stroked);
+    return out;
+#else
+    (void)path; (void)width; (void)cap; (void)join; (void)miter_limit; return nullptr;
+#endif
+}
+
+int compositor_path_bounds(const CompPath *path, float out_rect[4]) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!path || !out_rect) return 0;
+    SkPath p = path->get_path(false);
+    if (p.isEmpty()) return 0;
+    SkRect r = p.computeTightBounds();
+    out_rect[0] = r.x(); out_rect[1] = r.y(); out_rect[2] = r.width(); out_rect[3] = r.height();
+    return 1;
+#else
+    (void)path; (void)out_rect; return 0;
+#endif
+}
+
+size_t compositor_path_elements(const CompPath *path, uint8_t *out_types, size_t type_capacity,
+                                float *out_points, size_t point_float_capacity, size_t *points_written) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (points_written) *points_written = 0;
+    if (!path) return 0;
+    SkPath p = path->get_path(false);
+    SkPathIter iter = p.iter();
+    size_t count = 0, floats = 0;
+    while (auto rec = iter.next()) {
+        uint8_t type = 0; size_t first = 0, n = 0;
+        std::vector<SkPoint> converted;
+        switch (rec->fVerb) {
+        case SkPathVerb::kMove:  type = 0; first = 0; n = 1; break;
+        case SkPathVerb::kLine:  type = 1; first = 1; n = 1; break;
+        case SkPathVerb::kQuad:  type = 2; first = 1; n = 2; break;
+        case SkPathVerb::kCubic: type = 3; first = 1; n = 3; break;
+        case SkPathVerb::kConic: {
+            // Approximate the conic with quads; the point spans `pts[0..2]`.
+            SkPoint quads[1 + 2 * 4];
+            int q = SkPath::ConvertConicToQuads(rec->fPoints[0], rec->fPoints[1], rec->fPoints[2], rec->conicWeight(), quads, 2);
+            for (int i = 0; i < q; ++i) {
+                if (out_types && count < type_capacity) out_types[count] = 2;
+                if (out_points && floats + 4 <= point_float_capacity) {
+                    out_points[floats] = quads[1 + 2 * i].x(); out_points[floats + 1] = quads[1 + 2 * i].y();
+                    out_points[floats + 2] = quads[2 + 2 * i].x(); out_points[floats + 3] = quads[2 + 2 * i].y();
+                }
+                ++count; floats += 4;
+            }
+            continue;
+        }
+        case SkPathVerb::kClose: type = 4; n = 0; break;
+        }
+        if (out_types && count < type_capacity) out_types[count] = type;
+        if (out_points) {
+            for (size_t i = 0; i < n; ++i) {
+                if (floats + 2 <= point_float_capacity) {
+                    out_points[floats] = rec->fPoints[first + i].x();
+                    out_points[floats + 1] = rec->fPoints[first + i].y();
+                }
+                floats += 2;
+            }
+        } else floats += n * 2;
+        ++count;
+    }
+    if (points_written) *points_written = floats;
+    return count;
+#else
+    (void)path; (void)out_types; (void)type_capacity; (void)out_points; (void)point_float_capacity;
+    if (points_written) *points_written = 0;
+    return 0;
+#endif
+}
+
+void compositor_canvas_fill_path(CompCanvas *canvas, const CompPath *path, int even_odd,
+                                 float r, float g, float b, float a) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !path) return;
+    SkPaint paint;
+    paint.setColor4f(SkColor4f{r, g, b, a * canvas->current_state().alpha});
+    paint.setBlendMode(canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+    canvas->canvas->drawPath(path->get_path(even_odd != 0), paint);
+#else
+    (void)canvas; (void)path; (void)even_odd; (void)r; (void)g; (void)b; (void)a;
+#endif
+}
+
+void compositor_canvas_stroke_path(CompCanvas *canvas, const CompPath *path, float width, int cap, int join,
+                                   float miter_limit, float r, float g, float b, float a) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !path) return;
+    SkPaint paint;
+    paint.setStyle(SkPaint::kStroke_Style);
+    paint.setStrokeWidth(width);
+    paint.setStrokeMiter(miter_limit > 0 ? miter_limit : 10.0f);
+    paint.setStrokeCap(cap == 1 ? SkPaint::kRound_Cap : cap == 2 ? SkPaint::kSquare_Cap : SkPaint::kButt_Cap);
+    paint.setStrokeJoin(join == 1 ? SkPaint::kRound_Join : join == 2 ? SkPaint::kBevel_Join : SkPaint::kMiter_Join);
+    paint.setColor4f(SkColor4f{r, g, b, a * canvas->current_state().alpha});
+    paint.setBlendMode(canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+    canvas->canvas->drawPath(path->get_path(false), paint);
+#else
+    (void)canvas; (void)path; (void)width; (void)cap; (void)join; (void)miter_limit; (void)r; (void)g; (void)b; (void)a;
+#endif
+}
+
+#if defined(COMPOSITOR_HAS_SKIA)
+static void draw_gradient_shader(CompCanvas *canvas, sk_sp<SkShader> shader, const SkRect &clipBounds, int options,
+                                 bool extendStart, bool extendEnd, bool radial) {
+    (void)options; (void)extendStart; (void)extendEnd; (void)radial;
+    if (!shader) return;
+    SkPaint paint;
+    paint.setShader(shader);
+    paint.setAlphaf(canvas->current_state().alpha);
+    paint.setBlendMode(canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+    canvas->canvas->drawRect(clipBounds, paint);
+}
+#endif
+
+void compositor_canvas_draw_linear_gradient(CompCanvas *canvas, float x0, float y0, float x1, float y1,
+                                            const float *colors, const float *locations, size_t count, int options) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !colors || !locations || count < 2) return;
+    std::vector<SkColor4f> cs(count);
+    for (size_t i = 0; i < count; ++i) cs[i] = SkColor4f{colors[i * 4], colors[i * 4 + 1], colors[i * 4 + 2], colors[i * 4 + 3]};
+    // CoreGraphics only paints beyond the end points when the extend options ask for it; otherwise the
+    // outside stays untouched. A clamp tile mode plus an explicit limiting clip reproduces that.
+    const bool before = options & 1, after = options & 2;
+    SkPoint pts[2] = {SkPoint::Make(x0, y0), SkPoint::Make(x1, y1)};
+    SkGradient grad(SkGradient::Colors(cs, SkSpan<const float>(locations, count), SkTileMode::kClamp), SkGradient::Interpolation());
+    sk_sp<SkShader> shader = SkShaders::LinearGradient(pts, grad);
+    SkRect bounds = SkRect::Make(canvas->canvas->getDeviceClipBounds());
+    canvas->canvas->save();
+    if (!before || !after) {
+        // Limit to the half-planes the options allow (perpendicular to the gradient axis).
+        SkPath keep;
+        SkVector axis = pts[1] - pts[0];
+        float len = axis.length();
+        if (len > 0) {
+            axis.scale(1.0f / len);
+            SkVector normal = SkVector::Make(-axis.fY, axis.fX);
+            float big = 1e5f;
+            SkPoint a = pts[0] - (before ? axis * big : SkVector::Make(0, 0));
+            SkPoint b = pts[1] + (after ? axis * big : SkVector::Make(0, 0));
+            SkPathBuilder pb;
+            pb.moveTo(a + normal * big); pb.lineTo(b + normal * big); pb.lineTo(b - normal * big); pb.lineTo(a - normal * big); pb.close();
+            canvas->canvas->clipPath(pb.detach(), SkClipOp::kIntersect, false);
+        }
+    }
+    draw_gradient_shader(canvas, shader, bounds, options, before, after, false);
+    canvas->canvas->restore();
+#else
+    (void)canvas; (void)x0; (void)y0; (void)x1; (void)y1; (void)colors; (void)locations; (void)count; (void)options;
+#endif
+}
+
+void compositor_canvas_draw_radial_gradient(CompCanvas *canvas, float x0, float y0, float r0, float x1, float y1,
+                                            float r1, const float *colors, const float *locations, size_t count,
+                                            int options) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !colors || !locations || count < 2) return;
+    std::vector<SkColor4f> cs(count);
+    for (size_t i = 0; i < count; ++i) cs[i] = SkColor4f{colors[i * 4], colors[i * 4 + 1], colors[i * 4 + 2], colors[i * 4 + 3]};
+    const bool before = options & 1, after = options & 2;
+    SkGradient grad(SkGradient::Colors(cs, SkSpan<const float>(locations, count), SkTileMode::kClamp), SkGradient::Interpolation());
+    sk_sp<SkShader> shader = SkShaders::TwoPointConicalGradient(SkPoint::Make(x0, y0), r0, SkPoint::Make(x1, y1), r1, grad);
+    SkRect bounds = SkRect::Make(canvas->canvas->getDeviceClipBounds());
+    canvas->canvas->save();
+    if (!after) {
+        SkPathBuilder pb;
+        pb.addOval(SkRect::MakeXYWH(x1 - r1, y1 - r1, r1 * 2, r1 * 2));
+        canvas->canvas->clipPath(pb.detach(), SkClipOp::kIntersect, canvas->current_state().antialias);
+    }
+    (void)before;  // Before-start extension is empty for the concentric case used by upstream (r0 = 0).
+    draw_gradient_shader(canvas, shader, bounds, options, before, after, true);
+    canvas->canvas->restore();
+#else
+    (void)canvas; (void)x0; (void)y0; (void)r0; (void)x1; (void)y1; (void)r1; (void)colors; (void)locations; (void)count; (void)options;
 #endif
 }

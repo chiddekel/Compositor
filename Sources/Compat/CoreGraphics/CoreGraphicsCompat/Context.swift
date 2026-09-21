@@ -24,6 +24,9 @@ public final class CGContext: @unchecked Sendable {
         var fillColor: CGColor = .black
         var strokeColor: CGColor = .black
         var lineWidth: CGFloat = 1.0
+        var lineCap: CGLineCap = .butt
+        var lineJoin: CGLineJoin = .miter
+        var miterLimit: CGFloat = 10
         var ctm: CGAffineTransform = .identity
     }
 
@@ -167,6 +170,12 @@ public final class CGContext: @unchecked Sendable {
         }
     }
 
+    /// Apple's Swift name for `concatCTM`.
+    public func concatenate(_ transform: CGAffineTransform) { concatCTM(transform) }
+
+    /// The current transformation matrix (user space to device space).
+    public var ctm: CGAffineTransform { userSpaceToDeviceSpaceTransform }
+
     public func concatCTM(_ transform: CGAffineTransform) {
         state.ctm = state.ctm.concatenating(transform)
         if let raw = rawCanvas {
@@ -209,13 +218,10 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func clip(using rule: CGPathFillRule = .winding) {
-        if let raw = rawCanvas, let p = currentPath.rawPath {
-            CompCanvasBridge.shared.clipPath?(raw, p, rule == .evenOdd ? 1 : 0, state.shouldAntialias ? 1 : 0)
-        }
-        for sub in currentPath.subtractions {
-            if let raw = rawCanvas, let sp = sub.rawPath {
-                CompCanvasBridge.shared.clipPath?(raw, sp, 1, state.shouldAntialias ? 1 : 0)
-            }
+        if let raw = rawCanvas, let clipPath = CompCanvasBridge.shared.clipPath,
+           let path = SkiaPathABI.make(currentPath.segments) {
+            clipPath(raw, path, rule == .evenOdd ? 1 : 0, state.shouldAntialias ? 1 : 0)
+            SkiaPathABI.destroy?(path)
         }
         currentPath = CGMutablePath()
     }
@@ -231,13 +237,22 @@ public final class CGContext: @unchecked Sendable {
 
     // MARK: - Paths
 
-    public func addRect(_ rect: CGRect) {
-        currentPath.addRect(rect)
+    public func beginPath() { currentPath = CGMutablePath() }
+    public func closePath() { currentPath.closeSubpath() }
+    public func move(to point: CGPoint) { currentPath.move(to: point) }
+    public func addLine(to point: CGPoint) { currentPath.addLine(to: point) }
+    public func addLines(between points: [CGPoint]) { currentPath.addLines(between: points) }
+    public func addQuadCurve(to end: CGPoint, control: CGPoint) { currentPath.addQuadCurve(to: end, control: control) }
+    public func addCurve(to end: CGPoint, control1: CGPoint, control2: CGPoint) {
+        currentPath.addCurve(to: end, control1: control1, control2: control2)
     }
+    public func addRect(_ rect: CGRect) { currentPath.addRect(rect) }
+    public func addEllipse(in rect: CGRect) { currentPath.addEllipse(in: rect) }
+    public func addPath(_ path: CGPath) { currentPath.addPath(path) }
 
-    public func addPath(_ path: CGPath) {
-        currentPath.addPath(path)
-    }
+    public func setLineCap(_ cap: CGLineCap) { state.lineCap = cap }
+    public func setLineJoin(_ join: CGLineJoin) { state.lineJoin = join }
+    public func setMiterLimit(_ limit: CGFloat) { state.miterLimit = limit }
 
     // MARK: - Painting & Colors
 
@@ -273,8 +288,20 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func fillPath(using rule: CGPathFillRule = .winding) {
-        clip(using: rule)
-        fill(boundingBoxOfClipPath)
+        let path = currentPath
+        currentPath = CGMutablePath()
+        fill(path, rule: rule)
+    }
+
+    /// Fills `path` (user space) with the current fill colour, honouring the clip, alpha and blend mode.
+    public func fill(_ path: CGPath, rule: CGPathFillRule = .winding) {
+        let c = state.fillColor
+        if let raw = rawCanvas, let fillFn = SkiaPathABI.fillPath, let sk = SkiaPathABI.make(path.segments) {
+            fillFn(raw, sk, rule == .evenOdd ? 1 : 0, Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
+            SkiaPathABI.destroy?(sk)
+            return
+        }
+        fillPathSwift(path, rule: rule, color: c)
     }
 
     public func stroke(_ rect: CGRect) {
@@ -287,12 +314,47 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func strokePath() {
+        let path = currentPath
         currentPath = CGMutablePath()
+        stroke(path)
+    }
+
+    /// Strokes `path` (user space) with the current stroke colour, width, cap, join and miter limit.
+    public func stroke(_ path: CGPath) {
+        let c = state.strokeColor
+        if let raw = rawCanvas, let strokeFn = SkiaPathABI.strokePath, let sk = SkiaPathABI.make(path.segments) {
+            strokeFn(raw, sk, Float(state.lineWidth), state.lineCap.rawValue, state.lineJoin.rawValue,
+                     Float(state.miterLimit), Float(c.red), Float(c.green), Float(c.blue), Float(c.alpha))
+            SkiaPathABI.destroy?(sk)
+            return
+        }
+        let outline = path.copy(strokingWithWidth: state.lineWidth, lineCap: state.lineCap,
+                                lineJoin: state.lineJoin, miterLimit: state.miterLimit)
+        fillPathSwift(outline, rule: .winding, color: c)
     }
 
     public func fillEllipse(in rect: CGRect) {
         currentPath.addEllipse(in: rect)
         fillPath()
+    }
+
+    // MARK: - Gradients
+
+    public func drawLinearGradient(_ gradient: CGGradient, start: CGPoint, end: CGPoint,
+                                   options: CGGradientDrawingOptions) {
+        guard let raw = rawCanvas, let draw = SkiaPathABI.linearGradient else { return }
+        let colors = gradient.packedColors, locations = gradient.packedLocations
+        draw(raw, Float(start.x), Float(start.y), Float(end.x), Float(end.y),
+             colors, locations, locations.count, Int32(options.rawValue))
+    }
+
+    public func drawRadialGradient(_ gradient: CGGradient, startCenter: CGPoint, startRadius: CGFloat,
+                                   endCenter: CGPoint, endRadius: CGFloat, options: CGGradientDrawingOptions) {
+        guard let raw = rawCanvas, let draw = SkiaPathABI.radialGradient else { return }
+        let colors = gradient.packedColors, locations = gradient.packedLocations
+        draw(raw, Float(startCenter.x), Float(startCenter.y), Float(startRadius),
+             Float(endCenter.x), Float(endCenter.y), Float(endRadius),
+             colors, locations, locations.count, Int32(options.rawValue))
     }
 
     public func strokeEllipse(in rect: CGRect) {
@@ -383,6 +445,36 @@ public final class CGContext: @unchecked Sendable {
                 pixelData[off + 1] = g
                 pixelData[off + 2] = b
                 pixelData[off + 3] = a
+            }
+        }
+    }
+
+    /// Software path fill: 4x4 supersampled coverage through `CGPath.contains`, source-over with the fill alpha.
+    /// Used only when no render device is bound; ignores clipping and blend modes beyond source-over.
+    private func fillPathSwift(_ path: CGPath, rule: CGPathFillRule, color: CGColor) {
+        guard !path.isEmpty else { return }
+        let device = state.ctm == .identity ? path : (path.copy(using: [state.ctm]) ?? path)
+        let bounds = device.boundingBoxOfPath
+        guard !bounds.isNull else { return }
+        let x0 = max(0, Int(floor(bounds.minX))), x1 = min(width, Int(ceil(bounds.maxX)))
+        let y0 = max(0, Int(floor(bounds.minY))), y1 = min(height, Int(ceil(bounds.maxY)))
+        guard x0 < x1, y0 < y1 else { return }
+        let a = Double(color.alpha * state.alpha)
+        let premul = [Double(color.red) * a, Double(color.green) * a, Double(color.blue) * a, a]
+        for y in y0..<y1 {
+            for x in x0..<x1 {
+                var hits = 0
+                for sy in 0..<4 { for sx in 0..<4 {
+                    if device.contains(CGPoint(x: CGFloat(x) + (CGFloat(sx) + 0.5) / 4, y: CGFloat(y) + (CGFloat(sy) + 0.5) / 4), using: rule) { hits += 1 }
+                } }
+                guard hits > 0 else { continue }
+                let cov = Double(hits) / 16
+                let off = (y * width + x) * 4
+                let inv = 1 - premul[3] * cov
+                for i in 0..<4 {
+                    let dst = Double(pixelData[off + i])
+                    pixelData[off + i] = UInt8(max(0, min(255, (premul[i] * cov * 255 + dst * inv).rounded())))
+                }
             }
         }
     }

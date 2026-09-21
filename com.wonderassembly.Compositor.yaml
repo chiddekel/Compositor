@@ -75,8 +75,11 @@ modules:
             skia_enable_skshaper=true
         '
       - ninja -C out/Static
+      # SkPathOps (CGPath booleans) is only built with PDF/XPS; archive it next to libskia.a.
+      - ninja -C out/Static pathops
+      - ar rcs out/Static/libskia_pathops.a out/Static/obj/src/pathops/*.o
       - mkdir -p /app/lib /app/include/skia
-      - cp out/Static/libskia.a /app/lib/
+      - cp out/Static/libskia.a out/Static/libskia_pathops.a /app/lib/
       - cp -r include/*.h /app/include/skia/
       - cp -r include/core/*.h /app/include/skia/
       - cp -r include/config/*.h /app/include/skia/ 2>/dev/null || true

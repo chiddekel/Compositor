@@ -183,7 +183,16 @@ add_library(CompositorSkiaBridge SHARED linux/graphics/SkiaBridge.cpp)
 target_include_directories(CompositorSkiaBridge PUBLIC ${CMAKE_SOURCE_DIR}/include)
 if(Skia_FOUND)
     target_include_directories(CompositorSkiaBridge PRIVATE ${Skia_INCLUDE_DIR})
-    target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB} pthread dl)
+    # SkPathOps (path booleans for CGPath.union/intersection/...) is a separate GN source set that plain
+    # libskia.a omits when PDF is off; scripts/build-skia-pathops.sh archives it as libskia_pathops.a.
+    get_filename_component(_skia_lib_dir "${Skia_STATIC_LIB}" DIRECTORY)
+    if(EXISTS "${_skia_lib_dir}/libskia_pathops.a")
+        target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB} "${_skia_lib_dir}/libskia_pathops.a" pthread dl)
+    else()
+        message(WARNING "libskia_pathops.a not found next to ${Skia_STATIC_LIB}; CGPath booleans will be unavailable "
+                        "(run scripts/build-skia-pathops.sh)")
+        target_link_libraries(CompositorSkiaBridge PUBLIC ${Skia_STATIC_LIB} pthread dl)
+    endif()
 endif()
 if(Vulkan_FOUND)
     target_link_libraries(CompositorSkiaBridge PUBLIC Vulkan::Vulkan)

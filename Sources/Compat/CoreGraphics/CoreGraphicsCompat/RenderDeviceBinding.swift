@@ -106,15 +106,19 @@ public final class CompCanvasBridge: @unchecked Sendable {
     private init() {
         #if canImport(Glibc)
         let candidates = [
+            ProcessInfo.processInfo.environment["COMPOSITOR_SKIA_BRIDGE"] ?? "",
             "build-cmake/libCompositorSkiaBridge.so",
             "./build-cmake/libCompositorSkiaBridge.so",
             "./libCompositorSkiaBridge.so",
             "libCompositorSkiaBridge.so",
             "/app/lib/libCompositorSkiaBridge.so"
         ]
-        for path in candidates {
+        for path in candidates where !path.isEmpty {
             if dlopen(path, RTLD_NOW | RTLD_GLOBAL) != nil {
                 break
+            } else if path == ProcessInfo.processInfo.environment["COMPOSITOR_SKIA_BRIDGE"], let reason = dlerror() {
+                // An explicitly requested bridge that cannot load is worth saying so.
+                FileHandle.standardError.write(Data("COMPOSITOR_SKIA_BRIDGE: \(String(cString: reason))\n".utf8))
             }
         }
         #endif

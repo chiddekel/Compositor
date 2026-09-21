@@ -172,6 +172,42 @@ void compositor_path_add_ellipse(CompPath *path, float cx, float cy, float rx, f
 void compositor_path_close(CompPath *path);
 void compositor_path_reset(CompPath *path);
 
+/* CoreGraphics path surface (Apple CGPath/CGContext compat). Curves, rounded rects and copies. */
+void compositor_path_quad_to(CompPath *path, float cx, float cy, float x, float y);
+void compositor_path_cubic_to(CompPath *path, float c1x, float c1y, float c2x, float c2y, float x, float y);
+void compositor_path_add_round_rect(CompPath *path, float x, float y, float w, float h, float rx, float ry);
+CompPath *compositor_path_copy(const CompPath *path);
+
+/* Boolean operations (Skia PathOps): op 0 = difference (a - b), 1 = intersect, 2 = union, 3 = xor.
+ * even_odd_a/b select each operand's fill rule. Returns a new path, or NULL if the operation fails. */
+CompPath *compositor_path_op(const CompPath *a, const CompPath *b, int op, int even_odd_a, int even_odd_b);
+
+/* Stroked outline as a fillable path. cap: 0 butt, 1 round, 2 square. join: 0 miter, 1 round, 2 bevel. */
+CompPath *compositor_path_stroke(const CompPath *path, float width, int cap, int join, float miter_limit);
+
+/* Tight bounds of the path (out = x, y, w, h). Returns 0 when the path is empty. */
+int compositor_path_bounds(const CompPath *path, float out_rect[4]);
+
+/* Element enumeration: type 0 move (1 pt), 1 line (1 pt), 2 quad (2 pts), 3 cubic (3 pts), 4 close (0 pts).
+ * Conics are converted to quads. Returns the element count when out_types is NULL, otherwise the number of
+ * elements written; points are packed x,y in order into out_points (capacity in floats). */
+size_t compositor_path_elements(const CompPath *path, uint8_t *out_types, size_t type_capacity,
+                                float *out_points, size_t point_float_capacity, size_t *points_written);
+
+/* Painting a path on a canvas. */
+void compositor_canvas_fill_path(CompCanvas *canvas, const CompPath *path, int even_odd,
+                                 float r, float g, float b, float a);
+void compositor_canvas_stroke_path(CompCanvas *canvas, const CompPath *path, float width, int cap, int join,
+                                   float miter_limit, float r, float g, float b, float a);
+
+/* Gradients painted through the current clip. colors are packed r,g,b,a; locations has `count` entries in 0...1.
+ * options bit0: extend before start, bit1: extend after end (CGGradientDrawingOptions). */
+void compositor_canvas_draw_linear_gradient(CompCanvas *canvas, float x0, float y0, float x1, float y1,
+                                            const float *colors, const float *locations, size_t count, int options);
+void compositor_canvas_draw_radial_gradient(CompCanvas *canvas, float x0, float y0, float r0, float x1, float y1,
+                                            float r1, const float *colors, const float *locations, size_t count,
+                                            int options);
+
 #ifdef __cplusplus
 }
 #endif
