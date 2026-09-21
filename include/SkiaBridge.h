@@ -124,6 +124,54 @@ typedef int32_t (*CompRenderFn)(const uint8_t *src, uint8_t *dst,
                                 size_t width, size_t height);
 void compositor_compat_set_render_fn(CompRenderFn fn);
 
+/* ── Stage 4/5: Canvas C ABI (CoreGraphics-shaped Skia Bridge) ──────────── */
+
+typedef struct CompCanvas CompCanvas;
+typedef struct CompPath CompPath;
+
+/* Canvas Lifecycle */
+CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t height, size_t stride);
+void compositor_canvas_destroy(CompCanvas *canvas);
+
+/* State Management */
+void compositor_canvas_save(CompCanvas *canvas);
+void compositor_canvas_restore(CompCanvas *canvas);
+void compositor_canvas_translate(CompCanvas *canvas, float dx, float dy);
+void compositor_canvas_scale(CompCanvas *canvas, float sx, float sy);
+void compositor_canvas_rotate(CompCanvas *canvas, float radians);
+void compositor_canvas_concat(CompCanvas *canvas, float a, float b, float c, float d, float tx, float ty);
+void compositor_canvas_get_ctm(const CompCanvas *canvas, float *a, float *b, float *c, float *d, float *tx, float *ty);
+
+/* Clipping */
+void compositor_canvas_clip_rect(CompCanvas *canvas, float x, float y, float w, float h, int antialias);
+void compositor_canvas_clip_rect_difference(CompCanvas *canvas, float x, float y, float w, float h);
+void compositor_canvas_clip_path(CompCanvas *canvas, const CompPath *path, int even_odd, int antialias);
+void compositor_canvas_clip_mask(CompCanvas *canvas, const uint8_t *mask_pixels, size_t mask_w, size_t mask_h, size_t mask_stride, float x, float y, float w, float h, int is_alpha_only);
+void compositor_canvas_get_clip_bounds(const CompCanvas *canvas, float *x, float *y, float *w, float *h);
+
+/* Style & Attributes */
+void compositor_canvas_set_alpha(CompCanvas *canvas, float alpha);
+void compositor_canvas_set_blend_mode(CompCanvas *canvas, int cg_blend_mode);
+void compositor_canvas_set_interpolation_quality(CompCanvas *canvas, int cg_quality);
+void compositor_canvas_set_antialias(CompCanvas *canvas, int antialias);
+
+/* Drawing Operations */
+void compositor_canvas_fill_rect(CompCanvas *canvas, float x, float y, float w, float h, float r, float g, float b, float a);
+void compositor_canvas_clear(CompCanvas *canvas, float x, float y, float w, float h);
+void compositor_canvas_draw_image_rect(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality);
+void compositor_canvas_begin_transparency_layer(CompCanvas *canvas, float opacity);
+void compositor_canvas_end_transparency_layer(CompCanvas *canvas);
+
+/* Path Handle */
+CompPath *compositor_path_create(void);
+void compositor_path_destroy(CompPath *path);
+void compositor_path_move_to(CompPath *path, float x, float y);
+void compositor_path_line_to(CompPath *path, float x, float y);
+void compositor_path_add_rect(CompPath *path, float x, float y, float w, float h);
+void compositor_path_add_ellipse(CompPath *path, float cx, float cy, float rx, float ry);
+void compositor_path_close(CompPath *path);
+void compositor_path_reset(CompPath *path);
+
 #ifdef __cplusplus
 }
 #endif

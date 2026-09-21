@@ -196,6 +196,107 @@ static int test_vulkan_device_creation_and_device_lost_fallback() {
     return 0;
 }
 
+static int test_canvas_c_abi() {
+    const size_t w = 8, h = 8;
+    uint8_t dst[w * h * 4];
+    std::memset(dst, 0, sizeof(dst));
+
+    CompCanvas *canvas = compositor_canvas_create(dst, w, h, w * 4);
+    if (!canvas) {
+        std::fprintf(stderr, "compositor_canvas_create returned NULL\n");
+        return 1;
+    }
+
+    // 1. Initial CTM check
+    float a = 0, b = 0, c = 0, d = 0, tx = 0, ty = 0;
+    compositor_canvas_get_ctm(canvas, &a, &b, &c, &d, &tx, &ty);
+    if (a != 1.0f || b != 0.0f || c != 0.0f || d != 1.0f || tx != 0.0f || ty != 0.0f) {
+        std::fprintf(stderr, "Initial CTM mismatch: [%f,%f,%f,%f,%f,%f]\n", a, b, c, d, tx, ty);
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+
+    // 2. Fill rect with green (0, 1, 0, 1)
+    compositor_canvas_fill_rect(canvas, 0, 0, (float)w, (float)h, 0.0f, 1.0f, 0.0f, 1.0f);
+    if (dst[0] != 0 || dst[1] != 255 || dst[2] != 0 || dst[3] != 255) {
+        std::fprintf(stderr, "fill_rect failed: %d,%d,%d,%d\n", dst[0], dst[1], dst[2], dst[3]);
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+
+    // 3. Save, translate, scale, verify CTM, restore
+    compositor_canvas_save(canvas);
+    compositor_canvas_translate(canvas, 2.0f, 3.0f);
+    compositor_canvas_scale(canvas, 2.0f, 2.0f);
+    compositor_canvas_get_ctm(canvas, &a, &b, &c, &d, &tx, &ty);
+    if (a != 2.0f || b != 0.0f || c != 0.0f || d != 2.0f || tx != 2.0f || ty != 3.0f) {
+        std::fprintf(stderr, "Transformed CTM mismatch: [%f,%f,%f,%f,%f,%f]\n", a, b, c, d, tx, ty);
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+    compositor_canvas_restore(canvas);
+    compositor_canvas_get_ctm(canvas, &a, &b, &c, &d, &tx, &ty);
+    if (a != 1.0f || b != 0.0f || c != 0.0f || d != 1.0f || tx != 0.0f || ty != 0.0f) {
+        std::fprintf(stderr, "Restored CTM mismatch: [%f,%f,%f,%f,%f,%f]\n", a, b, c, d, tx, ty);
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+
+    // 4. Clip bounds
+    compositor_canvas_clip_rect(canvas, 1.0f, 1.0f, 4.0f, 4.0f, 0);
+    float cx = 0, cy = 0, cw = 0, ch = 0;
+    compositor_canvas_get_clip_bounds(canvas, &cx, &cy, &cw, &ch);
+    if (cx != 1.0f || cy != 1.0f || cw != 4.0f || ch != 4.0f) {
+        std::fprintf(stderr, "Clip bounds mismatch: [%f,%f,%f,%f]\n", cx, cy, cw, ch);
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+
+    // 5. Draw image rect inside clip
+    const uint8_t blue_img[4] = {0, 0, 255, 255};
+    compositor_canvas_draw_image_rect(canvas, blue_img, 1, 1, 4, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1, -1);
+    // pixel at (1, 1) should now be blue
+    size_t offset = (1 * w + 1) * 4;
+    if (dst[offset] != 0 || dst[offset + 1] != 0 || dst[offset + 2] != 255 || dst[offset + 3] != 255) {
+        std::fprintf(stderr, "draw_image_rect pixel (1,1) mismatch: %d,%d,%d,%d\n",
+                     dst[offset], dst[offset + 1], dst[offset + 2], dst[offset + 3]);
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+    // pixel outside clip (0, 0) should still be green
+    if (dst[0] != 0 || dst[1] != 255 || dst[2] != 0 || dst[3] != 255) {
+        std::fprintf(stderr, "pixel (0,0) outside clip was modified: %d,%d,%d,%d\n",
+                     dst[0], dst[1], dst[2], dst[3]);
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+
+    // 6. Path clip test
+    CompPath *path = compositor_path_create();
+    if (!path) {
+        std::fprintf(stderr, "compositor_path_create returned NULL\n");
+        compositor_canvas_destroy(canvas);
+        return 1;
+    }
+    compositor_path_move_to(path, 0, 0);
+    compositor_path_line_to(path, 4, 0);
+    compositor_path_line_to(path, 4, 4);
+    compositor_path_close(path);
+    compositor_canvas_clip_path(canvas, path, 0, 0);
+    compositor_path_destroy(path);
+
+    // 7. Transparency layer test
+    compositor_canvas_begin_transparency_layer(canvas, 0.5f);
+    compositor_canvas_fill_rect(canvas, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f);
+    compositor_canvas_end_transparency_layer(canvas);
+
+    // 8. Clear
+    compositor_canvas_clear(canvas, 0, 0, 8, 8);
+
+    compositor_canvas_destroy(canvas);
+    return 0;
+}
+
 int main() {
     if (!compositor_skia_available()) {
         std::printf("Skia unavailable, skipping bridge tests (exit 77)\n");
@@ -209,6 +310,7 @@ int main() {
     failures += test_render_rgba_source_over();
     failures += test_render_rgba_partial_alpha_over_nonempty_dst();
     failures += test_vulkan_device_creation_and_device_lost_fallback();
+    failures += test_canvas_c_abi();
     if (failures) {
         std::fprintf(stderr, "SkiaBridge smoke: %d FAILURE(S)\n", failures);
         return 1;
