@@ -167,12 +167,32 @@ public final class NSTrackingArea {
         return p
     }
     open func convert(_ point: CGPoint, from view: NSView?) -> CGPoint {
+        if view == nil {
+            let winHeight = window?.frame.height ?? bounds.height
+            let localX = point.x - originInWindow.x
+            let localY = isFlipped ? (winHeight - point.y - originInWindow.y) : (point.y - originInWindow.y)
+            return CGPoint(x: localX, y: localY)
+        }
         let source = view?.originInWindow ?? .zero, mine = originInWindow
-        return CGPoint(x: point.x + source.x - mine.x, y: point.y + source.y - mine.y)
+        var result = CGPoint(x: point.x + source.x - mine.x, y: point.y + source.y - mine.y)
+        if (view?.isFlipped ?? false) != self.isFlipped {
+            result.y = bounds.height - result.y
+        }
+        return result
     }
     open func convert(_ point: CGPoint, to view: NSView?) -> CGPoint {
+        if view == nil {
+            let winHeight = window?.frame.height ?? bounds.height
+            let winX = point.x + originInWindow.x
+            let winY = isFlipped ? (winHeight - (point.y + originInWindow.y)) : (point.y + originInWindow.y)
+            return CGPoint(x: winX, y: winY)
+        }
         let target = view?.originInWindow ?? .zero, mine = originInWindow
-        return CGPoint(x: point.x + mine.x - target.x, y: point.y + mine.y - target.y)
+        var result = CGPoint(x: point.x + mine.x - target.x, y: point.y + mine.y - target.y)
+        if self.isFlipped != (view?.isFlipped ?? false) {
+            result.y = (view?.bounds.height ?? bounds.height) - result.y
+        }
+        return result
     }
     open func convert(_ rect: CGRect, from view: NSView?) -> CGRect { CGRect(origin: convert(rect.origin, from: view), size: rect.size) }
     open func convert(_ rect: CGRect, to view: NSView?) -> CGRect { CGRect(origin: convert(rect.origin, to: view), size: rect.size) }

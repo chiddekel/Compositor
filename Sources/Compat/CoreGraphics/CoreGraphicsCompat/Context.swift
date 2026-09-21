@@ -23,6 +23,8 @@ public final class CGContext: @unchecked Sendable {
     private let pixelCount: Int
     private var rawCanvas: OpaquePointer?
     private let render: CompRenderFn?
+    private var externalData: UnsafeMutableRawPointer?
+    private var externalBytesPerRow: Int = 0
 
     private struct State {
         var alpha: CGFloat = 1.0
@@ -47,7 +49,8 @@ public final class CGContext: @unchecked Sendable {
     private var currentPath: CGMutablePath = CGMutablePath()
 
     public var data: UnsafeMutableRawPointer? {
-        UnsafeMutableRawPointer(pixelData)
+        syncToExternalData()
+        return externalData ?? UnsafeMutableRawPointer(pixelData)
     }
 
     public var buffer: PixelBuffer {
@@ -57,7 +60,10 @@ public final class CGContext: @unchecked Sendable {
             for i in 0..<(width * height) { let v = pixelData[i]; expanded[i * 4] = v; expanded[i * 4 + 1] = v; expanded[i * 4 + 2] = v }
             return PixelBuffer(width: width, height: height, bytes: expanded)
         }
-        let array = [UInt8](UnsafeBufferPointer(start: pixelData, count: pixelCount))
+        let array = Array<UInt8>(unsafeUninitializedCapacity: pixelCount) { buf, initializedCount in
+            memcpy(buf.baseAddress!, pixelData, pixelCount)
+            initializedCount = pixelCount
+        }
         return PixelBuffer(width: width, height: height, bytes: array)
     }
 
@@ -105,6 +111,8 @@ public final class CGContext: @unchecked Sendable {
         let format: PixelFormat = space.model == .monochrome ? .gray : .rgba
         self.init(width: width, height: height, format: format, yUp: true)
         if let srcData = data {
+            self.externalData = srcData
+            self.externalBytesPerRow = bytesPerRow
             let rowLength = self.bytesPerRow
             for y in 0..<height { memcpy(pixelData.advanced(by: y * rowLength), srcData.advanced(by: y * bytesPerRow), min(rowLength, bytesPerRow)) }
         }
@@ -138,7 +146,20 @@ public final class CGContext: @unchecked Sendable {
         if let raw = rawCanvas {
             CompCanvasBridge.shared.destroyCanvas?(raw)
         }
+        syncToExternalData()
         pixelData.deallocate()
+    }
+
+    public func flush() {
+        syncToExternalData()
+    }
+
+    public func syncToExternalData() {
+        guard let dstData = externalData else { return }
+        let rowLength = self.bytesPerRow
+        for y in 0..<height {
+            memcpy(dstData.advanced(by: y * externalBytesPerRow), pixelData.advanced(by: y * rowLength), min(rowLength, externalBytesPerRow))
+        }
     }
 
     // MARK: - State Management
@@ -523,8 +544,12 @@ public final class CGContext: @unchecked Sendable {
     // MARK: - Output
 
     public func makeImage() -> CGImage? {
+        syncToExternalData()
         if format == .gray {
-            let plane = [UInt8](UnsafeBufferPointer(start: pixelData, count: pixelCount))
+            let plane = Array<UInt8>(unsafeUninitializedCapacity: pixelCount) { buf, initializedCount in
+                memcpy(buf.baseAddress!, pixelData, pixelCount)
+                initializedCount = pixelCount
+            }
             return CGImage(PortableImage(width: width, height: height, kind: .mask, bytesPerRow: width, bytes: plane))
         }
         return CGImage(buffer)

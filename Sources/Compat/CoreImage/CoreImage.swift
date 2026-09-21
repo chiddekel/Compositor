@@ -9,6 +9,7 @@
 @_exported import CoreGraphics
 import Foundation
 import CoreVideo
+import Dispatch
 
 // MARK: - Small value types
 
@@ -96,9 +97,17 @@ private indirect enum Node {
     func eval(_ region: CGRect, _ env: Env) -> Raster {
         switch self {
         case .source(let raster, let rect):
+            if raster.rect == region {
+                if env.linear {
+                    var out = raster
+                    Gamma.map(&out, Gamma.toLinear)
+                    return out
+                }
+                return raster
+            }
             var out = raster.cropped(to: region.intersection(rect).isNull ? CGRect(x: region.minX, y: region.minY, width: 0, height: 0) : region.intersection(rect))
             if env.linear { Gamma.map(&out, Gamma.toLinear) }
-            return out.cropped(to: region)
+            return out.rect == region ? out : out.cropped(to: region)
         case .color(let c):
             var out = Raster(rect: region)
             let a = Float(c.alpha)
@@ -134,7 +143,16 @@ private indirect enum Node {
         case .blendMask(let n, let bg, let mask):
             return RasterFilters.blendWithMask(n.eval(region, env), background: bg.eval(region, env), mask: mask.eval(region, env))
         case .separable(let s, let b, let burn):
-            return RasterFilters.separableBlend(s.eval(region, env), backdrop: b.eval(region, env), burn ? RasterFilters.colorBurn : RasterFilters.colorDodge)
+            // Separable blend modes (PDF 1.7 / W3C Compositing & Blending) are defined on non-linear perceptual
+            // (sRGB) color components. When linear working space is active, evaluate inputs in sRGB and map the
+            // blended result into linear space so the caller receives the linear values it expects.
+            let sRGB_s = s.eval(region, Env(linear: false))
+            let sRGB_b = b.eval(region, Env(linear: false))
+            var res = RasterFilters.separableBlend(sRGB_s, backdrop: sRGB_b, burn ? RasterFilters.colorBurn : RasterFilters.colorDodge)
+            if env.linear {
+                Gamma.map(&res, Gamma.toLinear)
+            }
+            return res
         case .transform(let n, let t):
             guard abs(t.a * t.d - t.b * t.c) > 1e-12 else { return Raster(rect: region) }
             let inv = t.inverted()
@@ -159,6 +177,8 @@ private extension CGRect {
     var integral32: CGRect { integral }
 }
 
+private let byteToFloatTable: [Float] = (0...255).map { Float($0) / 255.0 }
+
 // MARK: - CIImage
 
 public final class CIImage: @unchecked Sendable {
@@ -169,19 +189,39 @@ public final class CIImage: @unchecked Sendable {
 
     public convenience init(cgImage: CGImage) {
         let w = cgImage.width, h = cgImage.height
-        var raster = Raster(rect: CGRect(x: 0, y: 0, width: w, height: h))
+        var raster = Raster(rect: CGRect(x: 0, y: 0, width: w, height: h), uninitialized: true)
         let bytes = cgImage.portableImage.bytes, stride = cgImage.bytesPerRow
         let gray = cgImage.isGrayPlane
-        for y in 0..<h {
-            // CGImage rows run top-down; CI rows run bottom-up.
-            let dst = (h - 1 - y) * w * 4
-            for x in 0..<w {
-                if gray {
-                    let v = Float(bytes[y * stride + x]) / 255
-                    raster.data[dst + x * 4] = v; raster.data[dst + x * 4 + 1] = v; raster.data[dst + x * 4 + 2] = v; raster.data[dst + x * 4 + 3] = 1
-                } else {
-                    let o = y * stride + x * 4
-                    for c in 0..<4 { raster.data[dst + x * 4 + c] = Float(bytes[o + c]) / 255 }
+        raster.data.withUnsafeMutableBufferPointer { rBuf in
+            bytes.withUnsafeBufferPointer { bBuf in
+                byteToFloatTable.withUnsafeBufferPointer { lutBuf in
+                    guard let rPtr = rBuf.baseAddress, let bPtr = bBuf.baseAddress, let lut = lutBuf.baseAddress else { return }
+                    DispatchQueue.concurrentPerform(iterations: h) { y in
+                        // CGImage rows run top-down; CI rows run bottom-up.
+                        let dst = (h - 1 - y) * w * 4
+                        let srcRow = y * stride
+                        if gray {
+                            var srcP = bPtr + srcRow
+                            var dstP = rPtr + dst
+                            for _ in 0..<w {
+                                let v = lut[Int(srcP[0])]
+                                dstP[0] = v; dstP[1] = v; dstP[2] = v; dstP[3] = 1.0
+                                srcP += 1
+                                dstP += 4
+                            }
+                        } else {
+                            var srcP = bPtr + srcRow
+                            var dstP = rPtr + dst
+                            for _ in 0..<w {
+                                dstP[0] = lut[Int(srcP[0])]
+                                dstP[1] = lut[Int(srcP[1])]
+                                dstP[2] = lut[Int(srcP[2])]
+                                dstP[3] = lut[Int(srcP[3])]
+                                srcP += 4
+                                dstP += 4
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -333,21 +373,63 @@ public final class CIContext: @unchecked Sendable {
         guard let r = raster(image, rect) else { return nil }
         let w = r.width, h = r.height
         if format == .L8 || format == .A8 {
-            var plane = [UInt8](repeating: 0, count: w * h)
-            for y in 0..<h { for x in 0..<w {
-                let i = r.index(x, h - 1 - y)   // back to top-down rows
-                let v = format == .A8 ? r.data[i + 3] : 0.2126 * r.data[i] + 0.7152 * r.data[i + 1] + 0.0722 * r.data[i + 2]
-                plane[y * w + x] = UInt8(max(0, min(255, (v * 255).rounded())))
-            } }
+            var plane = Array<UInt8>(unsafeUninitializedCapacity: w * h) { _, count in count = w * h }
+            plane.withUnsafeMutableBufferPointer { pBuf in
+                r.data.withUnsafeBufferPointer { rBuf in
+                    guard let pPtr = pBuf.baseAddress, let rPtr = rBuf.baseAddress else { return }
+                    DispatchQueue.concurrentPerform(iterations: h) { y in
+                        let srcRow = (h - 1 - y) * w * 4
+                        let dstRow = y * w
+                        for x in 0..<w {
+                            let i = srcRow + x * 4
+                            let v = format == .A8 ? rPtr[i + 3] : 0.2126 * rPtr[i] + 0.7152 * rPtr[i + 1] + 0.0722 * rPtr[i + 2]
+                            pPtr[dstRow + x] = UInt8(max(0, min(255, Int32(v * 255.0 + 0.5))))
+                        }
+                    }
+                }
+            }
             return CGImage(PortableImage(width: w, height: h, kind: .mask, bytesPerRow: w, bytes: plane))
         }
-        var out = [UInt8](repeating: 0, count: w * h * 4)
-        for y in 0..<h { for x in 0..<w {
-            let i = r.index(x, h - 1 - y), o = (y * w + x) * 4
-            let a = max(0, min(1, r.data[i + 3]))
-            for c in 0..<3 { out[o + c] = UInt8(max(0, min(255, (min(r.data[i + c], a) * 255).rounded()))) }
-            out[o + 3] = UInt8((a * 255).rounded())
-        } }
+        var out = Array<UInt8>(unsafeUninitializedCapacity: w * h * 4) { _, count in count = w * h * 4 }
+        out.withUnsafeMutableBufferPointer { oBuf in
+            r.data.withUnsafeBufferPointer { rBuf in
+                guard let oPtr = oBuf.baseAddress, let rPtr = rBuf.baseAddress else { return }
+                DispatchQueue.concurrentPerform(iterations: h) { y in
+                    let srcRow = (h - 1 - y) * w * 4
+                    let dstRow = y * w * 4
+                    var srcP = rPtr + srcRow
+                    var dstP = oPtr + dstRow
+                    for _ in 0..<w {
+                        let a = srcP[3]
+                        if a >= 1.0 {
+                            let r255 = srcP[0] * 255.0 + 0.5
+                            let g255 = srcP[1] * 255.0 + 0.5
+                            let b255 = srcP[2] * 255.0 + 0.5
+                            dstP[0] = UInt8(max(0, min(255, Int32(r255))))
+                            dstP[1] = UInt8(max(0, min(255, Int32(g255))))
+                            dstP[2] = UInt8(max(0, min(255, Int32(b255))))
+                            dstP[3] = 255
+                        } else if a <= 0.0 {
+                            dstP[0] = 0
+                            dstP[1] = 0
+                            dstP[2] = 0
+                            dstP[3] = 0
+                        } else {
+                            let a255 = a * 255.0 + 0.5
+                            let r255 = min(srcP[0], a) * 255.0 + 0.5
+                            let g255 = min(srcP[1], a) * 255.0 + 0.5
+                            let b255 = min(srcP[2], a) * 255.0 + 0.5
+                            dstP[0] = UInt8(max(0, min(255, Int32(r255))))
+                            dstP[1] = UInt8(max(0, min(255, Int32(g255))))
+                            dstP[2] = UInt8(max(0, min(255, Int32(b255))))
+                            dstP[3] = UInt8(max(0, min(255, Int32(a255))))
+                        }
+                        srcP += 4
+                        dstP += 4
+                    }
+                }
+            }
+        }
         return CGImage(PortableImage(width: w, height: h, kind: .rgba, bytesPerRow: w * 4, bytes: out))
     }
 
@@ -356,9 +438,10 @@ public final class CIContext: @unchecked Sendable {
         guard let cg = createCGImage(image, from: bounds, format: format, colorSpace: colorSpace) else { return }
         let bpp = cg.isGrayPlane ? 1 : 4
         let bytes = cg.portableImage.bytes
-        for y in 0..<cg.height {
-            bytes.withUnsafeBufferPointer { src in
-                memcpy(bitmap + y * rowBytes, src.baseAddress! + y * cg.bytesPerRow, cg.width * bpp)
+        bytes.withUnsafeBufferPointer { src in
+            guard let srcBase = src.baseAddress else { return }
+            for y in 0..<cg.height {
+                memcpy(bitmap + y * rowBytes, srcBase + y * cg.bytesPerRow, cg.width * bpp)
             }
         }
     }

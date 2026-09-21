@@ -6,6 +6,7 @@
 
 import Foundation
 import CoreGraphics
+import Dispatch
 
 struct Raster {
     var rect: CGRect              // integral, in CI coordinates
@@ -17,20 +18,41 @@ struct Raster {
         self.rect = rect
         data = [Float](repeating: 0, count: max(0, Int(rect.width) * Int(rect.height) * 4))
     }
+    init(rect: CGRect, uninitialized: Bool) {
+        self.rect = rect
+        let count = max(0, Int(rect.width) * Int(rect.height) * 4)
+        if uninitialized {
+            data = Array<Float>(unsafeUninitializedCapacity: count) { _, initializedCount in
+                initializedCount = count
+            }
+        } else {
+            data = [Float](repeating: 0, count: count)
+        }
+    }
     init(rect: CGRect, data: [Float]) { self.rect = rect; self.data = data }
 
     @inline(__always) func index(_ x: Int, _ y: Int) -> Int { (y * width + x) * 4 }
 
     /// Copy of `region` (which may extend beyond this raster; outside is transparent).
     func cropped(to region: CGRect) -> Raster {
+        if rect == region { return self }
         var out = Raster(rect: region)
         let inter = region.intersection(rect)
         guard !inter.isNull, inter.width > 0, inter.height > 0 else { return out }
         let x0 = Int(inter.minX - rect.minX), y0 = Int(inter.minY - rect.minY)
         let ox = Int(inter.minX - region.minX), oy = Int(inter.minY - region.minY)
-        for y in 0..<Int(inter.height) {
-            let s = index(x0, y0 + y), d = out.index(ox, oy + y)
-            out.data.replaceSubrange(d..<(d + Int(inter.width) * 4), with: data[s..<(s + Int(inter.width) * 4)])
+        let copyBytes = Int(inter.width) * 4 * MemoryLayout<Float>.stride
+        let h = Int(inter.height)
+        let outWidth = out.width
+        out.data.withUnsafeMutableBufferPointer { outBuf in
+            self.data.withUnsafeBufferPointer { srcBuf in
+                guard let dstPtr = outBuf.baseAddress, let srcPtr = srcBuf.baseAddress else { return }
+                for y in 0..<h {
+                    let s = index(x0, y0 + y)
+                    let d = ((oy + y) * outWidth + ox) * 4
+                    memcpy(dstPtr + d, srcPtr + s, copyBytes)
+                }
+            }
         }
         return out
     }
@@ -196,13 +218,46 @@ enum RasterFilters {
 
     /// CIBlendWithMask: mix(background, input, mask) where the mask value is its (unpremultiplied) red channel.
     static func blendWithMask(_ input: Raster, background: Raster, mask: Raster) -> Raster {
-        var out = input
-        var i = 0
-        while i < out.data.count {
-            let ma = mask.data[i + 3]
-            let m = ma > 0 ? mask.data[i] / ma : 0
-            for c in 0..<4 { out.data[i + c] = input.data[i + c] * m + background.data[i + c] * (1 - m) }
-            i += 4
+        var out = Raster(rect: input.rect, uninitialized: true)
+        let w = input.width, h = input.height
+        out.data.withUnsafeMutableBufferPointer { outBuf in
+            input.data.withUnsafeBufferPointer { inBuf in
+                background.data.withUnsafeBufferPointer { bgBuf in
+                    mask.data.withUnsafeBufferPointer { mskBuf in
+                        guard let outPtr = outBuf.baseAddress,
+                              let inPtr = inBuf.baseAddress,
+                              let bgPtr = bgBuf.baseAddress,
+                              let mskPtr = mskBuf.baseAddress else { return }
+                        DispatchQueue.concurrentPerform(iterations: h) { y in
+                            let rowStart = y * w * 4
+                            var outP = outPtr + rowStart
+                            var inP = inPtr + rowStart
+                            var bgP = bgPtr + rowStart
+                            var mskP = mskPtr + rowStart
+                            for _ in 0..<w {
+                                let ma = mskP[3]
+                                if ma <= 0 {
+                                    outP[0] = bgP[0]; outP[1] = bgP[1]; outP[2] = bgP[2]; outP[3] = bgP[3]
+                                } else {
+                                    let m = ma == 1.0 ? mskP[0] : mskP[0] / ma
+                                    if m <= 0.0 {
+                                        outP[0] = bgP[0]; outP[1] = bgP[1]; outP[2] = bgP[2]; outP[3] = bgP[3]
+                                    } else if m >= 1.0 {
+                                        outP[0] = inP[0]; outP[1] = inP[1]; outP[2] = inP[2]; outP[3] = inP[3]
+                                    } else {
+                                        let invM = 1.0 - m
+                                        outP[0] = inP[0] * m + bgP[0] * invM
+                                        outP[1] = inP[1] * m + bgP[1] * invM
+                                        outP[2] = inP[2] * m + bgP[2] * invM
+                                        outP[3] = inP[3] * m + bgP[3] * invM
+                                    }
+                                }
+                                outP += 4; inP += 4; bgP += 4; mskP += 4
+                            }
+                        }
+                    }
+                }
+            }
         }
         return out
     }

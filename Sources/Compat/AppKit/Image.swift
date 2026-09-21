@@ -114,8 +114,12 @@ extension NSBitmapImageRep {
                              pixelsHigh: Int, bitsPerSample: Int, samplesPerPixel: Int, hasAlpha: Bool, isPlanar: Bool,
                              colorSpaceName: NSColorSpaceName, bytesPerRow: Int, bitsPerPixel: Int) {
         guard pixelsWide > 0, pixelsHigh > 0, bitsPerSample == 8, samplesPerPixel == 4, !isPlanar else { return nil }
-        self.init(context: CGContext(width: pixelsWide, height: pixelsHigh))
+        guard let ctx = CGContext(data: nil, width: pixelsWide, height: pixelsHigh, bitsPerComponent: 8,
+                                  bytesPerRow: pixelsWide * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        self.init(context: ctx)
     }
+
     public var bytesPerRow: Int { (cgImage?.width ?? 0) * 4 }
     public var bitsPerPixel: Int { 32 }
     /// The live pixel memory of a drawable bitmap (premultiplied RGBA, top row first).

@@ -3,6 +3,7 @@
 // These are portable Swift implementations of exactly those entry points, with vImage's buffer/flag/error shapes.
 
 import Foundation
+import Dispatch
 
 public typealias vImagePixelCount = UInt
 public typealias vImage_Error = Int
@@ -148,20 +149,81 @@ public func vImageMatrixMultiply_ARGB8888(_ src: UnsafePointer<vImage_Buffer>, _
     let s = src.pointee, d = dest.pointee
     guard s.data != nil, d.data != nil, divisor != 0 else { return kvImageInvalidParameter }
     guard s.width == d.width, s.height == d.height else { return kvImageBufferSizeMismatch }
-    var m = [Int32](repeating: 0, count: 16)
-    for i in 0..<16 { m[i] = Int32(matrix[i]) }
-    for y in 0..<Int(s.height) {
-        let from = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
-        let to = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
-        for x in 0..<Int(s.width) {
-            var px = [Int32](repeating: 0, count: 4)
-            for i in 0..<4 { px[i] = Int32(from[x * 4 + i]) + (preBias.map { Int32($0[i]) } ?? 0) }
-            for j in 0..<4 {
-                let sum = px[0] * m[j] + px[1] * m[4 + j] + px[2] * m[8 + j] + px[3] * m[12 + j]
-                let biased = sum + (postBias.map { $0[j] } ?? 0)
-                // Round to nearest, ties away from zero like vImage's fixed-point path.
-                let v = biased >= 0 ? (biased + divisor / 2) / divisor : -((-biased + divisor / 2) / divisor)
-                to[x * 4 + j] = UInt8(max(0, min(255, v)))
+    let m0 = Int32(matrix[0]), m1 = Int32(matrix[1]), m2 = Int32(matrix[2]), m3 = Int32(matrix[3])
+    let m4 = Int32(matrix[4]), m5 = Int32(matrix[5]), m6 = Int32(matrix[6]), m7 = Int32(matrix[7])
+    let m8 = Int32(matrix[8]), m9 = Int32(matrix[9]), m10 = Int32(matrix[10]), m11 = Int32(matrix[11])
+    let m12 = Int32(matrix[12]), m13 = Int32(matrix[13]), m14 = Int32(matrix[14]), m15 = Int32(matrix[15])
+
+    let pre0 = preBias.map { Int32($0[0]) } ?? 0
+    let pre1 = preBias.map { Int32($0[1]) } ?? 0
+    let pre2 = preBias.map { Int32($0[2]) } ?? 0
+    let pre3 = preBias.map { Int32($0[3]) } ?? 0
+
+    let post0 = postBias.map { $0[0] } ?? 0
+    let post1 = postBias.map { $0[1] } ?? 0
+    let post2 = postBias.map { $0[2] } ?? 0
+    let post3 = postBias.map { $0[3] } ?? 0
+
+    let halfDivisor = divisor / 2
+    let width = Int(s.width)
+    let height = Int(s.height)
+
+    if divisor == 256 {
+        DispatchQueue.concurrentPerform(iterations: height) { y in
+            var srcP = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
+            var dstP = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
+            for _ in 0..<width {
+                let px0 = Int32(srcP[0]) + pre0
+                let px1 = Int32(srcP[1]) + pre1
+                let px2 = Int32(srcP[2]) + pre2
+                let px3 = Int32(srcP[3]) + pre3
+
+                let sum0 = px0 * m0 + px1 * m4 + px2 * m8 + px3 * m12 + post0
+                let sum1 = px0 * m1 + px1 * m5 + px2 * m9 + px3 * m13 + post1
+                let sum2 = px0 * m2 + px1 * m6 + px2 * m10 + px3 * m14 + post2
+                let sum3 = px0 * m3 + px1 * m7 + px2 * m11 + px3 * m15 + post3
+
+                let v0 = sum0 >= 0 ? (sum0 + 128) >> 8 : -((-sum0 + 128) >> 8)
+                let v1 = sum1 >= 0 ? (sum1 + 128) >> 8 : -((-sum1 + 128) >> 8)
+                let v2 = sum2 >= 0 ? (sum2 + 128) >> 8 : -((-sum2 + 128) >> 8)
+                let v3 = sum3 >= 0 ? (sum3 + 128) >> 8 : -((-sum3 + 128) >> 8)
+
+                dstP[0] = UInt8(max(0, min(255, v0)))
+                dstP[1] = UInt8(max(0, min(255, v1)))
+                dstP[2] = UInt8(max(0, min(255, v2)))
+                dstP[3] = UInt8(max(0, min(255, v3)))
+
+                srcP += 4
+                dstP += 4
+            }
+        }
+    } else {
+        DispatchQueue.concurrentPerform(iterations: height) { y in
+            var srcP = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
+            var dstP = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
+            for _ in 0..<width {
+                let px0 = Int32(srcP[0]) + pre0
+                let px1 = Int32(srcP[1]) + pre1
+                let px2 = Int32(srcP[2]) + pre2
+                let px3 = Int32(srcP[3]) + pre3
+
+                let sum0 = px0 * m0 + px1 * m4 + px2 * m8 + px3 * m12 + post0
+                let sum1 = px0 * m1 + px1 * m5 + px2 * m9 + px3 * m13 + post1
+                let sum2 = px0 * m2 + px1 * m6 + px2 * m10 + px3 * m14 + post2
+                let sum3 = px0 * m3 + px1 * m7 + px2 * m11 + px3 * m15 + post3
+
+                let v0 = sum0 >= 0 ? (sum0 + halfDivisor) / divisor : -((-sum0 + halfDivisor) / divisor)
+                let v1 = sum1 >= 0 ? (sum1 + halfDivisor) / divisor : -((-sum1 + halfDivisor) / divisor)
+                let v2 = sum2 >= 0 ? (sum2 + halfDivisor) / divisor : -((-sum2 + halfDivisor) / divisor)
+                let v3 = sum3 >= 0 ? (sum3 + halfDivisor) / divisor : -((-sum3 + halfDivisor) / divisor)
+
+                dstP[0] = UInt8(max(0, min(255, v0)))
+                dstP[1] = UInt8(max(0, min(255, v1)))
+                dstP[2] = UInt8(max(0, min(255, v2)))
+                dstP[3] = UInt8(max(0, min(255, v3)))
+
+                srcP += 4
+                dstP += 4
             }
         }
     }

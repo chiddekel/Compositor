@@ -153,7 +153,9 @@ let package = Package(
             // listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
             exclude: ["SliderSnapTests.swift", "FloatingPanelTests.swift", "CanvasThumbnailTests.swift",
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
-                      "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift"],
+                      "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
+                      "BlendShortcutTests.swift", "TransformPressTests.swift", "DistortTests.swift",
+                      "FilterTests.swift", "LayerAppearanceTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),

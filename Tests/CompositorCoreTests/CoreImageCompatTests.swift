@@ -73,6 +73,17 @@ final class CoreImageCompatTests: XCTestCase {
         XCTAssertEqual(through.portableImage.bytes, image.portableImage.bytes)
     }
 
+    func testInspectGaussianBlurFilter() {
+        let img = rgba(40, 20) { x, y in x < 20 ? (255, 255, 255, 255) : (0, 0, 0, 0) }
+        let ci = CIImage(cgImage: img)
+        let blurred = ci.applyingGaussianBlur(sigma: 3)
+        let out = render(blurred.cropped(to: CGRect(x: 0, y: 0, width: 40, height: 20)), unmanaged, 40, 20)
+        print("BLURRED DIRECT 40x20:")
+        for x in [0, 5, 10, 15, 20, 25, 30, 35, 38] {
+            print("DIRECT x=\(x) alpha=\(px(out, x, 10)[3])")
+        }
+    }
+
     func testColorDodgeAndBurnFollowTheBlendFormulas() {
         let src = rgba(1, 1) { _, _ in (128, 128, 128, 255) }
         let back = rgba(1, 1) { _, _ in (128, 128, 128, 255) }
@@ -84,6 +95,19 @@ final class CoreImageCompatTests: XCTestCase {
         }
         XCTAssertEqual(blend("CIColorDodgeBlendMode"), 255, accuracy: 1, "0.5 / (1 - 0.5) saturates")
         XCTAssertEqual(blend("CIColorBurnBlendMode"), 0, accuracy: 3, "1 - (1 - 0.502) / 0.502 is about 0.008")
+        // Managed context (with linear working space) must also respect perceptual sRGB formulas
+        let top08 = rgba(1, 1) { _, _ in (UInt8((0.8 * 255).rounded()), UInt8((0.8 * 255).rounded()), UInt8((0.8 * 255).rounded()), 255) }
+        let base04 = rgba(1, 1) { _, _ in (UInt8((0.4 * 255).rounded()), UInt8((0.4 * 255).rounded()), UInt8((0.4 * 255).rounded()), 255) }
+        let burnFilter = CIFilter(name: "CIColorBurnBlendMode")!
+        burnFilter.setValue(CIImage(cgImage: top08), forKey: kCIInputImageKey)
+        burnFilter.setValue(CIImage(cgImage: base04), forKey: kCIInputBackgroundImageKey)
+        let burnOut = px(render(burnFilter.outputImage!, managed, 1, 1), 0, 0)[0]
+        XCTAssertEqual(burnOut, 64, accuracy: 2, "Color Burn of 0.4 under 0.8 is 0.25 (~64/255)")
+        let dodgeFilter = CIFilter(name: "CIColorDodgeBlendMode")!
+        dodgeFilter.setValue(CIImage(cgImage: top08), forKey: kCIInputImageKey)
+        dodgeFilter.setValue(CIImage(cgImage: base04), forKey: kCIInputBackgroundImageKey)
+        let dodgeOut = px(render(dodgeFilter.outputImage!, managed, 1, 1), 0, 0)[0]
+        XCTAssertEqual(dodgeOut, 255, accuracy: 1, "Color Dodge of 0.4 under 0.8 is 1.0 (255/255)")
         XCTAssertNil(CIFilter(name: "CINotAFilter"))
     }
 

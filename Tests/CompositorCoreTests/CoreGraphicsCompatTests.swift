@@ -329,4 +329,30 @@ final class CoreGraphicsCompatTests: XCTestCase {
             XCTAssertEqual(Int(swiftOut.bytes[i]), Int(skiaOut.bytes[i]), accuracy: 1, "byte \(i) matches between Swift and Skia renderers")
         }
     }
+
+    func testExternalBufferSynchronization() {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes { bytes in
+            guard let ctx = CGContext(
+                data: bytes.baseAddress,
+                width: 1,
+                height: 1,
+                bitsPerComponent: 8,
+                bytesPerRow: 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                XCTFail("Failed to create context")
+                return
+            }
+            ctx.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+            ctx.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+            ctx.flush()
+        }
+        XCTAssertEqual(pixel[0], 255, "red channel")
+        XCTAssertEqual(pixel[1], 0, "green channel")
+        XCTAssertEqual(pixel[2], 0, "blue channel")
+        XCTAssertEqual(pixel[3], 255, "alpha channel")
+    }
 }
+
