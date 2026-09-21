@@ -258,4 +258,38 @@ final class CoreGraphicsCompatTests: XCTestCase {
         let subtracted = path.subtracting(cut, using: .winding)
         XCTAssertFalse(subtracted.isEmpty)
     }
+
+    func testRendererEnvSwitchDocumentRenderParity() throws {
+        var baseBuf = PixelBuffer(width: 4, height: 4)
+        for y in 0..<4 {
+            for x in 0..<4 { baseBuf[x, y] = (0, 0, 200, 255) }
+        }
+        var topBuf = PixelBuffer(width: 4, height: 4)
+        for y in 0..<4 {
+            for x in 0..<4 { topBuf[x, y] = (100, 0, 0, 128) }
+        }
+
+        let baseImg = ImportedImage(image: RasterImage(PortableImage(baseBuf)), thumbnail: RasterImage(PortableImage(baseBuf)), name: "Base")
+        let topImg = ImportedImage(image: RasterImage(PortableImage(topBuf)), thumbnail: RasterImage(PortableImage(topBuf)), name: "Top")
+
+        let doc = CanvasDocument(width: 4, height: 4, layers: [
+            ImageLayer(asset: baseImg, origin: .zero),
+            ImageLayer(asset: topImg, origin: .zero)
+        ])
+
+        setenv("COMPOSITOR_RENDERER", "swift", 1)
+        let swiftRenderer = try DocumentRenderer(doc)
+        let swiftOut = try swiftRenderer.render()
+
+        setenv("COMPOSITOR_RENDERER", "skia", 1)
+        let skiaRenderer = try DocumentRenderer(doc)
+        let skiaOut = try skiaRenderer.render()
+
+        unsetenv("COMPOSITOR_RENDERER")
+
+        XCTAssertEqual(swiftOut.bytes.count, skiaOut.bytes.count)
+        for i in 0..<swiftOut.bytes.count {
+            XCTAssertEqual(Int(swiftOut.bytes[i]), Int(skiaOut.bytes[i]), accuracy: 1, "byte \(i) matches between Swift and Skia renderers")
+        }
+    }
 }
