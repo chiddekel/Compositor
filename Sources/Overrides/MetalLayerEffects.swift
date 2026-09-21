@@ -1,19 +1,141 @@
 // OVERRIDE for Compositor/Rendering/MetalLayerEffects.swift (excluded from the Linux build).
 //
-// Upstream treats the GPU effects renderer as optional: `MetalLayerEffects.shared` is nil without Metal and
-// `LayerEffectsRenderer` then runs its CoreImage/CoreGraphics CPU path. This override reports "no accelerator" so that
-// path — now backed by the CoreImage compat — runs on Linux. The Vulkan → Skia → OpenCV → C effects backend chain
-// (same nine passes as the Metal kernels) plugs in here by returning a real instance from `shared`.
+// Same surface as upstream's Metal type (`MetalLayerEffects.shared`, `render(_:effects:)`), so `LayerEffectsRenderer`
+// compiles unmodified and asks "is there an accelerator?" exactly as on macOS. The accelerator is a chain of backends
+// running the nine passes of the Metal kernels (alpha, spread rows/columns, ring, shift, blur rows/columns, inside,
+// compose): Vulkan compute first, the portable C++ tier last, each failing over to the next. See
+// `LayerEffectsBackends` and backends/effects.
 
 import Foundation
 import CoreGraphics
+import CompatSupport
+import CompositorEffectsBackend
 
 final class MetalLayerEffects {
-    /// nil until an accelerated backend is installed (Phase 5).
-    nonisolated(unsafe) static var shared: MetalLayerEffects?
+    /// Always present: the C tier needs no device. (Upstream's own CoreImage path remains the fallback if every
+    /// backend in the chain fails for an image.)
+    nonisolated(unsafe) static var shared: MetalLayerEffects? = MetalLayerEffects()
+
+    private init() {}
 
     /// Same signature as upstream: the layer's pixels with room around them, stroke and drop shadow composited in.
     func render(_ pixels: CGImage, effects: LayerEffects) throws -> CGImage {
-        throw ExportError.render
+        var lastError: Error = ExportError.render
+        for backend in LayerEffectsBackends.chain {
+            do { return try backend.render(pixels, effects: effects) } catch { lastError = error }
+        }
+        throw lastError
+    }
+}
+
+/// One tier of the effects chain. Implementations take the padded layer pixels and return the composited image.
+protocol LayerEffectsBackend: AnyObject {
+    var name: String { get }
+    func render(_ pixels: CGImage, effects: LayerEffects) throws -> CGImage
+}
+
+enum LayerEffectsBackends {
+    /// The tiers to try, in order. `COMPOSITOR_EFFECTS=vulkan|cpu` narrows it (`auto`, the default, is all of them).
+    static let slot = ServiceSlot<[LayerEffectsBackend]>(fallback: { defaultChain() })
+
+    static var chain: [LayerEffectsBackend] { slot.current ?? [] }
+
+    static func withChain<Result>(_ chain: [LayerEffectsBackend], _ body: () throws -> Result) rethrows -> Result {
+        try slot.withOverride(chain, body)
+    }
+
+    private static func defaultChain() -> [LayerEffectsBackend] {
+        let choice = ProcessInfo.processInfo.environment["COMPOSITOR_EFFECTS"]?.lowercased() ?? "auto"
+        var tiers: [LayerEffectsBackend] = []
+        // `auto` skips a software Vulkan device (the C++ tier is faster there); `vulkan` takes whatever device exists.
+        if choice == "auto" || choice == "vulkan", let vulkan = CEffectsBackend.vulkan(),
+           choice == "vulkan" || !vulkan.isSoftwareDevice { tiers.append(vulkan) }
+        if choice != "vulkan" || tiers.isEmpty { tiers.append(CEffectsBackend.cpu()) }
+        return tiers
+    }
+}
+
+/// The C++ tiers behind `CompositorEffectsBackend.h`: the CPU reference, or a Vulkan device.
+final class CEffectsBackend: LayerEffectsBackend {
+    private enum Kind { case cpu; case vulkan(OpaquePointer) }
+    private let kind: Kind
+    let name: String
+    /// A Vulkan device that is really a CPU (llvmpipe): correct, but the direct C++ tier is faster than emulating a GPU.
+    let isSoftwareDevice: Bool
+
+    private init(kind: Kind, name: String, isSoftwareDevice: Bool = false) {
+        self.kind = kind; self.name = name; self.isSoftwareDevice = isSoftwareDevice
+    }
+    deinit { if case .vulkan(let context) = kind { compositor_vulkan_effects_destroy(context) } }
+
+    static func cpu() -> CEffectsBackend { CEffectsBackend(kind: .cpu, name: "cpu") }
+
+    static func vulkan() -> CEffectsBackend? {
+        guard let context = compositor_vulkan_effects_create() else { return nil }
+        let device = String(cString: compositor_vulkan_effects_device(context))
+        return CEffectsBackend(kind: .vulkan(context), name: "vulkan (\(device))",
+                               isSoftwareDevice: compositor_vulkan_effects_device_type(context) == 4)
+    }
+
+    func render(_ pixels: CGImage, effects: LayerEffects) throws -> CGImage {
+        let width = pixels.width, height = pixels.height
+        let count = width * height
+        guard count > 0, count <= 80_000_000 else { throw ExportError.tooLarge }
+        // The pixels as premultiplied RGBA bytes, the way the Metal path hands them to the GPU.
+        let source = try BrushRaster.context(width: width, height: height, mask: false)
+        BrushRaster.draw(pixels, in: CGRect(x: 0, y: 0, width: width, height: height), mask: false, context: source)
+        guard let bytes = source.data else { throw ExportError.render }
+        var params = Self.parameters(width: width, height: height, effects: effects)
+        var output = [UInt8](repeating: 0, count: count * 4)
+        let status: Int32 = output.withUnsafeMutableBufferPointer { out in
+            switch kind {
+            case .cpu:
+                return compositor_effects_cpu(&params, bytes.assumingMemoryBound(to: UInt8.self), out.baseAddress)
+            case .vulkan(let context):
+                return compositor_vulkan_effects_render(context, &params,
+                                                        bytes.assumingMemoryBound(to: UInt8.self), out.baseAddress)
+            }
+        }
+        guard status == 0 else { throw ExportError.render }
+        // Copied out of the working buffer, which is freed as soon as this returns.
+        guard let provider = CGDataProvider(data: Data(output) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { throw ExportError.render }
+        return image
+    }
+
+    /// The effects as the passes' parameters, with the same enable rules as the Metal renderer.
+    static func parameters(width: Int, height: Int, effects: LayerEffects) -> CompositorEffectsParams {
+        func color(_ c: PaletteColor, _ opacity: CGFloat) -> CompositorEffectColor {
+            CompositorEffectColor(r: Float(c.red), g: Float(c.green), b: Float(c.blue), opacity: Float(opacity))
+        }
+        var p = CompositorEffectsParams()
+        p.width = UInt32(width); p.height = UInt32(height)
+        if let stroke = effects.stroke, stroke.isEnabled, stroke.size > 0, stroke.opacity > 0 {
+            p.has_stroke = 1
+            p.stroke_inside = stroke.inside ? 1 : 0
+            p.stroke_reach = UInt32(max(1, Int(stroke.size.rounded())))
+            p.stroke = color(stroke.color, stroke.opacity)
+        }
+        if let shadow = effects.shadow, shadow.isEnabled, shadow.opacity > 0 {
+            p.has_shadow = 1
+            p.shadow_dx = Float(shadow.offset.width); p.shadow_dy = Float(shadow.offset.height)
+            p.shadow_sigma = Float(shadow.blur / 2)
+            p.shadow = color(shadow.color, shadow.opacity)
+        }
+        if let overlay = effects.colorOverlay, overlay.isEnabled, overlay.opacity > 0 {
+            p.has_overlay = 1
+            p.overlay = color(overlay.color, overlay.opacity)
+        }
+        if let inner = effects.innerShadow, inner.isEnabled, inner.opacity > 0 {
+            p.has_inner = 1
+            p.inner_dx = Float(inner.offset.width); p.inner_dy = Float(inner.offset.height)
+            p.inner_sigma = Float(inner.blur / 2)
+            p.inner = color(inner.color, inner.opacity)
+        }
+        return p
     }
 }

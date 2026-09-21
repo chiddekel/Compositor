@@ -7,6 +7,7 @@ and Linux Qt/Skia implementations are interchangeable (and test doubles are triv
 | Concern | macOS original | Interface | Linux implementation |
 |---|---|---|---|
 | 2D raster drawing | CoreGraphics `CGContext` | `CanvasBackend` / `CanvasBackendFactory` (`CanvasBackends.factories`, tried in order, pure-Swift fallback last) | `SkiaCanvasBackend` (Skia C ABI); Vulkan / OpenCV / test doubles plug in the same way |
+| Layer effects (stroke / shadow / overlay / inner shadow) | Metal (`MetalLayerEffects`) | `LayerEffectsBackend` chain behind the same-signature override | Vulkan compute (`backends/effects/shaders/effects.comp`) -> portable C++ tier (`EffectsCPU.cpp`); Skia and OpenCV tiers slot in between |
 | Brush coverage GPU | Metal | `BrushCoverageComputing` (Swift) | Vulkan compute, CPU fallback |
 | Foreground segmentation | Vision | `ForegroundSegmenter`, `MatteRefiner` (Swift) | OpenCV bridge |
 | Image codecs | ImageIO | `IImageExporter` (C++) | Qt image plugins |
@@ -67,3 +68,13 @@ Upstream's unmodified code cannot take a service through an initialiser, so each
 
 `CompCanvasBridge` (the Skia dlopen binding) is internal to `SkiaCanvasBackend`. Event-style hooks (alert and panel
 handlers, `onBeep`, cursor changes) stay closures: they are one-way notifications, not services with a lifetime.
+
+## Layer effects chain
+
+`Sources/Overrides/MetalLayerEffects.swift` keeps upstream's surface (`MetalLayerEffects.shared`, `render(_:effects:)`) and
+runs `LayerEffectsBackends.chain`: Vulkan first, the C++ tier last, each failing over to the next.
+`COMPOSITOR_EFFECTS=auto|vulkan|cpu` narrows it; `auto` skips a software Vulkan device (llvmpipe) because the direct C++
+tier is faster there. Both tiers run the same nine passes as the Metal kernels. Checks (`Tests/LinuxOverrideTests`): the C++
+tier against upstream's own CoreImage renderer (largest difference 10 of 255, mean under 0.4), and Vulkan against the C++
+tier (bit-identical on llvmpipe). SPIR-V is bundled (`scripts/build-brush-shader.py --check` detects stale words).
+Not done yet: the Skia and OpenCV tiers, and device-local staging buffers for discrete GPUs.

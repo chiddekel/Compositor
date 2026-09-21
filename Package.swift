@@ -25,6 +25,12 @@ let package = Package(
         .library(name: "CompositorCore", type: .static, targets: ["CompositorCore"]),
     ],
     targets: [
+        // Layer effects (stroke / shadow / overlay / inner shadow): the C tier and the Vulkan tier of the chain that
+        // Sources/Overrides/MetalLayerEffects.swift fronts. Same nine passes as upstream's Metal kernels.
+        .target(name: "CompositorEffectsBackend", path: "backends/effects",
+            exclude: ["shaders/effects.comp"],
+            sources: ["EffectsCPU.cpp", "EffectsVulkan.cpp"], publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("vulkan")]),
         .target(name: "CompositorBrushBackend", path: "backends/brush",
             exclude: ["shaders/continuous_brush.comp"],
             sources: ["BrushCoverageCPU.cpp", "VulkanBrushCoverage.cpp"],
@@ -114,7 +120,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"] + ["CompositorKernels", "CompositorBrushBackend"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
@@ -160,6 +166,19 @@ let package = Package(
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
                       "BlendShortcutTests.swift", "TransformPressTests.swift"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat"]),
+            ]
+        ),
+        // Tests of Linux-owned code that lives inside the Compositor module (the Sources/Overrides stand-ins), checked
+        // against upstream's own behaviour.
+        .testTarget(
+            name: "LinuxOverrideTests",
+            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "CompatSupport"] + ["CoreGraphics", "AppKit", "CoreImage", "ImageIO", "UniformTypeIdentifiers", "FoundationCompat"],
+            path: "Tests/LinuxOverrideTests",
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
