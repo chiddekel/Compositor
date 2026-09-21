@@ -52,3 +52,30 @@ Swift fallback through `RenderDeviceBinding` instead of importing the renderer. 
 3. Add `AppKit`/`CoreImage`/`ImageIO`/`Accelerate`/`Vision`/`UniformTypeIdentifiers` compat modules in the order of the
    table (counts are per distinct symbol; start with `ImageIO`, `CGGradient`, `NSColor`/`NSImage`, then `CoreImage`).
 4. Re-run the probe until `UpstreamProbe` compiles clean, then compile upstream `CompositorTests` unmodified.
+
+
+## Phase 1 status (2026-09-21)
+
+Done, all verified by `swift test` (446 tests, 0 failures; 3 Skia-only tests need `COMPOSITOR_SKIA_BRIDGE` to run):
+
+| Module | What it provides | Notes |
+|---|---|---|
+| `CoreGraphics` (`Sources/Compat/CoreGraphics`) | `CGContext`/`CGImage` over Skia, Apple-shaped `CGPath`/`CGMutablePath` (curves, rounded rects, hit testing, `applyWithBlock`, `copy(using:)`, booleans via SkPathOps, stroke outlines), `CGGradient`, `CGColorSpace` name constants + failable init, `CGColor(srgbRed:…)`, `CFArray/CFDictionary/CFString/CFURL/CFData` aliases | No dependency on document types any more; the pure-Swift renderer is injected through `CGContext.softwareDraw` (`CompatBootstrap.install()`) |
+| `AppKit` (`Sources/Compat/AppKit`) | `NSColor`, `NSGraphicsContext`, `NSCursor` (tokens), `NSSound` (hook), `NSImage`/`NSBitmapImageRep` (codec hook), `NSPasteboard` (change counts, backend hook), `NSItemProvider`, `NSAlert`/`NSOpenPanel`/`NSSavePanel` (injectable handlers), `NSView`/`NSWindow` placeholders, text stack stubs (`NSFont`, `NSAttributedString.boundingRect`, `NSTextStorage`, …) | Text layout is approximate and drawing is a no-op until the Skia paragraph backend (Phase 3) |
+| `FoundationCompat` | `FileWrapper`, `NSFileCoordinator`, `NSErrorPointer`, security-scoped URL calls, `autoreleasepool` | Files that import only Foundation see it through `-Xfrontend -import-module FoundationCompat` |
+| `UniformTypeIdentifiers` | `UTType` table with conformance, extensions, MIME, exported/imported types | |
+| Skia bridge | Path elements/ops/stroke/fill/gradients ABI (`include/SkiaBridge.h`); `scripts/build-skia-pathops.sh` archives Skia's PathOps (only built with PDF otherwise) and CMake links it | Flatpak manifest builds the same archive |
+
+Probe (`scripts/upstream-probe.sh`): 9,439 → 450 → **175 distinct error lines, 53 missing symbols**:
+
+- **ImageIO (22):** `CGImageSource*`, `CGImageDestination*`, `kCGImage*` keys → Qt image plugins (next).
+- **CoreImage (10):** `CIImage`, `CIContext`, `CIFilter`, `CIVector`, `CIColor`, input keys → Skia/OpenCV/C backend chain.
+- **Accelerate (12):** `vImage_Buffer`, `vImageScale_*`, `vImageTableLookUp_Planar8`, `vImageMatrixMultiply_ARGB8888`, `kvImage*`, `Pixel_8`.
+- **CoreVideo (3):** `CVPixelBuffer` (+ width/height).
+- **Vision (2):** `VNImageRequestHandler`, `VNGenerateForegroundInstanceMaskRequest` → OpenCV GrabCut.
+- **Metal (2, override files):** `MetalBrushCoverage`, `MetalLayerEffects` → Vulkan/Skia/OpenCV/C.
+- **App level (2):** `ProjectController`, `ImageFileDrop` (Qt shell).
+
+Known gaps carried forward: dashed strokes are recorded but not rasterised; `CGContext` blend modes/clipping in the
+no-Skia fallback path are minimal; Skia in the Flatpak manifest (canvaskit 0.42.0) is older than the tree the bridge
+is built against locally (`SkPathBuilder`, `SkPathIter`, `SkGradient`), so the manifest's Skia version must be bumped.

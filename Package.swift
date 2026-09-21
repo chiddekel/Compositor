@@ -69,6 +69,14 @@ let package = Package(
             path: "Sources/Compat/CoreGraphics",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])]
         ),
+        // Foundation gaps (FileWrapper, NSFileCoordinator, security-scoped URLs), UTType and the headless AppKit
+        // surface upstream's model code touches. Each is one Apple framework (interface segregation).
+        .target(name: "FoundationCompat", path: "Sources/Compat/FoundationCompat",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers"],
+                path: "Sources/Compat/AppKit", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(
             name: "CompositorCore",
             dependencies: ["CoreGraphics", "CompositorKernels", "CompositorBrushBackend"],
@@ -82,7 +90,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CompositorCoreTests",
-            dependencies: ["CompositorCore"],
+            dependencies: ["CompositorCore", "AppKit", "FoundationCompat", "UniformTypeIdentifiers"],
             path: "Tests/CompositorCoreTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift

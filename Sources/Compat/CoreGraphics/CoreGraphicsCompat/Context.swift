@@ -27,6 +27,8 @@ public final class CGContext: @unchecked Sendable {
         var lineCap: CGLineCap = .butt
         var lineJoin: CGLineJoin = .miter
         var miterLimit: CGFloat = 10
+        var dashPhase: CGFloat = 0
+        var dashLengths: [CGFloat] = []
         var ctm: CGAffineTransform = .identity
     }
 
@@ -251,6 +253,22 @@ public final class CGContext: @unchecked Sendable {
     public func addPath(_ path: CGPath) { currentPath.addPath(path) }
 
     public func setLineCap(_ cap: CGLineCap) { state.lineCap = cap }
+    /// Recorded for callers that read it back; dashed strokes are not rasterised yet.
+    public func setLineDash(phase: CGFloat, lengths: [CGFloat]) { state.dashPhase = phase; state.dashLengths = lengths }
+
+    /// The colour space of the backing bitmap (sRGB, premultiplied RGBA).
+    public var colorSpace: CGColorSpace { .srgbSpace }
+
+    public func drawPath(using mode: CGPathDrawingMode) {
+        let path = currentPath
+        switch mode {
+        case .fill, .eoFill, .fillStroke, .eoFillStroke:
+            fill(path, rule: (mode == .eoFill || mode == .eoFillStroke) ? .evenOdd : .winding)
+        case .stroke: break
+        }
+        if mode == .stroke || mode == .fillStroke || mode == .eoFillStroke { stroke(path) }
+        currentPath = CGMutablePath()
+    }
     public func setLineJoin(_ join: CGLineJoin) { state.lineJoin = join }
     public func setMiterLimit(_ limit: CGFloat) { state.miterLimit = limit }
 
@@ -514,5 +532,7 @@ public final class CGContext: @unchecked Sendable {
         }
     }
 }
+
+public enum CGPathDrawingMode: Int32, Sendable { case fill, eoFill, stroke, fillStroke, eoFillStroke }
 
 public typealias CGContextCompat = CGContext
