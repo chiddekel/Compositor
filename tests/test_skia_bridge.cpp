@@ -82,6 +82,42 @@ static int test_render_rgba_source_over() {
     return 0;
 }
 
+// Regression (2026-09-21 review, R46): the bridge used to memcpy src over dst,
+// so every test with an opaque source over a transparent destination passed
+// while real compositing was never exercised. A partially transparent source
+// over a NON-EMPTY destination is the smallest input a copy cannot satisfy.
+// Premultiplied source-over: out = src + dst * (255 - src.a) / 255.
+static int test_render_rgba_partial_alpha_over_nonempty_dst() {
+    const size_t w = 2, h = 1;
+    const uint8_t src[w * h * 4] = {128, 0, 0, 128,   0, 100, 0, 100};   // premultiplied
+    const uint8_t dst0[w * h * 4] = {0, 0, 255, 255,  200, 200, 200, 255}; // opaque backdrop
+    uint8_t expected[w * h * 4];
+    for (size_t p = 0; p < w * h; ++p) {
+        const int inv = 255 - src[p * 4 + 3];
+        for (int c = 0; c < 4; ++c) {
+            expected[p * 4 + c] = static_cast<uint8_t>(
+                src[p * 4 + c] + (dst0[p * 4 + c] * inv + 127) / 255);
+        }
+    }
+    uint8_t dst[w * h * 4];
+    std::memcpy(dst, dst0, sizeof(dst));
+    CompRenderer *r = compositor_renderer_create(1, nullptr);
+    if (!r) return 1;
+    int rc = compositor_render_rgba(r, src, dst, w, h);
+    compositor_renderer_close(r);
+    if (rc != 0) { std::fprintf(stderr, "partial_alpha rc=%d\n", rc); return 1; }
+    for (size_t i = 0; i < sizeof(dst); ++i) {
+        const int diff = static_cast<int>(dst[i]) - static_cast<int>(expected[i]);
+        if (diff < -1 || diff > 1) {  // Skia may round differently by 1
+            std::fprintf(stderr,
+                "partial_alpha byte %zu = %d, expected %d (source-over, not a copy)\n",
+                i, dst[i], expected[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int test_vulkan_device_creation_and_device_lost_fallback() {
     CompRendererKind kind = COMP_RENDERER_RASTER;
     CompRenderer *r = compositor_renderer_create(0, &kind);
@@ -140,6 +176,7 @@ int main() {
     failures += test_renderer_factory_raster();
     failures += test_vulkan_enumerate_no_crash();
     failures += test_render_rgba_source_over();
+    failures += test_render_rgba_partial_alpha_over_nonempty_dst();
     failures += test_vulkan_device_creation_and_device_lost_fallback();
     if (failures) {
         std::fprintf(stderr, "SkiaBridge smoke: %d FAILURE(S)\n", failures);
