@@ -35,6 +35,7 @@ private struct Command: Decodable {
     var x: Double?
     var y: Double?
     var parameters: [String: Double]?
+    var points: [[Double]]?
 }
 
 private struct State: Encodable {
@@ -77,9 +78,19 @@ final class UpstreamEditor {
     static let supportedActions: Set<String> = [
         "new", "addLayer", "addGroup", "groupSelectedLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
         "setOpacity", "setBlendMode", "setSelectedOpacity", "cycleBlendMode", "flipLayer", "flipCanvas", "undo", "redo",
+        "addRevealMask", "addHideMask", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
+        "selectRectangle", "selectEllipse", "selectLasso", "deselect", "expandSelection", "contractSelection",
+        "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
+        "duplicateLayer", "layerViaCopy",
     ]
 
+    /// Synchronous entry for the C ABI (called from the Qt main thread): runs `commandAsync`, pumping the run loop while
+    /// upstream's async operations finish. Must not be called from inside a main-actor job (tests use `commandAsync`).
     func command(_ json: Data) -> Int32 {
+        awaitOnMain { [self] in await commandAsync(json) }
+    }
+
+    func commandAsync(_ json: Data) async -> Int32 {
         guard let command = try? JSONDecoder().decode(Command.self, from: json) else { error = "Invalid command JSON"; return -1 }
         guard command.version == 1 else { error = "Unsupported command version"; return -4 }
         let s = session
@@ -120,6 +131,53 @@ final class UpstreamEditor {
         case "flipCanvas": s.flipCanvas(horizontally: command.horizontally ?? true)
         case "undo": s.undo()
         case "redo": s.redo()
+        case "addRevealMask", "addHideMask":
+            guard s.activeLayer != nil else { return fail(-5, "no layer") }
+            s.addLayerMask(revealing: command.action == "addRevealMask")
+        case "deleteMask": s.deleteLayerMask()
+        case "setMaskEnabled":
+            guard let enabled = command.enabled, let mask = s.activeLayer?.mask else { return fail(-1, "no mask") }
+            if mask.isEnabled != enabled { s.toggleLayerMask() }
+        case "setMaskLinked":
+            guard let linked = command.enabled, let layer = s.activeLayer, let mask = layer.mask else { return fail(-1, "no mask") }
+            if mask.isLinked != linked { s.toggleMaskLink(layer.id) }
+        case "moveLayer":
+            guard let dx = command.x, let dy = command.y, dx.isFinite, dy.isFinite, s.activeLayer != nil else { return fail(-1, "delta required") }
+            s.nudgeLayer(dx: CGFloat(dx), dy: CGFloat(dy))
+        case "selectRectangle", "selectEllipse":
+            guard s.document != nil else { return fail(-2, "no document") }
+            guard let x = command.x, let y = command.y, let width = command.width, let height = command.height,
+                  [x, y].allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }), (0...30_000).contains(width), (0...30_000).contains(height)
+            else { return fail(-1, "invalid rectangle") }
+            let rect = CGRect(x: x, y: y, width: CGFloat(width), height: CGFloat(height))
+            select(command.action == "selectEllipse" ? CGPath(ellipseIn: rect, transform: nil) : CGPath(rect: rect, transform: nil),
+                   mode: SelectionMode(rawValue: command.kind ?? "New") ?? .replace)
+        case "selectLasso":
+            guard s.document != nil else { return fail(-2, "no document") }
+            guard let list = command.points, list.count >= 3 else { return fail(-1, "lasso needs 3+ points") }
+            let points = list.compactMap { $0.count == 2 && $0[0].isFinite && $0[1].isFinite ? CGPoint(x: $0[0], y: $0[1]) : nil }
+            guard points.count == list.count else { return fail(-1, "invalid point") }
+            let path = CGMutablePath()
+            path.addLines(between: points); path.closeSubpath()
+            select(path, mode: SelectionMode(rawValue: command.kind ?? "New") ?? .replace)
+        case "deselect": s.deselect()
+        case "expandSelection": s.expandSelection(by: Int(command.parameters?["amount"] ?? 1))
+        case "contractSelection": s.contractSelection(by: Int(command.parameters?["amount"] ?? 1))
+        case "fillForeground", "fillBackground":
+            let background = command.action == "fillBackground"
+            let p = command.parameters ?? [:]
+            if p["red"] != nil || p["green"] != nil || p["blue"] != nil {
+                s.setPaletteColor(PaletteColor(red: p["red"] ?? 0, green: p["green"] ?? 0, blue: p["blue"] ?? 0), background: background)
+            }
+            await s.fillSelection(with: background ? .background : .foreground)
+        case "clearSelection": await s.clearSelectedPixels()
+        case "invert": await s.invertPixels()
+        case "copy": s.copySelection()
+        case "copyMerged": s.copyMergedSelection()
+        case "cut": await s.cutSelection()
+        case "paste": s.paste()
+        case "duplicateLayer": s.duplicateActiveLayer()
+        case "layerViaCopy": s.layerViaCopy()
         default:
             return fail(-7, "Unsupported by the upstream bridge yet: \(command.action)")
         }
@@ -128,6 +186,11 @@ final class UpstreamEditor {
     }
 
     private func fail(_ code: Int32, _ message: String) -> Int32 { error = message; return code }
+
+    private func select(_ path: CGPath, mode: SelectionMode) {
+        if mode == .replace { session.setSelection(DocumentSelection(path: path), name: "Select") }
+        else { session.applySelection(path, mode: mode, name: "Select") }
+    }
 
     func stateJSON() throws -> Data {
         let s = session

@@ -11,7 +11,7 @@ struct BridgeParityTests {
     private struct Side {
         var importPixels: ([UInt8], Int, Int, Bool) -> Int32
         var render: () -> [UInt8]
-        var send: (String) -> Int32
+        var send: (String) async -> Int32
         var state: () -> [String: Any]
         var layerIDs: () -> [String]
     }
@@ -46,18 +46,21 @@ struct BridgeParityTests {
         }
         return Side(importPixels: { editor.importRGBA($0, width: $1, height: $2, name: "Imported", replacing: $3) },
                     render: { (try? editor.renderRGBA().bytes) ?? [] },
-                    send: { editor.command(Data($0.utf8)) }, state: state,
+                    send: { await editor.commandAsync(Data($0.utf8)) }, state: state,
                     layerIDs: { ((state()["layers"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String } })
     }
 
     /// "select:N" is resolved to the Nth layer's id on each side; anything else is sent as is.
-    private func run(_ steps: [String], on side: Side) -> [Int32] {
-        steps.map { step in
+    private func run(_ steps: [String], on side: Side) async -> [Int32] {
+        var codes: [Int32] = []
+        for step in steps {
             if step.hasPrefix("select:"), let index = Int(step.dropFirst(7)), side.layerIDs().indices.contains(index) {
-                return side.send(#"{"version":1,"action":"selectLayer","layerID":"\#(side.layerIDs()[index])"}"#)
+                codes.append(await side.send(#"{"version":1,"action":"selectLayer","layerID":"\#(side.layerIDs()[index])"}"#))
+            } else {
+                codes.append(await side.send(step))
             }
-            return side.send(step)
         }
+        return codes
     }
 
     /// The state with layer ids replaced by their index, so two sessions can be compared.
@@ -84,9 +87,9 @@ struct BridgeParityTests {
         (try? String(data: JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]), encoding: .utf8)) ?? "?"
     }
 
-    private func check(_ name: String, _ steps: [String]) {
+    private func check(_ name: String, _ steps: [String]) async {
         let fork = forkSide(), upstream = upstreamSide()
-        let forkCodes = run(steps, on: fork), upstreamCodes = run(steps, on: upstream)
+        let forkCodes = await run(steps, on: fork), upstreamCodes = await run(steps, on: upstream)
         #expect(forkCodes == upstreamCodes, "\(name): return codes \(forkCodes) vs \(upstreamCodes)")
         let a = normalized(fork), b = normalized(upstream)
         #expect(canonical(a) == canonical(b), "\(name):\n fork:     \(canonical(a))\n upstream: \(canonical(b))")
@@ -96,27 +99,27 @@ struct BridgeParityTests {
         #"{"version":1,"action":"\#(action)"\#(fields.isEmpty ? "" : "," + fields)}"#
     }
 
-    @Test func newDocumentAndLayers() {
-        check("new", [cmd("new", #""width":120,"height":80"#)])
-        check("layers", [cmd("new", #""width":120,"height":80"#), cmd("addLayer"), cmd("addLayer"), cmd("addGroup")])
-        check("undo redo", [cmd("new", #""width":50,"height":40"#), cmd("addLayer"), cmd("addLayer"), cmd("undo"), cmd("redo"), cmd("undo")])
-        check("no document", [cmd("addLayer"), cmd("undo")])
+    @Test func newDocumentAndLayers() async {
+        await check("new", [cmd("new", #""width":120,"height":80"#)])
+        await check("layers", [cmd("new", #""width":120,"height":80"#), cmd("addLayer"), cmd("addLayer"), cmd("addGroup")])
+        await check("undo redo", [cmd("new", #""width":50,"height":40"#), cmd("addLayer"), cmd("addLayer"), cmd("undo"), cmd("redo"), cmd("undo")])
+        await check("no document", [cmd("addLayer"), cmd("undo")])
     }
 
-    @Test func layerProperties() {
+    @Test func layerProperties() async {
         let base = [cmd("new", #""width":60,"height":40"#), cmd("addLayer"), cmd("addLayer")]
-        check("rename", base + [cmd("renameLayer", #""name":"Sky""#)])
-        check("visible", base + [cmd("setVisible", #""enabled":false"#), cmd("setVisible", #""enabled":true"#), cmd("setVisible", #""enabled":false"#)])
-        check("opacity", base + [cmd("setOpacity", #""value":0.4"#)])
-        check("blend", base + [cmd("setBlendMode", #""kind":"Multiply""#), cmd("cycleBlendMode"), cmd("cycleBlendMode", #""forward":false"#)])
-        check("select and delete", base + ["select:0", cmd("deleteLayer")])
-        check("flip", base + [cmd("flipLayer"), cmd("flipCanvas", #""horizontally":false"#)])
+        await check("rename", base + [cmd("renameLayer", #""name":"Sky""#)])
+        await check("visible", base + [cmd("setVisible", #""enabled":false"#), cmd("setVisible", #""enabled":true"#), cmd("setVisible", #""enabled":false"#)])
+        await check("opacity", base + [cmd("setOpacity", #""value":0.4"#)])
+        await check("blend", base + [cmd("setBlendMode", #""kind":"Multiply""#), cmd("cycleBlendMode"), cmd("cycleBlendMode", #""forward":false"#)])
+        await check("select and delete", base + ["select:0", cmd("deleteLayer")])
+        await check("flip", base + [cmd("flipLayer"), cmd("flipCanvas", #""horizontally":false"#)])
     }
 
-    @Test func groupingAndSelectedOpacity() {
+    @Test func groupingAndSelectedOpacity() async {
         let base = [cmd("new", #""width":60,"height":40"#), cmd("addLayer"), cmd("addLayer")]
-        check("group selected", base + ["select:0", cmd("groupSelectedLayers")])
-        check("selected opacity", base + [cmd("setSelectedOpacity", #""value":0.5"#)])
+        await check("group selected", base + ["select:0", cmd("groupSelectedLayers")])
+        await check("selected opacity", base + [cmd("setSelectedOpacity", #""value":0.5"#)])
     }
 
     /// Premultiplied test pattern: opaque left half, half-transparent right half, with a colour gradient.
@@ -130,7 +133,7 @@ struct BridgeParityTests {
         return bytes
     }
 
-    @Test func importedPixelsRenderTheSame() {
+    @Test func importedPixelsRenderTheSame() async {
         let w = 32, h = 24
         let fork = forkSide(), upstream = upstreamSide()
         #expect(fork.importPixels(pattern(w, h), w, h, true) == 0)
@@ -144,8 +147,8 @@ struct BridgeParityTests {
         // A second import adds a centred layer, and opacity/blend/visibility change the composite the same way.
         for side in [fork, upstream] {
             _ = side.importPixels(pattern(16, 12), 16, 12, false)
-            _ = side.send(cmd("setOpacity", #""value":0.5"#))
-            _ = side.send(cmd("setBlendMode", #""kind":"Multiply""#))
+            _ = await side.send(cmd("setOpacity", #""value":0.5"#))
+            _ = await side.send(cmd("setBlendMode", #""kind":"Multiply""#))
         }
         #expect(canonical(normalized(fork)) == canonical(normalized(upstream)))
         let c = fork.render(), d = upstream.render()
@@ -154,35 +157,84 @@ struct BridgeParityTests {
         #expect(c.count == d.count && second <= 1, "renders differ by up to \(second)")
     }
 
-    @Test func invalidInputIsRefusedTheSameWay() {
+    /// Runs `steps` on both bridges after importing the same pattern, then compares state and rendered pixels.
+    private func checkRendered(_ name: String, _ steps: [String], tolerance: Int = 1) async {
+        let w = 40, h = 30
+        let fork = forkSide(), upstream = upstreamSide()
+        for side in [fork, upstream] { _ = side.importPixels(pattern(w, h), w, h, true) }
+        let forkCodes = await run(steps, on: fork), upstreamCodes = await run(steps, on: upstream)
+        #expect(forkCodes == upstreamCodes, "\(name): return codes \(forkCodes) vs \(upstreamCodes)")
+        #expect(canonical(normalized(fork)) == canonical(normalized(upstream)), "\(name): state differs\n fork: \(canonical(normalized(fork)))\n upstream: \(canonical(normalized(upstream)))")
+        let a = fork.render(), b = upstream.render()
+        var largest = 0
+        for i in a.indices where i < b.count { largest = max(largest, abs(Int(a[i]) - Int(b[i]))) }
+        #expect(a.count == b.count && largest <= tolerance, "\(name): renders differ by up to \(largest) (sizes \(a.count)/\(b.count))")
+    }
+
+    @Test func masksMoveAndSelection() async {
+        await checkRendered("hide mask", [cmd("addHideMask")])
+        await checkRendered("reveal mask off", [cmd("addRevealMask"), cmd("setMaskEnabled", #""enabled":false"#)])
+        await checkRendered("delete mask", [cmd("addHideMask"), cmd("deleteMask")])
+        await checkRendered("move", [cmd("moveLayer", #""x":5,"y":-3"#)])
+        await checkRendered("select rect", [cmd("selectRectangle", #""x":4,"y":4,"width":20,"height":12"#)])
+        await checkRendered("select ellipse add", [cmd("selectRectangle", #""x":2,"y":2,"width":16,"height":16"#),
+                                                   cmd("selectEllipse", #""x":10,"y":8,"width":20,"height":16,"kind":"Add""#)])
+        await checkRendered("lasso", [cmd("selectLasso", #""points":[[2,2],[30,4],[20,26]]"#), cmd("deselect")])
+    }
+
+    @Test func fillsInvertCopyPaste() async {
+        let rect = cmd("selectRectangle", #""x":6,"y":5,"width":18,"height":14"#)
+        await checkRendered("fill", [rect, cmd("fillForeground", #""parameters":{"red":1,"green":0.2,"blue":0}"#)])
+        await checkRendered("clear", [rect, cmd("clearSelection")])
+        await checkRendered("invert whole", [cmd("invert")])
+        await checkRendered("invert selected", [rect, cmd("invert")])
+        await checkRendered("duplicate", [cmd("duplicateLayer"), cmd("moveLayer", #""x":7,"y":4"#)])
+        await checkRendered("layer via copy", [rect, cmd("layerViaCopy"), cmd("moveLayer", #""x":9,"y":2"#)])
+        await checkRendered("copy paste", [rect, cmd("copy"), cmd("paste")])
+    }
+
+    /// Upstream's cut is copy then clear (Cmd-X). The fork's differed (it cropped the layer to the selection), so cut is
+    /// checked against upstream's own copy + clear rather than against the fork.
+    @Test func cutIsCopyThenClear() async throws {
+        let w = 40, h = 30
+        let cut = upstreamSide(), reference = upstreamSide()
+        for side in [cut, reference] { _ = side.importPixels(pattern(w, h), w, h, true) }
+        let rect = cmd("selectRectangle", #""x":6,"y":5,"width":18,"height":14"#)
+        for step in [rect, cmd("cut")] { _ = await cut.send(step) }
+        for step in [rect, cmd("copy"), cmd("clearSelection")] { _ = await reference.send(step) }
+        #expect(cut.render() == reference.render())
+        #expect(canonical(normalized(cut)) == canonical(normalized(reference)))
+    }
+
+    @Test func invalidInputIsRefusedTheSameWay() async {
         // Same document state (none). The code differs on purpose: upstream reports "invalid argument" (-1) where the
         // fork's generic failure was -5.
         let fork = forkSide(), upstream = upstreamSide()
         let steps = [cmd("new", #""width":0,"height":10"#), cmd("new", #""width":40000,"height":10"#)]
-        #expect(run(steps, on: fork).allSatisfy { $0 != 0 })
-        #expect(run(steps, on: upstream) == [-1, -1])
+        #expect(await run(steps, on: fork).allSatisfy { $0 != 0 })
+        #expect(await run(steps, on: upstream) == [-1, -1])
         #expect(canonical(normalized(fork)) == canonical(normalized(upstream)))
-        check("bad version", [#"{"version":2,"action":"new","width":10,"height":10}"#])
+        await check("bad version", [#"{"version":2,"action":"new","width":10,"height":10}"#])
     }
 
     /// Documented divergences from the fork: upstream's history is what the shell should show.
-    @Test func historyFollowsUpstream() throws {
+    @Test func historyFollowsUpstream() async throws {
         let editor = UpstreamEditor()
-        _ = editor.command(Data(cmd("new", #""width":50,"height":40"#).utf8))
-        _ = editor.command(Data(cmd("addLayer").utf8))
-        _ = editor.command(Data(cmd("setOpacity", #""value":0.5"#).utf8))
+        _ = await editor.commandAsync(Data(cmd("new", #""width":50,"height":40"#).utf8))
+        _ = await editor.commandAsync(Data(cmd("addLayer").utf8))
+        _ = await editor.commandAsync(Data(cmd("setOpacity", #""value":0.5"#).utf8))
         var state = try #require(JSONSerialization.jsonObject(with: try editor.stateJSON()) as? [String: Any])
         #expect(state["undoName"] as? String == "Layer Opacity")
         #expect(state["canUndo"] as? Bool == true)
-        _ = editor.command(Data(cmd("undo").utf8))
-        _ = editor.command(Data(cmd("undo").utf8))
-        _ = editor.command(Data(cmd("undo").utf8))   // File > New is undoable upstream
+        _ = await editor.commandAsync(Data(cmd("undo").utf8))
+        _ = await editor.commandAsync(Data(cmd("undo").utf8))
+        _ = await editor.commandAsync(Data(cmd("undo").utf8))   // File > New is undoable upstream
         state = try #require(JSONSerialization.jsonObject(with: try editor.stateJSON()) as? [String: Any])
         #expect(state["canUndo"] as? Bool == false && state["redoName"] as? String == "New Canvas")
     }
 
-    @Test func unsupportedCommandsAreReportedNotIgnored() {
+    @Test func unsupportedCommandsAreReportedNotIgnored() async {
         let editor = UpstreamEditor()
-        #expect(editor.command(Data(cmd("brushBegin").utf8)) == -7)
+        #expect(await editor.commandAsync(Data(cmd("brushBegin").utf8)) == -7)
     }
 }
