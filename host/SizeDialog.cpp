@@ -1,5 +1,5 @@
 #include "EditorDialogs.h"
-#include "ColorPickerDialog.h"
+#include "QtPlatformServices.h"
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -51,7 +51,8 @@ struct SizeDraft {
 };
 }
 
-SizeDialog::SizeDialog(const QJsonObject &state, bool imageSize, QWidget *parent) : QDialog(parent) {
+SizeDialog::SizeDialog(const QJsonObject &state, bool imageSize, QWidget *parent, std::shared_ptr<IColorPickerService> colors) : QDialog(parent) {
+    if (!colors) colors = PlatformServices::qtDefaults().colors;
     setObjectName("sizeDialog");
     setWindowTitle(imageSize ? tr("Image Size") : tr("Canvas Size"));
     auto draft = std::make_shared<SizeDraft>();
@@ -151,7 +152,7 @@ SizeDialog::SizeDialog(const QJsonObject &state, bool imageSize, QWidget *parent
     });
     connect(extension, &QComboBox::currentIndexChanged, this, [=](int v) { color->setEnabled(v == 3); });
     connect(color, &QPushButton::clicked, this, [=] {
-        const QColor selected = ColorPickerDialog::getColor(draft->fill, this, tr("Canvas extension"));
+        const QColor selected = colors->pick(draft->fill, tr("Canvas extension"));
         if (selected.isValid()) draft->fill = selected;
     });
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);

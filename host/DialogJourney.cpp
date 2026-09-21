@@ -3,6 +3,7 @@
 #include "SessionWindow.h"
 #include "EditorDialogs.h"
 #include "compositor_host_run.h"
+#include "interfaces/IPlatformServices.h"
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -22,6 +23,8 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QTemporaryDir>
+#include <QFileInfo>
+#include <QDir>
 #include <QTimer>
 #include <QColor>
 #include <QDebug>
@@ -69,6 +72,32 @@ void undo(SessionWindow &window) {
     }
     throw std::runtime_error("undo action missing");
 }
+}
+
+
+// Test doubles for the platform seams (Dependency Inversion): the shell must run
+// against these with no Qt file dialog, message box, clipboard or app-data lookup.
+namespace {
+struct FakeFiles final : IFileDialogService {
+    QString exportPath, openImagePath;
+    QString chooseImageToOpen() override { return openImagePath; }
+    QString chooseProjectToOpen() override { return {}; }
+    QString chooseProjectSavePath() override { return {}; }
+    QString chooseExportPath(const QString &, const QString &) override { return exportPath; }
+};
+struct FakeClipboard final : IClipboardService {
+    QImage stored;
+    void setImage(const QImage &image) override { stored = image; }
+    QImage image() const override { return stored; }
+};
+struct FakeNotifier final : IUserNotifier {
+    QStringList warnings;
+    void warn(const QString &title, const QString &) override { warnings << title; }
+};
+struct FakeStorage final : IStorageLocator {
+    QString root;
+    QString appDataDirectory() const override { return root; }
+};
 }
 
 extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
@@ -185,6 +214,32 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
         require(window.recoverAutosave(), "recoverAutosave failed");
         window.clearAutosave();
         require(!window.hasAutosaveRecovery(), "hasAutosaveRecovery true after clearAutosave");
+        // Platform seams: the shell runs entirely against injected fakes.
+        {
+            auto files = std::make_shared<FakeFiles>();
+            auto clipboard = std::make_shared<FakeClipboard>();
+            auto notifier = std::make_shared<FakeNotifier>();
+            auto storage = std::make_shared<FakeStorage>();
+            storage->root = temporary.filePath("appdata");
+            PlatformServices services;
+            services.files = files; services.clipboard = clipboard; services.notifier = notifier; services.storage = storage;
+            SessionWindow injected(nullptr, services);
+            auto action = [&](const QString &text) -> QAction * {
+                for (QAction *a : injected.findChildren<QAction *>()) if (a->text().remove('&') == text) return a;
+                require(false, "menu action missing"); return nullptr;
+            };
+            files->exportPath = temporary.filePath("injected.png");
+            action("Export PNG...")->trigger();
+            require(QFileInfo::exists(files->exportPath), "export did not use the injected file dialog");
+            require(notifier->warnings.isEmpty(), "unexpected warning on a successful export");
+            files->exportPath = temporary.filePath("missing-dir/injected.png");
+            action("Export PNG...")->trigger();
+            require(notifier->warnings.size() == 1, "failed export did not reach the injected notifier");
+            action("Copy")->trigger();
+            require(!clipboard->stored.isNull(), "copy did not reach the injected clipboard");
+            require(injected.performAutosave(), "autosave failed against the injected storage");
+            require(QDir(temporary.filePath("appdata/recovery")).exists(), "autosave ignored the injected storage locator");
+        }
         qInfo("Qt dialog journey OK (resize, resolution, cancel, preview, commit, undo, command palette, autosave, save/reopen)");
         return 0;
     } catch (const std::exception &e) {

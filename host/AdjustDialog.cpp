@@ -1,5 +1,5 @@
 #include "EditorDialogs.h"
-#include "ColorPickerDialog.h"
+#include "QtPlatformServices.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -288,7 +288,9 @@ protected:
     }
 };
 
-AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, HistogramProvider histogram) : QDialog(parent) {
+AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, HistogramProvider histogram,
+                           std::shared_ptr<IColorPickerService> colors) : QDialog(parent) {
+    if (!colors) colors = PlatformServices::qtDefaults().colors;
     setObjectName("adjustDialog"); setWindowTitle(kind);
     setMinimumWidth(kind == "Levels" ? 340 : 360);
     auto *layout = new QVBoxLayout(this);
@@ -570,7 +572,7 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, 
         };
         auto pick = [=](QPushButton *btn, QColor *target) {
             connect(btn, &QPushButton::clicked, this, [=] {
-                const QColor chosen = ColorPickerDialog::getColor(*target, this, btn->text());
+                const QColor chosen = colors->pick(*target, btn->text());
                 if (chosen.isValid()) { *target = chosen; paint(btn, chosen); emitSettings(); }
             });
         };

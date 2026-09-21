@@ -6,7 +6,7 @@
 #include "ImageExporters.h"
 #include "TabletHandler.h"
 #include "LayerItemDelegate.h"
-#include "ColorPickerDialog.h"
+#include "QtPlatformServices.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -19,7 +19,6 @@
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QUrl>
-#include <QFileDialog>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QComboBox>
@@ -48,7 +47,6 @@
 #include <QToolBar>
 #include <QActionGroup>
 #include <QTimer>
-#include <QStandardPaths>
 #include <QDateTime>
 #include <QCloseEvent>
 #include <QStackedWidget>
@@ -247,7 +245,8 @@ static QIcon makeToolIcon(SessionWindow::Tool tool) {
     return QIcon(pix);
 }
 
-SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
+SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
+    : QMainWindow(parent), m_platform(services.withDefaults()) {
     setWindowTitle("Compositor");
     resize(1200, 800);
     setAcceptDrops(true);
@@ -287,33 +286,32 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         }
     });
     file->addAction(tr("&Open Image..."), QKeySequence::Open, this, [this] {
-        const QString path = QFileDialog::getOpenFileName(this, tr("Open Image"), QString(),
-            tr("Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp);;All files (*)"));
-        if (!path.isEmpty() && !importImage(path)) QMessageBox::warning(this, tr("Open failed"), tr("Could not open image."));
+        const QString path = m_platform.files->chooseImageToOpen();
+        if (!path.isEmpty() && !importImage(path)) m_platform.notifier->warn(tr("Open failed"), tr("Could not open image."));
     });
     file->addAction(tr("Open &Project..."), this, [this] {
-        const QString path = QFileDialog::getExistingDirectory(this, tr("Open Project"));
-        if (!path.isEmpty() && !loadProject(path)) QMessageBox::warning(this, tr("Open failed"), tr("Could not open project."));
+        const QString path = m_platform.files->chooseProjectToOpen();
+        if (!path.isEmpty() && !loadProject(path)) m_platform.notifier->warn(tr("Open failed"), tr("Could not open project."));
     });
     file->addAction(tr("Save Project &As..."), QKeySequence::Save, this, [this] {
-        const QString path = QFileDialog::getSaveFileName(this, tr("Save Project"), QString(), tr("Compositor project (*.comp);;All files (*)"));
-        if (!path.isEmpty() && !saveProject(path)) QMessageBox::warning(this, tr("Save failed"), tr("Could not save project."));
+        const QString path = m_platform.files->chooseProjectSavePath();
+        if (!path.isEmpty() && !saveProject(path)) m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
     });
     file->addAction(tr("Export &PNG..."), this, [this] {
-        const QString path = QFileDialog::getSaveFileName(this, tr("Export PNG"), QString(), tr("PNG (*.png)"));
-        if (!path.isEmpty() && !exportPNG(path)) QMessageBox::warning(this, tr("Export failed"), tr("Could not export PNG."));
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("PNG"), tr("PNG (*.png)"));
+        if (!path.isEmpty() && !exportPNG(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export PNG."));
     });
     file->addAction(tr("Export &JPEG..."), this, [this] {
-        const QString path = QFileDialog::getSaveFileName(this, tr("Export JPEG"), QString(), tr("JPEG (*.jpg *.jpeg)"));
-        if (!path.isEmpty() && !exportJPEG(path)) QMessageBox::warning(this, tr("Export failed"), tr("Could not export JPEG."));
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("JPEG"), tr("JPEG (*.jpg *.jpeg)"));
+        if (!path.isEmpty() && !exportJPEG(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export JPEG."));
     });
     file->addAction(tr("Export &TIFF..."), this, [this] {
-        const QString path = QFileDialog::getSaveFileName(this, tr("Export TIFF"), QString(), tr("TIFF (*.tiff *.tif)"));
-        if (!path.isEmpty() && !exportTIFF(path)) QMessageBox::warning(this, tr("Export failed"), tr("Could not export TIFF."));
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("TIFF"), tr("TIFF (*.tiff *.tif)"));
+        if (!path.isEmpty() && !exportTIFF(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export TIFF."));
     });
     file->addAction(tr("Export &WebP..."), this, [this] {
-        const QString path = QFileDialog::getSaveFileName(this, tr("Export WebP"), QString(), tr("WebP (*.webp)"));
-        if (!path.isEmpty() && !exportWebP(path)) QMessageBox::warning(this, tr("Export failed"), tr("Could not export WebP."));
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("WebP"), tr("WebP (*.webp)"));
+        if (!path.isEmpty() && !exportWebP(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export WebP."));
     });
     file->addSeparator();
     file->addAction(tr("&Quit"), QKeySequence::Quit, this, &QWidget::close);
@@ -329,7 +327,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     edit->addAction(tr("&Copy"), QKeySequence::Copy, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0) {
             if (!m_image.isNull()) {
-                QGuiApplication::clipboard()->setImage(m_image);
+                m_platform.clipboard->setImage(m_image);
             }
             statusBar()->showMessage(tr("Copied to clipboard."), 1500);
         }
@@ -337,7 +335,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     edit->addAction(tr("Copy &Merged"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0) {
             if (!m_image.isNull()) {
-                QGuiApplication::clipboard()->setImage(m_image);
+                m_platform.clipboard->setImage(m_image);
             }
             statusBar()->showMessage(tr("Copied merged to clipboard."), 1500);
         }
@@ -346,10 +344,8 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"cut"})") == 0) refreshImage();
     });
     edit->addAction(tr("&Paste"), QKeySequence::Paste, this, [this] {
-        const QClipboard *clipboard = QGuiApplication::clipboard();
-        const QMimeData *mime = clipboard ? clipboard->mimeData() : nullptr;
-        if (mime && mime->hasImage()) {
-            QImage img = qvariant_cast<QImage>(mime->imageData());
+        {
+            const QImage img = m_platform.clipboard->image();
             if (!img.isNull()) {
                 QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
                 std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
@@ -1238,7 +1234,7 @@ QStringList SessionWindow::blendModes() const {
 }
 
 void SessionWindow::pickBrushColor() {
-    const QColor color = ColorPickerDialog::getColor(m_brushColor, this, tr("Brush color"));
+    const QColor color = m_platform.colors->pick(m_brushColor, tr("Brush color"));
     if (color.isValid()) setBrushColor(color);
 }
 
@@ -1879,11 +1875,7 @@ void SessionWindow::deleteSelectedLayers() {
 }
 
 QString SessionWindow::autosaveDirectory() const {
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (dir.isEmpty()) {
-        dir = QDir::tempPath() + "/Compositor";
-    }
-    return dir + "/recovery";
+    return m_platform.storage->appDataDirectory() + "/recovery";
 }
 
 bool SessionWindow::hasAutosaveRecovery() const {

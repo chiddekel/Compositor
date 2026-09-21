@@ -22,6 +22,7 @@
 #include <QStringList>
 #include <QPointF>
 #include <QJsonObject>
+#include "interfaces/IPlatformServices.h"
 
 class QTreeView;
 class QStandardItemModel;
@@ -50,7 +51,8 @@ class SessionWindow : public QMainWindow {
     Q_OBJECT
 
 public:
-    explicit SessionWindow(QWidget *parent = nullptr);
+    // Platform services are injected (DIP); omitted members fall back to the Qt implementations.
+    explicit SessionWindow(QWidget *parent = nullptr, PlatformServices services = {});
     ~SessionWindow() override;
 
     // File operations (IO milestone)
@@ -189,6 +191,7 @@ private:
     QLabel *m_statusProfileLabel = nullptr;
     QLabel *m_statusHintsLabel = nullptr;
     double m_zoomLevel = 0.0;
+    PlatformServices m_platform;
 
     // Move / Transform tool state. Geometry is in document pixels; rotation in degrees.
 public:

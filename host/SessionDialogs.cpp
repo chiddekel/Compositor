@@ -8,11 +8,11 @@
 void SessionWindow::showSizeDialog(bool imageSize) {
     const QJsonObject state = sessionState();
     if (state.value("busy").toBool() || state.value("width").toInt() <= 0) return;
-    SizeDialog dialog(state, imageSize, this);
+    SizeDialog dialog(state, imageSize, this, m_platform.colors);
     // Failed allocation/validation leaves the dialog open and the document intact.
     while (dialog.exec() == QDialog::Accepted) {
         if (sendCommand(dialog.command())) { refreshImage(); return; }
-        QMessageBox::warning(&dialog, tr("Resize failed"), sessionState().value("error").toString());
+        m_platform.notifier->warn(tr("Resize failed"), sessionState().value("error").toString());
     }
 }
 
@@ -53,7 +53,7 @@ void SessionWindow::showAdjustDialog(const QString &kind) {
         const bool ok = sendCommand(command);
         refreshImage();
         return ok;
-    }, this, [bins](int channel) { return (*bins)[qBound(0, channel, 3)]; });
+    }, this, [bins](int channel) { return (*bins)[qBound(0, channel, 3)]; }, m_platform.colors);
     if (dialog.exec() == QDialog::Rejected) {
         // Discard the newly created adjustment layer on cancel (R26)
         sendCommand({{"action", "undo"}});

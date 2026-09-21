@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QJsonObject>
+#include "interfaces/IPlatformServices.h"
 #include <functional>
 #include <vector>
 
@@ -9,7 +10,9 @@
 // They depend on callbacks, not the Swift ABI or SessionWindow.
 class SizeDialog final : public QDialog {
 public:
-    SizeDialog(const QJsonObject &state, bool imageSize, QWidget *parent = nullptr);
+    // `colors` is the injected colour-choice service (defaults to the Qt picker).
+    SizeDialog(const QJsonObject &state, bool imageSize, QWidget *parent = nullptr,
+               std::shared_ptr<IColorPickerService> colors = nullptr);
     QJsonObject command() const;
 private:
     std::function<QJsonObject()> m_command;
@@ -26,7 +29,8 @@ public:
     using Submit = std::function<bool(const QJsonObject &)>;
     // Returns 256 bins for a channel (0 = RGB, 1 = R, 2 = G, 3 = B) of the pixels the adjustment starts from.
     using HistogramProvider = std::function<std::vector<double>(int channel)>;
-    AdjustDialog(const QString &kind, Submit submit, QWidget *parent = nullptr, HistogramProvider histogram = nullptr);
+    AdjustDialog(const QString &kind, Submit submit, QWidget *parent = nullptr, HistogramProvider histogram = nullptr,
+                 std::shared_ptr<IColorPickerService> colors = nullptr);
 };
 
 class SessionWindow;
