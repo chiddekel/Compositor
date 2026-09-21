@@ -1,9 +1,7 @@
 #include "AdjustPixels.h"
-#include "CompositorKernels.h"
 #include <math.h>
 
 void adjust_gradient_map(uint8_t *rgba, size_t width, size_t height, size_t stride, const uint8_t *table) {
-    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
     for (size_t y = 0; y < height; y++) {
         uint8_t *p = rgba + y * stride;
         for (size_t x = 0; x < width; x++, p += 4) {
@@ -47,7 +45,6 @@ static inline float clamp255(float value) { return value < 0 ? 0 : value > 255 ?
 
 void adjust_grain(uint8_t *rgba, size_t width, size_t height, size_t stride, double amount, double size,
                   double roughness, uint32_t seed, double originX, double originY, double unitsPerPixel) {
-    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
     if (!(amount > 0) || !(unitsPerPixel > 0)) return;
     if (!(size > 0)) size = 1;
     float strength = (float)(amount > 100 ? 1.0 : amount / 100.0) * 0.35f * 255.0f;

@@ -7,6 +7,17 @@ open class NSItemProvider {
     /// Representations by type identifier, already resolved (Qt hands over data, not lazy providers).
     public var representations: [String: Data]
     public init(representations: [String: Data] = [:]) { self.representations = representations }
+    /// `NSItemProvider(item:typeIdentifier:)`: a URL becomes its absolute string, `Data` is kept as is.
+    public convenience init(item: NSSecureCoding?, typeIdentifier: String?) {
+        var reps: [String: Data] = [:]
+        if let typeIdentifier {
+            if let url = item as? URL { reps[typeIdentifier] = Data(url.absoluteString.utf8) }
+            else if let nsurl = item as? NSURL { reps[typeIdentifier] = Data((nsurl.absoluteString ?? "").utf8) }
+            else if let data = item as? Data { reps[typeIdentifier] = data }
+            else if let nsdata = item as? NSData { reps[typeIdentifier] = nsdata as Data }
+        }
+        self.init(representations: reps)
+    }
     public var registeredTypeIdentifiers: [String] { Array(representations.keys) }
 
     public func hasItemConformingToTypeIdentifier(_ identifier: String) -> Bool {

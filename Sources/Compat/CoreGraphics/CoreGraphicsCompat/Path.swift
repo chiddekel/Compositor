@@ -27,7 +27,7 @@ public struct CGPathElement {
     }
 }
 
-enum PathSegment: Equatable {
+public enum PathSegment: Equatable {
     case move(CGPoint)
     case line(CGPoint)
     case quad(CGPoint, CGPoint)
@@ -36,6 +36,13 @@ enum PathSegment: Equatable {
 }
 
 // MARK: - Skia path ABI (optional; resolved at runtime like CompCanvasBridge)
+
+enum SkiaContextABI {
+    typealias CreateEx = @convention(c) (UnsafeMutablePointer<UInt8>?, Int, Int, Int, Int32) -> OpaquePointer?
+    typealias DrawImageEx = @convention(c) (OpaquePointer?, UnsafePointer<UInt8>?, Int, Int, Int, Int32, Float, Float, Float, Float, Float, Int32, Int32) -> Void
+    static let createEx: CreateEx? = compatLookup("compositor_canvas_create_ex")
+    static let drawImageEx: DrawImageEx? = compatLookup("compositor_canvas_draw_image_rect_ex")
+}
 
 enum SkiaPathABI {
     typealias Create = @convention(c) () -> OpaquePointer?
@@ -128,9 +135,9 @@ enum SkiaPathABI {
 // MARK: - CGPath
 
 public class CGPath: @unchecked Sendable, Hashable {
-    var segments: [PathSegment]
+    public var segments: [PathSegment]
 
-    init(segments: [PathSegment]) { self.segments = segments }
+    public init(segments: [PathSegment]) { self.segments = segments }
 
     public init() { self.segments = [] }
 
@@ -402,7 +409,7 @@ public class CGPath: @unchecked Sendable, Hashable {
 
 public final class CGMutablePath: CGPath, @unchecked Sendable {
     public override init() { super.init(segments: []) }
-    override init(segments: [PathSegment]) { super.init(segments: segments) }
+    public override init(segments: [PathSegment]) { super.init(segments: segments) }
 
     public func move(to point: CGPoint, transform: CGAffineTransform = .identity) {
         segments.append(.move(point.applying(transform)))

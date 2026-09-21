@@ -5,6 +5,13 @@ import CoreGraphics
 // wired in (Phase 3); the API mirrors what upstream's TypeTool.swift calls.
 
 open class NSFont: @unchecked Sendable {
+    public struct Weight: RawRepresentable, Hashable, Sendable {
+        public let rawValue: CGFloat
+        public init(rawValue: CGFloat) { self.rawValue = rawValue }
+        public static let ultraLight = Weight(rawValue: -0.8), thin = Weight(rawValue: -0.6), light = Weight(rawValue: -0.4)
+        public static let regular = Weight(rawValue: 0), medium = Weight(rawValue: 0.23), semibold = Weight(rawValue: 0.3)
+        public static let bold = Weight(rawValue: 0.4), heavy = Weight(rawValue: 0.56), black = Weight(rawValue: 0.62)
+    }
     public let fontName: String
     public let pointSize: CGFloat
     public init?(name: String, size: CGFloat) {
@@ -13,6 +20,7 @@ open class NSFont: @unchecked Sendable {
     }
     private init(system size: CGFloat) { fontName = "System"; pointSize = size }
     public static func systemFont(ofSize size: CGFloat) -> NSFont { NSFont(system: size) }
+    public static func systemFont(ofSize size: CGFloat, weight: Weight) -> NSFont { NSFont(system: size) }
 }
 
 public enum NSTextAlignment: Int, Sendable { case left, right, center, justified, natural }
@@ -57,6 +65,7 @@ extension NSAttributedString {
 open class NSTextContainer {
     public var size: CGSize
     public var lineFragmentPadding: CGFloat = 5
+    public var widthTracksTextView = false, heightTracksTextView = false
     public init(size: CGSize) { self.size = size }
 }
 open class NSLayoutManager {
@@ -64,9 +73,12 @@ open class NSLayoutManager {
     open func addTextContainer(_ container: NSTextContainer) {}
     open func glyphRange(for container: NSTextContainer) -> NSRange { NSRange(location: 0, length: 0) }
     open func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {}
+    open func ensureLayout(for container: NSTextContainer) {}
+    open var numberOfGlyphs: Int { 0 }
 }
 open class NSTextStorage {
     public let attributedString: NSAttributedString
     public init(attributedString: NSAttributedString) { self.attributedString = attributedString }
     open func addLayoutManager(_ manager: NSLayoutManager) {}
+    open func setAttributes(_ attributes: [NSAttributedString.Key: Any]?, range: NSRange) {}
 }

@@ -23,10 +23,10 @@ public final class NSCursor: @unchecked Sendable, Equatable {
     }
 
     public let shape: Shape
-    public let image: NSImage?
+    public let image: NSImage
     public let hotSpot: CGPoint
 
-    public init(shape: Shape) { self.shape = shape; image = nil; hotSpot = .zero }
+    public init(shape: Shape) { self.shape = shape; image = NSImage(size: CGSize(width: 16, height: 16)); hotSpot = .zero }
     public init(image: NSImage, hotSpot: CGPoint) {
         shape = .custom(hotSpot: hotSpot); self.image = image; self.hotSpot = hotSpot
     }

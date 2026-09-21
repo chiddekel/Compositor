@@ -5,6 +5,9 @@
 // projects, exports and tests round-trip. A backend that does not know a format returns nil.
 
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#endif
 import CoreGraphics
 import UniformTypeIdentifiers
 
@@ -31,6 +34,14 @@ public protocol ImageCodecBackend: AnyObject {
     func decode(_ data: Data) -> CGImage?
     /// `quality` is 0...1 for lossy formats; `dpi` is written when the format can carry it.
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?) -> Data?
+    /// Like `encode` but also records an EXIF orientation (1...8) in the file when the format can carry one.
+    func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data?
+}
+
+public extension ImageCodecBackend {
+    func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data? {
+        encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi)
+    }
 }
 
 public enum ImageCodecRegistry {
@@ -38,7 +49,32 @@ public enum ImageCodecRegistry {
     nonisolated(unsafe) public static var host: ImageCodecBackend?
     public static let portable: ImageCodecBackend = PortablePNGCodec()
 
-    static var backends: [ImageCodecBackend] { host.map { [$0, portable] } ?? [portable] }
+    static var backends: [ImageCodecBackend] {
+        _ = autoloaded
+        return host.map { [$0, portable, gif] } ?? [portable, gif]
+    }
+    static let gif: ImageCodecBackend = PortableGIFEncoder()
+
+    /// Without a host-registered backend, look for the Qt codec library (`COMPOSITOR_IMAGEIO_BACKEND`, then the
+    /// usual build/install locations) once, the way the Skia bridge is found.
+    private static let autoloaded: Bool = {
+        guard host == nil else { return false }
+        #if canImport(Glibc)
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        let candidates = [env, "build-cmake/libCompositorQtImageIO.so", "./libCompositorQtImageIO.so",
+                          "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"]
+        typealias Functions = @convention(c) (UnsafeMutablePointer<CompositorImageDecodeFn?>?, UnsafeMutablePointer<CompositorImageEncodeFn?>?) -> Int32
+        for path in candidates where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_imageio_functions") else { continue }
+            var decode: CompositorImageDecodeFn?, encode: CompositorImageEncodeFn?
+            if unsafeBitCast(sym, to: Functions.self)(&decode, &encode) == 1, let decode, let encode {
+                host = CCallbackCodec(decode: decode, encode: encode)
+                return true
+            }
+        }
+        #endif
+        return false
+    }()
 
     public static func identify(_ data: Data) -> ImageInfo? {
         for b in backends { if let info = b.identify(data) { return info } }
@@ -48,8 +84,8 @@ public enum ImageCodecRegistry {
         for b in backends { if let image = b.decode(data) { return image } }
         return nil
     }
-    public static func encode(_ image: CGImage, typeIdentifier: String, quality: Double? = nil, dpi: Double? = nil) -> Data? {
-        for b in backends { if let data = b.encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi) { return data } }
+    public static func encode(_ image: CGImage, typeIdentifier: String, quality: Double? = nil, dpi: Double? = nil, orientation: Int32 = 1) -> Data? {
+        for b in backends { if let data = b.encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi, orientation: orientation) { return data } }
         return nil
     }
 
@@ -78,7 +114,7 @@ public typealias CompositorImageDecodeFn = @convention(c) (
     UnsafeMutablePointer<CChar>?, Int) -> Int32
 /// Encode: `pixels` premultiplied RGBA (channels 4) or gray (1). Returns 0 and a malloc'd buffer on success.
 public typealias CompositorImageEncodeFn = @convention(c) (
-    UnsafePointer<UInt8>?, Int32, Int32, Int32, UnsafePointer<CChar>?, Double, Double,
+    UnsafePointer<UInt8>?, Int32, Int32, Int32, UnsafePointer<CChar>?, Double, Double, Int32,
     UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int>?) -> Int32
 
 final class CCallbackCodec: ImageCodecBackend {
@@ -110,12 +146,15 @@ final class CCallbackCodec: ImageCodecBackend {
         return CGImage(PortableImage(width: r.w, height: r.h, kind: kind, bytesPerRow: r.w * r.channels, bytes: r.pixels))
     }
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?) -> Data? {
+        encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi, orientation: 1)
+    }
+    func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data? {
         var out: UnsafeMutablePointer<UInt8>?
         var length = 0
-        let channels: Int32 = image.isMask ? 1 : 4
+        let channels: Int32 = image.isGrayPlane ? 1 : 4
         let rc = image.portableImage.bytes.withUnsafeBufferPointer { px in
             typeIdentifier.withCString { uti in
-                encodeFn(px.baseAddress, Int32(image.width), Int32(image.height), channels, uti, quality ?? -1, dpi ?? 0, &out, &length)
+                encodeFn(px.baseAddress, Int32(image.width), Int32(image.height), channels, uti, quality ?? -1, dpi ?? 0, orientation, &out, &length)
             }
         }
         guard rc == 0, let out, length > 0 else { return nil }

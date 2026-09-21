@@ -1,4 +1,4 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.2
 // Compositor — Linux port package manifest.
 //
 // The macOS app remains an Xcode project (Compositor.xcodeproj). This SwiftPM
@@ -99,6 +99,68 @@ let package = Package(
                 .unsafeFlags(["-swift-version", "5"]),
             ]
         ),
+        .target(name: "_Testing_AppKit", path: "Sources/Compat/TestingOverlays/_Testing_AppKit"),
+        .target(name: "_Testing_CoreGraphics", path: "Sources/Compat/TestingOverlays/_Testing_CoreGraphics"),
+        .target(name: "_Testing_CoreImage", path: "Sources/Compat/TestingOverlays/_Testing_CoreImage"),
+        // The unmodified macOS editor core (Compositor/{Document,IO,Rendering}) as the module `Compositor`, so upstream's
+        // own tests (`@testable import Compositor`) run against it. Files are reached through symlinks in
+        // Sources/UpstreamCore; nothing under Compositor/ is edited. Excluded: view/app code the Qt shell replaces
+        // and the two Metal files, which Sources/Overrides replaces with same-API Vulkan/CPU implementations.
+        // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
+        .target(
+            name: "Compositor",
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"] + ["CompositorKernels", "CompositorBrushBackend"],
+            path: "Sources/UpstreamCore",
+            exclude: ["Rendering/AdjustPixels.c",
+                     "Rendering/AdjustPixels.h",
+                     "Rendering/BrushPixels.c",
+                     "Rendering/BrushPixels.h",
+                     "Rendering/ContentFill.c",
+                     "Rendering/ContentFill.h",
+                     "Rendering/HealPixels.c",
+                     "Rendering/HealPixels.h",
+                     "Rendering/LensPixels.c",
+                     "Rendering/LensPixels.h",
+                     "Rendering/LevelsPixels.c",
+                     "Rendering/LevelsPixels.h",
+                     "Rendering/NoisePixels.c",
+                     "Rendering/NoisePixels.h",
+                     "Rendering/WandPixels.c",
+                     "Rendering/WandPixels.h",
+                     "IO/CompositorApplicationDelegate.swift",
+                     "Rendering/MetalBrushCoverage.swift",
+                     "Rendering/MetalLayerEffects.swift"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .defaultIsolation(MainActor.self),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                // Upstream's Swift reaches the C kernels through a bridging header (no imports), and Foundation-only
+                // files use the Foundation gaps FoundationCompat fills; both become implicit module imports.
+                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat",
+                              "-Xfrontend", "-import-module", "-Xfrontend", "CompositorKernels",
+                              // Apple's closure-taking APIs (Timer, Dispatch) do not check main-actor state against
+                              // Sendable in Swift 5 mode; corelibs' do. Minimal checking matches Xcode's behaviour.
+                              "-strict-concurrency=minimal"]),
+            ]
+        ),
+        // Upstream's own test suite, unmodified (Swift Testing), run against the module above.
+        .testTarget(
+            name: "CompositorUpstreamTests",
+            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"],
+            path: "CompositorTests",
+            // Tests of macOS-only UI code (ObjC-runtime NSSlider swizzling, floating panels, SwiftUI thumbnails):
+            // listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
+            exclude: ["SliderSnapTests.swift", "FloatingPanelTests.swift", "CanvasThumbnailTests.swift",
+                      "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
+                      "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat"]),
+            ]
+        ),
         .testTarget(
             name: "CompositorCoreTests",
             dependencies: ["CompositorCore", "AppKit", "FoundationCompat", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision"],
@@ -128,7 +190,8 @@ let package = Package(
                     "-I/usr/include/QtGui",
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB",
                 ]),
-            ]
+            ],
+            linkerSettings: [.linkedLibrary("heif")]   // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",

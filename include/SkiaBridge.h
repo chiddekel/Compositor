@@ -131,6 +131,8 @@ typedef struct CompPath CompPath;
 
 /* Canvas Lifecycle */
 CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t height, size_t stride);
+/* Pixel formats: 0 = RGBA8888 premultiplied, 1 = 8-bit gray (opaque, one byte per pixel). */
+CompCanvas *compositor_canvas_create_ex(uint8_t *pixels, size_t width, size_t height, size_t stride, int format);
 void compositor_canvas_destroy(CompCanvas *canvas);
 
 /* State Management */
@@ -159,6 +161,8 @@ void compositor_canvas_set_antialias(CompCanvas *canvas, int antialias);
 void compositor_canvas_fill_rect(CompCanvas *canvas, float x, float y, float w, float h, float r, float g, float b, float a);
 void compositor_canvas_clear(CompCanvas *canvas, float x, float y, float w, float h);
 void compositor_canvas_draw_image_rect(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality);
+/* Same, with the source pixel format (0 = RGBA8888 premultiplied, 1 = 8-bit gray, drawn as opaque gray). */
+void compositor_canvas_draw_image_rect_ex(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, int src_format, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality);
 void compositor_canvas_begin_transparency_layer(CompCanvas *canvas, float opacity);
 void compositor_canvas_end_transparency_layer(CompCanvas *canvas);
 

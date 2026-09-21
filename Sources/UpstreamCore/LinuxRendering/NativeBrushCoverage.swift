@@ -1,0 +1,1 @@
+../../CompositorCore/Rendering/NativeBrushCoverage.swift

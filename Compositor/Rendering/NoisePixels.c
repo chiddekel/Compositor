@@ -1,5 +1,4 @@
 #include "NoisePixels.h"
-#include "CompositorKernels.h"
 #include <math.h>
 
 // A well-mixed 32-bit hash, so neighbouring pixels get unrelated values.
@@ -15,7 +14,6 @@ static inline float noise_unit(uint32_t key) { return (float)(noise_hash(key) >>
 
 void noise_add(uint8_t *rgba, size_t width, size_t height, size_t stride,
                float amount, int gaussian, int monochromatic, uint32_t seed) {
-    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, width);
     float spread = amount / 100.0f * 127.5f;
     for (size_t y = 0; y < height; ++y) {
         uint8_t *row = rgba + y * stride;

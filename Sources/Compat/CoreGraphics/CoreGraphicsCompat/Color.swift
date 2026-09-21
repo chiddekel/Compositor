@@ -76,7 +76,7 @@ public struct CGColor: Equatable, Sendable {
     public var alpha: CGFloat
     public var colorSpace: CGColorSpace
 
-    public var components: [CGFloat] {
+    public var components: [CGFloat]? {
         if colorSpace.model == .monochrome {
             return [red, alpha]
         }

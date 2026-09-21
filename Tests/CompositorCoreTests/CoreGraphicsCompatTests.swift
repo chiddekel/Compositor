@@ -244,6 +244,41 @@ final class CoreGraphicsCompatTests: XCTestCase {
         XCTAssertEqual(out.bytes[3], 255)
     }
 
+    func testImageDrawingAppliesContextAlphaOnce() throws {
+        // Exercise both the Linux convenience context and Apple's y-up bitmap context.
+        let contexts = [CGContext(width: 3, height: 1), try XCTUnwrap(CGContext(
+            data: nil, width: 3, height: 1, bitsPerComponent: 8, bytesPerRow: 12,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))]
+        let red = makeRedImage(1, 1)
+        for ctx in contexts {
+            ctx.saveGState()
+            ctx.setAlpha(0.5)
+            ctx.draw(red, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            ctx.draw(red, in: CGRect(x: 1, y: 0, width: 1, height: 1), opacity: 0.5)
+            ctx.restoreGState()
+            ctx.draw(red, in: CGRect(x: 2, y: 0, width: 1, height: 1))
+            let pixels = try XCTUnwrap(ctx.makeImage()).bytes
+            for (x, expected) in [128, 64, 255].enumerated() {
+                XCTAssertEqual(Int(pixels[x * 4]), expected, accuracy: 1)
+                XCTAssertEqual(Int(pixels[x * 4 + 3]), expected, accuracy: 1)
+            }
+        }
+    }
+
+    func testMaskedImageDrawingMultipliesCoverageAndContextAlphaOnce() throws {
+        let ctx = CGContext(width: 1, height: 1)
+        var mask = MaskBuffer(width: 1, height: 1)
+        mask[0, 0] = 128
+        let rect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        ctx.clip(to: rect, mask: CGImage(mask: mask))
+        ctx.setAlpha(0.5)
+        ctx.draw(makeRedImage(1, 1), in: rect)
+        let pixels = try XCTUnwrap(ctx.makeImage()).bytes
+        XCTAssertEqual(Int(pixels[0]), 64, accuracy: 1)
+        XCTAssertEqual(Int(pixels[3]), 64, accuracy: 1)
+    }
+
     func testCGPathOperations() {
         let path = CGMutablePath()
         XCTAssertTrue(path.isEmpty)

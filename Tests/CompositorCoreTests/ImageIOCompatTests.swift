@@ -68,7 +68,7 @@ final class ImageIOCompatTests: XCTestCase {
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         let source = try XCTUnwrap(CGImageSourceCreateWithData(data as Data as CFData, nil))
         let back = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary))
-        XCTAssertTrue(back.isMask)
+        XCTAssertTrue(back.isGrayPlane)
         XCTAssertEqual(back.portableImage.bytes, plane)
     }
 

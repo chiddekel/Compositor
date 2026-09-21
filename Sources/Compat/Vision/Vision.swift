@@ -148,7 +148,7 @@ enum ImageResampling {
 
     static func resample(_ image: CGImage, width: Int, height: Int) -> CGImage {
         // Area-average downscale (cheap and alias-free enough for segmentation input).
-        let ch = image.isMask ? 1 : 4
+        let ch = image.isGrayPlane ? 1 : 4
         let src = image.portableImage.bytes, sw = image.width, sh = image.height, stride = image.bytesPerRow
         var out = [UInt8](repeating: 0, count: width * height * ch)
         for y in 0..<height {
@@ -162,12 +162,12 @@ enum ImageResampling {
                 }
             }
         }
-        return CGImage(PortableImage(width: width, height: height, kind: image.isMask ? .mask : .rgba, bytesPerRow: width * ch, bytes: out))
+        return CGImage(PortableImage(width: width, height: height, kind: image.isGrayPlane ? .mask : .rgba, bytesPerRow: width * ch, bytes: out))
     }
 
     /// RGBA bytes with the EXIF-style orientation applied (mask images become opaque gray RGBA).
     static func applyOrientation(_ o: CGImagePropertyOrientation, to image: CGImage) -> Pixels {
-        let w = image.width, h = image.height, ch = image.isMask ? 1 : 4
+        let w = image.width, h = image.height, ch = image.isGrayPlane ? 1 : 4
         var rgba = [UInt8](repeating: 255, count: w * h * 4)
         for y in 0..<h { for x in 0..<w {
             let s = y * image.bytesPerRow + x * ch, d = (y * w + x) * 4

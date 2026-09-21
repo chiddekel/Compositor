@@ -152,8 +152,7 @@ add_library(CompositorKernels STATIC
     Compositor/Rendering/LensPixels.c
     Compositor/Rendering/LevelsPixels.c
     Compositor/Rendering/NoisePixels.c
-    Compositor/Rendering/WandPixels.c
-    Compositor/Rendering/CompositorKernelAssert.c)
+    Compositor/Rendering/WandPixels.c)
 target_include_directories(CompositorKernels PUBLIC ${CMAKE_SOURCE_DIR}/Compositor/Rendering)
 target_compile_definitions(CompositorKernels PUBLIC COMPOSITOR_PORTABLE)
 # libm is part of glibc bundled in the Freedesktop runtime, not a separately
@@ -215,6 +214,21 @@ endif()
 add_executable(test_opencv_bridge tests/test_opencv_bridge.cpp)
 target_link_libraries(test_opencv_bridge PRIVATE CompositorOpenCVBridge)
 add_test(NAME CompositorCore.OpenCVBridge COMMAND test_opencv_bridge)
+
+# Qt image plugins as a loadable ImageIO backend (JPEG/TIFF/HEIC/WebP/... for CGImageSource/Destination). The Swift
+# ImageIO shim dlopens it when the host has not registered one itself (upstream's tests, headless tools).
+if(Qt6_FOUND)
+    find_package(Qt6 COMPONENTS Gui QUIET)
+    add_library(CompositorQtImageIO SHARED host/QtImageIO.cpp)
+    target_link_libraries(CompositorQtImageIO PRIVATE Qt6::Gui)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBHEIF QUIET IMPORTED_TARGET libheif)
+        if(LIBHEIF_FOUND)
+            target_link_libraries(CompositorQtImageIO PRIVATE PkgConfig::LIBHEIF)
+        endif()
+    endif()
+endif()
 
 # Headless host journey test: open -> canonicalize -> filter -> save -> reopen.
 # Needs Qt6 (QImage codec); gated on Qt6_FOUND like the host app.

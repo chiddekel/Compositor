@@ -23,8 +23,8 @@ final class CoreImageCompatTests: XCTestCase {
                           colorSpace: mask ? CGColorSpaceCreateDeviceGray() : CGColorSpace(name: CGColorSpace.sRGB)!)!
     }
     private func px(_ image: CGImage, _ x: Int, _ y: Int) -> [Int] {
-        let o = y * image.bytesPerRow + x * (image.isMask ? 1 : 4)
-        return (0..<(image.isMask ? 1 : 4)).map { Int(image.portableImage.bytes[o + $0]) }
+        let o = y * image.bytesPerRow + x * (image.isGrayPlane ? 1 : 4)
+        return (0..<(image.isGrayPlane ? 1 : 4)).map { Int(image.portableImage.bytes[o + $0]) }
     }
 
     func testIdentityRoundTripKeepsPixelsAndTopLeftOrientation() {

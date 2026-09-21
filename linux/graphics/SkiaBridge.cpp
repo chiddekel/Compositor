@@ -557,13 +557,16 @@ struct CompPath {};
 #endif
 
 CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t height, size_t stride) {
+    return compositor_canvas_create_ex(pixels, width, height, stride, 0);
+}
+
+CompCanvas *compositor_canvas_create_ex(uint8_t *pixels, size_t width, size_t height, size_t stride, int format) {
     if (!pixels || width == 0 || height == 0) return nullptr;
 #if defined(COMPOSITOR_HAS_SKIA)
-    if (stride == 0) stride = width * 4;
-    SkImageInfo info = SkImageInfo::Make(static_cast<int>(width),
-                                         static_cast<int>(height),
-                                         kRGBA_8888_SkColorType,
-                                         kPremul_SkAlphaType);
+    const bool gray = format == 1;
+    if (stride == 0) stride = width * (gray ? 1 : 4);
+    SkImageInfo info = gray ? SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height), kGray_8_SkColorType, kOpaque_SkAlphaType)
+                            : SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
     sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, pixels, stride);
     if (!surface) return nullptr;
     SkCanvas* canvas = surface->getCanvas();
@@ -580,7 +583,7 @@ CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t heigh
     c->states.push_back(CompCanvasState{});
     return c;
 #else
-    (void)stride;
+    (void)stride; (void)format;
     return nullptr;
 #endif
 }
@@ -707,13 +710,15 @@ void compositor_canvas_clip_mask(CompCanvas *canvas, const uint8_t *mask_pixels,
     SkAlphaType at = is_alpha_only ? kPremul_SkAlphaType : kPremul_SkAlphaType;
     SkImageInfo maskInfo = SkImageInfo::Make(static_cast<int>(mask_w), static_cast<int>(mask_h), ct, at);
     SkPixmap maskPixmap(maskInfo, mask_pixels, mask_stride);
-    sk_sp<SkImage> maskImg = SkImages::RasterFromPixmap(maskPixmap, nullptr, nullptr);
+    sk_sp<SkImage> maskImg = SkImages::RasterFromPixmapCopy(maskPixmap);
     if (!maskImg) return;
 
     SkMatrix m;
     m.setRectToRect(SkRect::MakeWH(mask_w, mask_h), SkRect::MakeXYWH(x, y, w, h), SkMatrix::kFill_ScaleToFit);
-    sk_sp<SkShader> shader = maskImg->makeShader(SkTileMode::kDecal, SkTileMode::kDecal, SkSamplingOptions(SkFilterMode::kLinear), m);
+    // Core Graphics confines the mask to its rect and holds its edge pixels there, so a 1x1 mask stays uniform.
+    sk_sp<SkShader> shader = maskImg->makeShader(SkTileMode::kClamp, SkTileMode::kClamp, canvas->current_state().sampling, m);
     if (shader) {
+        canvas->canvas->clipRect(SkRect::MakeXYWH(x, y, w, h), SkClipOp::kIntersect, true);
         canvas->canvas->clipShader(shader, SkClipOp::kIntersect);
     }
 #else
@@ -807,11 +812,17 @@ void compositor_canvas_clear(CompCanvas *canvas, float x, float y, float w, floa
 }
 
 void compositor_canvas_draw_image_rect(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality) {
+    compositor_canvas_draw_image_rect_ex(canvas, src_pixels, src_w, src_h, src_stride, 0, dx, dy, dw, dh, opacity, cg_blend_mode, cg_sampling_quality);
+}
+
+void compositor_canvas_draw_image_rect_ex(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, int src_format, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality) {
 #if defined(COMPOSITOR_HAS_SKIA)
     if (!canvas || !canvas->canvas || !src_pixels || src_w == 0 || src_h == 0) return;
-    if (src_stride == 0) src_stride = src_w * 4;
+    const bool srcGray = src_format == 1;
+    if (src_stride == 0) src_stride = src_w * (srcGray ? 1 : 4);
 
-    SkImageInfo srcInfo = SkImageInfo::Make(static_cast<int>(src_w), static_cast<int>(src_h), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    SkImageInfo srcInfo = srcGray ? SkImageInfo::Make(static_cast<int>(src_w), static_cast<int>(src_h), kGray_8_SkColorType, kOpaque_SkAlphaType)
+                                  : SkImageInfo::Make(static_cast<int>(src_w), static_cast<int>(src_h), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
     SkPixmap srcPixmap(srcInfo, src_pixels, src_stride);
     sk_sp<SkImage> img = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
     if (!img) return;
@@ -825,7 +836,7 @@ void compositor_canvas_draw_image_rect(CompCanvas *canvas, const uint8_t *src_pi
     SkSamplingOptions sampling = (cg_sampling_quality >= 0) ? map_cg_sampling(cg_sampling_quality) : canvas->current_state().sampling;
     canvas->canvas->drawImageRect(img, SkRect::MakeXYWH(dx, dy, dw, dh), sampling, &paint);
 #else
-    (void)canvas; (void)src_pixels; (void)src_w; (void)src_h; (void)src_stride; (void)dx; (void)dy; (void)dw; (void)dh; (void)opacity; (void)cg_blend_mode; (void)cg_sampling_quality;
+    (void)canvas; (void)src_pixels; (void)src_w; (void)src_h; (void)src_stride; (void)src_format; (void)dx; (void)dy; (void)dw; (void)dh; (void)opacity; (void)cg_blend_mode; (void)cg_sampling_quality;
 #endif
 }
 

@@ -7,9 +7,17 @@
 import Foundation
 
 public final class CGContext: @unchecked Sendable {
+    /// Backing pixel layout. Contexts made with Apple's `CGContext(data:...)` initialiser follow the colour space:
+    /// a gray space gives a one-byte-per-pixel plane (what upstream's masks and C kernels expect).
+    public enum PixelFormat: Sendable { case rgba, gray }
+
     public let width: Int
     public let height: Int
-    public var bytesPerRow: Int { width * 4 }
+    public let format: PixelFormat
+    public let bytesPerRow: Int
+    /// Apple bitmap contexts have their origin at the bottom-left (y up); the compat's own initialisers keep the
+    /// top-left origin the Linux core was written against.
+    public let isYUp: Bool
 
     private let pixelData: UnsafeMutablePointer<UInt8>
     private let pixelCount: Int
@@ -28,6 +36,8 @@ public final class CGContext: @unchecked Sendable {
         var lineJoin: CGLineJoin = .miter
         var miterLimit: CGFloat = 10
         var dashPhase: CGFloat = 0
+        var shadowOffset = CGSize.zero
+        var shadowBlur: CGFloat = 0
         var dashLengths: [CGFloat] = []
         var ctm: CGAffineTransform = .identity
     }
@@ -41,24 +51,49 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public var buffer: PixelBuffer {
+        if format == .gray {
+            // Legacy RGBA view of a gray plane (opaque, r = g = b).
+            var expanded = [UInt8](repeating: 255, count: width * height * 4)
+            for i in 0..<(width * height) { let v = pixelData[i]; expanded[i * 4] = v; expanded[i * 4 + 1] = v; expanded[i * 4 + 2] = v }
+            return PixelBuffer(width: width, height: height, bytes: expanded)
+        }
         let array = [UInt8](UnsafeBufferPointer(start: pixelData, count: pixelCount))
         return PixelBuffer(width: width, height: height, bytes: array)
     }
 
-    public init(width: Int, height: Int, render: CompRenderFn? = nil) {
+    public convenience init(width: Int, height: Int, render: CompRenderFn? = nil) {
+        self.init(width: width, height: height, format: .rgba, yUp: false, render: render)
+    }
+
+    init(width: Int, height: Int, format: PixelFormat, yUp: Bool, render: CompRenderFn? = nil) {
         precondition(width > 0 && height > 0)
         self.width = width
         self.height = height
-        self.pixelCount = width * height * 4
+        self.format = format
+        self.isYUp = yUp
+        self.bytesPerRow = width * (format == .gray ? 1 : 4)
+        self.pixelCount = bytesPerRow * height
         self.pixelData = UnsafeMutablePointer<UInt8>.allocate(capacity: pixelCount)
         self.pixelData.initialize(repeating: 0, count: pixelCount)
         self.render = render ?? compositor_compat_current_render_fn()
+        makeCanvas()
+    }
 
-        if let create = CompCanvasBridge.shared.createCanvas {
-            self.rawCanvas = create(self.pixelData, width, height, width * 4)
+    private func makeCanvas() {
+        if let create = SkiaContextABI.createEx {
+            rawCanvas = create(pixelData, width, height, bytesPerRow, format == .gray ? 1 : 0)
+        } else if format == .rgba, let create = CompCanvasBridge.shared.createCanvas {
+            rawCanvas = create(pixelData, width, height, bytesPerRow)
+        }
+        // The flip lives below the visible CTM: user space is y-up, memory rows still run top-down.
+        if isYUp, let raw = rawCanvas {
+            CompCanvasBridge.shared.translate?(raw, 0, Float(height))
+            CompCanvasBridge.shared.scale?(raw, 1, -1)
         }
     }
 
+    /// Apple's bitmap-context initialiser. The colour space picks the pixel layout (gray -> one byte per pixel,
+    /// otherwise RGBA) and the origin is bottom-left, as in CoreGraphics.
     public convenience init?(data: UnsafeMutableRawPointer?,
                              width: Int,
                              height: Int,
@@ -66,10 +101,12 @@ public final class CGContext: @unchecked Sendable {
                              bytesPerRow: Int,
                              space: CGColorSpace,
                              bitmapInfo: UInt32) {
-        guard width > 0, height > 0 else { return nil }
-        self.init(width: width, height: height)
+        guard width > 0, height > 0, bitsPerComponent == 8 else { return nil }
+        let format: PixelFormat = space.model == .monochrome ? .gray : .rgba
+        self.init(width: width, height: height, format: format, yUp: true)
         if let srcData = data {
-            memcpy(self.pixelData, srcData, min(self.pixelCount, height * bytesPerRow))
+            let rowLength = self.bytesPerRow
+            for y in 0..<height { memcpy(pixelData.advanced(by: y * rowLength), srcData.advanced(by: y * bytesPerRow), min(rowLength, bytesPerRow)) }
         }
     }
 
@@ -80,6 +117,9 @@ public final class CGContext: @unchecked Sendable {
         let count = w * h * 4
         self.width = w
         self.height = h
+        self.format = .rgba
+        self.isYUp = false
+        self.bytesPerRow = w * 4
         self.pixelCount = count
         self.render = render ?? compositor_compat_current_render_fn()
 
@@ -188,6 +228,7 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public var userSpaceToDeviceSpaceTransform: CGAffineTransform {
+        if isYUp { return state.ctm }   // the y flip is below the visible CTM, as in CoreGraphics
         if let raw = rawCanvas, let getCTM = CompCanvasBridge.shared.getCTM {
             var a: Float = 1, b: Float = 0, c: Float = 0, d: Float = 1, tx: Float = 0, ty: Float = 0
             getCTM(raw, &a, &b, &c, &d, &tx, &ty)
@@ -210,11 +251,19 @@ public final class CGContext: @unchecked Sendable {
     public func clip(to rect: CGRect, mask: CGImage) {
         if let raw = rawCanvas {
             let pImg = mask.portableImage
-            pImg.bytes.withUnsafeBufferPointer { ptr in
+            var bytes = pImg.bytes
+            if isYUp {
+                // The mask's first row belongs at the rect's top edge (max y in y-up space): reverse the rows.
+                let row = pImg.bytesPerRow
+                var flipped = [UInt8](repeating: 0, count: bytes.count)
+                for y in 0..<pImg.height { flipped.replaceSubrange((y * row)..<((y + 1) * row), with: bytes[((pImg.height - 1 - y) * row)..<((pImg.height - y) * row)]) }
+                bytes = flipped
+            }
+            bytes.withUnsafeBufferPointer { ptr in
                 CompCanvasBridge.shared.clipMask?(raw, ptr.baseAddress!, pImg.width, pImg.height,
                                                  pImg.bytesPerRow, Float(rect.minX), Float(rect.minY),
                                                  Float(rect.width), Float(rect.height),
-                                                 mask.isMask ? 1 : 0)
+                                                 mask.isGrayPlane ? 1 : 0)
             }
         }
     }
@@ -255,6 +304,15 @@ public final class CGContext: @unchecked Sendable {
     public func setLineCap(_ cap: CGLineCap) { state.lineCap = cap }
     /// Recorded for callers that read it back; dashed strokes are not rasterised yet.
     public func setLineDash(phase: CGFloat, lengths: [CGFloat]) { state.dashPhase = phase; state.dashLengths = lengths }
+
+    /// Shadows are recorded but not rasterised yet.
+    public func setShadow(offset: CGSize, blur: CGFloat, color: CGColor? = nil) { state.shadowOffset = offset; state.shadowBlur = blur }
+    /// The path under construction (Apple exposes it as `path`).
+    public var path: CGPath? { currentPath.isEmpty ? nil : currentPath }
+    public func convertToDeviceSpace(_ rect: CGRect) -> CGRect { rect.applying(state.ctm) }
+    public func beginTransparencyLayer(in rect: CGRect, auxiliaryInfo: [AnyHashable: Any]? = nil) { beginTransparencyLayer(auxiliaryInfo: auxiliaryInfo) }
+    public func convertToDeviceSpace(_ point: CGPoint) -> CGPoint { point.applying(state.ctm) }
+    public func convertToUserSpace(_ point: CGPoint) -> CGPoint { point.applying(state.ctm.inverted()) }
 
     /// The colour space of the backing bitmap (sRGB, premultiplied RGBA).
     public var colorSpace: CGColorSpace? { .srgbSpace }
@@ -391,18 +449,23 @@ public final class CGContext: @unchecked Sendable {
     // MARK: - Drawing Images
 
     public func draw(_ image: CGImage, in rect: CGRect, opacity: Double = 1) {
-        let finalOpacity = opacity * Double(state.alpha)
         if let raw = rawCanvas {
-            let pImg = image.portableImage
-            pImg.bytes.withUnsafeBufferPointer { ptr in
-                CompCanvasBridge.shared.drawImageRect?(raw, ptr.baseAddress!, pImg.width, pImg.height,
-                                                      pImg.bytesPerRow, Float(rect.minX), Float(rect.minY),
-                                                      Float(rect.width), Float(rect.height),
-                                                      Float(finalOpacity), state.blendMode.rawValue,
-                                                      mapQuality(state.interpolationQuality))
+            // The canvas already holds setAlpha's graphics state. Pass only the per-draw
+            // opacity; multiplying here as well would square the context alpha in Skia.
+            // In y-up user space an image's first row sits at the rect's top edge (max y): draw it through a local flip.
+            if isYUp {
+                saveGState()
+                translateBy(x: rect.minX, y: rect.maxY)
+                scaleBy(x: 1, y: -1)
+                drawRaw(raw, image, in: CGRect(x: 0, y: 0, width: rect.width, height: rect.height), opacity: opacity)
+                restoreGState()
+            } else {
+                drawRaw(raw, image, in: rect, opacity: opacity)
             }
             return
         }
+        guard format == .rgba else { return }
+        let finalOpacity = opacity * Double(state.alpha)
 
         // Check injected render closure fallback
         if finalOpacity >= 1, rect.origin == .zero,
@@ -417,6 +480,24 @@ public final class CGContext: @unchecked Sendable {
         }
 
         drawSwift(image.portableImage, in: rect, opacity: finalOpacity)
+    }
+
+    private func drawRaw(_ raw: OpaquePointer, _ image: CGImage, in rect: CGRect, opacity: Double) {
+        let pImg = image.portableImage
+        let sourceFormat: Int32 = image.isGrayPlane ? 1 : 0
+        pImg.bytes.withUnsafeBufferPointer { ptr in
+            if let drawEx = SkiaContextABI.drawImageEx {
+                drawEx(raw, ptr.baseAddress!, pImg.width, pImg.height, pImg.bytesPerRow, sourceFormat,
+                       Float(rect.minX), Float(rect.minY), Float(rect.width), Float(rect.height),
+                       Float(opacity), state.blendMode.rawValue, mapQuality(state.interpolationQuality))
+            } else if !image.isGrayPlane {
+                CompCanvasBridge.shared.drawImageRect?(raw, ptr.baseAddress!, pImg.width, pImg.height,
+                                                      pImg.bytesPerRow, Float(rect.minX), Float(rect.minY),
+                                                      Float(rect.width), Float(rect.height),
+                                                      Float(opacity), state.blendMode.rawValue,
+                                                      mapQuality(state.interpolationQuality))
+            }
+        }
     }
 
     public func draw(_ image: PortableImage, in rect: CGRect, opacity: Double = 1) {
@@ -442,7 +523,11 @@ public final class CGContext: @unchecked Sendable {
     // MARK: - Output
 
     public func makeImage() -> CGImage? {
-        CGImage(buffer)
+        if format == .gray {
+            let plane = [UInt8](UnsafeBufferPointer(start: pixelData, count: pixelCount))
+            return CGImage(PortableImage(width: width, height: height, kind: .mask, bytesPerRow: width, bytes: plane))
+        }
+        return CGImage(buffer)
     }
 
     // MARK: - Swift Fallbacks

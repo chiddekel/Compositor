@@ -133,3 +133,58 @@ open class NSFileCoordinator {
         accessor(readURL, writeURL)
     }
 }
+
+public func CFAbsoluteTimeGetCurrent() -> Double { Date().timeIntervalSinceReferenceDate }
+
+/// Undo/redo with Apple's registration model (grouping, action names, redo registered while undoing).
+open class UndoManager {
+    private struct Group { var actions: [() -> Void] = []; var name = "" }
+    private var undoStack: [Group] = [], redoStack: [Group] = []
+    private var open: Group?
+    private var undoing = false, redoing = false
+    public private(set) var groupingLevel = 0
+    public var groupsByEvent = false
+    public init() {}
+
+    open var canUndo: Bool { !undoStack.isEmpty }
+    open var canRedo: Bool { !redoStack.isEmpty }
+    open var isUndoing: Bool { undoing }
+    open var isRedoing: Bool { redoing }
+    open var undoActionName: String { undoStack.last?.name ?? "" }
+    open var redoActionName: String { redoStack.last?.name ?? "" }
+
+    open func beginUndoGrouping() { groupingLevel += 1; if open == nil { open = Group() } }
+    open func endUndoGrouping() {
+        groupingLevel = max(0, groupingLevel - 1)
+        if groupingLevel == 0, let group = open { open = nil; if !group.actions.isEmpty { push(group) } }
+    }
+    private func push(_ group: Group) { if undoing { redoStack.append(group) } else { undoStack.append(group); if !redoing { redoStack = [] } } }
+
+    open func registerUndo<Target: AnyObject>(withTarget target: Target, handler: @escaping (Target) -> Void) {
+        let action = { [weak target] in if let target { handler(target) } }
+        if open != nil { open!.actions.append(action) } else { push(Group(actions: [action])) }
+    }
+    open func setActionName(_ name: String) { if open != nil { open!.name = name } else if undoing { if !redoStack.isEmpty { redoStack[redoStack.count - 1].name = name } } else if !undoStack.isEmpty { undoStack[undoStack.count - 1].name = name } }
+
+    open func undo() {
+        guard let group = undoStack.popLast() else { return }
+        undoing = true; beginUndoGrouping()
+        for a in group.actions.reversed() { a() }
+        open?.name = group.name
+        endUndoGrouping(); undoing = false
+    }
+    open func redo() {
+        guard let group = redoStack.popLast() else { return }
+        redoing = true; beginUndoGrouping()
+        for a in group.actions.reversed() { a() }
+        open?.name = group.name
+        endUndoGrouping(); redoing = false
+    }
+    open func removeAllActions() { undoStack = []; redoStack = []; open = nil; groupingLevel = 0 }
+}
+
+extension RunLoop.Mode {
+    public static let eventTracking = RunLoop.Mode("NSEventTrackingRunLoopMode")
+    public static let modalPanel = RunLoop.Mode("NSModalPanelRunLoopMode")
+}
+

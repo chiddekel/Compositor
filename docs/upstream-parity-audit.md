@@ -2,6 +2,26 @@
 
 Generated 2026-09-21 against `upstream/main` (c39da13). Method and honest verdict below.
 
+## Reproducible audit commands
+
+The old table below is a historical approximate name audit. Generate the current
+upstream declaration inventory from the pinned branch with:
+
+```sh
+python3 scripts/upstream-audit.py --ref upstream/main \
+  --json /tmp/compositor-upstream-audit.json \
+  --csv /tmp/compositor-upstream-audit.csv
+scripts/check-upstream-clean.sh
+```
+
+The generated inventory separates UI from document/data/logic declarations and
+marks name matches as candidates only. A candidate is not functional parity until
+the implementation mapping, shipped workflow and test evidence are recorded.
+`check-upstream-clean.sh` now passes: the Linux-only buffer assertion translation
+unit and umbrella header were removed from the protected upstream tree. The
+remaining Linux kernel contract work belongs at Linux adapter boundaries and must
+not be added back to `Compositor/Rendering`.
+
 ## Verdict
 
 **The port is NOT at 100% of upstream.** The Linux core reproduces most of the document/data logic; the Qt UI reproduces the core editing workflow but not the newer upstream features (1.1 – 1.1.8) or several editing tools.

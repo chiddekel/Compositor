@@ -6,55 +6,6 @@ import UniformTypeIdentifiers
 // UI types the model layer names. They are inert containers; anything interactive is an injectable hook
 // so the Qt host (or a test) supplies the behaviour.
 
-@MainActor open class NSResponder {}
-
-/// Hosts a view tree in a window. On Linux it only carries the root view; the Qt shell renders sheets itself.
-@MainActor open class NSViewController: NSResponder {
-    open var representedRootView: Any?
-    public override init() {}
-}
-
-/// Something a sheet's root view can implement so a window with no host can settle it (headless: cancel).
-@MainActor public protocol SheetAutoResolving { func resolveWithoutHost() }
-open class NSView: NSResponder, @unchecked Sendable {
-    public var frame: CGRect
-    public var bounds: CGRect { CGRect(origin: .zero, size: frame.size) }
-    public var needsDisplay = false
-    public init(frame: CGRect) { self.frame = frame }
-    public required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    open var isFlipped: Bool { false }
-    open func hitTest(_ point: CGPoint) -> NSView? { nil }
-    open func draw(_ dirtyRect: CGRect) {}
-    open func setAccessibilityElement(_ isElement: Bool) {}
-    open func removeFromSuperview() {}
-}
-
-open class NSWindow: NSResponder {
-    public struct StyleMask: OptionSet, Sendable {
-        public let rawValue: UInt
-        public init(rawValue: UInt) { self.rawValue = rawValue }
-        public static let titled = StyleMask(rawValue: 1 << 0), closable = StyleMask(rawValue: 1 << 1)
-        public static let miniaturizable = StyleMask(rawValue: 1 << 2), resizable = StyleMask(rawValue: 1 << 3)
-        public static let fullSizeContentView = StyleMask(rawValue: 1 << 15)
-    }
-    public var title = ""
-    public var isDocumentEdited = false
-    public var representedURL: URL?
-    public var styleMask: StyleMask = []
-    public var contentViewController: NSViewController?
-    public override init() {}
-    open func close() {}
-    open func orderOut(_ sender: Any?) {}
-
-    /// The Qt shell installs this to show a sheet; without a host the sheet's root view settles itself.
-    nonisolated(unsafe) public static var sheetPresenter: ((_ parent: NSWindow, _ sheet: NSWindow) -> Void)?
-    open func beginSheet(_ sheet: NSWindow, completionHandler: ((NSApplication.ModalResponse) -> Void)? = nil) {
-        if let present = NSWindow.sheetPresenter { present(self, sheet); return }
-        (sheet.contentViewController?.representedRootView as? SheetAutoResolving)?.resolveWithoutHost()
-    }
-    open func endSheet(_ sheet: NSWindow) {}
-}
-
 public enum NSApplication {
     public enum ModalResponse: Int { case OK = 1, cancel = 0, stop = -1000, abort = -1001, continue_ = -1002
         case alertFirstButtonReturn = 1000, alertSecondButtonReturn = 1001, alertThirdButtonReturn = 1002 }

@@ -1,0 +1,21 @@
+{
+  "upstream_remote": "upstream",
+  "upstream_ref": "upstream/main",
+  "protected_roots": [
+    "Compositor",
+    "CompositorTests"
+  ],
+  "allowed_paths": [],
+  "excluded_upstream_tests": "linux/UPSTREAM_TEST_EXCLUSIONS.md",
+  "overrides": {
+    "Compositor/Rendering/MetalBrushCoverage.swift": "Sources/Overrides/MetalBrushCoverage.swift",
+    "Compositor/Rendering/MetalLayerEffects.swift": "Sources/Overrides/MetalLayerEffects.swift",
+    "Compositor/IO/CompositorApplicationDelegate.swift": "Qt application composition root",
+    "Compositor/Rendering/EditorCanvas.swift": "Qt canvas adapter",
+    "Compositor/Rendering/InlineTextEditor.swift": "Qt text editor adapter",
+    "Compositor/Rendering/BrushCursorOverlay.swift": "Qt cursor adapter",
+    "Compositor/Rendering/SampleRingOverlay.swift": "Qt sampling overlay",
+    "Compositor/UI": "Qt workflow adapter"
+  },
+  "status": "transitional: existing upstream-tree drift must be moved to Linux-owned adapters"
+}

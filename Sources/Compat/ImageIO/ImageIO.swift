@@ -99,12 +99,20 @@ public final class CGImageDestination: @unchecked Sendable {
     var image: CGImage?
     var properties: [AnyHashable: Any] = [:]
     var finalized = false
+    var url: URL?
     init(sink: NSMutableData, type: String) { self.sink = sink; self.type = type }
 }
 
 public func CGImageDestinationCreateWithData(_ data: CFMutableData, _ type: CFString, _ count: Int, _ options: CFDictionary?) -> CGImageDestination? {
     guard count == 1, UTType(type)?.conforms(to: .image) == true else { return nil }
     return CGImageDestination(sink: data, type: type)
+}
+
+public func CGImageDestinationCreateWithURL(_ url: CFURL, _ type: CFString, _ count: Int, _ options: CFDictionary?) -> CGImageDestination? {
+    guard count == 1, UTType(type)?.conforms(to: .image) == true else { return nil }
+    let destination = CGImageDestination(sink: NSMutableData(), type: type)
+    destination.url = url
+    return destination
 }
 
 public func CGImageDestinationAddImage(_ destination: CGImageDestination, _ image: CGImage, _ properties: CFDictionary?) {
@@ -118,7 +126,11 @@ public func CGImageDestinationFinalize(_ destination: CGImageDestination) -> Boo
     destination.finalized = true
     let quality = destination.properties[kCGImageDestinationLossyCompressionQuality] as? Double
     let dpi = (destination.properties[kCGImagePropertyDPIWidth] as? Double) ?? (destination.properties[kCGImagePropertyDPIWidth] as? CGFloat).map(Double.init)
-    guard let data = ImageCodecRegistry.encode(image, typeIdentifier: destination.type, quality: quality, dpi: dpi) else { return false }
+    let orientation = (destination.properties[kCGImagePropertyOrientation] as? Int).map(Int32.init) ?? (destination.properties[kCGImagePropertyOrientation] as? Int32) ?? 1
+    guard let data = ImageCodecRegistry.encode(image, typeIdentifier: destination.type, quality: quality, dpi: dpi, orientation: orientation) else { return false }
+    if let url = destination.url {
+        do { try data.write(to: url); return true } catch { return false }
+    }
     destination.sink.append(data)
     return true
 }
@@ -129,7 +141,7 @@ enum ImageOrientation {
     /// Applies an EXIF orientation (1...8) so the result is upright. Works on the canonical pixel layout.
     static func apply(_ orientation: Int32, to image: CGImage) -> CGImage {
         guard orientation != 1, (2...8).contains(orientation) else { return image }
-        let w = image.width, h = image.height, ch = image.isMask ? 1 : 4
+        let w = image.width, h = image.height, ch = image.isGrayPlane ? 1 : 4
         let swap = orientation >= 5
         let ow = swap ? h : w, oh = swap ? w : h
         let src = image.portableImage.bytes, srcRow = image.bytesPerRow
@@ -149,11 +161,11 @@ enum ImageOrientation {
                 for c in 0..<ch { out[(ny * ow + nx) * ch + c] = src[y * srcRow + x * ch + c] }
             }
         }
-        return CGImage(PortableImage(width: ow, height: oh, kind: image.isMask ? .mask : .rgba, bytesPerRow: ow * ch, bytes: out))
+        return CGImage(PortableImage(width: ow, height: oh, kind: image.isGrayPlane ? .mask : .rgba, bytesPerRow: ow * ch, bytes: out))
     }
 
     static func resampled(_ image: CGImage, width: Int, height: Int) -> CGImage {
-        let ch = image.isMask ? 1 : 4
+        let ch = image.isGrayPlane ? 1 : 4
         var out = [UInt8](repeating: 0, count: width * height * ch)
         var src = image.portableImage.bytes
         src.withUnsafeMutableBytes { s in
@@ -163,6 +175,6 @@ enum ImageOrientation {
                                 destinationHeight: height, destinationRowBytes: width * ch, channels: ch, highQuality: true)
             }
         }
-        return CGImage(PortableImage(width: width, height: height, kind: image.isMask ? .mask : .rgba, bytesPerRow: width * ch, bytes: out))
+        return CGImage(PortableImage(width: width, height: height, kind: image.isGrayPlane ? .mask : .rgba, bytesPerRow: width * ch, bytes: out))
     }
 }

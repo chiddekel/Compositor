@@ -70,35 +70,57 @@ public struct CGDataProviderDirectCallbacks {
 }
 
 public final class CGDataProvider: @unchecked Sendable {
-    public let data: [UInt8]
+    private let lock = NSLock()
+    private var loaded: [UInt8]?
+    private var loader: (() -> [UInt8])?
+    private let onRelease: (() -> Void)?
+
+    /// The provider's bytes. A direct provider reads its source on first use, like Core Graphics does when an
+    /// image is first drawn, and never before.
+    var bytes: [UInt8] {
+        lock.lock(); defer { lock.unlock() }
+        if let loaded { return loaded }
+        let result = loader?() ?? []
+        loaded = result; loader = nil
+        return result
+    }
+    /// The provider's contents (Apple: `CFData?`, which is `Data` here).
+    public var data: Data? { Data(bytes) }
 
     public init(data: [UInt8]) {
-        self.data = data
+        self.loaded = data; self.onRelease = nil
     }
 
     /// Failable like Apple's `CGDataProvider(data:)` (which returns nil for an unusable CFData).
     public init?(data: Data) {
         guard !data.isEmpty else { return nil }
-        self.data = [UInt8](data)
+        self.loaded = [UInt8](data); self.onRelease = nil
     }
 
     public init?(directInfo: UnsafeMutableRawPointer?, size: off_t, callbacks: UnsafePointer<CGDataProviderDirectCallbacks>) {
         guard size > 0 else { return nil }
-        var buffer = [UInt8](repeating: 0, count: Int(size))
         let cb = callbacks.pointee
-        if let getBytes = cb.getBytesAtPosition {
-            _ = buffer.withUnsafeMutableBytes { rawBuf in
-                getBytes(directInfo, rawBuf.baseAddress!, 0, Int(size))
+        let total = Int(size)
+        let info = SendableRaw(directInfo)
+        self.onRelease = { cb.releaseInfo?(info.pointer) }
+        self.loader = {
+            var buffer = [UInt8](repeating: 0, count: total)
+            if let getBytes = cb.getBytesAtPosition {
+                _ = buffer.withUnsafeMutableBytes { rawBuf in getBytes(info.pointer, rawBuf.baseAddress!, 0, total) }
+            } else if let getBytePtr = cb.getBytePointer, let src = getBytePtr(info.pointer) {
+                _ = buffer.withUnsafeMutableBytes { dst in memcpy(dst.baseAddress!, src, total) }
+                cb.releaseBytePointer?(info.pointer, src)
             }
-        } else if let getBytePtr = cb.getBytePointer, let src = getBytePtr(directInfo) {
-            _ = buffer.withUnsafeMutableBytes { dst in
-                memcpy(dst.baseAddress!, src, Int(size))
-            }
-            cb.releaseBytePointer?(directInfo, src)
+            return buffer
         }
-        cb.releaseInfo?(directInfo)
-        self.data = buffer
     }
+
+    deinit { onRelease?() }
+}
+
+private struct SendableRaw: @unchecked Sendable {
+    let pointer: UnsafeMutableRawPointer?
+    init(_ pointer: UnsafeMutableRawPointer?) { self.pointer = pointer }
 }
 
 // MARK: - CGImage
@@ -114,10 +136,23 @@ public final class CGImage: @unchecked Sendable {
     public var colorSpace: CGColorSpace? { space }
     public let alphaInfo: CGImageAlphaInfo
     public let bitmapInfo: CGBitmapInfo
-    public let portableImage: PortableImage
+    private let imageLock = NSLock()
+    private var resolved: PortableImage?
+    private var deferred: (() -> PortableImage)?
+    /// The raster behind this image. Images built over a direct data provider resolve it on first use.
+    public var portableImage: PortableImage {
+        imageLock.lock(); defer { imageLock.unlock() }
+        if let resolved { return resolved }
+        let image = deferred!()
+        resolved = image; deferred = nil
+        return image
+    }
 
     public var bytes: [UInt8] { portableImage.bytes }
-    public var isMask: Bool { space.model == .monochrome || alphaInfo == .only }
+    /// One-byte-per-pixel gray plane (the compat's internal notion of a mask raster).
+    public var isGrayPlane: Bool { space.model == .monochrome || alphaInfo == .only }
+    /// Apple's meaning: a stencil image mask. An ordinary gray image is not one.
+    public var isMask: Bool { alphaInfo == .only }
 
     public init(_ portableImage: PortableImage) {
         self.width = portableImage.width
@@ -128,7 +163,7 @@ public final class CGImage: @unchecked Sendable {
         self.space = portableImage.kind == .rgba ? .srgbSpace : .deviceGraySpace
         self.alphaInfo = portableImage.kind == .rgba ? .premultipliedLast : .none
         self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue)
-        self.portableImage = portableImage
+        self.resolved = portableImage
     }
 
     public convenience init(_ buffer: PixelBuffer) {
@@ -162,11 +197,13 @@ public final class CGImage: @unchecked Sendable {
 
         let kind: PortableImage.Kind = (space.model == .monochrome || bitsPerPixel == 8) ? .mask : .rgba
         let expectedBytes = height * bytesPerRow
-        var pixelBytes = provider.data
-        if pixelBytes.count < expectedBytes {
-            pixelBytes.append(contentsOf: repeatElement(0, count: expectedBytes - pixelBytes.count))
+        self.deferred = {
+            var pixelBytes = provider.bytes
+            if pixelBytes.count < expectedBytes {
+                pixelBytes.append(contentsOf: repeatElement(0, count: expectedBytes - pixelBytes.count))
+            }
+            return PortableImage(width: width, height: height, kind: kind, bytesPerRow: bytesPerRow, bytes: pixelBytes)
         }
-        self.portableImage = PortableImage(width: width, height: height, kind: kind, bytesPerRow: bytesPerRow, bytes: pixelBytes)
     }
 
     public func cropping(to rect: CGRect) -> CGImage? {
@@ -175,6 +212,6 @@ public final class CGImage: @unchecked Sendable {
     }
 
     public var dataProvider: CGDataProvider? {
-        CGDataProvider(data: portableImage.bytes)
+        CGDataProvider(data: portableImage.bytes as [UInt8])
     }
 }

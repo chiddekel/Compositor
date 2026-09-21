@@ -1,5 +1,4 @@
 #include "ContentFill.h"
-#include "CompositorKernels.h"
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
@@ -22,8 +21,6 @@ static double match(const uint8_t *pixels, size_t stride, const uint8_t *known,
     return count ? sum/count : DBL_MAX;
 }
 int content_fill(uint8_t *pixels, size_t stride, const uint8_t *mask, size_t ms, int w, int h) {
-    COMPOSITOR_REQUIRE_CANONICAL_RGBA(stride, (size_t)w);
-    COMPOSITOR_REQUIRE_CANONICAL_GRAY(ms, (size_t)w);
     size_t n=(size_t)w*h;
     uint8_t *known=calloc(n,1), *target=calloc(n,1), *valid=calloc(n,1), *queued=calloc(n,1);
     int *donors=malloc(n*sizeof(int)), *queue=malloc(n*sizeof(int)), *chosen=malloc(n*sizeof(int));

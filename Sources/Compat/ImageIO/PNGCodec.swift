@@ -138,7 +138,7 @@ final class PortablePNGCodec: ImageCodecBackend {
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?) -> Data? {
         guard typeIdentifier == "public.png" else { return nil }
         let w = image.width, h = image.height
-        let mask = image.isMask
+        let mask = image.isGrayPlane
         let ch = mask ? 1 : 4
         var filtered = [UInt8](); filtered.reserveCapacity(h * (w * ch + 1))
         let px = image.portableImage.bytes, rowBytes = image.bytesPerRow

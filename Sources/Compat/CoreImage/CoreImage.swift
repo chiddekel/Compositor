@@ -171,7 +171,7 @@ public final class CIImage: @unchecked Sendable {
         let w = cgImage.width, h = cgImage.height
         var raster = Raster(rect: CGRect(x: 0, y: 0, width: w, height: h))
         let bytes = cgImage.portableImage.bytes, stride = cgImage.bytesPerRow
-        let gray = cgImage.isMask
+        let gray = cgImage.isGrayPlane
         for y in 0..<h {
             // CGImage rows run top-down; CI rows run bottom-up.
             let dst = (h - 1 - y) * w * 4
@@ -354,7 +354,7 @@ public final class CIContext: @unchecked Sendable {
     public func render(_ image: CIImage, toBitmap bitmap: UnsafeMutableRawPointer, rowBytes: Int, bounds: CGRect,
                        format: CIFormat, colorSpace: CGColorSpace?) {
         guard let cg = createCGImage(image, from: bounds, format: format, colorSpace: colorSpace) else { return }
-        let bpp = cg.isMask ? 1 : 4
+        let bpp = cg.isGrayPlane ? 1 : 4
         let bytes = cg.portableImage.bytes
         for y in 0..<cg.height {
             bytes.withUnsafeBufferPointer { src in

@@ -35,3 +35,9 @@ build-dir/
 build-flatpak/
 build-flatpak-minimal/
 linux/build/
+
+# Test scratch logs and Python bytecode
+.*.log
+.*.txt
+__pycache__/
+*.pyc
