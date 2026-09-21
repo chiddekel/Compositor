@@ -10,6 +10,7 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QImageReader>
+#include <QLabel>
 #include <QJsonArray>
 #include <QTreeView>
 #include <QStandardItemModel>
@@ -129,6 +130,23 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
         });
         require(exported(window, path) != original, "filter commit missing");
         undo(window); require(exported(window, path) == original, "filter undo did not restore source in one step");
+        // Regression: /qa 2026-09-21 — every Adjust sheet failed its first live preview
+        // ("Invalid command JSON": the payload omitted `curves`), leaving OK disabled.
+        for (const QString kind : {"Levels", "Hue/Saturation", "Curves", "Exposure", "Gradient Map", "Grain"}) {
+            QString adjustError;
+            modal(window, "adjust." + kind, [&](QDialog *dialog) {
+                QTimer::singleShot(300, dialog, [&, dialog] {
+                    auto *buttons = dialog->findChild<QDialogButtonBox *>();
+                    if (!buttons || !buttons->button(QDialogButtonBox::Ok)->isEnabled()) adjustError = "OK disabled after first preview";
+                    for (auto *label : dialog->findChildren<QLabel *>())
+                        if (!label->text().isEmpty() && label->text().contains("failed")) adjustError = label->text();
+                    dialog->reject();
+                });
+            });
+            require(adjustError.isEmpty(), qPrintable(kind + ": " + adjustError));
+            undo(window); // drop the sheet the dialog added (cancel keeps the new layer)
+            require(exported(window, path) == original, "adjust undo did not restore source");
+        }
         modal(window, "imageSize", [&](QDialog *dialog) {
             dialog->findChild<QCheckBox *>("resample")->setChecked(false);
             number(dialog, "resolution")->setValue(300);
