@@ -245,6 +245,10 @@ public final class CGContext: @unchecked Sendable {
         state.fillColor = CGColor(gray: gray, alpha: alpha)
     }
 
+    public func setFillColor(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+        state.fillColor = CGColor(red: red, green: green, blue: blue, alpha: alpha)
+    }
+
     public func setFillColor(_ color: CGColor) {
         state.fillColor = color
     }

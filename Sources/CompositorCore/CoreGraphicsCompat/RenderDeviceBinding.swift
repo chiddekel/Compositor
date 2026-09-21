@@ -104,6 +104,21 @@ public final class CompCanvasBridge: @unchecked Sendable {
     public var isAvailable: Bool { createCanvas != nil }
 
     private init() {
+        #if canImport(Glibc)
+        let candidates = [
+            "build-cmake/libCompositorSkiaBridge.so",
+            "./build-cmake/libCompositorSkiaBridge.so",
+            "./libCompositorSkiaBridge.so",
+            "libCompositorSkiaBridge.so",
+            "/app/lib/libCompositorSkiaBridge.so"
+        ]
+        for path in candidates {
+            if dlopen(path, RTLD_NOW | RTLD_GLOBAL) != nil {
+                break
+            }
+        }
+        #endif
+
         self.createCanvas = Self.lookup("compositor_canvas_create")
         self.destroyCanvas = Self.lookup("compositor_canvas_destroy")
         self.save = Self.lookup("compositor_canvas_save")
