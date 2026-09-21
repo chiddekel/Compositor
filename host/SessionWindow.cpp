@@ -7,6 +7,7 @@
 #include "TabletHandler.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QPaintEvent>
 #include <QMouseEvent>
 #include <QTabletEvent>
@@ -48,6 +49,14 @@
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QCloseEvent>
+#include <QStackedWidget>
+#include <QTabBar>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
+#include <QButtonGroup>
+#include <QFrame>
+#include <QWheelEvent>
 
 #include <cstdint>
 #include <cstring>
@@ -136,15 +145,109 @@ protected:
     void dropEvent(QDropEvent *event) override {
         m_window->canvasDropEvent(event, this);
     }
+    void wheelEvent(QWheelEvent *event) override {
+        if (event->modifiers() & Qt::ControlModifier) {
+            if (event->angleDelta().y() > 0) {
+                m_window->zoomBy(1.25);
+            } else if (event->angleDelta().y() < 0) {
+                m_window->zoomBy(1.0 / 1.25);
+            }
+            event->accept();
+        } else {
+            QWidget::wheelEvent(event);
+        }
+    }
 private:
     SessionWindow *m_window;
 };
+
+static QIcon makeToolIcon(SessionWindow::Tool tool) {
+    QPixmap pix(22, 22);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(QColor(0xd0, 0xd0, 0xd5), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+
+    switch (tool) {
+    case SessionWindow::Tool::Move:
+        p.drawLine(11, 3, 11, 19);
+        p.drawLine(3, 11, 19, 11);
+        p.drawLine(11, 3, 8, 6);
+        p.drawLine(11, 3, 14, 6);
+        p.drawLine(11, 19, 8, 16);
+        p.drawLine(11, 19, 14, 16);
+        p.drawLine(3, 11, 6, 8);
+        p.drawLine(3, 11, 6, 14);
+        p.drawLine(19, 11, 16, 8);
+        p.drawLine(19, 11, 16, 14);
+        break;
+    case SessionWindow::Tool::Brush:
+        p.drawLine(15, 4, 19, 8);
+        p.drawLine(15, 4, 10, 10);
+        p.drawLine(19, 8, 13, 14);
+        p.drawLine(10, 10, 7, 16);
+        p.drawLine(13, 14, 7, 16);
+        p.setBrush(QColor(0xd0, 0xd0, 0xd5));
+        p.drawEllipse(4, 15, 4, 4);
+        break;
+    case SessionWindow::Tool::Eraser:
+        p.drawRoundedRect(4, 7, 14, 9, 2, 2);
+        p.drawLine(9, 7, 9, 16);
+        break;
+    case SessionWindow::Tool::RectSelect:
+        p.setPen(QPen(QColor(0xd0, 0xd0, 0xd5), 1.5, Qt::DashLine));
+        p.drawRect(4, 4, 14, 14);
+        break;
+    case SessionWindow::Tool::EllipseSelect:
+        p.setPen(QPen(QColor(0xd0, 0xd0, 0xd5), 1.5, Qt::DashLine));
+        p.drawEllipse(4, 4, 14, 14);
+        break;
+    case SessionWindow::Tool::Lasso: {
+        QPainterPath path;
+        path.moveTo(5, 8);
+        path.cubicTo(5, 3, 17, 3, 17, 10);
+        path.cubicTo(17, 16, 12, 18, 9, 16);
+        path.lineTo(6, 19);
+        p.drawPath(path);
+        break;
+    }
+    case SessionWindow::Tool::MagicWand:
+        p.drawLine(4, 18, 15, 7);
+        p.drawLine(17, 3, 17, 7);
+        p.drawLine(15, 5, 19, 5);
+        p.drawLine(13, 3, 13, 4);
+        p.drawLine(19, 9, 19, 10);
+        break;
+    case SessionWindow::Tool::CloneStamp:
+        p.drawEllipse(9, 2, 4, 4);
+        p.drawLine(11, 6, 11, 11);
+        p.drawRoundedRect(6, 11, 10, 5, 1, 1);
+        p.fillRect(4, 16, 14, 3, QColor(0xd0, 0xd0, 0xd5));
+        break;
+    case SessionWindow::Tool::SpotHealing:
+        p.save();
+        p.translate(11, 11);
+        p.rotate(45);
+        p.drawRoundedRect(-4, -8, 8, 16, 3, 3);
+        p.drawPoint(-1, 0); p.drawPoint(1, 0);
+        p.restore();
+        break;
+    case SessionWindow::Tool::Crop:
+        p.drawLine(3, 7, 15, 7);
+        p.drawLine(7, 3, 7, 15);
+        p.drawLine(7, 15, 19, 15);
+        p.drawLine(15, 7, 15, 19);
+        break;
+    }
+    return QIcon(pix);
+}
 
 SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("Compositor");
     resize(1200, 800);
     setAcceptDrops(true);
     m_tabletHandler = std::make_unique<PressureModulatedTabletHandler>();
+    applyDarkTheme();
 
     // Central canvas widget:
     m_canvasWidget = new SessionCanvasWidget(this);
@@ -154,6 +257,8 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     toolsBar->setObjectName("toolbar.tools");
     toolsBar->setMovable(false);
     toolsBar->setOrientation(Qt::Vertical);
+    toolsBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    toolsBar->setIconSize(QSize(22, 22));
     addToolBar(Qt::LeftToolBarArea, toolsBar);
     auto *toolGroup = new QActionGroup(this);
     toolGroup->setExclusive(true);
@@ -277,6 +382,12 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     addAction(cmdPaletteAction);
     edit->addAction(cmdPaletteAction);
 
+    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->addAction(tr("Fit on Screen"), QKeySequence(Qt::CTRL | Qt::Key_0), this, &SessionWindow::fitCanvas);
+    viewMenu->addAction(tr("Actual Pixels (100%)"), QKeySequence(Qt::CTRL | Qt::Key_1), this, &SessionWindow::actualPixels);
+    viewMenu->addAction(tr("Zoom &In"), QKeySequence::ZoomIn, this, [this] { zoomBy(1.25); });
+    viewMenu->addAction(tr("Zoom &Out"), QKeySequence::ZoomOut, this, [this] { zoomBy(1.0 / 1.25); });
+
     QMenu *layer = menuBar()->addMenu(tr("&Layer"));
     layer->addAction(tr("&New Layer"), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) { refreshImage(); refreshLayers(); }
@@ -317,6 +428,10 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     QMenu *tool = menuBar()->addMenu(tr("&Tool"));
     auto addToolAct = [&](const QString &title, QKeySequence shortcut, Tool t, const char *objName) {
         auto *act = tool->addAction(title, shortcut, this, [this, t] { setTool(t); });
+        act->setIcon(makeToolIcon(t));
+        QString cleanTitle = title;
+        cleanTitle.remove('&');
+        act->setToolTip(QString("%1 (%2)").arg(cleanTitle).arg(shortcut.toString(QKeySequence::NativeText)));
         act->setObjectName(objName);
         act->setCheckable(true);
         toolGroup->addAction(act);
@@ -363,6 +478,47 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     dock->setObjectName("dock.layers");
     auto *panel = new QWidget(dock);
     auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    // Header: "Layers" and layer count
+    auto *headerLayout = new QHBoxLayout();
+    auto *lblLayersTitle = new QLabel(tr("Layers"), panel);
+    lblLayersTitle->setStyleSheet("font-size: 12px; font-weight: 600; color: #ffffff;");
+    m_layerCountLabel = new QLabel(tr("1"), panel);
+    m_layerCountLabel->setObjectName("layerCount");
+    m_layerCountLabel->setStyleSheet("font-size: 11px; color: #707074; font-family: monospace;");
+    headerLayout->addWidget(lblLayersTitle);
+    headerLayout->addStretch();
+    headerLayout->addWidget(m_layerCountLabel);
+    layout->addLayout(headerLayout);
+
+    // Appearance Controls: Blend & Opacity
+    auto *blendLayout = new QHBoxLayout();
+    auto *lblBlend = new QLabel(tr("Blend"), panel);
+    lblBlend->setStyleSheet("font-size: 11px; color: #a0a0a5;");
+    blendLayout->addWidget(lblBlend);
+    m_blend = new QComboBox(panel);
+    m_blend->setObjectName("blend.mode");
+    for (const QString &mode : blendModes()) m_blend->addItem(mode);
+    blendLayout->addWidget(m_blend, 1);
+    layout->addLayout(blendLayout);
+
+    auto *opacityLayout = new QHBoxLayout();
+    auto *lblOpacity = new QLabel(tr("Opacity"), panel);
+    lblOpacity->setStyleSheet("font-size: 11px; color: #a0a0a5;");
+    opacityLayout->addWidget(lblOpacity);
+    m_opacity = new QSlider(Qt::Horizontal, panel);
+    m_opacity->setObjectName("layer.opacity");
+    m_opacity->setRange(0, 100);
+    m_opacity->setValue(100);
+    opacityLayout->addWidget(m_opacity, 1);
+    m_opacityLabel = new QLabel(tr("100 %"), panel);
+    m_opacityLabel->setFixedWidth(40);
+    m_opacityLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_opacityLabel->setStyleSheet("font-size: 11px; color: #d0d0d5;");
+    opacityLayout->addWidget(m_opacityLabel);
+    layout->addLayout(opacityLayout);
 
     m_layersView = new QTreeView(panel);
     m_layersView->setObjectName("layers.treeView");
@@ -379,9 +535,20 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     m_layersView->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_layersView->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_layersView->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    layout->addWidget(m_layersView);
+    layout->addWidget(m_layersView, 1);
+
+    auto *checksLayout = new QHBoxLayout();
+    m_visibleCheck = new QCheckBox(tr("Visible"), panel);
+    m_visibleCheck->setObjectName("layer.visible");
+    m_maskCheck = new QCheckBox(tr("Mask enabled"), panel);
+    m_maskCheck->setObjectName("layer.mask");
+    checksLayout->addWidget(m_visibleCheck);
+    checksLayout->addWidget(m_maskCheck);
+    checksLayout->addStretch();
+    layout->addLayout(checksLayout);
 
     auto *btnLayout = new QHBoxLayout();
+    btnLayout->setSpacing(4);
     auto *btnAddLayer = new QPushButton(tr("+ Layer"), panel);
     btnAddLayer->setObjectName("layer.add");
     btnAddLayer->setToolTip(tr("Add blank layer"));
@@ -413,21 +580,10 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
         deleteSelectedLayers();
     });
 
-    layout->addWidget(new QLabel(tr("Opacity"), panel));
-    m_opacity = new QSlider(Qt::Horizontal, panel);
-    m_opacity->setRange(0, 100);
-    m_opacity->setValue(100);
-    layout->addWidget(m_opacity);
-    m_visibleCheck = new QCheckBox(tr("Visible"), panel);
-    m_visibleCheck->setObjectName("layer.visible");
-    m_maskCheck = new QCheckBox(tr("Mask enabled"), panel);
-    m_maskCheck->setObjectName("layer.mask");
-    layout->addWidget(m_visibleCheck);
-    layout->addWidget(m_maskCheck);
-    dock->setMinimumWidth(260);
-    dock->setMaximumWidth(320);
-    panel->setMinimumWidth(260);
-    panel->setMaximumWidth(320);
+    dock->setMinimumWidth(252);
+    dock->setMaximumWidth(352);
+    panel->setMinimumWidth(252);
+    panel->setMaximumWidth(352);
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
@@ -480,6 +636,7 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     });
 
     connect(m_opacity, &QSlider::valueChanged, this, &SessionWindow::setOpacityFromSlider);
+    connect(m_blend, &QComboBox::currentIndexChanged, this, &SessionWindow::setBlendModeFromCombo);
     connect(m_visibleCheck, &QCheckBox::toggled, this, [this](bool on) { if (setLayerFlag("setVisible", on)) refreshImage(); });
     connect(m_maskCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (sendCommand({{"action", "setMaskEnabled"}, {"enabled", on}})) refreshImage();
@@ -496,53 +653,10 @@ SessionWindow::SessionWindow(QWidget *parent) : QMainWindow(parent) {
     imageMenu->addAction(tr("Fill Background"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"fillBackground"})") == 0) refreshImage(); })->setObjectName("fill.background");
     imageMenu->addAction(tr("Clear Selection"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"clearSelection"})") == 0) refreshImage(); })->setObjectName("fill.clear");
 
-    // Brush palette: diameter/hardness/opacity sliders, a color button, and the
-    // active-layer blend mode. Shared by the mouse paint path and smokes.
-    auto *brushDock = new QDockWidget(tr("Brush"), this);
-    auto *brushPanel = new QWidget(brushDock);
-    auto *brushLayout = new QVBoxLayout(brushPanel);
-    m_brushColorButton = new QPushButton(tr("Red"), brushPanel);
-    m_brushColorButton->setObjectName("brush.color");
-    m_brushColorButton->setFixedHeight(28);
-    m_brushColorButton->setStyleSheet("background-color: red;");
-    brushLayout->addWidget(m_brushColorButton);
-    brushLayout->addWidget(new QLabel(tr("Diameter"), brushPanel));
-    m_brushDiameterSlider = new QSlider(Qt::Horizontal, brushPanel);
-    m_brushDiameterSlider->setObjectName("brush.diameter");
-    m_brushDiameterSlider->setRange(1, 256);
-    m_brushDiameterSlider->setValue(m_brushDiameter);
-    brushLayout->addWidget(m_brushDiameterSlider);
-    brushLayout->addWidget(new QLabel(tr("Hardness"), brushPanel));
-    m_brushHardnessSlider = new QSlider(Qt::Horizontal, brushPanel);
-    m_brushHardnessSlider->setObjectName("brush.hardness");
-    m_brushHardnessSlider->setRange(0, 100);
-    m_brushHardnessSlider->setValue(m_brushHardness);
-    brushLayout->addWidget(m_brushHardnessSlider);
-    brushLayout->addWidget(new QLabel(tr("Opacity"), brushPanel));
-    m_brushOpacitySlider = new QSlider(Qt::Horizontal, brushPanel);
-    m_brushOpacitySlider->setObjectName("brush.opacity");
-    m_brushOpacitySlider->setRange(0, 100);
-    m_brushOpacitySlider->setValue(m_brushOpacity);
-    brushLayout->addWidget(m_brushOpacitySlider);
-    brushLayout->addWidget(new QLabel(tr("Blend"), brushPanel));
-    m_blend = new QComboBox(brushPanel);
-    m_blend->setObjectName("blend.mode");
-    for (const QString &mode : blendModes()) m_blend->addItem(mode);
-    brushLayout->addWidget(m_blend);
-    brushDock->setMinimumWidth(260);
-    brushDock->setMaximumWidth(320);
-    brushPanel->setMinimumWidth(260);
-    brushPanel->setMaximumWidth(320);
-    brushDock->setWidget(brushPanel);
-    addDockWidget(Qt::RightDockWidgetArea, brushDock);
-    splitDockWidget(dock, brushDock, Qt::Vertical);
-    connect(m_brushColorButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
-    connect(m_brushDiameterSlider, &QSlider::valueChanged, this, &SessionWindow::setBrushDiameter);
-    connect(m_brushHardnessSlider, &QSlider::valueChanged, this, &SessionWindow::setBrushHardness);
-    connect(m_brushOpacitySlider, &QSlider::valueChanged, this, &SessionWindow::setBrushOpacity);
-    connect(m_blend, &QComboBox::currentIndexChanged, this, &SessionWindow::setBlendModeFromCombo);
-
-    statusBar()->showMessage(tr("Drag on canvas to paint."));
+    setupHeaderBar();
+    setupOptionsBar();
+    updateOptionsBar();
+    updateStatusTelemetry();
 
     m_autosaveTimer = new QTimer(this);
     m_autosaveTimer->setObjectName("autosaveTimer");
@@ -561,11 +675,16 @@ QRectF SessionWindow::canvasTargetRect() const {
     const int pad = 24;
     const int maxW = std::max(10, canvasSize.width() - pad * 2);
     const int maxH = std::max(10, canvasSize.height() - pad * 2);
-    double scale = std::min(static_cast<double>(maxW) / m_image.width(),
-                            static_cast<double>(maxH) / m_image.height());
-    if (m_image.width() <= 128 && m_image.height() <= 128) {
-        int intScale = std::max(1, static_cast<int>(scale));
-        scale = intScale;
+    double scale = 1.0;
+    if (m_zoomLevel > 0.0) {
+        scale = m_zoomLevel;
+    } else {
+        scale = std::min(static_cast<double>(maxW) / m_image.width(),
+                         static_cast<double>(maxH) / m_image.height());
+        if (m_image.width() <= 128 && m_image.height() <= 128) {
+            int intScale = std::max(1, static_cast<int>(scale));
+            scale = intScale;
+        }
     }
     const double displayW = m_image.width() * scale;
     const double displayH = m_image.height() * scale;
@@ -719,6 +838,7 @@ void SessionWindow::refreshImage() {
     m_image = rendered;
     if (m_canvasWidget) m_canvasWidget->update();
     update();
+    updateStatusTelemetry();
     QMetaObject::invokeMethod(this, [this] { refreshLayers(); }, Qt::QueuedConnection);
 }
 
@@ -845,12 +965,18 @@ void SessionWindow::refreshLayers() {
 
     m_layersView->expandAll();
 
+    if (m_layerCountLabel) {
+        m_layerCountLabel->setText(QString::number(order.size()));
+    }
+
     if (selectedIndex.isValid()) {
         m_layersView->setCurrentIndex(selectedIndex);
         m_layersView->selectionModel()->select(selectedIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         m_layersView->scrollTo(selectedIndex);
 
-        m_opacity->setValue(qRound(activeLayerObj.value("opacity").toDouble(1.0) * 100));
+        const int opVal = qRound(activeLayerObj.value("opacity").toDouble(1.0) * 100);
+        m_opacity->setValue(opVal);
+        if (m_opacityLabel) m_opacityLabel->setText(QString("%1 %").arg(opVal));
         m_visibleCheck->setChecked(activeLayerObj.value("visible").toBool(true));
         m_maskCheck->setEnabled(activeLayerObj.value("hasMask").toBool(false));
         m_maskCheck->setChecked(activeLayerObj.value("hasMask").toBool(false) && activeLayerObj.value("maskEnabled").toBool(true));
@@ -870,6 +996,7 @@ void SessionWindow::selectLayerRow(int row) {
 }
 
 void SessionWindow::setOpacityFromSlider(int value) {
+    if (m_opacityLabel) m_opacityLabel->setText(QString("%1 %").arg(value));
     if (m_syncingLayers) return;
     const QByteArray json = QString(R"({"version":1,"action":"setOpacity","value":%1})").arg(value / 100.0, 0, 'f', 3).toUtf8();
     if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
@@ -923,13 +1050,8 @@ void SessionWindow::setTool(Tool tool) {
     if (m_toolActions.contains(tool) && !m_toolActions[tool]->isChecked()) {
         m_toolActions[tool]->setChecked(true);
     }
-    const char *names[] = {
-        "Brush", "Eraser", "Move", "Rect Marquee", "Ellipse Marquee",
-        "Lasso", "Magic Wand", "Clone Stamp", "Spot Healing", "Crop"
-    };
-    if (statusBar()) {
-        statusBar()->showMessage(tr("Tool: %1").arg(tr(names[static_cast<int>(tool)])), 2000);
-    }
+    updateOptionsBar();
+    updateStatusTelemetry();
 }
 
 void SessionWindow::mousePressEvent(QMouseEvent *event) {
@@ -1537,4 +1659,873 @@ void SessionWindow::clearAutosave() {
 void SessionWindow::closeEvent(QCloseEvent *event) {
     clearAutosave();
     QMainWindow::closeEvent(event);
+}
+
+void SessionWindow::applyDarkTheme() {
+    const QString qss = QString::fromUtf8(R"(
+        QMainWindow {
+            background-color: #1c1d1f;
+            color: #e5e5e7;
+        }
+        QWidget {
+            color: #e5e5e7;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            font-size: 12px;
+        }
+        QMenuBar {
+            background-color: #1e1e20;
+            color: #d0d0d5;
+            border-bottom: 1px solid #141416;
+            padding: 2px 6px;
+        }
+        QMenuBar::item {
+            background: transparent;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        QMenuBar::item:selected {
+            background-color: #2c2c30;
+            color: #ffffff;
+        }
+        QMenu {
+            background-color: #242427;
+            color: #e0e0e5;
+            border: 1px solid #38383c;
+            border-radius: 6px;
+            padding: 4px;
+        }
+        QMenu::item {
+            padding: 5px 24px 5px 12px;
+            border-radius: 4px;
+        }
+        QMenu::item:selected {
+            background-color: #007aff;
+            color: #ffffff;
+        }
+        QMenu::separator {
+            height: 1px;
+            background-color: #38383c;
+            margin: 4px 8px;
+        }
+        QToolBar {
+            background-color: #1e1e20;
+            border: none;
+            spacing: 4px;
+            padding: 2px;
+        }
+        QToolBar#toolbar.tools {
+            background-color: #1e1e20;
+            border-right: 1px solid #141416;
+            spacing: 2px;
+            padding: 4px;
+            width: 44px;
+        }
+        QToolBar#toolbar.tools QToolButton {
+            background: transparent;
+            color: #c0c0c5;
+            border: 1px solid transparent;
+            border-radius: 5px;
+            padding: 5px;
+            margin: 1px 2px;
+            min-width: 28px;
+            min-height: 28px;
+            font-size: 11px;
+        }
+        QToolBar#toolbar.tools QToolButton:hover {
+            background-color: #2c2c30;
+            color: #ffffff;
+        }
+        QToolBar#toolbar.tools QToolButton:checked {
+            background-color: #38393e;
+            color: #ffffff;
+            border: 1px solid #4a4b52;
+        }
+        QToolBar::separator {
+            background-color: #2d2d30;
+            height: 1px;
+            margin: 4px 4px;
+        }
+        QDockWidget {
+            background-color: #1e1e20;
+            color: #e0e0e5;
+            border: none;
+        }
+        QDockWidget::title {
+            background-color: #1e1e20;
+            color: #e0e0e5;
+            padding: 8px 12px;
+            border-bottom: 1px solid #141416;
+            font-weight: 600;
+            font-size: 12px;
+        }
+        QDockWidget > QWidget {
+            background-color: #1e1e20;
+            border-left: 1px solid #141416;
+        }
+        QTreeView {
+            background-color: #1a1a1c;
+            alternate-background-color: #202023;
+            color: #dcdce0;
+            border: 1px solid #28282c;
+            border-radius: 4px;
+            selection-background-color: #38393e;
+            selection-color: #ffffff;
+            show-decoration-selected: 1;
+            padding: 2px;
+        }
+        QTreeView::item {
+            padding: 4px 2px;
+            border-radius: 3px;
+        }
+        QTreeView::item:hover {
+            background-color: #28292d;
+        }
+        QTreeView::item:selected {
+            background-color: #38393e;
+            color: #ffffff;
+        }
+        QHeaderView::section {
+            background-color: #1e1e20;
+            color: #88888c;
+            padding: 4px 8px;
+            border: none;
+            border-bottom: 1px solid #28282c;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        QStatusBar {
+            background-color: #1e1e20;
+            color: #88888c;
+            border-top: 1px solid #141416;
+            font-size: 11px;
+            min-height: 24px;
+        }
+        QStatusBar QLabel {
+            color: #88888c;
+            font-size: 11px;
+        }
+        QSlider::groove:horizontal {
+            height: 4px;
+            background: #333336;
+            border-radius: 2px;
+        }
+        QSlider::sub-page:horizontal {
+            background: #007aff;
+            border-radius: 2px;
+        }
+        QSlider::handle:horizontal {
+            background: #ffffff;
+            border: 1px solid #b0b0b5;
+            width: 12px;
+            height: 12px;
+            margin: -4px 0;
+            border-radius: 6px;
+        }
+        QSlider::handle:horizontal:hover {
+            background: #f0f0f5;
+        }
+        QComboBox {
+            background-color: #28282b;
+            color: #e0e0e5;
+            border: 1px solid #38383c;
+            border-radius: 4px;
+            padding: 3px 8px;
+            min-height: 18px;
+            font-size: 11px;
+        }
+        QComboBox:hover {
+            border-color: #4a4a50;
+        }
+        QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 18px;
+            border-left-width: 0px;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #242427;
+            color: #e0e0e5;
+            border: 1px solid #38383c;
+            selection-background-color: #007aff;
+            selection-color: #ffffff;
+            padding: 4px;
+        }
+        QCheckBox {
+            color: #d0d0d5;
+            font-size: 11px;
+            spacing: 6px;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+            border: 1px solid #4a4a50;
+            border-radius: 3px;
+            background-color: #28282b;
+        }
+        QCheckBox::indicator:hover {
+            border-color: #65656d;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #007aff;
+            border-color: #007aff;
+        }
+        QSpinBox, QDoubleSpinBox, QLineEdit {
+            background-color: #28282b;
+            color: #e0e0e5;
+            border: 1px solid #38383c;
+            border-radius: 4px;
+            padding: 2px 4px;
+            font-size: 11px;
+        }
+        QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {
+            border: 1px solid #007aff;
+        }
+        QPushButton {
+            background-color: #2a2a2d;
+            color: #d0d0d5;
+            border: 1px solid #38383c;
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11px;
+        }
+        QPushButton:hover {
+            background-color: #35353a;
+            color: #ffffff;
+            border-color: #48484f;
+        }
+        QPushButton:pressed {
+            background-color: #1f1f22;
+        }
+    )");
+    setStyleSheet(qss);
+}
+
+void SessionWindow::setupHeaderBar() {
+    m_headerToolBar = addToolBar(tr("Header"));
+    m_headerToolBar->setObjectName("toolbar.header");
+    m_headerToolBar->setMovable(false);
+    m_headerToolBar->setFixedHeight(36);
+    m_headerToolBar->setStyleSheet("QToolBar { background: #1e1e20; border-bottom: 1px solid #141416; spacing: 6px; padding: 2px 8px; }");
+
+    auto *btnNew = new QPushButton("+", m_headerToolBar);
+    btnNew->setObjectName("newCanvasToolbar");
+    btnNew->setToolTip(tr("New canvas (Ctrl+N)"));
+    btnNew->setFixedSize(26, 26);
+    btnNew->setStyleSheet(
+        "QPushButton { background: #2a2a2d; color: #d0d0d0; border: 1px solid #3a3a3d; border-radius: 4px; font-size: 15px; font-weight: bold; } "
+        "QPushButton:hover { background: #353539; color: #ffffff; } "
+        "QPushButton:pressed { background: #202022; }"
+    );
+    connect(btnNew, &QPushButton::clicked, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"new","width":512,"height":512})") == 0) {
+            m_image = renderToQImage(m_sessionHandle, 512, 512);
+            refreshImage();
+        }
+    });
+    m_headerToolBar->addWidget(btnNew);
+
+    m_documentTabBar = new QTabBar(m_headerToolBar);
+    m_documentTabBar->setObjectName("header.documentTabs");
+    m_documentTabBar->setDrawBase(false);
+    m_documentTabBar->setExpanding(false);
+    m_documentTabBar->setTabsClosable(true);
+    m_documentTabBar->addTab(tr("Untitled 1"));
+    m_documentTabBar->setStyleSheet(
+        "QTabBar::tab { background: #252528; color: #9a9a9f; border: 1px solid #333336; border-radius: 5px; padding: 3px 12px; margin-right: 4px; font-size: 12px; } "
+        "QTabBar::tab:selected { background: #38393e; color: #ffffff; border: 1px solid #4a4b52; } "
+        "QTabBar::tab:hover:!selected { background: #2e2f33; color: #d0d0d5; } "
+        "QTabBar::close-button { image: none; subcontrol-position: right; margin-left: 4px; } "
+        "QTabBar::close-button:hover { background: #55555a; border-radius: 2px; }"
+    );
+    m_headerToolBar->addWidget(m_documentTabBar);
+
+    auto *spacer = new QWidget(m_headerToolBar);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_headerToolBar->addWidget(spacer);
+
+    auto makeZoomBtn = [this](const QString &text, const QString &objName, const QString &tooltip) {
+        auto *btn = new QPushButton(text, m_headerToolBar);
+        btn->setObjectName(objName);
+        btn->setToolTip(tooltip);
+        btn->setFixedHeight(24);
+        btn->setStyleSheet(
+            "QPushButton { background: #2a2a2d; color: #c8c8cd; border: 1px solid #38383c; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 500; } "
+            "QPushButton:hover { background: #35353a; color: #ffffff; border-color: #4a4a50; } "
+            "QPushButton:pressed { background: #202022; }"
+        );
+        return btn;
+    };
+
+    auto *btnFit = makeZoomBtn(tr("Fit"), "fitCanvas", tr("Fit canvas in window (Ctrl+0)"));
+    connect(btnFit, &QPushButton::clicked, this, &SessionWindow::fitCanvas);
+    m_headerToolBar->addWidget(btnFit);
+
+    auto *btn100 = makeZoomBtn(tr("100%"), "actualPixels", tr("Actual pixels (Ctrl+1)"));
+    connect(btn100, &QPushButton::clicked, this, &SessionWindow::actualPixels);
+    m_headerToolBar->addWidget(btn100);
+
+    auto *btnZoomOut = makeZoomBtn(QString::fromUtf8("−"), "zoomOut", tr("Zoom out (Ctrl+−)"));
+    connect(btnZoomOut, &QPushButton::clicked, this, [this] { zoomBy(1.0 / 1.25); });
+    m_headerToolBar->addWidget(btnZoomOut);
+
+    auto *btnZoomIn = makeZoomBtn("+", "zoomIn", tr("Zoom in (Ctrl++)"));
+    connect(btnZoomIn, &QPushButton::clicked, this, [this] { zoomBy(1.25); });
+    m_headerToolBar->addWidget(btnZoomIn);
+}
+
+void SessionWindow::setupOptionsBar() {
+    addToolBarBreak(Qt::TopToolBarArea);
+    m_optionsToolBar = addToolBar(tr("Options"));
+    m_optionsToolBar->setObjectName("toolbar.options");
+    m_optionsToolBar->setMovable(false);
+    m_optionsToolBar->setFixedHeight(42);
+    m_optionsToolBar->setStyleSheet("QToolBar { background: #1e1e20; border-bottom: 1px solid #141416; spacing: 0px; padding: 0px 8px; }");
+
+    m_optionsStack = new QStackedWidget(m_optionsToolBar);
+    m_optionsStack->setObjectName("optionsStack");
+    m_optionsStack->setFixedHeight(38);
+
+    const QString titleStyle = "color: #ffffff; font-weight: 600; font-size: 12px; margin-right: 6px;";
+    const QString labelStyle = "color: #a0a0a5; font-size: 11px; margin-left: 4px; margin-right: 2px;";
+    const QString spinStyle = "QSpinBox, QDoubleSpinBox { background: #28282b; color: #e0e0e0; border: 1px solid #3c3c40; border-radius: 4px; padding: 2px 4px; font-size: 11px; } "
+                              "QSpinBox::up-button, QSpinBox::down-button { width: 0px; }";
+    const QString btnStyle = "QPushButton { background: #2c2c2f; color: #d0d0d5; border: 1px solid #3c3c40; border-radius: 4px; padding: 3px 8px; font-size: 11px; } "
+                             "QPushButton:hover { background: #38383c; color: #ffffff; } "
+                             "QPushButton:pressed { background: #202022; }";
+    const QString pillActive = "background: #007aff; color: #ffffff; border: 1px solid #0062cc; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 500;";
+    const QString pillInactive = "background: #28282b; color: #a0a0a5; border: 1px solid #38383c; border-radius: 4px; padding: 2px 8px; font-size: 11px;";
+
+    // Page 0: Move / Transform
+    auto *pageMove = new QWidget(m_optionsStack);
+    auto *layoutMove = new QHBoxLayout(pageMove);
+    layoutMove->setContentsMargins(0, 0, 0, 0);
+    layoutMove->setSpacing(8);
+
+    auto *lblMoveTitle = new QLabel(tr("Move / Transform"), pageMove);
+    lblMoveTitle->setStyleSheet(titleStyle);
+    layoutMove->addWidget(lblMoveTitle);
+
+    auto *chkAutoSelect = new QCheckBox(tr("Auto Select"), pageMove);
+    chkAutoSelect->setObjectName("transformAutoSelect");
+    chkAutoSelect->setChecked(true);
+    layoutMove->addWidget(chkAutoSelect);
+
+    auto *chkIgnoreTrans = new QCheckBox(tr("Ignore Transparent Pixels"), pageMove);
+    layoutMove->addWidget(chkIgnoreTrans);
+
+    auto *chkShowControls = new QCheckBox(tr("Show Controls"), pageMove);
+    chkShowControls->setChecked(true);
+    layoutMove->addWidget(chkShowControls);
+
+    auto addCoordBox = [&](const QString &label, int defVal) {
+        auto *lbl = new QLabel(label, pageMove);
+        lbl->setStyleSheet(labelStyle);
+        layoutMove->addWidget(lbl);
+        auto *spin = new QSpinBox(pageMove);
+        spin->setRange(-9999, 9999);
+        spin->setValue(defVal);
+        spin->setFixedWidth(56);
+        spin->setStyleSheet(spinStyle);
+        layoutMove->addWidget(spin);
+        return spin;
+    };
+    addCoordBox("X", 0);
+    addCoordBox("Y", 0);
+    addCoordBox("W", 512);
+    addCoordBox("H", 512);
+
+    auto *chkLink = new QCheckBox(tr("Link"), pageMove);
+    chkLink->setChecked(true);
+    layoutMove->addWidget(chkLink);
+
+    auto *lblAngle = new QLabel(tr("Angle"), pageMove);
+    lblAngle->setStyleSheet(labelStyle);
+    layoutMove->addWidget(lblAngle);
+    auto *spinAngle = new QSpinBox(pageMove);
+    spinAngle->setRange(-360, 360);
+    spinAngle->setValue(0);
+    spinAngle->setSuffix(QString::fromUtf8("°"));
+    spinAngle->setFixedWidth(50);
+    spinAngle->setStyleSheet(spinStyle);
+    layoutMove->addWidget(spinAngle);
+
+    layoutMove->addStretch();
+    m_optionsStack->addWidget(pageMove);
+
+    // Page 1: Brush / Eraser
+    auto *pageBrush = new QWidget(m_optionsStack);
+    auto *layoutBrush = new QHBoxLayout(pageBrush);
+    layoutBrush->setContentsMargins(0, 0, 0, 0);
+    layoutBrush->setSpacing(8);
+
+    auto *lblBrushTitle = new QLabel(tr("Brush"), pageBrush);
+    lblBrushTitle->setObjectName("options.brushTitle");
+    lblBrushTitle->setStyleSheet(titleStyle);
+    layoutBrush->addWidget(lblBrushTitle);
+
+    auto *btnPaintMode = new QPushButton(tr("Paint"), pageBrush);
+    btnPaintMode->setCheckable(true);
+    btnPaintMode->setChecked(true);
+    btnPaintMode->setStyleSheet(pillActive);
+    auto *btnEraseMode = new QPushButton(tr("Erase"), pageBrush);
+    btnEraseMode->setCheckable(true);
+    btnEraseMode->setChecked(false);
+    btnEraseMode->setStyleSheet(pillInactive);
+
+    connect(btnPaintMode, &QPushButton::clicked, this, [this, btnPaintMode, btnEraseMode, pillActive, pillInactive] {
+        m_brushMode = "Paint";
+        btnPaintMode->setChecked(true);
+        btnEraseMode->setChecked(false);
+        btnPaintMode->setStyleSheet(pillActive);
+        btnEraseMode->setStyleSheet(pillInactive);
+        setTool(Tool::Brush);
+    });
+    connect(btnEraseMode, &QPushButton::clicked, this, [this, btnPaintMode, btnEraseMode, pillActive, pillInactive] {
+        m_brushMode = "Paint";
+        btnPaintMode->setChecked(false);
+        btnEraseMode->setChecked(true);
+        btnPaintMode->setStyleSheet(pillInactive);
+        btnEraseMode->setStyleSheet(pillActive);
+        setTool(Tool::Eraser);
+    });
+    layoutBrush->addWidget(btnPaintMode);
+    layoutBrush->addWidget(btnEraseMode);
+
+    auto *lblSize = new QLabel(tr("Size"), pageBrush);
+    lblSize->setStyleSheet(labelStyle);
+    layoutBrush->addWidget(lblSize);
+
+    m_brushDiameterSlider = new QSlider(Qt::Horizontal, pageBrush);
+    m_brushDiameterSlider->setObjectName("brush.diameter");
+    m_brushDiameterSlider->setRange(1, 256);
+    m_brushDiameterSlider->setValue(m_brushDiameter);
+    m_brushDiameterSlider->setFixedWidth(100);
+    layoutBrush->addWidget(m_brushDiameterSlider);
+
+    auto *spinSize = new QSpinBox(pageBrush);
+    spinSize->setRange(1, 2000);
+    spinSize->setValue(m_brushDiameter);
+    spinSize->setSuffix(tr(" px"));
+    spinSize->setFixedWidth(64);
+    spinSize->setStyleSheet(spinStyle);
+    layoutBrush->addWidget(spinSize);
+
+    connect(m_brushDiameterSlider, &QSlider::valueChanged, this, [this, spinSize](int val) {
+        if (spinSize->value() != val) spinSize->setValue(val);
+        setBrushDiameter(val);
+    });
+    connect(spinSize, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        if (m_brushDiameterSlider->value() != std::min(val, 256)) m_brushDiameterSlider->setValue(std::min(val, 256));
+        setBrushDiameter(val);
+    });
+
+    auto *lblHard = new QLabel(tr("Hardness"), pageBrush);
+    lblHard->setStyleSheet(labelStyle);
+    layoutBrush->addWidget(lblHard);
+
+    m_brushHardnessSlider = new QSlider(Qt::Horizontal, pageBrush);
+    m_brushHardnessSlider->setObjectName("brush.hardness");
+    m_brushHardnessSlider->setRange(0, 100);
+    m_brushHardnessSlider->setValue(m_brushHardness);
+    m_brushHardnessSlider->setFixedWidth(80);
+    layoutBrush->addWidget(m_brushHardnessSlider);
+
+    auto *spinHard = new QSpinBox(pageBrush);
+    spinHard->setRange(0, 100);
+    spinHard->setValue(m_brushHardness);
+    spinHard->setSuffix(tr(" %"));
+    spinHard->setFixedWidth(54);
+    spinHard->setStyleSheet(spinStyle);
+    layoutBrush->addWidget(spinHard);
+
+    connect(m_brushHardnessSlider, &QSlider::valueChanged, this, [this, spinHard](int val) {
+        if (spinHard->value() != val) spinHard->setValue(val);
+        setBrushHardness(val);
+    });
+    connect(spinHard, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        if (m_brushHardnessSlider->value() != val) m_brushHardnessSlider->setValue(val);
+        setBrushHardness(val);
+    });
+
+    auto *lblOpac = new QLabel(tr("Opacity"), pageBrush);
+    lblOpac->setStyleSheet(labelStyle);
+    layoutBrush->addWidget(lblOpac);
+
+    m_brushOpacitySlider = new QSlider(Qt::Horizontal, pageBrush);
+    m_brushOpacitySlider->setObjectName("brush.opacity");
+    m_brushOpacitySlider->setRange(0, 100);
+    m_brushOpacitySlider->setValue(m_brushOpacity);
+    m_brushOpacitySlider->setFixedWidth(80);
+    layoutBrush->addWidget(m_brushOpacitySlider);
+
+    auto *spinOpac = new QSpinBox(pageBrush);
+    spinOpac->setRange(0, 100);
+    spinOpac->setValue(m_brushOpacity);
+    spinOpac->setSuffix(tr(" %"));
+    spinOpac->setFixedWidth(54);
+    spinOpac->setStyleSheet(spinStyle);
+    layoutBrush->addWidget(spinOpac);
+
+    connect(m_brushOpacitySlider, &QSlider::valueChanged, this, [this, spinOpac](int val) {
+        if (spinOpac->value() != val) spinOpac->setValue(val);
+        setBrushOpacity(val);
+    });
+    connect(spinOpac, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        if (m_brushOpacitySlider->value() != val) m_brushOpacitySlider->setValue(val);
+        setBrushOpacity(val);
+    });
+
+    auto *lblColor = new QLabel(tr("Color"), pageBrush);
+    lblColor->setStyleSheet(labelStyle);
+    layoutBrush->addWidget(lblColor);
+
+    m_brushColorButton = new QPushButton(pageBrush);
+    m_brushColorButton->setObjectName("brush.color");
+    m_brushColorButton->setFixedSize(36, 20);
+    m_brushColorButton->setToolTip(tr("Foreground brush color"));
+    m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #101012; border-radius: 3px;").arg(m_brushColor.name()));
+    connect(m_brushColorButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
+    layoutBrush->addWidget(m_brushColorButton);
+
+    layoutBrush->addStretch();
+    m_optionsStack->addWidget(pageBrush);
+
+    // Page 2: Selection
+    auto *pageSelect = new QWidget(m_optionsStack);
+    auto *layoutSelect = new QHBoxLayout(pageSelect);
+    layoutSelect->setContentsMargins(0, 0, 0, 0);
+    layoutSelect->setSpacing(8);
+
+    auto *lblSelectTitle = new QLabel(tr("Selection"), pageSelect);
+    lblSelectTitle->setObjectName("options.selectTitle");
+    lblSelectTitle->setStyleSheet(titleStyle);
+    layoutSelect->addWidget(lblSelectTitle);
+
+    auto *btnRect = new QPushButton(tr("Rectangle"), pageSelect);
+    btnRect->setStyleSheet(pillActive);
+    auto *btnEllipse = new QPushButton(tr("Ellipse"), pageSelect);
+    btnEllipse->setStyleSheet(pillInactive);
+    connect(btnRect, &QPushButton::clicked, this, [this, btnRect, btnEllipse, pillActive, pillInactive] {
+        btnRect->setStyleSheet(pillActive);
+        btnEllipse->setStyleSheet(pillInactive);
+        setTool(Tool::RectSelect);
+    });
+    connect(btnEllipse, &QPushButton::clicked, this, [this, btnRect, btnEllipse, pillActive, pillInactive] {
+        btnRect->setStyleSheet(pillInactive);
+        btnEllipse->setStyleSheet(pillActive);
+        setTool(Tool::EllipseSelect);
+    });
+    layoutSelect->addWidget(btnRect);
+    layoutSelect->addWidget(btnEllipse);
+
+    auto *btnNewSel = new QPushButton(tr("New"), pageSelect);
+    btnNewSel->setStyleSheet(pillActive);
+    auto *btnAddSel = new QPushButton(tr("Add"), pageSelect);
+    btnAddSel->setStyleSheet(pillInactive);
+    auto *btnSubSel = new QPushButton(tr("Subtract"), pageSelect);
+    btnSubSel->setStyleSheet(pillInactive);
+    connect(btnNewSel, &QPushButton::clicked, this, [btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+        btnNewSel->setStyleSheet(pillActive); btnAddSel->setStyleSheet(pillInactive); btnSubSel->setStyleSheet(pillInactive);
+    });
+    connect(btnAddSel, &QPushButton::clicked, this, [btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+        btnNewSel->setStyleSheet(pillInactive); btnAddSel->setStyleSheet(pillActive); btnSubSel->setStyleSheet(pillInactive);
+    });
+    connect(btnSubSel, &QPushButton::clicked, this, [btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
+        btnNewSel->setStyleSheet(pillInactive); btnAddSel->setStyleSheet(pillInactive); btnSubSel->setStyleSheet(pillActive);
+    });
+    layoutSelect->addWidget(btnNewSel);
+    layoutSelect->addWidget(btnAddSel);
+    layoutSelect->addWidget(btnSubSel);
+
+    auto *chkAntiAlias = new QCheckBox(tr("Anti-alias"), pageSelect);
+    chkAntiAlias->setChecked(true);
+    layoutSelect->addWidget(chkAntiAlias);
+
+    auto *btnExpand = new QPushButton(tr("Expand"), pageSelect);
+    btnExpand->setStyleSheet(btnStyle);
+    layoutSelect->addWidget(btnExpand);
+    auto *spinExpand = new QSpinBox(pageSelect);
+    spinExpand->setRange(1, 250);
+    spinExpand->setValue(1);
+    spinExpand->setSuffix(tr(" px"));
+    spinExpand->setFixedWidth(54);
+    spinExpand->setStyleSheet(spinStyle);
+    layoutSelect->addWidget(spinExpand);
+    connect(btnExpand, &QPushButton::clicked, this, [this, spinExpand] {
+        cmd(m_sessionHandle, QString(R"({"version":1,"action":"expandSelection","amount":%1})").arg(spinExpand->value()).toUtf8().constData());
+        refreshImage();
+    });
+
+    auto *btnContract = new QPushButton(tr("Contract"), pageSelect);
+    btnContract->setStyleSheet(btnStyle);
+    layoutSelect->addWidget(btnContract);
+    auto *spinContract = new QSpinBox(pageSelect);
+    spinContract->setRange(1, 250);
+    spinContract->setValue(1);
+    spinContract->setSuffix(tr(" px"));
+    spinContract->setFixedWidth(54);
+    spinContract->setStyleSheet(spinStyle);
+    layoutSelect->addWidget(spinContract);
+    connect(btnContract, &QPushButton::clicked, this, [this, spinContract] {
+        cmd(m_sessionHandle, QString(R"({"version":1,"action":"contractSelection","amount":%1})").arg(spinContract->value()).toUtf8().constData());
+        refreshImage();
+    });
+
+    auto *btnDeselect = new QPushButton(tr("Deselect"), pageSelect);
+    btnDeselect->setStyleSheet(btnStyle);
+    connect(btnDeselect, &QPushButton::clicked, this, [this] {
+        cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})");
+        refreshImage();
+    });
+    layoutSelect->addWidget(btnDeselect);
+
+    layoutSelect->addStretch();
+    m_optionsStack->addWidget(pageSelect);
+
+    // Page 3: Magic Wand
+    auto *pageWand = new QWidget(m_optionsStack);
+    auto *layoutWand = new QHBoxLayout(pageWand);
+    layoutWand->setContentsMargins(0, 0, 0, 0);
+    layoutWand->setSpacing(8);
+
+    auto *lblWandTitle = new QLabel(tr("Magic Wand"), pageWand);
+    lblWandTitle->setStyleSheet(titleStyle);
+    layoutWand->addWidget(lblWandTitle);
+
+    auto *lblTol = new QLabel(tr("Tolerance"), pageWand);
+    lblTol->setStyleSheet(labelStyle);
+    layoutWand->addWidget(lblTol);
+    auto *spinTol = new QSpinBox(pageWand);
+    spinTol->setRange(0, 255);
+    spinTol->setValue(32);
+    spinTol->setFixedWidth(50);
+    spinTol->setStyleSheet(spinStyle);
+    layoutWand->addWidget(spinTol);
+
+    auto *chkWandContig = new QCheckBox(tr("Contiguous"), pageWand);
+    chkWandContig->setChecked(true);
+    layoutWand->addWidget(chkWandContig);
+
+    auto *chkWandAA = new QCheckBox(tr("Anti-alias"), pageWand);
+    chkWandAA->setChecked(true);
+    layoutWand->addWidget(chkWandAA);
+
+    auto *chkWandSample = new QCheckBox(tr("Sample All Layers"), pageWand);
+    layoutWand->addWidget(chkWandSample);
+
+    layoutWand->addStretch();
+    m_optionsStack->addWidget(pageWand);
+
+    // Page 4: Clone Stamp / Spot Healing
+    auto *pageClone = new QWidget(m_optionsStack);
+    auto *layoutClone = new QHBoxLayout(pageClone);
+    layoutClone->setContentsMargins(0, 0, 0, 0);
+    layoutClone->setSpacing(8);
+
+    auto *lblCloneTitle = new QLabel(tr("Clone Stamp"), pageClone);
+    lblCloneTitle->setObjectName("options.cloneTitle");
+    lblCloneTitle->setStyleSheet(titleStyle);
+    layoutClone->addWidget(lblCloneTitle);
+
+    auto *chkAligned = new QCheckBox(tr("Aligned"), pageClone);
+    chkAligned->setChecked(true);
+    layoutClone->addWidget(chkAligned);
+
+    auto *lblSample = new QLabel(tr("Sample:"), pageClone);
+    lblSample->setStyleSheet(labelStyle);
+    layoutClone->addWidget(lblSample);
+    auto *comboSample = new QComboBox(pageClone);
+    comboSample->addItems({tr("Current Layer"), tr("All Layers")});
+    layoutClone->addWidget(comboSample);
+
+    layoutClone->addStretch();
+    m_optionsStack->addWidget(pageClone);
+
+    // Page 5: Crop
+    auto *pageCrop = new QWidget(m_optionsStack);
+    auto *layoutCrop = new QHBoxLayout(pageCrop);
+    layoutCrop->setContentsMargins(0, 0, 0, 0);
+    layoutCrop->setSpacing(8);
+
+    auto *lblCropTitle = new QLabel(tr("Crop"), pageCrop);
+    lblCropTitle->setStyleSheet(titleStyle);
+    layoutCrop->addWidget(lblCropTitle);
+
+    auto *lblRatio = new QLabel(tr("Ratio"), pageCrop);
+    lblRatio->setStyleSheet(labelStyle);
+    layoutCrop->addWidget(lblRatio);
+    auto *comboRatio = new QComboBox(pageCrop);
+    comboRatio->addItems({tr("Free"), tr("Original"), tr("1:1"), tr("4:3"), tr("16:9")});
+    layoutCrop->addWidget(comboRatio);
+
+    auto *btnApplyCrop = new QPushButton(tr("Apply Crop"), pageCrop);
+    btnApplyCrop->setStyleSheet(btnStyle);
+    auto *btnCancelCrop = new QPushButton(tr("Cancel"), pageCrop);
+    btnCancelCrop->setStyleSheet(btnStyle);
+    layoutCrop->addWidget(btnApplyCrop);
+    layoutCrop->addWidget(btnCancelCrop);
+
+    layoutCrop->addStretch();
+    m_optionsStack->addWidget(pageCrop);
+
+    // Page 6: Default / Idle
+    auto *pageIdle = new QWidget(m_optionsStack);
+    auto *layoutIdle = new QHBoxLayout(pageIdle);
+    layoutIdle->setContentsMargins(0, 0, 0, 0);
+    layoutIdle->setSpacing(8);
+    auto *lblIdle = new QLabel(tr("Select a tool from the left toolbar"), pageIdle);
+    lblIdle->setStyleSheet(labelStyle);
+    layoutIdle->addWidget(lblIdle);
+    layoutIdle->addStretch();
+    m_optionsStack->addWidget(pageIdle);
+
+    m_optionsToolBar->addWidget(m_optionsStack);
+}
+
+void SessionWindow::updateOptionsBar() {
+    if (!m_optionsStack) return;
+    switch (m_tool) {
+    case Tool::Move:
+        m_optionsStack->setCurrentIndex(0);
+        break;
+    case Tool::Brush:
+    case Tool::Eraser: {
+        m_optionsStack->setCurrentIndex(1);
+        auto *lbl = m_optionsStack->widget(1)->findChild<QLabel *>("options.brushTitle");
+        if (lbl) lbl->setText(m_tool == Tool::Eraser ? tr("Eraser") : tr("Brush"));
+        break;
+    }
+    case Tool::RectSelect:
+    case Tool::EllipseSelect:
+    case Tool::Lasso:
+        m_optionsStack->setCurrentIndex(2);
+        break;
+    case Tool::MagicWand:
+        m_optionsStack->setCurrentIndex(3);
+        break;
+    case Tool::CloneStamp:
+    case Tool::SpotHealing: {
+        m_optionsStack->setCurrentIndex(4);
+        auto *lbl = m_optionsStack->widget(4)->findChild<QLabel *>("options.cloneTitle");
+        if (lbl) lbl->setText(m_tool == Tool::SpotHealing ? tr("Spot Healing") : tr("Clone Stamp"));
+        break;
+    }
+    case Tool::Crop:
+        m_optionsStack->setCurrentIndex(5);
+        break;
+    default:
+        m_optionsStack->setCurrentIndex(6);
+        break;
+    }
+}
+
+void SessionWindow::updateStatusTelemetry() {
+    if (!statusBar()) return;
+
+    if (!m_statusZoomLabel) {
+        m_statusZoomLabel = new QLabel(this);
+        m_statusZoomLabel->setObjectName("status.zoom");
+        m_statusZoomLabel->setStyleSheet("color: #88888c; font-size: 11px; padding: 0 8px;");
+        statusBar()->addWidget(m_statusZoomLabel);
+    }
+    if (!m_statusDimsLabel) {
+        m_statusDimsLabel = new QLabel(this);
+        m_statusDimsLabel->setObjectName("status.dims");
+        m_statusDimsLabel->setStyleSheet("color: #88888c; font-size: 11px; padding: 0 8px; border-left: 1px solid #28282b;");
+        statusBar()->addWidget(m_statusDimsLabel);
+    }
+    if (!m_statusProfileLabel) {
+        m_statusProfileLabel = new QLabel(this);
+        m_statusProfileLabel->setObjectName("status.profile");
+        m_statusProfileLabel->setStyleSheet("color: #88888c; font-size: 11px; padding: 0 8px; border-left: 1px solid #28282b;");
+        statusBar()->addWidget(m_statusProfileLabel);
+    }
+    if (!m_statusHintsLabel) {
+        m_statusHintsLabel = new QLabel(this);
+        m_statusHintsLabel->setObjectName("status.hints");
+        m_statusHintsLabel->setStyleSheet("color: #707074; font-size: 11px; padding: 0 8px;");
+        statusBar()->addPermanentWidget(m_statusHintsLabel);
+    }
+
+    double effectiveZoom = 1.0;
+    if (m_zoomLevel > 0.0) {
+        effectiveZoom = m_zoomLevel;
+    } else if (!m_image.isNull()) {
+        const QSize canvasSize = m_canvasWidget ? m_canvasWidget->size() : size();
+        const int pad = 24;
+        const int maxW = std::max(10, canvasSize.width() - pad * 2);
+        const int maxH = std::max(10, canvasSize.height() - pad * 2);
+        effectiveZoom = std::min(static_cast<double>(maxW) / m_image.width(),
+                                 static_cast<double>(maxH) / m_image.height());
+    }
+    m_statusZoomLabel->setText(QString("%1%").arg(effectiveZoom * 100.0, 0, 'f', 1));
+
+    if (!m_image.isNull()) {
+        m_statusDimsLabel->setText(QString("%1 × %2 px").arg(m_image.width()).arg(m_image.height()));
+    } else {
+        m_statusDimsLabel->setText(tr("No canvas"));
+    }
+    m_statusProfileLabel->setText(tr("sRGB · Transparent"));
+
+    QString hint;
+    switch (m_tool) {
+    case Tool::Move:
+        hint = tr("Click to select · Click outside to deselect · Drag to move · Handles to resize · Space to pan");
+        break;
+    case Tool::Brush:
+        hint = tr("Drag on canvas to paint · [ and ] resize brush · 1–9 opacity · Space to pan");
+        break;
+    case Tool::Eraser:
+        hint = tr("Drag on canvas to erase · [ and ] resize eraser · 1–9 opacity · Space to pan");
+        break;
+    case Tool::RectSelect:
+    case Tool::EllipseSelect:
+    case Tool::Lasso:
+        hint = tr("Drag to select · Drag inside to move · Shift add · Option subtract · Ctrl+D deselect");
+        break;
+    case Tool::MagicWand:
+        hint = tr("Click to select region · Shift add · Option subtract · Ctrl+D deselect");
+        break;
+    case Tool::CloneStamp:
+        hint = tr("Alt-click to set source · Drag to clone from source point");
+        break;
+    case Tool::SpotHealing:
+        hint = tr("Drag over blemishes to heal using surrounding texture");
+        break;
+    case Tool::Crop:
+        hint = tr("Drag to define crop region · Apply to crop canvas · Esc to cancel");
+        break;
+    default:
+        hint = tr("Ready");
+        break;
+    }
+    m_statusHintsLabel->setText(hint);
+}
+
+void SessionWindow::fitCanvas() {
+    m_zoomLevel = 0.0;
+    updateStatusTelemetry();
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::actualPixels() {
+    m_zoomLevel = 1.0;
+    updateStatusTelemetry();
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::zoomBy(double factor) {
+    double current = m_zoomLevel;
+    if (current <= 0.0 && !m_image.isNull()) {
+        const QSize canvasSize = m_canvasWidget ? m_canvasWidget->size() : size();
+        const int pad = 24;
+        const int maxW = std::max(10, canvasSize.width() - pad * 2);
+        const int maxH = std::max(10, canvasSize.height() - pad * 2);
+        current = std::min(static_cast<double>(maxW) / m_image.width(),
+                           static_cast<double>(maxH) / m_image.height());
+    }
+    if (current <= 0.0) current = 1.0;
+    m_zoomLevel = std::clamp(current * factor, 0.05, 32.0);
+    updateStatusTelemetry();
+    if (m_canvasWidget) m_canvasWidget->update();
 }

@@ -49,6 +49,13 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     window.show();
     // CI and Swift smoke runs use offscreen Qt. Real desktop launches keep the
     // event loop alive; offscreen runs only need one paint pass.
+    if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
+        for (int i = 0; i < 10; ++i) {
+            QCoreApplication::processEvents();
+        }
+        window.grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH"));
+        return 0;
+    }
     if (qEnvironmentVariable("QT_QPA_PLATFORM") == "offscreen") {
         QCoreApplication::processEvents();
         return 0;

@@ -33,6 +33,10 @@ class QCheckBox;
 class QMenu;
 class QColor;
 class QAction;
+class QStackedWidget;
+class QTabBar;
+class QLabel;
+class QToolBar;
 #include <vector>
 #include <memory>
 #include <QMap>
@@ -134,6 +138,15 @@ private:
     QStringList blendModes() const;
     bool setLayerFlag(const char *action, bool on);
     void selectRegion(bool rectangle);
+    void applyDarkTheme();
+    void setupHeaderBar();
+    void setupOptionsBar();
+    void updateOptionsBar();
+    void updateStatusTelemetry();
+    void fitCanvas();
+    void actualPixels();
+    void zoomBy(double factor);
+
     QWidget *m_canvasWidget = nullptr;
     QImage m_image;
     uint64_t m_sessionHandle = 0;
@@ -148,6 +161,8 @@ private:
     QTreeView *m_layersView = nullptr;
     QStandardItemModel *m_layerModel = nullptr;
     QSlider *m_opacity = nullptr;
+    QLabel *m_opacityLabel = nullptr;
+    QLabel *m_layerCountLabel = nullptr;
     QComboBox *m_blend = nullptr;
     QPushButton *m_brushColorButton = nullptr;
     QSlider *m_brushDiameterSlider = nullptr;
@@ -163,4 +178,13 @@ private:
     QMap<Tool, QAction *> m_toolActions;
     std::unique_ptr<ITabletHandler> m_tabletHandler;
     QTimer *m_autosaveTimer = nullptr;
+    QToolBar *m_headerToolBar = nullptr;
+    QToolBar *m_optionsToolBar = nullptr;
+    QStackedWidget *m_optionsStack = nullptr;
+    QTabBar *m_documentTabBar = nullptr;
+    QLabel *m_statusZoomLabel = nullptr;
+    QLabel *m_statusDimsLabel = nullptr;
+    QLabel *m_statusProfileLabel = nullptr;
+    QLabel *m_statusHintsLabel = nullptr;
+    double m_zoomLevel = 0.0;
 };
