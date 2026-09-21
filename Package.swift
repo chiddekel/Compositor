@@ -194,7 +194,7 @@ let package = Package(
         // against upstream's own behaviour.
         .testTarget(
             name: "LinuxOverrideTests",
-            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "CompatSupport"] + ["CoreGraphics", "AppKit", "CoreImage", "ImageIO", "UniformTypeIdentifiers", "FoundationCompat"],
+            dependencies: ["Compositor", "CompositorCore", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "CompatSupport"] + ["CoreGraphics", "AppKit", "CoreImage", "ImageIO", "UniformTypeIdentifiers", "FoundationCompat"],
             path: "Tests/LinuxOverrideTests",
             swiftSettings: [
                 .swiftLanguageMode(.v5),

@@ -1,0 +1,188 @@
+import Foundation
+import Testing
+@testable import Compositor
+import CompositorCore
+
+/// Differential tests for retiring the forked CompositorCore: the same command sequence goes to the fork's bridge (the
+/// current spec) and to `UpstreamEditor` (the adapter over upstream's unmodified `EditorSession`), and the resulting
+/// state and return codes must match. Layer ids are random per session, so they are compared by layer index.
+@MainActor
+struct BridgeParityTests {
+    private struct Side {
+        var importPixels: ([UInt8], Int, Int, Bool) -> Int32
+        var render: () -> [UInt8]
+        var send: (String) -> Int32
+        var state: () -> [String: Any]
+        var layerIDs: () -> [String]
+    }
+
+    private func forkSide() -> Side {
+        let handle = compositorSessionCreate()
+        func state() -> [String: Any] {
+            var buffer = [UInt8](repeating: 0, count: 1 << 16)
+            let n = compositorSessionState(handle, &buffer, buffer.count)
+            return (try? JSONSerialization.jsonObject(with: Data(buffer[0..<Int(n)])) as? [String: Any]) ?? [:]
+        }
+        func importPixels(_ pixels: [UInt8], _ w: Int, _ h: Int, _ replacing: Bool) -> Int32 {
+            let name = Array("Imported".utf8)
+            return pixels.withUnsafeBufferPointer { p in name.withUnsafeBufferPointer { n in
+                compositorSessionImportRGBA(handle, p.baseAddress, p.count, w, h, n.baseAddress, n.count, replacing ? 1 : 0) } }
+        }
+        func render() -> [UInt8] {
+            let size = Int(compositorSessionRender(handle, nil, 0))
+            var out = [UInt8](repeating: 0, count: max(0, size))
+            _ = compositorSessionRender(handle, &out, out.count)
+            return out
+        }
+        return Side(importPixels: importPixels, render: render,
+                    send: { json in Array(json.utf8).withUnsafeBufferPointer { compositorSessionCommand(handle, $0.baseAddress, $0.count) } },
+                    state: state, layerIDs: { ((state()["layers"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String } })
+    }
+
+    private func upstreamSide() -> Side {
+        let editor = UpstreamEditor()
+        func state() -> [String: Any] {
+            (try? JSONSerialization.jsonObject(with: (try? editor.stateJSON()) ?? Data()) as? [String: Any]) ?? [:]
+        }
+        return Side(importPixels: { editor.importRGBA($0, width: $1, height: $2, name: "Imported", replacing: $3) },
+                    render: { (try? editor.renderRGBA().bytes) ?? [] },
+                    send: { editor.command(Data($0.utf8)) }, state: state,
+                    layerIDs: { ((state()["layers"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String } })
+    }
+
+    /// "select:N" is resolved to the Nth layer's id on each side; anything else is sent as is.
+    private func run(_ steps: [String], on side: Side) -> [Int32] {
+        steps.map { step in
+            if step.hasPrefix("select:"), let index = Int(step.dropFirst(7)), side.layerIDs().indices.contains(index) {
+                return side.send(#"{"version":1,"action":"selectLayer","layerID":"\#(side.layerIDs()[index])"}"#)
+            }
+            return side.send(step)
+        }
+    }
+
+    /// The state with layer ids replaced by their index, so two sessions can be compared.
+    private func normalized(_ side: Side) -> [String: Any] {
+        var state = side.state()
+        let ids = side.layerIDs()
+        func token(_ id: Any?) -> Any { (id as? String).flatMap { ids.firstIndex(of: $0) }.map { "layer#\($0)" } ?? NSNull() }
+        state["activeLayerID"] = token(state["activeLayerID"])
+        state["layers"] = ((state["layers"] as? [[String: Any]]) ?? []).map { layer in
+            var layer = layer
+            layer["id"] = token(layer["id"]); layer["parentID"] = token(layer["parentID"])
+            return layer
+        }
+        state["error"] = nil
+        // History bookkeeping is where upstream deliberately differs from the fork, and upstream is the target (it is what
+        // the Mac app shows): finer undo names ("Hide Layer", "Layer Opacity", "New Blank Layer"), and File > New is itself
+        // an undoable step. See `historyFollowsUpstream`.
+        for key in ["undoName", "redoName", "canUndo", "canRedo", "modified"] { state[key] = nil }
+        return state
+    }
+
+    /// Canonical text of a state, for comparison (NSDictionary equality does not see through Swift-bridged nested values).
+    private func canonical(_ state: [String: Any]) -> String {
+        (try? String(data: JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]), encoding: .utf8)) ?? "?"
+    }
+
+    private func check(_ name: String, _ steps: [String]) {
+        let fork = forkSide(), upstream = upstreamSide()
+        let forkCodes = run(steps, on: fork), upstreamCodes = run(steps, on: upstream)
+        #expect(forkCodes == upstreamCodes, "\(name): return codes \(forkCodes) vs \(upstreamCodes)")
+        let a = normalized(fork), b = normalized(upstream)
+        #expect(canonical(a) == canonical(b), "\(name):\n fork:     \(canonical(a))\n upstream: \(canonical(b))")
+    }
+
+    private func cmd(_ action: String, _ fields: String = "") -> String {
+        #"{"version":1,"action":"\#(action)"\#(fields.isEmpty ? "" : "," + fields)}"#
+    }
+
+    @Test func newDocumentAndLayers() {
+        check("new", [cmd("new", #""width":120,"height":80"#)])
+        check("layers", [cmd("new", #""width":120,"height":80"#), cmd("addLayer"), cmd("addLayer"), cmd("addGroup")])
+        check("undo redo", [cmd("new", #""width":50,"height":40"#), cmd("addLayer"), cmd("addLayer"), cmd("undo"), cmd("redo"), cmd("undo")])
+        check("no document", [cmd("addLayer"), cmd("undo")])
+    }
+
+    @Test func layerProperties() {
+        let base = [cmd("new", #""width":60,"height":40"#), cmd("addLayer"), cmd("addLayer")]
+        check("rename", base + [cmd("renameLayer", #""name":"Sky""#)])
+        check("visible", base + [cmd("setVisible", #""enabled":false"#), cmd("setVisible", #""enabled":true"#), cmd("setVisible", #""enabled":false"#)])
+        check("opacity", base + [cmd("setOpacity", #""value":0.4"#)])
+        check("blend", base + [cmd("setBlendMode", #""kind":"Multiply""#), cmd("cycleBlendMode"), cmd("cycleBlendMode", #""forward":false"#)])
+        check("select and delete", base + ["select:0", cmd("deleteLayer")])
+        check("flip", base + [cmd("flipLayer"), cmd("flipCanvas", #""horizontally":false"#)])
+    }
+
+    @Test func groupingAndSelectedOpacity() {
+        let base = [cmd("new", #""width":60,"height":40"#), cmd("addLayer"), cmd("addLayer")]
+        check("group selected", base + ["select:0", cmd("groupSelectedLayers")])
+        check("selected opacity", base + [cmd("setSelectedOpacity", #""value":0.5"#)])
+    }
+
+    /// Premultiplied test pattern: opaque left half, half-transparent right half, with a colour gradient.
+    private func pattern(_ w: Int, _ h: Int) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h { for x in 0..<w {
+            let a = UInt8(x < w / 2 ? 255 : 128), i = (y * w + x) * 4
+            bytes[i] = UInt8(Int(a) * (x * 255 / w) / 255); bytes[i + 1] = UInt8(Int(a) * (y * 255 / h) / 255)
+            bytes[i + 2] = UInt8(Int(a) * 90 / 255); bytes[i + 3] = a
+        } }
+        return bytes
+    }
+
+    @Test func importedPixelsRenderTheSame() {
+        let w = 32, h = 24
+        let fork = forkSide(), upstream = upstreamSide()
+        #expect(fork.importPixels(pattern(w, h), w, h, true) == 0)
+        #expect(upstream.importPixels(pattern(w, h), w, h, true) == 0)
+        #expect(canonical(normalized(fork)) == canonical(normalized(upstream)))
+        let a = fork.render(), b = upstream.render()
+        #expect(a.count == w * h * 4 && b.count == a.count)
+        var largest = 0
+        for i in a.indices where i < b.count { largest = max(largest, abs(Int(a[i]) - Int(b[i]))) }
+        #expect(largest <= 1, "renders differ by up to \(largest)")
+        // A second import adds a centred layer, and opacity/blend/visibility change the composite the same way.
+        for side in [fork, upstream] {
+            _ = side.importPixels(pattern(16, 12), 16, 12, false)
+            _ = side.send(cmd("setOpacity", #""value":0.5"#))
+            _ = side.send(cmd("setBlendMode", #""kind":"Multiply""#))
+        }
+        #expect(canonical(normalized(fork)) == canonical(normalized(upstream)))
+        let c = fork.render(), d = upstream.render()
+        var second = 0
+        for i in c.indices where i < d.count { second = max(second, abs(Int(c[i]) - Int(d[i]))) }
+        #expect(c.count == d.count && second <= 1, "renders differ by up to \(second)")
+    }
+
+    @Test func invalidInputIsRefusedTheSameWay() {
+        // Same document state (none). The code differs on purpose: upstream reports "invalid argument" (-1) where the
+        // fork's generic failure was -5.
+        let fork = forkSide(), upstream = upstreamSide()
+        let steps = [cmd("new", #""width":0,"height":10"#), cmd("new", #""width":40000,"height":10"#)]
+        #expect(run(steps, on: fork).allSatisfy { $0 != 0 })
+        #expect(run(steps, on: upstream) == [-1, -1])
+        #expect(canonical(normalized(fork)) == canonical(normalized(upstream)))
+        check("bad version", [#"{"version":2,"action":"new","width":10,"height":10}"#])
+    }
+
+    /// Documented divergences from the fork: upstream's history is what the shell should show.
+    @Test func historyFollowsUpstream() throws {
+        let editor = UpstreamEditor()
+        _ = editor.command(Data(cmd("new", #""width":50,"height":40"#).utf8))
+        _ = editor.command(Data(cmd("addLayer").utf8))
+        _ = editor.command(Data(cmd("setOpacity", #""value":0.5"#).utf8))
+        var state = try #require(JSONSerialization.jsonObject(with: try editor.stateJSON()) as? [String: Any])
+        #expect(state["undoName"] as? String == "Layer Opacity")
+        #expect(state["canUndo"] as? Bool == true)
+        _ = editor.command(Data(cmd("undo").utf8))
+        _ = editor.command(Data(cmd("undo").utf8))
+        _ = editor.command(Data(cmd("undo").utf8))   // File > New is undoable upstream
+        state = try #require(JSONSerialization.jsonObject(with: try editor.stateJSON()) as? [String: Any])
+        #expect(state["canUndo"] as? Bool == false && state["redoName"] as? String == "New Canvas")
+    }
+
+    @Test func unsupportedCommandsAreReportedNotIgnored() {
+        let editor = UpstreamEditor()
+        #expect(editor.command(Data(cmd("brushBegin").utf8)) == -7)
+    }
+}
