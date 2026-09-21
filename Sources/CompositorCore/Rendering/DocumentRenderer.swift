@@ -137,8 +137,19 @@ final class DocumentRenderer {
     }
 
     private func composite(_ source: PixelBuffer, mode: LayerBlendMode, into destination: inout PixelBuffer) {
-        LayerRenderer.draw(RasterImage(PortableImage(source)), transform: placement, center: placement.center,
-                           blendMode: mode, into: &destination)
+        // Normal source-over at opacity 1 with identity placement routes through
+        // the CoreGraphicsCompat shim (plan §3/Stage 4): Skia when a render
+        // device is registered, the pure-Swift LayerRenderer otherwise. Non-
+        // normal blend modes keep the exact Swift kernel path — the shim's
+        // Stage 5 scope is source-over only.
+        guard mode == .normal, source.width == destination.width, source.height == destination.height else {
+            LayerRenderer.draw(RasterImage(PortableImage(source)), transform: placement, center: placement.center,
+                               blendMode: mode, into: &destination)
+            return
+        }
+        let ctx = CGContextCompat(buffer: destination)
+        ctx.draw(PortableImage(source), in: CGRect(x: 0, y: 0, width: CGFloat(source.width), height: CGFloat(source.height)))
+        destination = ctx.buffer
     }
 
     private func alphaOf(_ pixels: PixelBuffer) -> MaskBuffer {

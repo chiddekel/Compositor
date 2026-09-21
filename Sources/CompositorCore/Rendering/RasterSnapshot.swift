@@ -154,7 +154,11 @@ nonisolated final class RasterSnapshot: @unchecked Sendable {
     func rendered(width: Int, height: Int) -> PortableImage {
         precondition(width > 0 && height > 0)
         let bpp = bytesPerPixel
-        var out = [UInt8](repeating: 0, count: width * height * bpp)
+        // Canonical tile contract (plan §1): 8-bit premultiplied RGBA sRGB,
+        // explicit byte stride == width * bytesPerPixel, explicit dimensions,
+        // immutable once committed into a PortableImage (its fields are `let`).
+        let stride = width * bpp
+        var out = [UInt8](repeating: 0, count: height * stride)
         // Dest pixel center -> raster coordinate.
         for py in 0..<height {
             for px in 0..<width {
@@ -165,7 +169,7 @@ nonisolated final class RasterSnapshot: @unchecked Sendable {
                 for b in 0..<bpp { out[o + b] = value[b] }
             }
         }
-        return PortableImage(width: width, height: height, kind: isMask ? .mask : .rgba, bytesPerRow: width * bpp, bytes: out)
+        return PortableImage(width: width, height: height, kind: isMask ? .mask : .rgba, bytesPerRow: stride, bytes: out)
     }
 
     /// A lazy image over this raster (the macOS zero-copy CGDataProvider wrap):

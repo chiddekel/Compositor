@@ -16,8 +16,8 @@
 #   - OpenCV: 4.14.0 (plan §8.5), core+imgproc only.
 #
 # Sandbox: tightened to plan §8.6 (no home/host grants; portal-driven).
-#   - --filesystem=xdg-download remains temporarily for the .comp directory
-#     portal spike (plan §8.8 risk). Remove after portal Save As is proven.
+#   - No --filesystem grants; all file access routes through the XDG
+#     FileChooser and Documents portals (plan §8.8).
 #
 # Build runs entirely inside the Flatpak SDK sandbox. Nothing links the build
 # host's installed system libraries.
@@ -41,11 +41,9 @@ finish-args:
   - --socket=wayland        # Qt windowing (Wayland, preferred)
   - --device=dri            # GPU: Vulkan + GL (plan §8.6, §8.7)
   # Plan §8.6: no --filesystem=home/host, no --share=network.
-  # Temporary xdg-download grant for the .comp directory portal spike
-  # (plan §8.8). Replaced by Documents portal persistent access; remove
-  # once Save As for directory packages is proven on GNOME + KDE.
-  - --filesystem=xdg-download
-  - --talk-name=org.freedesktop.portal.*   # FileChooser, Documents portals
+  # All file access routes through the XDG FileChooser/Documents portals
+  # (plan §8.8); no --filesystem grants required.
+  - --talk-name=org.freedesktop.portal.*   # FileChooser, Documents, Clipboard portals
 
 # Strip static archives post-link (they are consumed at build time).
 cleanup:

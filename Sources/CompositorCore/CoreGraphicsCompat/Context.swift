@@ -63,6 +63,17 @@ public final class CGContextCompat {
         self.render = render ?? compositor_compat_current_render_fn()
     }
 
+    /// Create a context backed by an existing buffer (composite-into-context:
+    /// the macOS `CGContext` with a pre-filled backing store). The buffer is
+    /// adopted as the drawing surface; draws composite over its current pixels.
+    public init(buffer: PixelBuffer, render: CompRenderFn? = nil) {
+        precondition(buffer.width > 0 && buffer.height > 0)
+        self.width = buffer.width
+        self.height = buffer.height
+        self.buffer = buffer
+        self.render = render ?? compositor_compat_current_render_fn()
+    }
+
     /// Draw `image` into the context at `rect`, source-over at `opacity`.
     /// Stage 5 scope: identity placement (rect origin == (0,0), rect size ==
     /// image size); transforms/paths land with the LayerRenderer parity work.

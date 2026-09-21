@@ -33,9 +33,7 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
-  - --filesystem=home
-  - --filesystem=xdg-download
-  - --filesystem=/tmp
+  - --talk-name=org.freedesktop.portal.*
 
 modules:
   - name: compositor
@@ -63,6 +61,7 @@ modules:
           -DCOMPOSITOR_REQUIRE_VENDORED_DEPS=OFF
       - cmake --build build
       - QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+      - swift test
       # Install the Swift `@main` binary as the app command.
       - install -Dm755 .build/release/CompositorHostBootstrap /app/bin/compositor
       - |
