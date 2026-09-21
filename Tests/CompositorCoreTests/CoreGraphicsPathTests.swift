@@ -120,8 +120,8 @@ final class CoreGraphicsPathTests: XCTestCase {
     }
 
     func testGradientRejectsTooFewStops() {
-        XCTAssertNil(CGGradient(colorSpace: .deviceGray, colorComponents: [0, 1], locations: [0], count: 1))
+        XCTAssertNil(CGGradient(colorSpace: .deviceGraySpace, colorComponents: [0, 1], locations: [0], count: 1))
         let colors: CFArray = [CGColor.black, CGColor.white]
-        XCTAssertNotNil(CGGradient(colorsSpace: .sRGB, colors: colors, locations: [0, 1]))
+        XCTAssertNotNil(CGGradient(colorsSpace: .srgbSpace, colors: colors, locations: [0, 1]))
     }
 }

@@ -121,7 +121,7 @@ public final class CGImage: @unchecked Sendable {
         self.bytesPerRow = portableImage.bytesPerRow
         self.bitsPerComponent = 8
         self.bitsPerPixel = portableImage.kind == .rgba ? 32 : 8
-        self.colorSpace = portableImage.kind == .rgba ? .sRGB : .deviceGray
+        self.colorSpace = portableImage.kind == .rgba ? .srgbSpace : .deviceGraySpace
         self.alphaInfo = portableImage.kind == .rgba ? .premultipliedLast : .none
         self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue)
         self.portableImage = portableImage
@@ -140,7 +140,7 @@ public final class CGImage: @unchecked Sendable {
                  bitsPerComponent: Int = 8,
                  bitsPerPixel: Int = 32,
                  bytesPerRow: Int,
-                 space: CGColorSpace = .sRGB,
+                 space: CGColorSpace = .srgbSpace,
                  bitmapInfo: CGBitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                  provider: CGDataProvider,
                  decode: UnsafePointer<CGFloat>? = nil,

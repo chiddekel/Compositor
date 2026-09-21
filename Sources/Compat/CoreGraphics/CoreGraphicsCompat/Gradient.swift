@@ -22,7 +22,13 @@ public final class CGGradient: @unchecked Sendable {
         let per = colorSpace.model == .monochrome ? 2 : 4
         guard components.count >= count * per else { return nil }
         self.colorSpace = colorSpace
-        self.stops = (0..<count).map { CGColor(colorSpace: colorSpace, components: Array(components[($0 * per)..<(($0 + 1) * per)])) }
+        var stops: [CGColor] = []
+        for i in 0..<count {
+            let slice = Array(components[(i * per)..<((i + 1) * per)])
+            guard let color = CGColor(colorSpace: colorSpace, components: slice) else { return nil }
+            stops.append(color)
+        }
+        self.stops = stops
         self.locations = Self.normalized(locations, count: count)
     }
 
@@ -30,7 +36,7 @@ public final class CGGradient: @unchecked Sendable {
     public init?(colorsSpace: CGColorSpace?, colors: CFArray, locations: [CGFloat]?) {
         let cgColors = colors.compactMap { $0 as? CGColor }
         guard cgColors.count >= 2, cgColors.count == colors.count else { return nil }
-        self.colorSpace = colorsSpace ?? .sRGB
+        self.colorSpace = colorsSpace ?? .srgbSpace
         self.stops = cgColors
         self.locations = Self.normalized(locations, count: cgColors.count)
     }

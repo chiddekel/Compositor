@@ -11,25 +11,8 @@ printf '@_exported import Foundation\n@_exported import CoreGraphics\n' > "$W/So
 cp "$W/Sources/AppKit/stub.swift" "$W/Sources/CoreImage/stub.swift"
 printf '@_exported import Foundation\n@_exported import CoreGraphics\n@_exported import Observation\n' > "$W/Sources/SwiftUI/stub.swift"
 for m in Vision UniformTypeIdentifiers Accelerate ImageIO; do mkdir -p "$W/Sources/$m"; cp "$W/Sources/AppKit/stub.swift" "$W/Sources/$m/stub.swift"; done
-# CoreGraphics = the port's current compat (copied so the two domain-coupled bits can be neutralised for the probe).
-mkdir -p "$W/Sources/CoreGraphics"
-cp -r "$ROOT/Sources/CompositorCore/CoreGraphicsCompat" "$W/Sources/CoreGraphics/"
-cp "$ROOT/Sources/CompositorCore/"{CompositorGeometry,CompositorRaster,CompositeOver}.swift "$W/Sources/CoreGraphics/"
-echo '@_exported import Foundation' > "$W/Sources/CoreGraphics/stub.swift"
-python3 - "$W" <<'PY'
-import sys
-W=sys.argv[1]
-p=W+'/Sources/CoreGraphics/CoreGraphicsCompat/Color.swift'; s=open(p).read()
-a=s.index('extension LayerBlendMode {'); i=s.index('{',a); d=0; j=i
-while True:
-    d+= (s[j]=='{') - (s[j]=='}')
-    if d==0: break
-    j+=1
-open(p,'w').write(s[:a]+s[j+1:])
-p=W+'/Sources/CoreGraphics/CoreGraphicsCompat/Context.swift'; s=open(p).read()
-a=s.index('    private func drawSwift('); b=s.index('\n    }\n',a)+7
-open(p,'w').write(s[:a]+'    private func drawSwift(_ image: PortableImage, in rect: CGRect, opacity: Double) {}\n'+s[b:])
-PY
+# CoreGraphics = the real compat module (it no longer depends on any document type).
+ln -s "$ROOT/Sources/Compat/CoreGraphics" "$W/Sources/CoreGraphics"
 # Upstream: only Document, IO, Rendering (UI/App files are the Qt shell's job); C kernels become their own target.
 mkdir -p "$W/Sources/UpstreamProbe" "$W/Sources/UpstreamKernels/include"
 for d in Document IO Rendering; do ln -s "$ROOT/Compositor/$d" "$W/Sources/UpstreamProbe/$d"; done
