@@ -17,6 +17,7 @@
 // found via same-directory include.
 
 #include <QMainWindow>
+#include <functional>
 #include <QImage>
 #include <QString>
 #include <QStringList>
@@ -192,6 +193,8 @@ private:
     QLabel *m_statusHintsLabel = nullptr;
     double m_zoomLevel = 0.0;
     PlatformServices m_platform;
+    // One-shot canvas pixel request (Levels eyedroppers): receives the document point of the next click.
+    std::function<void(const QPointF &)> m_pixelSampler;
 
     // Move / Transform tool state. Geometry is in document pixels; rotation in degrees.
 public:

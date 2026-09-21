@@ -182,6 +182,35 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             require(exported(window, path) == original, "adjust discard did not restore source");
         }
 
+        // Levels: Auto buttons and eyedropper sampling from the canvas.
+        modal(window, "adjust.Levels", [&](QDialog *dialog) {
+            for (int i = 0; i < 3; ++i) {
+                auto *autoButton = dialog->findChild<QPushButton *>(QString("auto.%1").arg(i));
+                require(autoButton && autoButton->isEnabled(), "Levels Auto button missing or disabled");
+                autoButton->click(); QApplication::processEvents();
+            }
+            auto *sample = dialog->findChild<QPushButton *>("sample.0");
+            require(sample && sample->isEnabled(), "Levels eyedropper missing or disabled");
+            sample->click(); QApplication::processEvents();
+            QWidget *canvas = window.centralWidget();
+            const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
+            const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
+            const QPointF pos = origin + QPointF(28.5 * scale, 28.5 * scale);  // on the red stroke
+            QMouseEvent press(QEvent::MouseButtonPress, pos, canvas->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(canvas, &press);
+            QMouseEvent release(QEvent::MouseButtonRelease, pos, canvas->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(canvas, &release);
+            QApplication::processEvents();
+            require(dialog->isModal(), "dialog did not become modal again after sampling");
+            auto *channel = dialog->findChild<QComboBox *>("channel");
+            channel->setCurrentIndex(1);  // Red: sampled 255 sets the black point to 254
+            require(number(dialog, "Black")->value() == 254, "black eyedropper did not calibrate the red channel");
+            channel->setCurrentIndex(2);  // Green: sampled 0 keeps black at 0
+            require(number(dialog, "Black")->value() == 0, "black eyedropper changed the green channel");
+            click(dialog, QDialogButtonBox::Cancel);
+        });
+        require(exported(window, path) == original, "Levels sampling discard did not restore source");
+
         // Command Palette (Ctrl+Shift+P / F1)
         modal(window, "commandPalette", [&](QDialog *dialog) {
             auto *filter = dialog->findChild<QLineEdit *>("commandPalette.filter");

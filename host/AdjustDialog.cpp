@@ -288,9 +288,10 @@ protected:
     }
 };
 
-AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, HistogramProvider histogram,
-                           std::shared_ptr<IColorPickerService> colors) : QDialog(parent) {
-    if (!colors) colors = PlatformServices::qtDefaults().colors;
+AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, AdjustServices services) : QDialog(parent) {
+    const HistogramProvider histogram = services.histogram;
+    const AdjustServices::SampleRequest requestSample = services.requestSample;
+    std::shared_ptr<IColorPickerService> colors = services.colors ? services.colors : PlatformServices::qtDefaults().colors;
     setObjectName("adjustDialog"); setWindowTitle(kind);
     setMinimumWidth(kind == "Levels" ? 340 : 360);
     auto *layout = new QVBoxLayout(this);
@@ -406,6 +407,119 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, 
         });
         loadBins(0);
         syncHistogram();
+
+        // Writes `ranges` into the adjustment and refreshes the visible fields for the current channel.
+        auto commitRanges = [=] {
+            adjustment->insert("levels", QJsonObject{{"channel", channel->currentText()}, {"ranges", *ranges}});
+            const QJsonObject range = ranges->at(channel->currentIndex()).toObject();
+            fields[0]->setValue(range.value("black").toDouble());
+            fields[1]->setValue(range.value("gamma").toDouble());
+            fields[2]->setValue(range.value("white").toDouble());
+            fields[3]->setValue(range.value("outputBlack").toDouble());
+            fields[4]->setValue(range.value("outputWhite").toDouble());
+            syncHistogram();
+            debounce->start();
+        };
+
+        // Auto: black/white points from the 0.1% tails; "Color" per channel, "Contrast" one shared interval,
+        // "neutral" also sets each channel's gamma so its mean lands on mid-grey (mirrors LevelsAuto).
+        auto endpoints = [](const std::vector<double> &bins, double &low, double &high) {
+            double total = 0; for (double v : bins) total += v;
+            if (total <= 0 || bins.size() != 256) return false;
+            double sum = 0; int lo = 0, hi = 255;
+            for (int i = 0; i < 256; ++i) { sum += bins[i]; if (sum > total * 0.001) { lo = i; break; } }
+            sum = 0;
+            for (int i = 255; i >= 0; --i) { sum += bins[i]; if (sum > total * 0.001) { hi = i; break; } }
+            low = lo; high = hi;
+            return lo < hi;
+        };
+        auto autoLevels = [=](int mode) {
+            if (!histogram) return;
+            QJsonArray next = levelRangesIdentity();
+            if (mode == 0) {
+                double lowest = 255, highest = 0; bool any = false;
+                for (int c = 1; c <= 3; ++c) {
+                    double lo, hi;
+                    if (endpoints(histogram(c), lo, hi)) { lowest = std::min(lowest, lo); highest = std::max(highest, hi); any = true; }
+                }
+                if (any && lowest < highest) next.replace(0, levelRange(lowest, 1, highest, 0, 255));
+            } else {
+                for (int c = 1; c <= 3; ++c) {
+                    const std::vector<double> bins = histogram(c);
+                    double lo, hi;
+                    if (!endpoints(bins, lo, hi)) continue;
+                    double gamma = 1;
+                    if (mode == 2) {
+                        double total = 0, weighted = 0;
+                        for (int i = 0; i < 256; ++i) { total += bins[i]; weighted += bins[i] * std::clamp((i - lo) / (hi - lo), 0.0, 1.0); }
+                        const double mean = weighted / total;
+                        if (mean > 0 && mean < 1) gamma = std::clamp(std::log(mean) / std::log(0.5), 0.1, 9.99);
+                    }
+                    next.replace(c, levelRange(lo, gamma, hi, 0, 255));
+                }
+            }
+            *ranges = next;
+            commitRanges();
+        };
+
+        // Eyedroppers: calibrate all three channels from one clicked pixel (mirrors LevelsSettings.sampling).
+        auto sampleLevels = [=](int mode, const QColor &color) {
+            QJsonArray next = *ranges;
+            next.replace(0, levelRange(0, 1, 255, 0, 255));
+            const double components[3] = {color.redF() * 255, color.greenF() * 255, color.blueF() * 255};
+            for (int c = 1; c <= 3; ++c) {
+                QJsonObject range = next.at(c).toObject();
+                double black = range.value("black").toDouble(), white = range.value("white").toDouble(), gamma = range.value("gamma").toDouble(1);
+                const double v = components[c - 1];
+                if (mode == 0) black = std::min(white - 1, std::max(0.0, v));
+                else if (mode == 2) white = std::max(black + 1, std::min(255.0, v));
+                else {
+                    const double fraction = (v - black) / (white - black);
+                    if (fraction > 0 && fraction < 1) gamma = std::clamp(std::log(fraction) / std::log(0.5), 0.1, 9.99);
+                }
+                next.replace(c, levelRange(black, gamma, white, 0, 255));
+            }
+            *ranges = next;
+            commitRanges();
+        };
+
+        auto *autoRow = new QHBoxLayout;
+        auto *autoLabel = new QLabel(tr("Auto"), this);
+        autoLabel->setStyleSheet("color: #a0a0a5; font-size: 11px;");
+        autoRow->addWidget(autoLabel);
+        const QStringList autoNames = {tr("Contrast"), tr("Color"), tr("Color + neutral midtones")};
+        for (int i = 0; i < 3; ++i) {
+            auto *button = new QPushButton(autoNames[i], this);
+            button->setObjectName(QString("auto.%1").arg(i));
+            button->setEnabled(bool(histogram));
+            connect(button, &QPushButton::clicked, this, [=] { autoLevels(i); });
+            autoRow->addWidget(button);
+        }
+        autoRow->addStretch();
+        extras->addLayout(autoRow);
+
+        auto *sampleRow = new QHBoxLayout;
+        auto *sampleLabel = new QLabel(tr("Sample"), this);
+        sampleLabel->setStyleSheet("color: #a0a0a5; font-size: 11px;");
+        sampleRow->addWidget(sampleLabel);
+        const QStringList sampleNames = {tr("Black"), tr("Gray"), tr("White")};
+        for (int i = 0; i < 3; ++i) {
+            auto *button = new QPushButton(sampleNames[i], this);
+            button->setObjectName(QString("sample.%1").arg(i));
+            button->setToolTip(tr("Click, then click a pixel on the canvas to set the %1 point").arg(sampleNames[i].toLower()));
+            button->setEnabled(bool(requestSample));
+            connect(button, &QPushButton::clicked, this, [=] {
+                // Step aside so the canvas receives the click, then come back.
+                setWindowModality(Qt::NonModal); show();
+                requestSample([=](const QColor &color) {
+                    setWindowModality(Qt::ApplicationModal); show(); raise();
+                    if (color.isValid()) sampleLevels(i, color);
+                });
+            });
+            sampleRow->addWidget(button);
+        }
+        sampleRow->addStretch();
+        extras->addLayout(sampleRow);
     }
     if (kind == "Hue/Saturation") {
         auto *range = new QComboBox(this);

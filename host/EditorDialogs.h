@@ -24,13 +24,22 @@ public:
     FilterDialog(const QString &kind, Submit submit, QWidget *parent = nullptr);
 };
 
+// Everything an adjustment sheet needs from its host, injected rather than reached for (DIP).
+struct AdjustServices {
+    // Returns 256 bins for a channel (0 = RGB luma, 1 = R, 2 = G, 3 = B) of the pixels the adjustment starts from.
+    using HistogramProvider = std::function<std::vector<double>(int channel)>;
+    // Asks the host for the next pixel the user clicks on the canvas (original, un-adjusted colour).
+    using SampleRequest = std::function<void(std::function<void(const QColor &)>)>;
+    HistogramProvider histogram;
+    std::shared_ptr<IColorPickerService> colors;
+    SampleRequest requestSample;
+};
+
 class AdjustDialog final : public QDialog {
 public:
     using Submit = std::function<bool(const QJsonObject &)>;
-    // Returns 256 bins for a channel (0 = RGB, 1 = R, 2 = G, 3 = B) of the pixels the adjustment starts from.
-    using HistogramProvider = std::function<std::vector<double>(int channel)>;
-    AdjustDialog(const QString &kind, Submit submit, QWidget *parent = nullptr, HistogramProvider histogram = nullptr,
-                 std::shared_ptr<IColorPickerService> colors = nullptr);
+    using HistogramProvider = AdjustServices::HistogramProvider;
+    AdjustDialog(const QString &kind, Submit submit, QWidget *parent = nullptr, AdjustServices services = {});
 };
 
 class SessionWindow;

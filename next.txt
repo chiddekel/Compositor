@@ -34,4 +34,5 @@ Date: 2026-09-21
 - Layers panel: eye toggle, thumbnails, size subtitles, icon action bar, top-first order — DONE
 - Move/Transform: X/Y/W/H/Angle bound to layer, on-canvas handles, auto-select — DONE
 - Adjust dialogs: Levels histogram, Hue/Sat range bars, slider rows; foreground colour picker — DONE
-- Remaining: floating Adjustments panel, Curves graph editor, Levels sample/auto buttons
+- Adjustments panel, Curves graph editor, Levels Auto + Black/Gray/White eyedroppers — DONE
+- Selection New/Add/Subtract, Expand/Contract, Freehand/Polygonal lasso — DONE

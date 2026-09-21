@@ -1281,6 +1281,13 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || m_painting) return;
     const QPointF point = documentPoint(event->position());
     m_dragStart = point;
+    if (m_pixelSampler) {
+        auto sample = std::move(m_pixelSampler);
+        m_pixelSampler = nullptr;
+        if (m_canvasWidget) m_canvasWidget->unsetCursor();
+        sample(point);
+        return;
+    }
 
     switch (m_tool) {
     case Tool::Move: {

@@ -1,5 +1,6 @@
 #include "SessionWindow.h"
 #include <memory>
+#include <QtMath>
 #include <vector>
 #include <QImage>
 #include "EditorDialogs.h"
@@ -49,12 +50,31 @@ void SessionWindow::showAdjustDialog(const QString &kind) {
         sendCommand({{"action", "adjustmentCancel"}});
         return;
     }
+    auto original = std::make_shared<QImage>(m_image);
+    AdjustServices services;
+    services.histogram = [bins](int channel) { return (*bins)[qBound(0, channel, 3)]; };
+    services.colors = m_platform.colors;
+    services.requestSample = [this, original](std::function<void(const QColor &)> done) {
+        if (m_canvasWidget) m_canvasWidget->setCursor(Qt::CrossCursor);
+        m_pixelSampler = [this, original, done](const QPointF &point) {
+            QColor color;
+            const QPoint pixel(qFloor(point.x()), qFloor(point.y()));
+            if (original->rect().contains(pixel)) {
+                const QColor c = original->pixelColor(pixel);
+                if (c.alpha() > 0) color = QColor::fromRgbF(c.redF(), c.greenF(), c.blueF());
+            }
+            done(color);
+        };
+    };
     AdjustDialog dialog(kind, [this](const QJsonObject &command) {
         const bool ok = sendCommand(command);
         refreshImage();
         return ok;
-    }, this, [bins](int channel) { return (*bins)[qBound(0, channel, 3)]; }, m_platform.colors);
-    if (dialog.exec() == QDialog::Rejected) {
+    }, this, services);
+    const int outcome = dialog.exec();
+    m_pixelSampler = nullptr;
+    if (m_canvasWidget) m_canvasWidget->unsetCursor();
+    if (outcome == QDialog::Rejected) {
         // Discard the newly created adjustment layer on cancel (R26)
         sendCommand({{"action", "undo"}});
         refreshImage();

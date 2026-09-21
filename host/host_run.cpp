@@ -76,11 +76,14 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             if (dialogKind == "ColorPicker") {
                 dialog = new ColorPickerDialog(QColor(0xFA, 0x75, 0x27), QStringLiteral("Color Picker (Foreground Color)"), &window);
             } else {
-                dialog = new AdjustDialog(dialogKind, [](const QJsonObject &) { return true; }, &window, [](int) {
+                AdjustServices services;
+                services.histogram = [](int) {
                     std::vector<double> bins(256);
                     for (int i = 0; i < 256; ++i) bins[i] = 40.0 * std::exp(-std::pow((i - 60) / 40.0, 2)) + 15.0 * std::exp(-std::pow((i - 170) / 60.0, 2)) + (i < 6 ? 60 : 1);
                     return bins;
-                });
+                };
+                services.requestSample = [](std::function<void(const QColor &)>) {};
+                dialog = new AdjustDialog(dialogKind, [](const QJsonObject &) { return true; }, &window, services);
             }
             dialog->show();
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
