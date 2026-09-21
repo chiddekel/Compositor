@@ -11,7 +11,7 @@ extern "C" {
 // platform types. `color` is straight rgb in 0...1 and `opacity` is the effect's own opacity.
 typedef struct { float r, g, b, opacity; } CompositorEffectColor;
 
-typedef struct {
+typedef struct CompositorEffectsParams {
     uint32_t width, height;
     int32_t has_stroke, stroke_inside;
     uint32_t stroke_reach;                      // whole pixels, at least 1

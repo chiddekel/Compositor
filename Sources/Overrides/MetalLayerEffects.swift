@@ -9,6 +9,9 @@
 import Foundation
 import CoreGraphics
 import CompatSupport
+#if canImport(Glibc)
+import Glibc
+#endif
 import CompositorEffectsBackend
 
 final class MetalLayerEffects {
@@ -35,7 +38,9 @@ protocol LayerEffectsBackend: AnyObject {
 }
 
 enum LayerEffectsBackends {
-    /// The tiers to try, in order. `COMPOSITOR_EFFECTS=vulkan|cpu` narrows it (`auto`, the default, is all of them).
+    /// The tiers to try, in order. `COMPOSITOR_EFFECTS=auto|vulkan|skia|cpu` chooses; `auto`, the default, is a hardware
+    /// Vulkan device when there is one, then the C++ tier. `skia` puts the Skia image-filter tier first (it is approximate
+    /// and, on Skia's raster backend, slower than the C++ tier, so it is opt-in until Skia is built with a GPU backend).
     static let slot = ServiceSlot<[LayerEffectsBackend]>(fallback: { defaultChain() })
 
     static var chain: [LayerEffectsBackend] { slot.current ?? [] }
@@ -50,14 +55,16 @@ enum LayerEffectsBackends {
         // `auto` skips a software Vulkan device (the C++ tier is faster there); `vulkan` takes whatever device exists.
         if choice == "auto" || choice == "vulkan", let vulkan = CEffectsBackend.vulkan(),
            choice == "vulkan" || !vulkan.isSoftwareDevice { tiers.append(vulkan) }
-        if choice != "vulkan" || tiers.isEmpty { tiers.append(CEffectsBackend.cpu()) }
+        if choice == "skia", let skia = CEffectsBackend.skia() { tiers.append(skia) }
+        if !["vulkan", "skia"].contains(choice) || tiers.isEmpty { tiers.append(CEffectsBackend.cpu()) }
         return tiers
     }
 }
 
 /// The C++ tiers behind `CompositorEffectsBackend.h`: the CPU reference, or a Vulkan device.
 final class CEffectsBackend: LayerEffectsBackend {
-    private enum Kind { case cpu; case vulkan(OpaquePointer) }
+    private typealias SkiaEffectsFn = @convention(c) (UnsafePointer<CompositorEffectsParams>?, UnsafePointer<UInt8>?, UnsafeMutablePointer<UInt8>?) -> Int32
+    private enum Kind { case cpu; case vulkan(OpaquePointer); case skia(SkiaEffectsFn) }
     private let kind: Kind
     let name: String
     /// A Vulkan device that is really a CPU (llvmpipe): correct, but the direct C++ tier is faster than emulating a GPU.
@@ -69,6 +76,17 @@ final class CEffectsBackend: LayerEffectsBackend {
     deinit { if case .vulkan(let context) = kind { compositor_vulkan_effects_destroy(context) } }
 
     static func cpu() -> CEffectsBackend { CEffectsBackend(kind: .cpu, name: "cpu") }
+
+    /// The Skia image-filter tier, when the Skia bridge library is loaded (it is once any Skia canvas exists).
+    static func skia() -> CEffectsBackend? {
+        _ = CanvasBackends.isAvailable   // loads the bridge library if it has not been yet
+        #if canImport(Glibc)
+        guard let symbol = dlsym(nil, "compositor_skia_effects_render") else { return nil }
+        return CEffectsBackend(kind: .skia(unsafeBitCast(symbol, to: SkiaEffectsFn.self)), name: "skia")
+        #else
+        return nil
+        #endif
+    }
 
     static func vulkan() -> CEffectsBackend? {
         guard let context = compositor_vulkan_effects_create() else { return nil }
@@ -94,6 +112,8 @@ final class CEffectsBackend: LayerEffectsBackend {
             case .vulkan(let context):
                 return compositor_vulkan_effects_render(context, &params,
                                                         bytes.assumingMemoryBound(to: UInt8.self), out.baseAddress)
+            case .skia(let render):
+                return render(&params, bytes.assumingMemoryBound(to: UInt8.self), out.baseAddress)
             }
         }
         guard status == 0 else { throw ExportError.render }

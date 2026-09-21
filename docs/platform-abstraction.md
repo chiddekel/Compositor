@@ -7,7 +7,7 @@ and Linux Qt/Skia implementations are interchangeable (and test doubles are triv
 | Concern | macOS original | Interface | Linux implementation |
 |---|---|---|---|
 | 2D raster drawing | CoreGraphics `CGContext` | `CanvasBackend` / `CanvasBackendFactory` (`CanvasBackends.factories`, tried in order, pure-Swift fallback last) | `SkiaCanvasBackend` (Skia C ABI); Vulkan / OpenCV / test doubles plug in the same way |
-| Layer effects (stroke / shadow / overlay / inner shadow) | Metal (`MetalLayerEffects`) | `LayerEffectsBackend` chain behind the same-signature override | Vulkan compute (`backends/effects/shaders/effects.comp`) -> portable C++ tier (`EffectsCPU.cpp`); Skia and OpenCV tiers slot in between |
+| Layer effects (stroke / shadow / overlay / inner shadow) | Metal (`MetalLayerEffects`) | `LayerEffectsBackend` chain behind the same-signature override | Vulkan compute (`backends/effects/shaders/effects.comp`) -> portable C++ tier (`EffectsCPU.cpp`); Skia image-filter tier (opt-in `COMPOSITOR_EFFECTS=skia`); OpenCV tier not built |
 | Brush coverage GPU | Metal | `BrushCoverageComputing` (Swift) | Vulkan compute, CPU fallback |
 | Foreground segmentation | Vision | `ForegroundSegmenter`, `MatteRefiner` (Swift) | OpenCV bridge |
 | Image codecs | ImageIO | `IImageExporter` (C++) | Qt image plugins |
@@ -72,9 +72,17 @@ handlers, `onBeep`, cursor changes) stay closures: they are one-way notification
 ## Layer effects chain
 
 `Sources/Overrides/MetalLayerEffects.swift` keeps upstream's surface (`MetalLayerEffects.shared`, `render(_:effects:)`) and
-runs `LayerEffectsBackends.chain`: Vulkan first, the C++ tier last, each failing over to the next.
-`COMPOSITOR_EFFECTS=auto|vulkan|cpu` narrows it; `auto` skips a software Vulkan device (llvmpipe) because the direct C++
-tier is faster there. Both tiers run the same nine passes as the Metal kernels. Checks (`Tests/LinuxOverrideTests`): the C++
-tier against upstream's own CoreImage renderer (largest difference 10 of 255, mean under 0.4), and Vulkan against the C++
-tier (bit-identical on llvmpipe). SPIR-V is bundled (`scripts/build-brush-shader.py --check` detects stale words).
-Not done yet: the Skia and OpenCV tiers, and device-local staging buffers for discrete GPUs.
+runs `LayerEffectsBackends.chain`, each tier failing over to the next. `COMPOSITOR_EFFECTS=auto|vulkan|skia|cpu` chooses:
+`auto` (default) is a hardware Vulkan device when there is one, then the C++ tier (a software Vulkan device such as
+llvmpipe is skipped: the direct C++ tier is faster). `skia` puts the Skia tier first.
+
+| Tier | Where | Checked against |
+|---|---|---|
+| C++ (reference) | `backends/effects/EffectsCPU.cpp`, the nine Metal passes, multithreaded | upstream's own CoreImage renderer: largest difference 10/255, mean < 0.4 |
+| Vulkan | `backends/effects/EffectsVulkan.cpp` + `shaders/effects.comp` (bundled SPIR-V, `scripts/build-brush-shader.py --check`) | C++ tier: bit-identical on llvmpipe |
+| Skia | `compositor_skia_effects_render` in `SkiaBridge.cpp`: image filters over float surfaces (dilate/erode, bilinear translate, clamped Gaussian, arithmetic blends, colour-matrix tint, source-over compose) | C++ tier: within one level |
+
+Upstream's own tests never call layer effects, so these checks live in `Tests/LinuxOverrideTests`.
+Not done: an OpenCV tier (OpenCV is not installed in this SDK, so it could not be built or verified), and device-local
+staging buffers for discrete GPUs. On Skia's raster backend the Skia tier is slower than the C++ tier, which is why it is
+opt-in; with a GPU-backed Skia it becomes the tier to try after Vulkan.

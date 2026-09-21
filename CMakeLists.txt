@@ -180,6 +180,7 @@ find_package(Vulkan QUIET)
 
 add_library(CompositorSkiaBridge SHARED linux/graphics/SkiaBridge.cpp)
 target_include_directories(CompositorSkiaBridge PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(CompositorSkiaBridge PRIVATE ${CMAKE_SOURCE_DIR}/backends/effects/include)
 if(Skia_FOUND)
     target_include_directories(CompositorSkiaBridge PRIVATE ${Skia_INCLUDE_DIR})
     # SkPathOps (path booleans for CGPath.union/intersection/...) is a separate GN source set that plain

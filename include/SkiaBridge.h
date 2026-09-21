@@ -46,6 +46,12 @@ typedef enum {
  */
 int compositor_skia_available(void);
 
+/* Layer effects (stroke, drop shadow, colour overlay, inner shadow) with Skia image filters: the Skia tier of the
+ * effects chain. `pixels` and `out` are width*height*4 bytes (premultiplied RGBA8), disjoint. Returns 0 on success,
+ * -1 invalid input, -2 when Skia is not built in. See backends/effects/include/CompositorEffectsBackend.h. */
+struct CompositorEffectsParams;
+int compositor_skia_effects_render(const struct CompositorEffectsParams *params, const uint8_t *pixels, uint8_t *out);
+
 /*
  * Create a render device. Try Vulkan first (plan §6 startup). On any
  * failure (no device, no queue family, bad ICD, device lost, no /dev/dri),

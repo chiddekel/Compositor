@@ -101,3 +101,37 @@ struct VulkanEffectsTests {
         }
     }
 }
+
+
+/// The Skia image-filter tier against the C++ reference (float surfaces, same kernel radii: matches to within a level).
+/// Skipped when the Skia bridge is not loaded.
+@MainActor
+struct SkiaEffectsTests {
+    @Test func skiaTierAgreesWithTheReferenceWithinAFewLevels() throws {
+        guard let skia = CEffectsBackend.skia() else { return }
+        let cpu = CEffectsBackend.cpu()
+        let context = try BrushRaster.context(width: 70, height: 50, mask: false)
+        context.setFillColor(CGColor(srgbRed: 0.9, green: 0.3, blue: 0.2, alpha: 1))
+        context.fillEllipse(in: CGRect(x: 14, y: 10, width: 40, height: 28))
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.4, blue: 0.9, alpha: 0.5))
+        context.fill(CGRect(x: 34, y: 24, width: 22, height: 16))
+        let padded = try #require(context.makeImage())
+        let cases: [(String, LayerEffects)] = [
+            ("outside stroke", LayerEffects(stroke: StrokeEffect(size: 3, red: 1, green: 1, blue: 0, opacity: 1))),
+            ("inside stroke", LayerEffects(stroke: StrokeEffect(size: 2, red: 0, green: 1, blue: 0, opacity: 0.8, inside: true))),
+            ("drop shadow", LayerEffects(shadow: ShadowEffect(angle: 45, distance: 6, blur: 8, opacity: 0.6))),
+            ("colour overlay", LayerEffects(colorOverlay: ColorOverlayEffect(red: 0, green: 0, blue: 1, opacity: 0.4))),
+            ("inner shadow", LayerEffects(innerShadow: InnerShadowEffect(angle: 120, distance: 4, blur: 6, opacity: 0.7))),
+            ("everything", LayerEffects(stroke: StrokeEffect(size: 2, opacity: 1), shadow: ShadowEffect(angle: 60, distance: 5, blur: 6),
+                                        colorOverlay: ColorOverlayEffect(red: 1, green: 0, blue: 0, opacity: 0.3), innerShadow: InnerShadowEffect(angle: 90, distance: 3, blur: 4))),
+        ]
+        for (name, effects) in cases {
+            let pa = try cpu.render(padded, effects: effects).portableImage.bytes
+            let pb = try skia.render(padded, effects: effects).portableImage.bytes
+            var largest = 0, total = 0
+            for i in pa.indices { let d = abs(Int(pa[i]) - Int(pb[i])); largest = max(largest, d); total += d }
+            print("SKIA", name, "largest", largest, "mean", Double(total) / Double(pa.count))
+            #expect(largest <= 1, "\(name): largest difference \(largest)")
+        }
+    }
+}

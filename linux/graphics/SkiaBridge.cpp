@@ -17,8 +17,11 @@
 // Status codes: 0 success, -1 invalid argument, -2 backend lost (try Raster).
 
 #include "SkiaBridge.h"
+#include "CompositorEffectsBackend.h"
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
+#include <array>
 #include <iostream>
 #include <vector>
 
@@ -42,6 +45,9 @@
 #include "include/core/SkPathIter.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkRegion.h"
+#include "include/core/SkColorFilter.h"
+#include "include/effects/SkImageFilters.h"
+#include "include/effects/SkColorMatrix.h"
 #include "include/pathops/SkPathOps.h"
 #include "include/effects/SkGradient.h"
 #elif __has_include(<skia/core/SkCanvas.h>)
@@ -62,6 +68,9 @@
 #include <skia/core/SkPathIter.h>
 #include <skia/core/SkRRect.h>
 #include <skia/core/SkRegion.h>
+#include <skia/core/SkColorFilter.h>
+#include <skia/effects/SkImageFilters.h>
+#include <skia/effects/SkColorMatrix.h>
 #include <skia/pathops/SkPathOps.h>
 #include <skia/effects/SkGradient.h>
 #endif
@@ -1192,5 +1201,112 @@ void compositor_canvas_draw_radial_gradient(CompCanvas *canvas, float x0, float 
     canvas->canvas->restore();
 #else
     (void)canvas; (void)x0; (void)y0; (void)r0; (void)x1; (void)y1; (void)r1; (void)colors; (void)locations; (void)count; (void)options;
+#endif
+}
+
+
+// ── Layer effects: the Skia tier ───────────────────────────────────────────────────────────────────────────────
+//
+// The nine passes as Skia image filters over float (RGBA F32) surfaces, so nothing is rounded to 8 bits until the end:
+// dilate/erode for the stroke's reach, a bilinear translate for the shadow's offset, a clamped Gaussian for its blur,
+// arithmetic blends for the ring and the inner shadow's coverage, and colour-matrix filters to tint coverage before
+// the layers are composited with source-over in the order upstream's Metal compose kernel uses. Approximate where
+// Skia's kernels differ from the reference C++ tier (Gaussian support and edge blending of the shift), by a few levels.
+
+#if defined(COMPOSITOR_HAS_SKIA)
+namespace {
+
+sk_sp<SkImage> effects_apply(const sk_sp<SkImage> &input, sk_sp<SkImageFilter> filter, int w, int h) {
+    sk_sp<SkSurface> surface = SkSurfaces::Raster(SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType));
+    if (!surface) return nullptr;
+    surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+    SkPaint paint;
+    paint.setImageFilter(std::move(filter));
+    surface->getCanvas()->drawImage(input, 0, 0, SkSamplingOptions(), &paint);
+    return surface->makeImageSnapshot();
+}
+
+// Coverage held in alpha, tinted: colour * coverage * opacity, premultiplied.
+sk_sp<SkImageFilter> effects_tint(const CompositorEffectColor &c) {
+    SkColorMatrix m;
+    m.setRowMajor(std::array<float, 20>{0, 0, 0, 0, c.r,
+                                        0, 0, 0, 0, c.g,
+                                        0, 0, 0, 0, c.b,
+                                        0, 0, 0, c.opacity, 0}.data());
+    return SkImageFilters::ColorFilter(SkColorFilters::Matrix(m), nullptr);
+}
+
+sk_sp<SkImageFilter> effects_blur(float sigma) { return SkImageFilters::Blur(sigma, sigma, SkTileMode::kClamp, nullptr); }
+sk_sp<SkImageFilter> effects_shift(float dx, float dy) {
+    return SkImageFilters::MatrixTransform(SkMatrix::Translate(dx, dy), SkSamplingOptions(SkFilterMode::kLinear), nullptr);
+}
+
+}  // namespace
+#endif
+
+int compositor_skia_effects_render(const CompositorEffectsParams *p, const uint8_t *pixels, uint8_t *out) {
+    if (!p || !pixels || !out || p->width == 0 || p->height == 0) return -1;
+#if defined(COMPOSITOR_HAS_SKIA)
+    const int w = static_cast<int>(p->width), h = static_cast<int>(p->height);
+    if (static_cast<size_t>(w) * h > 100000000) return -1;
+    try {
+        SkPixmap sourcePixmap(SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType), pixels, static_cast<size_t>(w) * 4);
+        sk_sp<SkImage> source = SkImages::RasterFromPixmapCopy(sourcePixmap);
+        if (!source) return -2;
+        // The shape's own coverage, in alpha.
+        SkColorMatrix alphaOnly;
+        alphaOnly.setRowMajor(std::array<float, 20>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0}.data());
+        sk_sp<SkImage> shape = effects_apply(source, SkImageFilters::ColorFilter(SkColorFilters::Matrix(alphaOnly), nullptr), w, h);
+        if (!shape) return -2;
+
+        sk_sp<SkSurface> result = SkSurfaces::Raster(SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType));
+        if (!result) return -2;
+        SkCanvas *canvas = result->getCanvas();
+        canvas->clear(SK_ColorTRANSPARENT);
+
+        sk_sp<SkImage> shadow, ring, inner;
+        if (p->has_stroke) {
+            const float reach = static_cast<float>(std::max(1u, p->stroke_reach));
+            sk_sp<SkImage> moved = effects_apply(shape, p->stroke_inside ? SkImageFilters::Erode(reach, reach, nullptr)
+                                                                          : SkImageFilters::Dilate(reach, reach, nullptr), w, h);
+            if (!moved) return -2;
+            // outside: moved - shape; inside: shape - moved (both clamped to 0...1 by the blend).
+            sk_sp<SkImage> difference = effects_apply(shape,
+                p->stroke_inside ? SkImageFilters::Arithmetic(0, 1, -1, 0, false, SkImageFilters::Image(moved, SkSamplingOptions()), SkImageFilters::Image(shape, SkSamplingOptions()))
+                                 : SkImageFilters::Arithmetic(0, 1, -1, 0, false, SkImageFilters::Image(shape, SkSamplingOptions()), SkImageFilters::Image(moved, SkSamplingOptions())), w, h);
+            ring = difference ? effects_apply(difference, effects_tint(p->stroke), w, h) : nullptr;
+            if (!ring) return -2;
+        }
+        if (p->has_shadow) {
+            sk_sp<SkImage> moved = effects_apply(shape, effects_shift(p->shadow_dx, p->shadow_dy), w, h);
+            if (moved && p->shadow_sigma > 0.01f) moved = effects_apply(moved, effects_blur(p->shadow_sigma), w, h);
+            shadow = moved ? effects_apply(moved, effects_tint(p->shadow), w, h) : nullptr;
+            if (!shadow) return -2;
+        }
+        if (p->has_inner) {
+            sk_sp<SkImage> moved = effects_apply(shape, effects_shift(p->inner_dx, p->inner_dy), w, h);
+            if (moved && p->inner_sigma > 0.01f) moved = effects_apply(moved, effects_blur(p->inner_sigma), w, h);
+            // inside: shape * (1 - moved)
+            sk_sp<SkImage> inside = moved ? effects_apply(shape,
+                SkImageFilters::Arithmetic(-1, 1, 0, 0, false, SkImageFilters::Image(moved, SkSamplingOptions()), SkImageFilters::Image(shape, SkSamplingOptions())), w, h) : nullptr;
+            inner = inside ? effects_apply(inside, effects_tint(p->inner), w, h) : nullptr;
+            if (!inner) return -2;
+        }
+        // Shadow behind, outside stroke over it, the layer's pixels over that, then a colour overlay, an inner shadow
+        // and an inside stroke on top.
+        if (shadow) canvas->drawImage(shadow, 0, 0);
+        if (ring && !p->stroke_inside) canvas->drawImage(ring, 0, 0);
+        canvas->drawImage(source, 0, 0);
+        if (p->has_overlay) canvas->drawImage(effects_apply(shape, effects_tint(p->overlay), w, h), 0, 0);
+        if (inner) canvas->drawImage(inner, 0, 0);
+        if (ring && p->stroke_inside) canvas->drawImage(ring, 0, 0);
+
+        SkPixmap target(SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType), out, static_cast<size_t>(w) * 4);
+        return result->readPixels(target, 0, 0) ? 0 : -2;
+    } catch (...) {
+        return -2;
+    }
+#else
+    return -2;
 #endif
 }
