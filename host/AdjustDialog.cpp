@@ -72,6 +72,9 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
     adjustment->insert("hue", 0); adjustment->insert("saturation", 0);
     adjustment->insert("lightness", 0); adjustment->insert("colorize", false);
     adjustment->insert("levels", QJsonObject{{"channel", "RGB"}, {"ranges", levelRangesIdentity()}});
+    // LayerAdjustment's synthesized decoder requires `curves` even when the sheet
+    // is not Curves; without it every preview fails with "Invalid command JSON".
+    adjustment->insert("curves", QJsonObject{{"channel", "RGB"}, {"channels", curveChannelsIdentity()}});
 
     auto *debounce = new QTimer(this);
     debounce->setSingleShot(true); debounce->setInterval(120);
