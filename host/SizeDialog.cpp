@@ -1,4 +1,5 @@
 #include "EditorDialogs.h"
+#include "ColorPickerDialog.h"
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -150,7 +151,7 @@ SizeDialog::SizeDialog(const QJsonObject &state, bool imageSize, QWidget *parent
     });
     connect(extension, &QComboBox::currentIndexChanged, this, [=](int v) { color->setEnabled(v == 3); });
     connect(color, &QPushButton::clicked, this, [=] {
-        const QColor selected = QColorDialog::getColor(draft->fill, this, tr("Canvas extension"));
+        const QColor selected = ColorPickerDialog::getColor(draft->fill, this, tr("Canvas extension"));
         if (selected.isValid()) draft->fill = selected;
     });
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);

@@ -6,6 +6,7 @@
 #include "ImageExporters.h"
 #include "TabletHandler.h"
 #include "LayerItemDelegate.h"
+#include "ColorPickerDialog.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -1143,7 +1144,7 @@ QStringList SessionWindow::blendModes() const {
 }
 
 void SessionWindow::pickBrushColor() {
-    const QColor color = QColorDialog::getColor(m_brushColor, this, tr("Brush color"));
+    const QColor color = ColorPickerDialog::getColor(m_brushColor, this, tr("Brush color"));
     if (color.isValid()) setBrushColor(color);
 }
 

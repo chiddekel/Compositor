@@ -1,4 +1,7 @@
 #include "SessionWindow.h"
+#include <memory>
+#include <vector>
+#include <QImage>
 #include "EditorDialogs.h"
 #include <QMessageBox>
 
@@ -26,6 +29,22 @@ void SessionWindow::showFilterDialog(const QString &kind) {
 void SessionWindow::showAdjustDialog(const QString &kind) {
     // New sheets: addAdjustment creates the adjustment layer and begins its edit
     // (macOS Layers > New Adjustment Sheet). The sheet becomes the active layer.
+    // Histogram of the pixels the adjustment starts from (captured before the sheet exists),
+    // alpha-weighted: bins for RGB (luma), R, G, B.
+    auto bins = std::make_shared<std::vector<std::vector<double>>>(4, std::vector<double>(256, 0.0));
+    if (!m_image.isNull()) {
+        const QImage source = m_image.convertToFormat(QImage::Format_RGBA8888);
+        for (int y = 0; y < source.height(); ++y) {
+            const uchar *row = source.constScanLine(y);
+            for (int x = 0; x < source.width(); ++x) {
+                const uchar *px = row + x * 4;
+                const double weight = px[3] / 255.0;
+                if (weight <= 0) continue;
+                (*bins)[0][qBound(0, qRound(0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]), 255)] += weight;
+                for (int c = 0; c < 3; ++c) (*bins)[c + 1][px[c]] += weight;
+            }
+        }
+    }
     if (!sendCommand({{"action", "addAdjustment"}, {"kind", kind}})) {
         sendCommand({{"action", "adjustmentCancel"}});
         return;
@@ -34,7 +53,7 @@ void SessionWindow::showAdjustDialog(const QString &kind) {
         const bool ok = sendCommand(command);
         refreshImage();
         return ok;
-    }, this);
+    }, this, [bins](int channel) { return (*bins)[qBound(0, channel, 3)]; });
     if (dialog.exec() == QDialog::Rejected) {
         // Discard the newly created adjustment layer on cancel (R26)
         sendCommand({{"action", "undo"}});

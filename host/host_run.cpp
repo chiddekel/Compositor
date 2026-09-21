@@ -23,6 +23,11 @@
 #include <QDir>
 
 #include "compositor_host_run.h"
+#include "EditorDialogs.h"
+#include "ColorPickerDialog.h"
+#include <cmath>
+#include <vector>
+#include <QJsonObject>
 #include "SessionWindow.h"
 
 #if defined(COMPOSITOR_SKIA_BRIDGE)
@@ -55,6 +60,23 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             QCoreApplication::processEvents();
         }
         window.grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH"));
+        // COMPOSITOR_GRAB_DIALOG=<Adjust kind | ColorPicker> also captures that dialog as <path>.dialog.png.
+        const QString dialogKind = qEnvironmentVariable("COMPOSITOR_GRAB_DIALOG");
+        if (!dialogKind.isEmpty()) {
+            QDialog *dialog = nullptr;
+            if (dialogKind == "ColorPicker") {
+                dialog = new ColorPickerDialog(QColor(0xFA, 0x75, 0x27), QStringLiteral("Color Picker (Foreground Color)"), &window);
+            } else {
+                dialog = new AdjustDialog(dialogKind, [](const QJsonObject &) { return true; }, &window, [](int) {
+                    std::vector<double> bins(256);
+                    for (int i = 0; i < 256; ++i) bins[i] = 40.0 * std::exp(-std::pow((i - 60) / 40.0, 2)) + 15.0 * std::exp(-std::pow((i - 170) / 60.0, 2)) + (i < 6 ? 60 : 1);
+                    return bins;
+                });
+            }
+            dialog->show();
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            dialog->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".dialog.png");
+        }
         return 0;
     }
     if (qEnvironmentVariable("QT_QPA_PLATFORM") == "offscreen") {

@@ -3,6 +3,7 @@
 #include <QDialog>
 #include <QJsonObject>
 #include <functional>
+#include <vector>
 
 // Dialogs describe edits. The caller owns dispatch, document state, and errors.
 // They depend on callbacks, not the Swift ABI or SessionWindow.
@@ -23,7 +24,9 @@ public:
 class AdjustDialog final : public QDialog {
 public:
     using Submit = std::function<bool(const QJsonObject &)>;
-    AdjustDialog(const QString &kind, Submit submit, QWidget *parent = nullptr);
+    // Returns 256 bins for a channel (0 = RGB, 1 = R, 2 = G, 3 = B) of the pixels the adjustment starts from.
+    using HistogramProvider = std::function<std::vector<double>(int channel)>;
+    AdjustDialog(const QString &kind, Submit submit, QWidget *parent = nullptr, HistogramProvider histogram = nullptr);
 };
 
 class SessionWindow;

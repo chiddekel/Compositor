@@ -1,4 +1,5 @@
 #include "EditorDialogs.h"
+#include "ColorPickerDialog.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -7,9 +8,16 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QLabel>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPainterPath>
+#include <QSlider>
+#include <QSignalBlocker>
+#include <cmath>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTimer>
@@ -59,11 +67,162 @@ static QJsonObject hueBandDefault(int index) {
     return {{"falloffStart", b[0]}, {"rangeStart", b[1]}, {"rangeEnd", b[2]}, {"falloffEnd", b[3]}};
 }
 
-AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) : QDialog(parent) {
+
+// ---- Shared dialog widgets ----------------------------------------------------
+
+// A numeric field paired with a slider, both ways in sync.
+static QWidget *sliderRow(QDoubleSpinBox *box, QWidget *parent) {
+    auto *row = new QWidget(parent);
+    auto *h = new QHBoxLayout(row);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(10);
+    auto *slider = new QSlider(Qt::Horizontal, row);
+    const double scale = std::pow(10.0, box->decimals());
+    slider->setRange(qRound(box->minimum() * scale), qRound(box->maximum() * scale));
+    slider->setValue(qRound(box->value() * scale));
+    QObject::connect(slider, &QSlider::valueChanged, box, [=](int v) {
+        if (!qFuzzyCompare(box->value() + 1, v / scale + 1)) box->setValue(v / scale);
+    });
+    QObject::connect(box, qOverload<double>(&QDoubleSpinBox::valueChanged), slider, [=](double v) {
+        const QSignalBlocker blocker(slider);
+        slider->setValue(qRound(v * scale));
+    });
+    box->setParent(row);
+    box->setFixedWidth(64);
+    box->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    box->setAlignment(Qt::AlignRight);
+    h->addWidget(slider, 1);
+    h->addWidget(box);
+    row->setFocusProxy(box);
+    return row;
+}
+
+// Hue/Saturation range strips: the reference rainbow above, the shifted result below,
+// with the selected colour range's fall-off / range markers.
+class HueRangeBars : public QWidget {
+public:
+    explicit HueRangeBars(QWidget *parent = nullptr) : QWidget(parent) { setFixedHeight(52); }
+    void setState(double shift, int band) { m_shift = shift; m_band = band; update(); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        const QRect top(0, 4, width(), 12), bottom(0, 28, width(), 12);
+        for (int x = 0; x < width(); ++x) {
+            const double t = x / double(std::max(1, width() - 1));
+            double shifted = std::fmod(t + m_shift / 360.0 + 1.0, 1.0);
+            p.fillRect(x, top.top(), 1, top.height(), QColor::fromHsvF(std::min(t, 0.999), 0.9, 0.95));
+            p.fillRect(x, bottom.top(), 1, bottom.height(), QColor::fromHsvF(std::min(shifted, 0.999), 0.9, 0.95));
+        }
+        p.setPen(QColor(0x18, 0x18, 0x1a)); p.setBrush(Qt::NoBrush);
+        p.drawRect(top.adjusted(0, 0, -1, 0)); p.drawRect(bottom.adjusted(0, 0, -1, 0));
+        if (m_band > 0) {
+            const QJsonObject b = hueBandDefault(m_band);
+            p.setPen(QColor(0xf2, 0xf2, 0xf5)); p.setBrush(QColor(0xf2, 0xf2, 0xf5));
+            const char *keys[4] = {"falloffStart", "rangeStart", "rangeEnd", "falloffEnd"};
+            for (int i = 0; i < 4; ++i) {
+                double deg = std::fmod(b.value(keys[i]).toDouble() + 360.0, 360.0);
+                const double x = deg / 360.0 * (width() - 1);
+                if (i == 0 || i == 3) { p.drawLine(QPointF(x, bottom.bottom() + 2), QPointF(x, bottom.bottom() + 8)); }
+                else { QPolygonF tri; tri << QPointF(x - 3, bottom.bottom() + 9) << QPointF(x + 3, bottom.bottom() + 9) << QPointF(x, bottom.bottom() + 3); p.drawPolygon(tri); }
+            }
+        }
+    }
+private:
+    double m_shift = 0;
+    int m_band = 0;
+};
+
+// Levels histogram with draggable black / gamma / white input markers.
+class LevelsHistogram : public QWidget {
+public:
+    std::function<void(double black, double gamma, double white)> onChange;
+    explicit LevelsHistogram(QWidget *parent = nullptr) : QWidget(parent) {
+        setFixedHeight(112);
+        setMinimumWidth(280);
+    }
+    void setBins(const std::vector<double> &bins) { m_bins = bins; update(); }
+    void setMarkers(double black, double gamma, double white) { m_b = black; m_g = gamma; m_w = white; update(); }
+protected:
+    QRectF plot() const { return QRectF(6, 4, width() - 12, height() - 22); }
+    double xFor(double level) const { return plot().left() + level / 255.0 * plot().width(); }
+    double levelFor(double x) const { return qBound(0.0, (x - plot().left()) / plot().width() * 255.0, 255.0); }
+    double gammaX() const { return xFor(m_b + (m_w - m_b) * std::pow(0.5, m_g)); }
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = plot();
+        p.fillRect(r, QColor(0x14, 0x14, 0x16));
+        double peak = 0;
+        for (double v : m_bins) peak = std::max(peak, v);
+        if (peak > 0 && m_bins.size() == 256) {
+            QPainterPath path;
+            path.moveTo(r.left(), r.bottom());
+            for (int i = 0; i < 256; ++i) {
+                path.lineTo(r.left() + i / 255.0 * r.width(), r.bottom() - std::sqrt(m_bins[i] / peak) * (r.height() - 2));
+            }
+            path.lineTo(r.right(), r.bottom());
+            p.setPen(Qt::NoPen); p.setBrush(QColor(0x9a, 0x9a, 0xa0));
+            p.drawPath(path);
+        }
+        auto marker = [&](double x, const QColor &fill) {
+            QPolygonF tri; tri << QPointF(x, r.bottom() + 2) << QPointF(x - 5, r.bottom() + 12) << QPointF(x + 5, r.bottom() + 12);
+            p.setPen(QPen(QColor(0x60, 0x60, 0x66), 1)); p.setBrush(fill); p.drawPolygon(tri);
+        };
+        marker(xFor(m_b), QColor(0x10, 0x10, 0x10));
+        marker(gammaX(), QColor(0x80, 0x80, 0x80));
+        marker(xFor(m_w), QColor(0xf2, 0xf2, 0xf5));
+    }
+    void mousePressEvent(QMouseEvent *e) override {
+        const double x = e->position().x();
+        const double db = std::abs(x - xFor(m_b)), dg = std::abs(x - gammaX()), dw = std::abs(x - xFor(m_w));
+        m_drag = (dg <= db && dg <= dw) ? 1 : (db <= dw ? 0 : 2);
+        moveDrag(x);
+    }
+    void mouseMoveEvent(QMouseEvent *e) override { if (m_drag >= 0) moveDrag(e->position().x()); }
+    void mouseReleaseEvent(QMouseEvent *) override { m_drag = -1; }
+private:
+    void moveDrag(double x) {
+        double b = m_b, g = m_g, w = m_w;
+        const double level = levelFor(x);
+        if (m_drag == 0) b = std::min(level, w - 1);
+        else if (m_drag == 2) w = std::max(level, b + 1);
+        else {
+            const double t = qBound(0.02, (level - b) / std::max(1.0, w - b), 0.98);
+            g = qBound(0.1, std::log(t) / std::log(0.5), 9.99);
+        }
+        if (onChange) onChange(std::round(b), std::round(g * 100) / 100.0, std::round(w));
+    }
+    std::vector<double> m_bins;
+    double m_b = 0, m_g = 1, m_w = 255;
+    int m_drag = -1;
+};
+
+// Plain black-to-white ramp under the output fields.
+class OutputRamp : public QWidget {
+public:
+    explicit OutputRamp(QWidget *parent = nullptr) : QWidget(parent) { setFixedHeight(14); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        QLinearGradient g(0, 0, width(), 0);
+        g.setColorAt(0, Qt::black); g.setColorAt(1, Qt::white);
+        p.fillRect(rect().adjusted(6, 0, -6, 0), g);
+    }
+};
+
+AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, HistogramProvider histogram) : QDialog(parent) {
     setObjectName("adjustDialog"); setWindowTitle(kind);
+    setMinimumWidth(kind == "Levels" ? 340 : 360);
     auto *layout = new QVBoxLayout(this);
+    layout->setSpacing(10);
     auto *form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignLeft);
+    form->setHorizontalSpacing(12);
     layout->addLayout(form);
+    // Kind-specific controls go here, above Preview and the button row.
+    auto *extras = new QVBoxLayout;
+    extras->setSpacing(8);
+    layout->addLayout(extras);
 
     auto adjustment = std::make_shared<QJsonObject>();
     adjustment->insert("kind", kind);
@@ -95,7 +254,10 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
         channel->setObjectName("channel"); channel->setAccessibleName("Channel");
         channel->addItems({"RGB", "Red", "Green", "Blue"});
         form->addRow(tr("&Channel"), channel);
+        auto *hist = new LevelsHistogram(this);
+        extras->addWidget(hist);
         const QStringList names = {"Black", "Gamma", "White", "Output Black", "Output White"};
+        const QStringList captions = {tr("Input black"), tr("Gamma"), tr("Input white"), tr("Output black"), tr("Output white")};
         const double defaults[5] = {0, 1, 255, 0, 255};
         auto ranges = std::make_shared<QJsonArray>(levelRangesIdentity());
         auto *fields = new QDoubleSpinBox *[5];
@@ -106,7 +268,32 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
             fields[i]->setRange(i == 1 ? 0.01 : -255, i == 1 ? 9.99 : 255);
             fields[i]->setDecimals(i == 1 ? 2 : 0); fields[i]->setValue(defaults[i]);
             fields[i]->setKeyboardTracking(false);
-            form->addRow(tr("&%1").arg(names[i]), fields[i]);
+            fields[i]->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            fields[i]->setAlignment(Qt::AlignRight);
+        }
+        auto fieldGrid = [&](std::initializer_list<int> which) {
+            auto *grid = new QGridLayout;
+            grid->setHorizontalSpacing(12);
+            int col = 0;
+            for (int i : which) {
+                auto *cap = new QLabel(captions[i], this);
+                cap->setStyleSheet("color: #a0a0a5; font-size: 11px;");
+                cap->setBuddy(fields[i]);
+                grid->addWidget(cap, 0, col);
+                grid->addWidget(fields[i], 1, col);
+                grid->setColumnStretch(col, 1);
+                ++col;
+            }
+            return grid;
+        };
+        extras->addLayout(fieldGrid({0, 1, 2}));
+        extras->addWidget(new OutputRamp(this));
+        extras->addLayout(fieldGrid({3, 4}));
+        auto syncHistogram = [=] {
+            hist->setMarkers(fields[0]->value(), fields[1]->value(), fields[2]->value());
+        };
+        auto loadBins = [=](int index) { if (histogram) hist->setBins(histogram(index)); };
+        for (int i = 0; i < 5; ++i) {
             connect(fields[i], qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                     [=](double v) {
                         static const char *const keys[5] = {"black", "gamma", "white", "outputBlack", "outputWhite"};
@@ -114,9 +301,13 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
                         range.insert(keys[i], v);
                         ranges->replace(channel->currentIndex(), range);
                         adjustment->insert("levels", QJsonObject{{"channel", channel->currentText()}, {"ranges", *ranges}});
+                        syncHistogram();
                         debounce->start();
                     });
         }
+        hist->onChange = [=](double b, double g, double w) {
+            fields[0]->setValue(b); fields[1]->setValue(g); fields[2]->setValue(w);
+        };
         connect(channel, qOverload<int>(&QComboBox::currentIndexChanged), this, [=](int index) {
             const QJsonObject range = ranges->at(index).toObject();
             fields[0]->setValue(range.value("black").toDouble());
@@ -124,7 +315,17 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
             fields[2]->setValue(range.value("white").toDouble());
             fields[3]->setValue(range.value("outputBlack").toDouble());
             fields[4]->setValue(range.value("outputWhite").toDouble());
+            loadBins(index);
+            syncHistogram();
         });
+        auto *reset = new QPushButton(tr("Reset"), this);
+        reset->setObjectName("reset");
+        extras->addWidget(reset, 0, Qt::AlignRight);
+        connect(reset, &QPushButton::clicked, this, [=] {
+            for (int i = 0; i < 5; ++i) fields[i]->setValue(defaults[i]);
+        });
+        loadBins(0);
+        syncHistogram();
     }
     if (kind == "Hue/Saturation") {
         auto *range = new QComboBox(this);
@@ -135,11 +336,23 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
         auto addHsv = [=](QDoubleSpinBox *box, const QString &label, double min, double max) {
             box->setObjectName(label); box->setAccessibleName(label);
             box->setRange(min, max); box->setDecimals(0); box->setKeyboardTracking(false);
-            form->addRow(tr("&%1").arg(label), box);
+            form->addRow(tr("&%1").arg(label), sliderRow(box, this));
         };
         addHsv(hue, "Hue", -180, 180); addHsv(sat, "Saturation", -100, 100); addHsv(light, "Lightness", -100, 100);
-        auto *colorize = new QCheckBox(tr("Colorize"), this), *invert = new QCheckBox(tr("Invert range"), this);
-        layout->addWidget(colorize); layout->addWidget(invert);
+        auto *bars = new HueRangeBars(this);
+        extras->addWidget(bars);
+        auto *colorize = new QCheckBox(tr("Colorize"), this), *invert = new QCheckBox(tr("Apply outside this range instead"), this);
+        auto *hsvReset = new QPushButton(tr("Reset"), this);
+        hsvReset->setObjectName("reset");
+        auto *hsvOptions = new QHBoxLayout;
+        hsvOptions->addWidget(colorize); hsvOptions->addWidget(invert); hsvOptions->addStretch(); hsvOptions->addWidget(hsvReset);
+        extras->addLayout(hsvOptions);
+        connect(hsvReset, &QPushButton::clicked, this, [=] {
+            hue->setValue(0); sat->setValue(0); light->setValue(0); colorize->setChecked(false); invert->setChecked(false);
+        });
+        auto refreshBars = [=] { bars->setState(hue->value(), range->currentIndex()); };
+        connect(hue, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) { refreshBars(); });
+        connect(range, qOverload<int>(&QComboBox::currentIndexChanged), this, [=](int) { refreshBars(); });
         auto build = [=] {
             // Swift dicts keyed by enums encode as arrays of alternating key/value.
             QJsonArray adjustments;
@@ -172,12 +385,12 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
         table->setObjectName("points"); table->setAccessibleName("Points");
         table->setHorizontalHeaderLabels({tr("Input"), tr("Output")});
         table->setAcceptDrops(false);
-        layout->addWidget(table);
+        extras->addWidget(table);
         auto *rowButtons = new QHBoxLayout;
         auto *addBtn = new QPushButton(tr("Add"), this), *delBtn = new QPushButton(tr("Delete"), this),
              *resetBtn = new QPushButton(tr("Reset channel"), this);
         rowButtons->addWidget(addBtn); rowButtons->addWidget(delBtn); rowButtons->addWidget(resetBtn);
-        layout->addLayout(rowButtons);
+        extras->addLayout(rowButtons);
         auto channels = std::make_shared<QJsonArray>(curveChannelsIdentity());
         auto reload = [=](int index) {
             const QJsonArray points = channels->at(index).toArray();
@@ -233,7 +446,7 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
         auto addNum = [=](QDoubleSpinBox *box, const QString &label, double min, double max, double value, int decimals) {
             box->setObjectName(label); box->setAccessibleName(label);
             box->setRange(min, max); box->setDecimals(decimals); box->setValue(value); box->setKeyboardTracking(false);
-            form->addRow(tr("&%1").arg(label), box);
+            form->addRow(tr("&%1").arg(label), sliderRow(box, this));
             connect(box, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) {
                 adjustment->insert("exposureSettings", QJsonObject{{"exposure", exposure->value()}, {"offset", offset->value()}, {"gamma", gamma->value()}});
                 debounce->start();
@@ -245,7 +458,7 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
     }
     if (kind == "Gradient Map") {
         auto *shadows = new QPushButton(this), *highlights = new QPushButton(this);
-        auto *reversed = new QCheckBox(tr("Reversed"), this); layout->addWidget(reversed);
+        auto *reversed = new QCheckBox(tr("Reversed"), this); extras->addWidget(reversed);
         QColor shadowColor(0, 0, 0), highlightColor(255, 255, 255);
         auto paint = [=](QPushButton *btn, const QColor &c) {
             btn->setStyleSheet(QString("background-color: %1; border: 1px solid #555555;").arg(c.name()));
@@ -264,7 +477,7 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
         };
         auto pick = [=](QPushButton *btn, QColor *target) {
             connect(btn, &QPushButton::clicked, this, [=] {
-                const QColor chosen = QColorDialog::getColor(*target, this, btn->text());
+                const QColor chosen = ColorPickerDialog::getColor(*target, this, btn->text());
                 if (chosen.isValid()) { *target = chosen; paint(btn, chosen); emitSettings(); }
             });
         };
@@ -277,7 +490,7 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent) 
         auto addNum = [=](QDoubleSpinBox *box, const QString &label, double min, double max, double value, int decimals) {
             box->setObjectName(label); box->setAccessibleName(label);
             box->setRange(min, max); box->setDecimals(decimals); box->setValue(value); box->setKeyboardTracking(false);
-            form->addRow(tr("&%1").arg(label), box);
+            form->addRow(tr("&%1").arg(label), sliderRow(box, this));
             connect(box, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [=](double) {
                 adjustment->insert("grainSettings", QJsonObject{{"amount", amount->value()}, {"size", size->value()}, {"roughness", roughness->value()}, {"seed", 0}});
                 debounce->start();
