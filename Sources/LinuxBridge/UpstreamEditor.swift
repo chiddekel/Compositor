@@ -36,6 +36,7 @@ private struct Command: Decodable {
     var y: Double?
     var parameters: [String: Double]?
     var points: [[Double]]?
+    var adjustment: LayerAdjustment?
 }
 
 private struct State: Encodable {
@@ -82,8 +83,17 @@ final class UpstreamEditor {
         "selectRectangle", "selectEllipse", "selectLasso", "deselect", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
         "duplicateLayer", "layerViaCopy", "brushBegin", "brushMove", "brushEnd", "brushCancel", "magicWand",
-        "filterBegin", "filterPreview", "filterCommit", "filterCancel",
+        "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
+        "setMaskSelected", "invertMask", "transform", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
+        "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
+        "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
+        "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte",
     ]
+
+    /// The adjustment as it was when editing began, for cancel.
+    private var adjustmentOriginal: (id: UUID, value: LayerAdjustment)?
+    /// The manifest of a project being loaded; its layers' images and masks arrive through `installLayerAsset`.
+    private var loadingManifest: ProjectManifest?
 
     /// Synchronous entry for the C ABI (called from the Qt main thread): runs `commandAsync`, pumping the run loop while
     /// upstream's async operations finish. Must not be called from inside a main-actor job (tests use `commandAsync`).
@@ -220,6 +230,120 @@ final class UpstreamEditor {
             guard s.filterEdit != nil else { return fail(-1, "no filter in progress") }
             await s.commitFilter()
         case "filterCancel": s.cancelFilter()
+        case "filterSetPreview":
+            guard let enabled = command.enabled, let edit = s.filterEdit else { return fail(-1, "no filter in progress") }
+            edit.preview = enabled
+        case "setMaskSelected":
+            s.isMaskSelected = command.enabled ?? false
+            if s.isMaskSelected, s.activeLayer?.mask?.isLinked == false { s.beginTransform() }
+        case "invertMask":
+            guard let layer = s.activeLayer, layer.mask != nil else { return fail(-5, "no mask") }
+            let was = s.isMaskSelected
+            s.isMaskSelected = true
+            await s.invertPixels()
+            s.isMaskSelected = was
+        case "transformBegin": s.beginTransform()
+        case "transform":
+            guard var transform = s.activeLayer?.transform else { return fail(-5, "no layer") }
+            apply(command.parameters ?? [:], to: &transform)
+            s.beginTransform()
+            s.previewTransform(transform)
+            s.commitTransform()
+        case "transformPreview":
+            guard var draft = s.transformEdit?.draft ?? s.activeLayer?.transform else { return fail(-5, "no layer") }
+            apply(command.parameters ?? [:], to: &draft)
+            s.previewTransform(draft)
+        case "transformCommit": s.commitTransform()
+        case "transformCancel": s.cancelTransform()
+        case "distortBegin":
+            s.beginTransform()
+            s.beginDistort()
+        case "distortCommit":
+            guard let edit = s.transformEdit, let list = command.points, list.count == 4 else { return fail(-1, "four corners required") }
+            let corners = list.compactMap { $0.count == 2 && $0[0].isFinite && $0[1].isFinite ? CGPoint(x: $0[0], y: $0[1]) : nil }
+            guard corners.count == 4 else { return fail(-1, "invalid corner") }
+            s.commitDistort(edit, corners: corners)
+        case "addShape":
+            guard s.document != nil, let name = command.kind, let kind = ShapeKind(rawValue: name),
+                  let width = command.width, let height = command.height, let x = command.x, let y = command.y else { return fail(-1, "invalid shape") }
+            let p = command.parameters ?? [:]
+            s.setPaletteColor(PaletteColor(red: p["red"] ?? 0, green: p["green"] ?? 0, blue: p["blue"] ?? 0), background: false)
+            s.selectTool(.shape)
+            s.shapeKind = kind
+            s.shapeCornerRadius = p["cornerRadius"] ?? 0
+            s.beginShape(at: CGPoint(x: x, y: y))
+            s.dragShape(to: CGPoint(x: x + Double(width), y: y + Double(height)), square: false, fromCenter: false)
+            s.finishShape()
+        case "warpBegin":
+            guard let name = command.kind, let mode = BlurToolMode(rawValue: name), let point = point(command) else { return fail(-1, "invalid warp") }
+            let p = command.parameters ?? [:]
+            var settings = BrushSettings()
+            settings.diameter = p["diameter"] ?? 40; settings.hardness = p["hardness"] ?? 1; settings.opacity = p["opacity"] ?? 1
+            s.selectTool(.blur)
+            s.blurMode = mode
+            s.brushSettings = settings
+            s.beginWarp(at: point)
+            guard s.warpStroke != nil else { return fail(-5, "warp could not start") }
+        case "warpMove":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            s.continueBrush(at: point)
+        case "warpEnd": s.finishWarp()
+        case "warpCancel": s.cancelBrush()
+        case "resizeCanvas":
+            guard let width = command.width, let height = command.height, let snapshot = s.projectSnapshot() else { return fail(-1, "invalid size") }
+            let p = command.parameters ?? [:]
+            let anchor = p["anchor"] ?? 4
+            guard (0...8).contains(anchor), anchor.rounded() == anchor else { return fail(-1, "invalid anchor") }
+            var options = CanvasSizeOptions(width: width, height: height, anchor: Int(anchor))
+            if command.enabled == true { options.fill = CanvasExtensionColor(red: p["red"] ?? 0, green: p["green"] ?? 0, blue: p["blue"] ?? 0) }
+            guard let resized = try? await CanvasResizer.shared.resize(snapshot, to: options) else { return fail(-5, "canvas resize failed") }
+            s.applyDocumentSize(resized, actionName: "Canvas Size")
+        case "cropCanvas":
+            guard let width = command.width, let height = command.height, let snapshot = s.projectSnapshot() else { return fail(-1, "invalid crop") }
+            let options = CanvasSizeOptions(width: width, height: height, contentOffset: CGPoint(x: -(command.x ?? 0), y: -(command.y ?? 0)))
+            guard let cropped = try? await CanvasResizer.shared.resize(snapshot, to: options) else { return fail(-5, "crop failed") }
+            s.applyDocumentSize(cropped, actionName: "Crop")
+        case "resizeImage":
+            guard let width = command.width, let height = command.height, let snapshot = s.projectSnapshot() else { return fail(-1, "invalid size") }
+            var sampling = LayerSampling.high
+            if let kind = command.kind { guard let chosen = LayerSampling(rawValue: kind) else { return fail(-1, "unknown sampling") }; sampling = chosen }
+            let options = ImageSizeOptions(width: width, height: height, resolution: command.value ?? s.document?.resolution ?? 72, sampling: sampling)
+            guard let resized = try? await ImageResizer.shared.resize(snapshot, to: options) else { return fail(-5, "image resize failed") }
+            s.applyImageSize(resized)
+        case "addAdjustment":
+            guard let name = command.kind, let kind = AdjustmentKind(rawValue: name) else { return fail(-1, "unknown adjustment") }
+            s.addAdjustment(kind)
+        case "adjustmentBegin":
+            guard let id = command.layerID, let value = s.document?.layers.first(where: { $0.id == id })?.adjustment else { return fail(-1, "not an adjustment layer") }
+            s.selectLayer(id)
+            s.adjustmentEditingID = id
+            adjustmentOriginal = (id, value)
+        case "adjustmentPreview":
+            guard let value = command.adjustment, let id = s.adjustmentEditingID else { return fail(-1, "no adjustment being edited") }
+            s.updateAdjustment(id, value: value)
+        case "adjustmentCommit":
+            guard let value = command.adjustment, let id = s.adjustmentEditingID ?? adjustmentOriginal?.id else { return fail(-1, "no adjustment being edited") }
+            s.beginEdit("Edit \(value.kind.rawValue) Adjustment")
+            s.updateAdjustment(id, value: value)
+            s.endEdit()
+            s.adjustmentEditingID = nil; adjustmentOriginal = nil
+        case "adjustmentCancel":
+            if let original = adjustmentOriginal { s.updateAdjustment(original.id, value: original.value) }
+            s.adjustmentEditingID = nil; adjustmentOriginal = nil
+        case "contentFill":
+            s.beginFilter(.contentAwareFill)
+            guard s.filterEdit != nil else { return fail(-5, "content-aware fill needs a selection") }
+            await s.commitFilter()
+        case "removeBackground", "smartMatte":
+            s.beginFilter(.removeBackground)
+            guard s.filterEdit != nil else { return fail(-5, "remove background could not start") }
+            var settings = s.filterEdit?.settings ?? s.filterSettings
+            let p = command.parameters ?? [:]
+            settings.refineEdges = p["refineEdges"] ?? settings.refineEdges
+            settings.matteContrast = p["matteContrast"] ?? settings.matteContrast
+            settings.shiftEdge = p["shiftEdge"] ?? settings.shiftEdge
+            s.updateFilter(settings, preview: true)
+            await s.commitFilter()
         default:
             return fail(-7, "Unsupported by the upstream bridge yet: \(command.action)")
         }
@@ -228,6 +352,60 @@ final class UpstreamEditor {
     }
 
     private func fail(_ code: Int32, _ message: String) -> Int32 { error = message; return code }
+
+    private func apply(_ p: [String: Double], to transform: inout LayerTransform) {
+        transform.origin.x = p["x"] ?? transform.origin.x
+        transform.origin.y = p["y"] ?? transform.origin.y
+        transform.size.width = p["width"] ?? transform.size.width
+        transform.size.height = p["height"] ?? transform.size.height
+        transform.rotation = p["rotation"] ?? transform.rotation
+    }
+
+    // MARK: Project persistence (the shell writes the files; the session hands over and takes back layer pixels)
+
+    func exportManifest() throws -> Data {
+        guard let snapshot = session.projectSnapshot() else { throw ExportError.render }
+        return try JSONEncoder().encode(snapshot.manifest)
+    }
+
+    /// Installs the project's structure; layer images and masks then arrive through `installLayerAsset`.
+    func importManifest(_ data: Data) -> Int32 {
+        guard let manifest = try? JSONDecoder().decode(ProjectManifest.self, from: data), (1...30_000).contains(manifest.width), (1...30_000).contains(manifest.height),
+              manifest.width * manifest.height <= 100_000_000, manifest.layers.count <= 10_000,
+              (try? LiveMaskGraph.validate(manifest.layers)) != nil else { return fail(-1, "invalid project manifest") }
+        session.installProject(ProjectSnapshot(manifest: manifest, images: [:]), from: URL(fileURLWithPath: "/dev/null"))
+        session.projectURL = nil
+        loadingManifest = manifest
+        session.history.reset()
+        error = nil
+        return 0
+    }
+
+    func layerPixels(id: UUID, mask: Bool) -> PortableImage? {
+        guard let layer = session.document?.layers.first(where: { $0.id == id }) else { return nil }
+        return (mask ? layer.mask?.asset.image : layer.asset?.image)?.portableImage
+    }
+
+    func installLayerAsset(_ pixels: PortableImage, id: UUID, mask: Bool) -> Int32 {
+        let s = session
+        guard var document = s.document, let index = document.layers.firstIndex(where: { $0.id == id }) else { return fail(-5, "no such layer") }
+        let image = CGImage(pixels)
+        if mask {
+            guard let record = loadingManifest?.layers.first(where: { $0.id == id }) ?? nil, record.maskFile != nil,
+                  let asset = try? LayerMask.asset(from: image) else { return fail(-1, "invalid mask") }
+            document.layers[index].mask = LayerMask(asset: asset, isEnabled: record.maskEnabled ?? true, placement: record.maskPlacement, isLinked: record.maskLinked ?? true)
+        } else {
+            guard pixels.kind == .rgba, pixels.width > 0, pixels.height > 0, let thumbnail = try? PixelAdjust.thumbnail(of: image) else { return fail(-1, "invalid image") }
+            document.layers[index].asset = ImportedImage(image: image, thumbnail: thumbnail, name: document.layers[index].name)
+            let record = loadingManifest?.layers.first(where: { $0.id == id }) ?? nil
+            document.layers[index].shape = LayerShape.loaded(record?.shape, image: image)
+            document.layers[index].text = LayerText.loaded(record?.text, image: image)
+        }
+        s.document = document
+        s.history.reset()
+        error = nil
+        return 0
+    }
 
     private func point(_ command: Command) -> CGPoint? {
         guard let x = command.x, let y = command.y, x.isFinite, y.isFinite, abs(x) <= 1_000_000, abs(y) <= 1_000_000 else { return nil }
@@ -290,9 +468,49 @@ final class UpstreamEditor {
         return 0
     }
 
+    /// The project as the canvas shows it right now: pending transforms applied and live filter, levels and hue/saturation
+    /// previews standing in for the layer they preview (upstream's canvas draws them the same way).
+    func displayedSnapshot() -> ProjectSnapshot? {
+        let s = session
+        guard var snapshot = s.projectSnapshot(), let document = s.document else { return nil }
+        var images = snapshot.images
+        var manifest = snapshot.manifest
+        for (index, layer) in document.layers.enumerated() {
+            let shown = s.displayedTransform(for: layer)
+            let preview = s.filterEdit?.previewImage(for: layer.id) ?? s.levels?.previewImage(for: layer.id)
+                ?? s.hueSaturation?.previewImage(for: layer.id)
+            if let preview, let asset = layer.asset {
+                images[layer.id] = ImportedImage(image: preview, thumbnail: asset.thumbnail, name: asset.name)
+            }
+            if shown != layer.transform {
+                let record = manifest.layers[index]
+                manifest.layers[index] = ProjectLayerRecord(id: record.id, name: record.name, isVisible: record.isVisible, transform: shown,
+                    imageFile: record.imageFile, parentID: record.parentID, isGroup: record.isGroup, opacity: record.opacity,
+                    blendMode: record.blendMode, maskFile: record.maskFile, maskEnabled: record.maskEnabled, maskSourceID: record.maskSourceID,
+                    adjustment: record.adjustment, maskPlacement: record.maskPlacement, maskLinked: record.maskLinked,
+                    shape: record.shape, effects: record.effects, text: record.text)
+            }
+        }
+        snapshot = ProjectSnapshot(manifest: manifest, images: images, masks: snapshot.masks)
+        return snapshot
+    }
+
+    /// Lets upstream's background work (a filter preview being prepared on a task) finish before a frame is read, by
+    /// pumping the main run loop from the shell's plain callback. Bounded, so a stuck preview cannot hang the shell.
+    func settle(timeout: TimeInterval = 3) {
+        func waiting() -> Bool {
+            if let edit = session.filterEdit, edit.preview, edit.preparedPreview == nil, edit.previewError == nil { return true }
+            if let edit = session.levels, edit.preview, edit.preparedPreview == nil { return true }
+            return false
+        }
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while waiting(), Date() < deadline { RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.005)) }
+    }
+
     /// The composite as premultiplied RGBA8 (document size), from upstream's own exporter.
     func renderRGBA() throws -> (bytes: [UInt8], width: Int, height: Int) {
-        guard let snapshot = session.projectSnapshot() else { throw ExportError.render }
+        settle()
+        guard let snapshot = displayedSnapshot() else { throw ExportError.render }
         // The exporter is an actor that never needs the main thread, so this blocks the caller on a plain semaphore:
         // safe from a Qt callback and from a main-actor test alike (pumping the main run loop would deadlock in the latter).
         nonisolated(unsafe) var outcome: Result<ExportRaster, Error>?

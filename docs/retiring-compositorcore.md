@@ -6,36 +6,30 @@ the session through a C command interface (`EditorBridge`); the replacement is `
 an adapter that lives inside the `Compositor` module (via `Sources/UpstreamCore/LinuxBridge`) so it can reach upstream's
 internal types without editing them. It holds no editing logic: every command calls an upstream method.
 
-## Strangler status
+## Status: done
 
-Differential tests (`Tests/LinuxOverrideTests/BridgeParityTests.swift`) send the same command sequences to the fork's bridge
-and to `UpstreamEditor`, then compare layer state (ids compared by index) and rendered pixels (<= 1 level; 2 for brush and
-blur). Where the fork was wrong or differs from the Mac app, the divergence is documented in a test of its own.
+The fork is gone. `Sources/CompositorCore` (72 files) was deleted; the Qt shell now runs on upstream's unmodified
+`EditorSession` end to end:
 
-| Area | Commands | Status |
-|---|---|---|
-| Document, layers, groups | new, addLayer, addGroup, groupSelectedLayers, selectLayer, deleteLayer, renameLayer, setVisible, setOpacity, setBlendMode, setSelectedOpacity, cycleBlendMode, flipLayer, flipCanvas, undo, redo | matches fork |
-| Masks, move, selection | addRevealMask, addHideMask, deleteMask, setMaskEnabled, setMaskLinked, moveLayer, selectRectangle/Ellipse/Lasso, deselect, expand/contractSelection | matches fork |
-| Pixel edits, clipboard | fillForeground/Background, clearSelection, invert, copy, copyMerged, paste, duplicateLayer, layerViaCopy | matches fork |
-| Brush, wand, blur | brushBegin/Move/End/Cancel (paint, erase, mask), magicWand, filterBegin/Preview/Commit/Cancel | brush/erase/wand match; see divergences |
-| Import, state, render | import_rgba, state JSON, composite render | matches fork |
-| Not yet mapped (return -7) | resizeCanvas, cropCanvas, resizeImage, addShape, transform*/distort*, warp*, adjustment*, contentFill, removeBackground, healing and clone brushes, invertMask, manifest and layer export/import | to do |
+- `Sources/LinuxBridge/SessionABI.swift` exports the same `compositor_session_*` C ABI (create, close, command, state, render,
+  import_rgba, manifest and layer export/import) from the `Compositor` module; `Sources/LinuxBridge/UpstreamEditor.swift` is the
+  adapter. `CompositorHostBootstrap` and the static `CompositorCore` library product now link `Compositor`.
+- Every command the host sends is mapped (about 75): documents, layers, groups, masks, transform and distort, selection,
+  fills, clipboard, brush (paint, erase, mask), warp, magic wand, filters, adjustments, shapes, canvas/image size and crop,
+  remove background, content fill, project manifest and layer pixels. Unmapped commands (healing and clone brushes,
+  `smartMatte` refinements beyond remove background) return -7.
+- Render composites what the canvas shows: pending transforms and live filter/levels/hue previews are applied, and
+  background preview tasks are given a bounded moment to finish (`settle`).
+- Verified by: the host bootstrap journey (create, new, paint, render, undo, redo, close through the C ABI, then Qt host entry)
+  and all four Qt smoke modes (dialog: canvas/image size, filter preview, commit, undo, command palette, autosave,
+  save/reopen; io; layers; brush), plus `Tests/LinuxOverrideTests/UpstreamEditorTests` (14 tests, began as differential
+  tests against the fork), upstream's own 222 tests, and 96 compat-layer tests (`Tests/CompatTests`).
 
-Divergences from the fork (upstream is the target, it is what the Mac app does):
-- History: finer undo names ("Hide Layer", "Layer Opacity", "New Blank Layer") and File > New is an undoable step.
-- `cut` is copy + clear; the fork cropped the layer to the selection.
-- Gaussian blur grows the layer by 3 sigma per side (fork: less).
-- A soft mask stroke hides only the stroke (the fork hid about 80% of the image).
-- Invalid sizes return -1 (invalid argument) where the fork returned -5.
+Divergences from the old fork, upstream being the target: finer undo names and File > New undoable; `cut` is copy + clear;
+Gaussian blur grows the layer by 3 sigma; a soft mask stroke hides only the stroke; invalid sizes return -1.
 
-## Threading (verified)
-The Qt shell calls from the process main thread. Synchronous commands run there directly; upstream's async operations are
-awaited by pumping the main run loop from that plain callback (`awaitOnMain`, checked with a probe: `assumeIsolated` works
-on the main thread and a pumped main-actor task completes). This must not run inside a main-actor job, so tests use
-`commandAsync`; render blocks on a semaphore because the exporter is an actor that never needs the main thread.
+Threading: sessions are main-actor objects entered from the shell's main thread; async upstream work is awaited by pumping
+the run loop from that plain callback (`awaitOnMain`), never from inside a main-actor job (tests use `commandAsync`).
 
-## Switch-over plan
-1. Map the remaining commands above (each with a parity or upstream-only test).
-2. Export the same C ABI (`compositor_session_*`) from the `Compositor` module, point `CompositorHostBootstrap` and the C++
-   host at it, and run the host smoke modes.
-3. Delete `Sources/CompositorCore` and the fork-only tests it carried; keep the journey and Vulkan tests.
+Follow-ups: healing/clone brush commands; live in-progress brush stroke is composited only when the stroke ends (the
+fork drew it live); Flatpak build not re-run here (the product name `CompositorCore` is unchanged).

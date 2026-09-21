@@ -16,7 +16,8 @@
 // that the Swift-`@main` root unblocks the host journey (Foundation works here,
 // where it traps from a C++ main). Run: `swift run CompositorHostBootstrap`.
 
-import CompositorCore
+import Compositor
+import CoreGraphics
 import ImageIO
 import Foundation
 import HostRun

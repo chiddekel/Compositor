@@ -34,7 +34,7 @@ let package = Package(
         // Static library so the C++ host (ENG-2 composition root) links the Swift
         // core's @_cdecl symbols in-process; built with --static-swift-stdlib in
         // the Flatpak manifest so the Swift runtime is bundled, not a system dep.
-        .library(name: "CompositorCore", type: .static, targets: ["CompositorCore"]),
+        .library(name: "CompositorCore", type: .static, targets: ["Compositor"]),
     ],
     targets: [
         // Layer effects (stroke / shadow / overlay / inner shadow): the C tier and the Vulkan tier of the chain that
@@ -116,17 +116,6 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO", "CompatSupport"],
                 path: "Sources/Compat/AppKit", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(
-            name: "CompositorCore",
-            dependencies: ["CoreGraphics", "CompositorKernels", "CompositorBrushBackend"],
-            path: "Sources/CompositorCore",
-            swiftSettings: [
-                // ENG-12 provisional decision: Swift 5 language mode for the
-                // vertical slice. Switching to .v6 is a tracked follow-up that
-                // enforces Sendable data-race safety (aligns with SOLID).
-                .unsafeFlags(["-swift-version", "5"]),
-            ]
-        ),
         .target(name: "_Testing_AppKit", path: "Sources/Compat/TestingOverlays/_Testing_AppKit"),
         .target(name: "_Testing_CoreGraphics", path: "Sources/Compat/TestingOverlays/_Testing_CoreGraphics"),
         .target(name: "_Testing_CoreImage", path: "Sources/Compat/TestingOverlays/_Testing_CoreImage"),
@@ -194,7 +183,7 @@ let package = Package(
         // against upstream's own behaviour.
         .testTarget(
             name: "LinuxOverrideTests",
-            dependencies: ["Compositor", "CompositorCore", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "CompatSupport"] + ["CoreGraphics", "AppKit", "CoreImage", "ImageIO", "UniformTypeIdentifiers", "FoundationCompat"],
+            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "CompatSupport"] + ["CoreGraphics", "AppKit", "CoreImage", "ImageIO", "UniformTypeIdentifiers", "FoundationCompat"],
             path: "Tests/LinuxOverrideTests",
             swiftSettings: [
                 .swiftLanguageMode(.v5),
@@ -204,9 +193,9 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "CompositorCoreTests",
-            dependencies: ["CompositorCore", "AppKit", "FoundationCompat", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision"],
-            path: "Tests/CompositorCoreTests"
+            name: "CompatTests",
+            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision"],
+            path: "Tests/CompatTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift
         // runtime + Foundation (which a C++ main cannot on the Freedesktop Swift
@@ -239,7 +228,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",
-            dependencies: ["CompositorCore", "HostRun", "ImageIO"],
+            dependencies: ["Compositor", "HostRun", "ImageIO", "CoreGraphics"],
             path: "Sources/CompositorHostBootstrap",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
             linkerSettings: [

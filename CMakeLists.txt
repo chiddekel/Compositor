@@ -6,7 +6,7 @@
 #   - shim/            thin C++ wrapper over the C ABI (ENG-1)
 #   - Compositor/Rendering/*.c   portable C pixel kernels, reused from macOS (Keep tier)
 #   - host/            Qt6 Widgets shell: composition root + canvas + canonical adapters
-# The Swift core (Sources/CompositorCore) is built by SwiftPM under the Freedesktop
+# The Swift core (the Compositor module + Sources/LinuxBridge, product CompositorCore) is built by SwiftPM under the Freedesktop
 # Swift runtime extension, not by this file (no Swift toolchain on this build host).
 # The ABI tests link a C reference impl (tests/ref) so they run without Swift.
 #
