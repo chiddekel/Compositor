@@ -17,6 +17,7 @@
 // where it traps from a C++ main). Run: `swift run CompositorHostBootstrap`.
 
 import CompositorCore
+import ImageIO
 import Foundation
 import HostRun
 
@@ -32,7 +33,19 @@ struct HostBootstrap {
         if CommandLine.arguments.contains("--io-smoke") {
             let result = compositor_host_io_smoke(CommandLine.argc, CommandLine.unsafeArgv)
             guard result == 0 else { fail("Qt IO smoke returned \(result)") }
-            print("CompositorHostBootstrap: Qt IO smoke OK")
+            // The same Qt plugins through Apple's CGImageSource/CGImageDestination API.
+            guard ImageCodecRegistry.host != nil else { fail("Qt image backend was not registered") }
+            var pixels = PixelBuffer(width: 8, height: 8)
+            for y in 0..<8 { for x in 0..<8 { pixels[x, y] = (UInt8(x * 30), UInt8(y * 30), 120, 255) } }
+            let jpegData = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(jpegData, "public.jpeg" as CFString, 1, nil) else { fail("no JPEG destination") }
+            CGImageDestinationAddImage(destination, CGImage(pixels), [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+            guard CGImageDestinationFinalize(destination), let source = CGImageSourceCreateWithData(jpegData as Data as CFData, nil),
+                  CGImageSourceGetType(source) as String? == "public.jpeg",
+                  let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil), decoded.width == 8, decoded.height == 8 else {
+                fail("JPEG did not round-trip through CGImageSource/CGImageDestination")
+            }
+            print("CompositorHostBootstrap: Qt IO smoke OK (ImageIO JPEG via Qt plugins)")
             return
         }
         if CommandLine.arguments.contains("--layers-smoke") {

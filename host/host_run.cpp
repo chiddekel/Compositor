@@ -35,8 +35,12 @@
 #include "SkiaBridge.h"
 #endif
 
+extern "C" int compositor_qt_imageio_install(void);
+
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
+    // Qt image plugins become the ImageIO compat backend (JPEG/TIFF/WebP/... beyond the portable PNG codec).
+    compositor_qt_imageio_install();
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
     app.setDesktopFileName("com.wonderassembly.Compositor");
@@ -98,8 +102,12 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     return app.exec();
 }
 
+extern "C" int compositor_qt_imageio_selftest(void);
+
 extern "C" int compositor_host_io_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    compositor_qt_imageio_install();
+    if (compositor_qt_imageio_selftest() != 0) return 8;
     QTemporaryDir temporary;
     if (!temporary.isValid()) return 1;
     SessionWindow window;

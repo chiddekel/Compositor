@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ImageIO
 
 /// A bitmap wrapper. Rendering symbols/vector art is a macOS feature; on Linux an `NSImage` holds pixels.
 open class NSImage: @unchecked Sendable {
@@ -27,7 +28,7 @@ open class NSImage: @unchecked Sendable {
     /// Reads an image the pasteboard holds as PNG/TIFF data (needs the ImageIO codec backend).
     public convenience init?(pasteboard: NSPasteboard) {
         for type in [NSPasteboard.PasteboardType.png, .tiff] {
-            if let data = pasteboard.data(forType: type), let image = CGImageCodec.decode(data) {
+            if let data = pasteboard.data(forType: type), let image = ImageCodecRegistry.decode(data) {
                 self.init(cgImage: image, size: CGSize(width: image.width, height: image.height)); return
             }
         }
@@ -44,14 +45,6 @@ open class NSImageRep {
     public struct HintKey: Hashable, RawRepresentable { public let rawValue: String; public init(rawValue: String) { self.rawValue = rawValue } }
 }
 
-/// Encoding side of the pasteboard/export path. Implemented by the ImageIO compat (Qt image plugins).
-public enum CGImageCodec {
-    nonisolated(unsafe) public static var decodeBackend: ((Data) -> CGImage?)?
-    nonisolated(unsafe) public static var encodeBackend: ((CGImage, String) -> Data?)?
-    public static func decode(_ data: Data) -> CGImage? { decodeBackend?(data) }
-    public static func encode(_ image: CGImage, uti: String) -> Data? { encodeBackend?(image, uti) }
-}
-
 public final class NSBitmapImageRep: NSImageRep, @unchecked Sendable {
     public enum FileType { case png, jpeg, tiff, bmp, gif }
     private let image: CGImage
@@ -61,7 +54,7 @@ public final class NSBitmapImageRep: NSImageRep, @unchecked Sendable {
         let uti: String
         switch type { case .png: uti = "public.png"; case .jpeg: uti = "public.jpeg"; case .tiff: uti = "public.tiff"
                       case .bmp: uti = "com.microsoft.bmp"; case .gif: uti = "com.compuserve.gif" }
-        return CGImageCodec.encode(image, uti: uti)
+        return ImageCodecRegistry.encode(image, typeIdentifier: uti)
     }
     public struct PropertyKey: Hashable, RawRepresentable { public let rawValue: String; public init(rawValue: String) { self.rawValue = rawValue } }
 }

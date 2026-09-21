@@ -73,9 +73,13 @@ let package = Package(
         // surface upstream's model code touches. Each is one Apple framework (interface segregation).
         .target(name: "FoundationCompat", path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "Accelerate", path: "Sources/Compat/Accelerate",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "ImageIO", dependencies: ["CoreGraphics", "Accelerate", "UniformTypeIdentifiers"],
+                path: "Sources/Compat/ImageIO", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers"],
+        .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO"],
                 path: "Sources/Compat/AppKit", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(
             name: "CompositorCore",
@@ -90,7 +94,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CompositorCoreTests",
-            dependencies: ["CompositorCore", "AppKit", "FoundationCompat", "UniformTypeIdentifiers"],
+            dependencies: ["CompositorCore", "AppKit", "FoundationCompat", "UniformTypeIdentifiers", "Accelerate", "ImageIO"],
             path: "Tests/CompositorCoreTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift
@@ -109,7 +113,7 @@ let package = Package(
             name: "HostRun",
             dependencies: [],
             path: "host",
-            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "moc_SessionWindow.cpp"],
+            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "QtImageIO.cpp", "moc_SessionWindow.cpp"],
             cxxSettings: [
                 .unsafeFlags([
                     "-I/usr/include/QtWidgets",
@@ -121,7 +125,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",
-            dependencies: ["CompositorCore", "HostRun"],
+            dependencies: ["CompositorCore", "HostRun", "ImageIO"],
             path: "Sources/CompositorHostBootstrap",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
             linkerSettings: [
