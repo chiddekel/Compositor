@@ -71,7 +71,7 @@ let package = Package(
         ),
         // Foundation gaps (FileWrapper, NSFileCoordinator, security-scoped URLs), UTType and the headless AppKit
         // surface upstream's model code touches. Each is one Apple framework (interface segregation).
-        .target(name: "FoundationCompat", path: "Sources/Compat/FoundationCompat",
+        .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers"], path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Accelerate", path: "Sources/Compat/Accelerate",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -79,7 +79,7 @@ let package = Package(
                 path: "Sources/Compat/ImageIO", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Vision", dependencies: ["CoreGraphics", "CoreVideo"], path: "Sources/Compat/Vision",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "SwiftUI", dependencies: ["CoreGraphics"], path: "Sources/Compat/SwiftUI",
+        .target(name: "SwiftUI", dependencies: ["CoreGraphics", "AppKit"], path: "Sources/Compat/SwiftUI",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo"], path: "Sources/Compat/CoreImage",

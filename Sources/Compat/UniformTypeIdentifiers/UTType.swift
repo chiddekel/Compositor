@@ -24,6 +24,8 @@ public struct UTType: Hashable, Sendable {
         "public.json": Info(ext: ["json"], mime: "application/json", parents: ["public.data"]),
         "public.plain-text": Info(ext: ["txt"], mime: "text/plain", parents: ["public.data", "public.content"]),
         "public.folder": Info(ext: [], mime: nil, parents: ["public.item"]),
+        "public.file-url": Info(ext: [], mime: nil, parents: ["public.url"]),
+        "public.url": Info(ext: [], mime: nil, parents: ["public.data"]),
         "com.apple.package": Info(ext: [], mime: nil, parents: ["public.item"]),
     ]
     /// Types an app declares for itself (exported/imported) are registered here.
@@ -88,5 +90,7 @@ public struct UTType: Hashable, Sendable {
     public static let json = UTType("public.json")!
     public static let plainText = UTType("public.plain-text")!
     public static let folder = UTType("public.folder")!
+    public static let fileURL = UTType("public.file-url")!
+    public static let url = UTType("public.url")!
     public static let package = UTType("com.apple.package")!
 }

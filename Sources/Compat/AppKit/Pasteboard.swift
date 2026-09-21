@@ -46,26 +46,3 @@ public final class NSPasteboard: @unchecked Sendable {
         return !held.isEmpty
     }
 }
-
-/// Drag-and-drop / paste providers carry loadable representations; Qt hands file URLs and images instead, so this is
-/// a plain container of already-resolved data.
-open class NSItemProvider {
-    /// Representations by type identifier, already resolved (Qt hands over data, not lazy providers).
-    public var representations: [String: Data]
-    public init(representations: [String: Data] = [:]) { self.representations = representations }
-    public var registeredTypeIdentifiers: [String] { Array(representations.keys) }
-
-    public func hasItemConformingToTypeIdentifier(_ identifier: String) -> Bool {
-        guard let wanted = UTType(identifier) else { return representations[identifier] != nil }
-        return representations.keys.contains { UTType($0)?.conforms(to: wanted) == true || $0 == identifier }
-    }
-
-    @discardableResult
-    public func loadDataRepresentation(forTypeIdentifier identifier: String,
-                                       completionHandler: @escaping @Sendable (Data?, Error?) -> Void) -> AnyObject? {
-        let wanted = UTType(identifier)
-        let match = representations.first { key, _ in key == identifier || (wanted != nil && UTType(key)?.conforms(to: wanted!) == true) }
-        completionHandler(match?.value, match == nil ? CocoaError(.fileReadNoSuchFile) : nil)
-        return nil
-    }
-}

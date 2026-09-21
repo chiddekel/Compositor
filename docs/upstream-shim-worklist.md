@@ -79,3 +79,39 @@ Probe (`scripts/upstream-probe.sh`): 9,439 → 450 → **175 distinct error line
 Known gaps carried forward: dashed strokes are recorded but not rasterised; `CGContext` blend modes/clipping in the
 no-Skia fallback path are minimal; Skia in the Flatpak manifest (canvaskit 0.42.0) is older than the tree the bridge
 is built against locally (`SkPathBuilder`, `SkPathIter`, `SkGradient`), so the manifest's Skia version must be bumped.
+
+
+## Phase 3 status (2026-09-21): the probe builds clean
+
+`scripts/upstream-probe.sh` now reports **0 error lines and `Build complete`**: upstream `Compositor/{Document,IO,Rendering}`
+(70 Swift files, plus the C pixel kernels via the bridging header) compile **unmodified** on Linux against the compat
+modules, with the Xcode project's own concurrency settings (`SWIFT_VERSION 5`, default actor isolation `MainActor`,
+approachable concurrency). History: 9,439 → 450 → 175 → 53 → 31 → 11 → **0** distinct error lines.
+
+Excluded from the probe (7 files, all view/app code the Qt shell replaces): `IO/CompositorApplicationDelegate.swift`,
+`Rendering/EditorCanvas.swift`, `InlineTextEditor.swift`, `BrushCursorOverlay.swift`, `SampleRingOverlay.swift`, and the two
+Metal files below.
+
+| Module / file | Provides |
+|---|---|
+| `Accelerate` | `vImage_Buffer`, `vImageScale_ARGB8888/Planar8` (Lanczos-3 or tent, filtered when shrinking), `vImageTableLookUp_Planar8`, `vImageMatrixMultiply_ARGB8888` with vImage's row-major pixel×matrix convention |
+| `ImageIO` | `CGImageSource*`/`CGImageDestination*` with Apple's keys; portable pure-Swift PNG codec (inflate, all filters, 8/16-bit, palette, pHYs); pluggable backend; the Qt host registers QImageReader/QImageWriter (`host/QtImageIO.cpp`, `compositor_imageio_register`) so JPEG/TIFF/WebP/BMP/GIF work; EXIF orientation and thumbnails |
+| `CoreImage` | Lazily evaluated `CIImage` graph + CPU float evaluator: Gaussian/motion blur, colour matrix/clamp/cube, blend-with-mask, colour burn/dodge, perspective transform, edge-preserving upsample, crop, clamp-to-extent, affine transform, EXIF orientation; `CIContext` with managed (linear) and unmanaged modes |
+| `CoreVideo` | `CVPixelBuffer` (8-bit and float mask planes) |
+| `Vision` | `VNGenerateForegroundInstanceMaskRequest` / instance-mask observation / scaled masks; classical border-model segmenter as the floor; `ForegroundSegmentationRegistry` + `compositor_vision_register` for OpenCV GrabCut or a learned model |
+| `SwiftUI` | `View`, `NSHostingController`, `move(fromOffsets:toOffset:)`; `AppKit` gained `NSViewController`, `NSWindow` sheets (`beginSheet`, `sheetPresenter`), `NSDocumentController`, alert/panel members |
+| `Sources/Overrides/` | `MetalBrushCoverage` (same API, Vulkan → C CPU kernel via `AdaptiveBrushCoverage`), `MetalLayerEffects` (same API, `shared == nil` so upstream's CPU effects path runs), `CanvasSizeSheet`/`ImageSizeSheet`/`JPEGExportSheet` stand-ins (upstream's unmodified `ProjectController` hosts and presents them; with no host they settle as cancelled) |
+
+Fidelity notes recorded while getting here (all fixed in the shims): `CGImage.colorSpace` and `CGContext.colorSpace` are
+optional, `CGColorSpace.sRGB` is a name constant, `CGColor(colorSpace:components:)` and `CGDataProvider(data:)` are
+failable, `CGPath` is `Equatable`/`Hashable`, `CGDataProviderDirectCallbacks.getBytesAtPosition` takes a non-optional
+buffer, `NSItemProvider` lives in Foundation, `CVPixelBuffer` comes with Vision.
+
+## What is next (Phase 2: the strangler)
+
+The probe proves compilation, not behaviour. Next: (1) a real `UpstreamCore` SwiftPM target built from
+`Compositor/{Document,IO,Rendering}` + `Sources/Overrides` + the Linux-original Vulkan brush backend, (2) compile
+upstream's `CompositorTests/*.swift` unmodified against it and drive failures to zero (Swift Testing is available), (3)
+retire the forked `Sources/CompositorCore` files module by module as their upstream equivalents pass, (4) point
+`EditorBridge` at the unmodified `EditorSession`. Then Phase 4/5: Vulkan → Skia → OpenCV → C effects backend behind
+`MetalLayerEffects.shared`, and OpenCV GrabCut behind the segmentation registry.

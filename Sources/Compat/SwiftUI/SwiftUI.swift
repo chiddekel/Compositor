@@ -4,6 +4,16 @@
 @_exported import Foundation
 @_exported import CoreGraphics
 @_exported import Observation
+import AppKit
+
+/// The view protocol; upstream's SwiftUI views are not compiled on Linux, but the sheet stand-ins conform to it.
+public protocol View {}
+
+/// Carries a root view for `NSWindow.beginSheet`; the Qt shell (or a headless resolver) decides what to show.
+@MainActor public final class NSHostingController<Root: View>: NSViewController {
+    public var rootView: Root { didSet { representedRootView = rootView } }
+    public init(rootView: Root) { self.rootView = rootView; super.init(); representedRootView = rootView }
+}
 
 extension MutableCollection where Self: RangeReplaceableCollection {
     /// SwiftUI's `move(fromOffsets:toOffset:)` used by list reordering (`onMove`): moves the elements at `source`

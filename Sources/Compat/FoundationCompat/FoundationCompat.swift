@@ -4,6 +4,7 @@
 // stay unmodified.
 
 import Foundation
+import UniformTypeIdentifiers
 
 /// Objective-C's out-error parameter; `error: &coordinationError` binds to it exactly as on Apple platforms.
 public typealias NSErrorPointer = UnsafeMutablePointer<NSError?>?
