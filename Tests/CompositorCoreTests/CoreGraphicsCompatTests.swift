@@ -22,7 +22,7 @@ final class CoreGraphicsCompatTests: XCTestCase {
             return 0
         }
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: 2, height: 2))
-        let out = ctx.makeImage()
+        let out = ctx.makeImage()!
         XCTAssertEqual(out.bytes, img.bytes)
     }
 
@@ -31,7 +31,7 @@ final class CoreGraphicsCompatTests: XCTestCase {
         // Closure "fails" (device lost, plan §6); Swift fallback must draw red.
         let ctx = CGContextCompat(width: 2, height: 2) { _, _, _, _ in -2 }
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: 2, height: 2))
-        let out = ctx.makeImage()
+        let out = ctx.makeImage()!
         for p in 0..<4 {
             let i = p * 4
             XCTAssertEqual(out.bytes[i], 255, "red channel at \(p)")
@@ -43,7 +43,7 @@ final class CoreGraphicsCompatTests: XCTestCase {
         let img = makeRedImage(1, 1)
         let ctx = CGContextCompat(width: 1, height: 1, render: nil)
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-        let out = ctx.makeImage()
+        let out = ctx.makeImage()!
         XCTAssertEqual(out.bytes[0], 255)
         XCTAssertEqual(out.bytes[3], 255)
     }
@@ -57,7 +57,7 @@ final class CoreGraphicsCompatTests: XCTestCase {
         let ctx = CGContextCompat(width: 4, height: 4) { _, _, _, _ in -1 }
         // Scaled rect -> not identity -> Swift path, closure must not run.
         ctx.draw(img, in: CGRect(x: 1, y: 1, width: 2, height: 2))
-        let out = ctx.makeImage()
+        let out = ctx.makeImage()!
         // Swift fallback draws red into the placed rect; pixels at (1,1)
         // should be red, pixels at (0,0) should be transparent.
         let i00 = 0 * 4
