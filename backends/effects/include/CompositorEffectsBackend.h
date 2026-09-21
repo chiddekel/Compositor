@@ -26,6 +26,9 @@ typedef struct CompositorEffectsParams {
     CompositorEffectColor inner;
 } CompositorEffectsParams;
 
+// The OpenCV tier: the heavy passes as OpenCV operators on float planes. -2 when the build has no OpenCV.
+int compositor_effects_opencv(const CompositorEffectsParams *params, const uint8_t *pixels, uint8_t *out);
+
 typedef struct CompositorVulkanEffects CompositorVulkanEffects;
 
 // `pixels` and `out` are width*height*4 bytes, disjoint. Return 0 on success, -1 invalid input, -2 backend

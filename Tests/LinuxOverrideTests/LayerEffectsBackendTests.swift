@@ -135,3 +135,58 @@ struct SkiaEffectsTests {
         }
     }
 }
+
+
+/// The OpenCV tier (pinned OpenCV 4.14.0) against the C++ reference. Skipped in a build without OpenCV.
+@MainActor
+struct OpenCVEffectsTests {
+    @Test func openCVTierAgreesWithTheReference() throws {
+        guard let opencv = CEffectsBackend.opencv() else { return }
+        let cpu = CEffectsBackend.cpu()
+        let context = try BrushRaster.context(width: 70, height: 50, mask: false)
+        context.setFillColor(CGColor(srgbRed: 0.9, green: 0.3, blue: 0.2, alpha: 1))
+        context.fillEllipse(in: CGRect(x: 14, y: 10, width: 40, height: 28))
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.4, blue: 0.9, alpha: 0.5))
+        context.fill(CGRect(x: 34, y: 24, width: 22, height: 16))
+        let padded = try #require(context.makeImage())
+        let cases: [(String, LayerEffects)] = [
+            ("outside stroke", LayerEffects(stroke: StrokeEffect(size: 3, red: 1, green: 1, blue: 0, opacity: 1))),
+            ("inside stroke", LayerEffects(stroke: StrokeEffect(size: 2, red: 0, green: 1, blue: 0, opacity: 0.8, inside: true))),
+            ("drop shadow", LayerEffects(shadow: ShadowEffect(angle: 45, distance: 6, blur: 8, opacity: 0.6))),
+            ("colour overlay", LayerEffects(colorOverlay: ColorOverlayEffect(red: 0, green: 0, blue: 1, opacity: 0.4))),
+            ("inner shadow", LayerEffects(innerShadow: InnerShadowEffect(angle: 120, distance: 4, blur: 6, opacity: 0.7))),
+            ("everything", LayerEffects(stroke: StrokeEffect(size: 2, opacity: 1), shadow: ShadowEffect(angle: 60, distance: 5, blur: 6),
+                                        colorOverlay: ColorOverlayEffect(red: 1, green: 0, blue: 0, opacity: 0.3), innerShadow: InnerShadowEffect(angle: 90, distance: 3, blur: 4))),
+        ]
+        for (name, effects) in cases {
+            let pa = try cpu.render(padded, effects: effects).portableImage.bytes
+            let pb = try opencv.render(padded, effects: effects).portableImage.bytes
+            var largest = 0, total = 0
+            for i in pa.indices { let d = abs(Int(pa[i]) - Int(pb[i])); largest = max(largest, d); total += d }
+            print("OPENCV", name, "largest", largest, "mean", Double(total) / Double(pa.count))
+            #expect(largest <= 1, "\(name): largest difference \(largest)")
+        }
+    }
+}
+
+/// Timing only (printed, never asserted): which tier is fastest on a large layer.
+@MainActor
+struct EffectsTimingTests {
+    @Test func timeTheTiersOnALargeLayer() throws {
+        let context = try BrushRaster.context(width: 2400, height: 1600, mask: false)
+        context.setFillColor(CGColor(srgbRed: 0.9, green: 0.3, blue: 0.2, alpha: 1))
+        context.fillEllipse(in: CGRect(x: 300, y: 250, width: 1800, height: 1100))
+        let image = try #require(context.makeImage())
+        let effects = LayerEffects(stroke: StrokeEffect(size: 12, opacity: 1), shadow: ShadowEffect(angle: 60, distance: 30, blur: 40),
+                                   innerShadow: InnerShadowEffect(angle: 90, distance: 10, blur: 16))
+        var tiers: [(String, CEffectsBackend)] = [("cpu", CEffectsBackend.cpu())]
+        if let o = CEffectsBackend.opencv() { tiers.append(("opencv", o)) }
+        if let s = CEffectsBackend.skia() { tiers.append(("skia", s)) }
+        if let v = CEffectsBackend.vulkan() { tiers.append((v.name, v)) }
+        for (name, tier) in tiers {
+            let start = ContinuousClock.now
+            _ = try tier.render(image, effects: effects)
+            print("TIMING", name, ContinuousClock.now - start)
+        }
+    }
+}

@@ -13,6 +13,18 @@
 import PackageDescription
 import Foundation
 
+// The pinned OpenCV (third_party/opencv.pinned: 4.14.0, static core + imgproc) lives under /app in the Flatpak build and
+// under build/opencv/install when built locally with the manifest's options. The OpenCV tier of the layer-effects chain
+// compiles only when its headers are there, and links the static libraries from the same prefix.
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
+let opencvPrefix: String? = ["\(packageRoot)/build/opencv/install", "/app"].first {
+    FileManager.default.fileExists(atPath: "\($0)/include/opencv4/opencv2/imgproc.hpp")
+}
+let opencvLibrary: String? = opencvPrefix.flatMap { prefix in
+    ["lib64", "lib"].map { "\(prefix)/\($0)" }.first { FileManager.default.fileExists(atPath: "\($0)/libopencv_core.a") }
+}
+import Foundation
+
 let package = Package(
     name: "Compositor",
     platforms: [
@@ -29,8 +41,13 @@ let package = Package(
         // Sources/Overrides/MetalLayerEffects.swift fronts. Same nine passes as upstream's Metal kernels.
         .target(name: "CompositorEffectsBackend", path: "backends/effects",
             exclude: ["shaders/effects.comp"],
-            sources: ["EffectsCPU.cpp", "EffectsVulkan.cpp"], publicHeadersPath: "include",
-            linkerSettings: [.linkedLibrary("vulkan")]),
+            sources: ["EffectsCPU.cpp", "EffectsVulkan.cpp", "EffectsOpenCV.cpp"], publicHeadersPath: "include",
+            cxxSettings: opencvPrefix.map { [.unsafeFlags(["-DCOMPOSITOR_HAS_OPENCV", "-I\($0)/include/opencv4"])] } ?? [],
+            linkerSettings: [.linkedLibrary("vulkan")] + (opencvLibrary.map { library in [
+                .unsafeFlags(["-L\(library)", "-L\(library)/opencv4/3rdparty"]),
+                .linkedLibrary("opencv_imgproc"), .linkedLibrary("opencv_core"), .linkedLibrary("zlib"),
+                .linkedLibrary("dl"), .linkedLibrary("pthread"),
+            ] } ?? [])),
         .target(name: "CompositorBrushBackend", path: "backends/brush",
             exclude: ["shaders/continuous_brush.comp"],
             sources: ["BrushCoverageCPU.cpp", "VulkanBrushCoverage.cpp"],
