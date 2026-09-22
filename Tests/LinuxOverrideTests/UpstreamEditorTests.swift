@@ -245,4 +245,40 @@ struct UpstreamEditorTests {
         let left = try a.renderRGBA().bytes, right = try b.renderRGBA().bytes
         #expect(left == right)
     }
+
+    @Test func selectionAndLayerWorkflow() async throws {
+        let e = loaded(60, 40)
+        let s0 = state(e)
+        #expect(s0["hasSelection"] as? Bool == false)
+        #expect(s0["mergeTitle"] as? String == "Merge Down")
+        #expect(s0["canMergeLayers"] as? Bool == false, "single layer cannot merge down")
+
+        // Select All -> hasSelection is true -> Deselect
+        await send(e, cmd("selectAll"))
+        #expect(state(e)["hasSelection"] as? Bool == true)
+        await send(e, cmd("invertSelection"))
+        #expect(state(e)["hasSelection"] as? Bool == true)
+        await send(e, cmd("featherSelection", #""parameters":{"amount":2}"#))
+        await send(e, cmd("deselect"))
+        #expect(state(e)["hasSelection"] as? Bool == false)
+
+        // Layers, clipping, reordering, and merge
+        await send(e, cmd("addLayer"))
+        #expect(layers(e).count == 2)
+        let s1 = state(e)
+        #expect(s1["canMergeLayers"] as? Bool == true)
+        #expect(s1["mergeTitle"] as? String == "Merge Down")
+        #expect(s1["canToggleClippingMask"] as? Bool == true)
+
+        await send(e, cmd("toggleClippingMask"))
+        #expect(state(e)["activeLayerIsClipped"] as? Bool == true)
+        await send(e, cmd("toggleClippingMask"))
+        #expect(state(e)["activeLayerIsClipped"] as? Bool == false)
+
+        await send(e, cmd("moveActiveLayer", #""value":-1"#))
+        await send(e, cmd("moveActiveLayer", #""value":1"#))
+
+        await send(e, cmd("mergeLayers"))
+        #expect(layers(e).count == 1)
+    }
 }

@@ -41,6 +41,7 @@ class QLabel;
 class QToolBar;
 class QSpinBox;
 class QPainter;
+class QKeyEvent;
 #include <vector>
 #include <memory>
 #include <QMap>
@@ -102,7 +103,14 @@ public:
         MagicWand,
         CloneStamp,
         SpotHealing,
-        Crop
+        Crop,
+        Blur,
+        Gradient,
+        Shape,
+        Type,
+        Eyedropper,
+        Hand,
+        Zoom
     };
 
     void setTool(Tool tool);
@@ -117,6 +125,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
     friend class SessionCanvasWidget;
     void canvasPaintEvent(QPaintEvent *event, QWidget *canvas);
@@ -130,6 +139,12 @@ protected:
     QPointF documentToCanvasPoint(const QPointF &docPoint) const;
 
 private:
+    void createMenus();
+    void refreshMenuTitles(const QJsonObject &state);
+    void swapPaletteColors();
+    void resetPaletteColors();
+    void setBackgroundColor(const QColor &color);
+    void pickBackgroundColor();
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
     void showAdjustDialog(const QString &kind);
@@ -182,6 +197,8 @@ private:
     QCheckBox *m_visibleCheck = nullptr;
     QCheckBox *m_maskCheck = nullptr;
     QColor m_brushColor = QColor(255, 0, 0);
+    QColor m_backgroundColor = QColor(255, 255, 255);
+    QPushButton *m_bgColorButton = nullptr;
     int m_brushDiameter = 16;
     int m_brushHardness = 100;
     int m_brushOpacity = 100;
@@ -191,6 +208,9 @@ private:
     QTimer *m_autosaveTimer = nullptr;
     QToolBar *m_headerToolBar = nullptr;
     QToolBar *m_optionsToolBar = nullptr;
+    QToolBar *m_toolsBar = nullptr;
+    QDockWidget *m_layersDock = nullptr;
+    QDockWidget *m_adjustmentsDock = nullptr;
     QStackedWidget *m_optionsStack = nullptr;
     QTabBar *m_documentTabBar = nullptr;
     QLabel *m_statusZoomLabel = nullptr;
@@ -199,6 +219,43 @@ private:
     QLabel *m_statusHintsLabel = nullptr;
     double m_zoomLevel = 0.0;
     PlatformServices m_platform;
+
+    // Dynamic menu action pointers for macOS parity
+    QAction *m_actUndo = nullptr;
+    QAction *m_actRedo = nullptr;
+    QAction *m_actCut = nullptr;
+    QAction *m_actCopy = nullptr;
+    QAction *m_actCopyMerged = nullptr;
+    QAction *m_actPaste = nullptr;
+    QAction *m_actFillFG = nullptr;
+    QAction *m_actFillBG = nullptr;
+    QAction *m_actClearSelection = nullptr;
+    QAction *m_actContentAwareFill = nullptr;
+    QAction *m_actSelectAll = nullptr;
+    QAction *m_actDeselect = nullptr;
+    QAction *m_actInverse = nullptr;
+    QAction *m_actLayerPixels = nullptr;
+    QAction *m_actSelectSubject = nullptr;
+    QAction *m_actMaskBlackAreas = nullptr;
+    QAction *m_actExpandSelection = nullptr;
+    QAction *m_actContractSelection = nullptr;
+    QAction *m_actFeatherSelection = nullptr;
+    QAction *m_actInvert = nullptr;
+    QAction *m_actTransform = nullptr;
+    QAction *m_actDuplicate = nullptr;
+    QAction *m_actClippingMask = nullptr;
+    QAction *m_actGroupLayers = nullptr;
+    QAction *m_actMoveOutOfFolder = nullptr;
+    QAction *m_actNewBlankLayer = nullptr;
+    QAction *m_actRenameLayer = nullptr;
+    QAction *m_actShowHideLayer = nullptr;
+    QAction *m_actMoveLayerUp = nullptr;
+    QAction *m_actMoveLayerDown = nullptr;
+    QAction *m_actMerge = nullptr;
+    QAction *m_actFlipLayerH = nullptr;
+    QAction *m_actFlipLayerV = nullptr;
+    QAction *m_actDelete = nullptr;
+
     // One-shot canvas pixel request (Levels eyedroppers): receives the document point of the next click.
     std::function<void(const QPointF &)> m_pixelSampler;
 

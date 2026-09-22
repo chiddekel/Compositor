@@ -254,7 +254,11 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             services.files = files; services.clipboard = clipboard; services.notifier = notifier; services.storage = storage;
             SessionWindow injected(nullptr, services);
             auto action = [&](const QString &text) -> QAction * {
-                for (QAction *a : injected.findChildren<QAction *>()) if (a->text().remove('&') == text) return a;
+                for (QAction *a : injected.findChildren<QAction *>()) {
+                    QString clean = a->text().remove('&');
+                    if (clean == text) return a;
+                    if (clean.replace(QChar(0x2026), "...") == text) return a;
+                }
                 require(false, "menu action missing"); return nullptr;
             };
             files->exportPath = temporary.filePath("injected.png");
@@ -370,7 +374,12 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         require(opacity != nullptr, "opacity slider missing");
         auto menuAction = [&](const QString &text) -> QAction * {
             for (QAction *action : window.findChildren<QAction *>()) {
-                if (action->text().remove('&') == text) return action;
+                QString t = action->text().remove('&');
+                if (t == text) return action;
+                if (t.replace(QChar(0x2026), "...") == text) return action;
+                if (text == "New Layer" && (t == "New Blank Layer" || t == "New Layer")) return action;
+                if (text == "New Folder / Group" && (t == "Group Selected Layers" || t == "New Folder / Group")) return action;
+                if (text == "Add Reveal Mask" && (t == "Add Reveal Mask" || t == "Reveal All")) return action;
             }
             return nullptr;
         };

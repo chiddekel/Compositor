@@ -7,6 +7,7 @@
 #include "TabletHandler.h"
 #include "LayerItemDelegate.h"
 #include "QtPlatformServices.h"
+#include "EditorDialogs.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -60,6 +61,8 @@
 #include <QMenu>
 #include <QPixmap>
 #include <QWheelEvent>
+#include <QKeyEvent>
+#include <QInputDialog>
 
 #include <cstdint>
 #include <cstring>
@@ -241,6 +244,46 @@ static QIcon makeToolIcon(SessionWindow::Tool tool) {
         p.drawLine(7, 15, 19, 15);
         p.drawLine(15, 7, 15, 19);
         break;
+    case SessionWindow::Tool::Blur: {
+        QPainterPath path;
+        path.moveTo(11, 4);
+        path.cubicTo(11, 4, 6, 12, 6, 15);
+        path.arcTo(6, 10, 10, 10, 180, 180);
+        path.cubicTo(16, 12, 11, 4, 11, 4);
+        p.drawPath(path);
+        break;
+    }
+    case SessionWindow::Tool::Gradient:
+        p.drawRect(4, 4, 14, 14);
+        p.fillRect(4, 11, 14, 7, QColor(0xd0, 0xd0, 0xd5));
+        break;
+    case SessionWindow::Tool::Shape:
+        p.drawRect(4, 4, 9, 9);
+        p.drawEllipse(9, 9, 9, 9);
+        break;
+    case SessionWindow::Tool::Type:
+        p.drawLine(5, 5, 17, 5);
+        p.drawLine(11, 5, 11, 18);
+        p.drawLine(8, 18, 14, 18);
+        break;
+    case SessionWindow::Tool::Eyedropper:
+        p.drawLine(6, 16, 8, 14);
+        p.drawLine(8, 14, 14, 8);
+        p.drawLine(14, 8, 16, 10);
+        p.drawLine(16, 10, 10, 16);
+        p.drawLine(10, 16, 6, 16);
+        p.drawLine(14, 8, 17, 5);
+        break;
+    case SessionWindow::Tool::Hand:
+        p.drawRoundedRect(7, 8, 8, 11, 2, 2);
+        p.drawLine(9, 4, 9, 8);
+        p.drawLine(11, 3, 11, 8);
+        p.drawLine(13, 4, 13, 8);
+        break;
+    case SessionWindow::Tool::Zoom:
+        p.drawEllipse(5, 5, 10, 10);
+        p.drawLine(12, 12, 18, 18);
+        break;
     }
     return QIcon(pix);
 }
@@ -257,15 +300,89 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_canvasWidget = new SessionCanvasWidget(this);
     setCentralWidget(m_canvasWidget);
 
-    auto *toolsBar = addToolBar(tr("Tools"));
-    toolsBar->setObjectName("toolbar.tools");
-    toolsBar->setMovable(false);
-    toolsBar->setOrientation(Qt::Vertical);
-    toolsBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    toolsBar->setIconSize(QSize(22, 22));
-    addToolBar(Qt::LeftToolBarArea, toolsBar);
+    m_toolsBar = addToolBar(tr("Tools"));
+    m_toolsBar->setObjectName("toolbar.tools");
+    m_toolsBar->setMovable(false);
+    m_toolsBar->setOrientation(Qt::Vertical);
+    m_toolsBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_toolsBar->setIconSize(QSize(22, 22));
+    addToolBar(Qt::LeftToolBarArea, m_toolsBar);
     auto *toolGroup = new QActionGroup(this);
     toolGroup->setExclusive(true);
+
+    auto addToolAct = [&](const QString &title, QKeySequence shortcut, Tool t, const char *objName) {
+        auto *act = new QAction(makeToolIcon(t), title, this);
+        act->setShortcut(shortcut);
+        QString cleanTitle = title;
+        cleanTitle.remove('&');
+        act->setToolTip(QString("%1 (%2)").arg(cleanTitle).arg(shortcut.toString(QKeySequence::NativeText)));
+        act->setObjectName(objName);
+        act->setCheckable(true);
+        connect(act, &QAction::triggered, this, [this, t] { setTool(t); });
+        toolGroup->addAction(act);
+        m_toolsBar->addAction(act);
+        m_toolActions[t] = act;
+        if (t == Tool::Brush) act->setChecked(true);
+        return act;
+    };
+
+    addToolAct(tr("Move Tool"), QKeySequence(Qt::Key_V), Tool::Move, "tool.move");
+    addToolAct(tr("Rectangular Marquee"), QKeySequence(Qt::Key_M), Tool::RectSelect, "tool.rectSelect");
+    addToolAct(tr("Elliptical Marquee"), QKeySequence(Qt::SHIFT | Qt::Key_M), Tool::EllipseSelect, "tool.ellipseSelect");
+    addToolAct(tr("Lasso"), QKeySequence(Qt::Key_L), Tool::Lasso, "tool.lasso");
+    addToolAct(tr("Magic Wand"), QKeySequence(Qt::Key_W), Tool::MagicWand, "tool.magicWand");
+    m_toolsBar->addSeparator();
+    addToolAct(tr("Crop"), QKeySequence(Qt::Key_C), Tool::Crop, "tool.crop");
+    addToolAct(tr("Brush"), QKeySequence(Qt::Key_B), Tool::Brush, "tool.brush");
+    addToolAct(tr("Eraser"), QKeySequence(Qt::Key_E), Tool::Eraser, "tool.eraser");
+    addToolAct(tr("Spot Healing"), QKeySequence(Qt::Key_J), Tool::SpotHealing, "tool.spotHealing");
+    addToolAct(tr("Clone Stamp"), QKeySequence(Qt::Key_S), Tool::CloneStamp, "tool.cloneStamp");
+    addToolAct(tr("Smear / Blur"), QKeySequence(Qt::Key_R), Tool::Blur, "tool.blur");
+    m_toolsBar->addSeparator();
+    addToolAct(tr("Gradient"), QKeySequence(Qt::Key_G), Tool::Gradient, "tool.gradient");
+    addToolAct(tr("Shape"), QKeySequence(Qt::Key_U), Tool::Shape, "tool.shape");
+    addToolAct(tr("Type"), QKeySequence(Qt::Key_T), Tool::Type, "tool.type");
+    addToolAct(tr("Eyedropper"), QKeySequence(Qt::Key_I), Tool::Eyedropper, "tool.eyedropper");
+    m_toolsBar->addSeparator();
+    addToolAct(tr("Hand"), QKeySequence(Qt::Key_H), Tool::Hand, "tool.hand");
+    addToolAct(tr("Zoom"), QKeySequence(Qt::Key_Z), Tool::Zoom, "tool.zoom");
+
+    m_toolsBar->addSeparator();
+    auto *paletteWidget = new QWidget(m_toolsBar);
+    paletteWidget->setObjectName("palette.controls");
+    paletteWidget->setFixedSize(36, 42);
+
+    m_bgColorButton = new QPushButton(paletteWidget);
+    m_bgColorButton->setObjectName("palette.background");
+    m_bgColorButton->setGeometry(10, 16, 22, 22);
+    m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+    m_bgColorButton->setToolTip(tr("Background color (click to change)"));
+    connect(m_bgColorButton, &QPushButton::clicked, this, &SessionWindow::pickBackgroundColor);
+
+    m_brushColorButton = new QPushButton(paletteWidget);
+    m_brushColorButton->setObjectName("brush.color");
+    m_brushColorButton->setGeometry(2, 4, 22, 22);
+    m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_brushColor.name()));
+    m_brushColorButton->setToolTip(tr("Foreground color (click to change)"));
+    connect(m_brushColorButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
+
+    auto *btnSwap = new QToolButton(paletteWidget);
+    btnSwap->setGeometry(23, 0, 13, 13);
+    btnSwap->setAutoRaise(true);
+    btnSwap->setText(QString::fromUtf8("⇄"));
+    btnSwap->setStyleSheet("color: #a0a0a5; font-size: 10px; border: none; padding: 0px;");
+    btnSwap->setToolTip(tr("Swap colors (X)"));
+    connect(btnSwap, &QToolButton::clicked, this, &SessionWindow::swapPaletteColors);
+
+    auto *btnReset = new QToolButton(paletteWidget);
+    btnReset->setGeometry(0, 28, 12, 12);
+    btnReset->setAutoRaise(true);
+    btnReset->setText(QString::fromUtf8("⟲"));
+    btnReset->setStyleSheet("color: #a0a0a5; font-size: 9px; border: none; padding: 0px;");
+    btnReset->setToolTip(tr("Default black/white (D)"));
+    connect(btnReset, &QToolButton::clicked, this, &SessionWindow::resetPaletteColors);
+
+    m_toolsBar->addWidget(paletteWidget);
 
     // Drive the Swift editor core through the C ABI: create a canvas, paint a red
     // stroke, render, and hold the composited RGBA as a QImage for paintEvent.
@@ -278,204 +395,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     m_image = renderToQImage(m_sessionHandle, 64, 64);
 
-    QMenu *file = menuBar()->addMenu(tr("&File"));
-    file->addAction(tr("&New Canvas"), QKeySequence::New, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"new","width":512,"height":512})") == 0) {
-            m_image = renderToQImage(m_sessionHandle, 512, 512);
-            refreshImage();
-        }
-    });
-    file->addAction(tr("&Open Image..."), QKeySequence::Open, this, [this] {
-        const QString path = m_platform.files->chooseImageToOpen();
-        if (!path.isEmpty() && !importImage(path)) m_platform.notifier->warn(tr("Open failed"), tr("Could not open image."));
-    });
-    file->addAction(tr("Open &Project..."), this, [this] {
-        const QString path = m_platform.files->chooseProjectToOpen();
-        if (!path.isEmpty() && !loadProject(path)) m_platform.notifier->warn(tr("Open failed"), tr("Could not open project."));
-    });
-    file->addAction(tr("Save Project &As..."), QKeySequence::Save, this, [this] {
-        const QString path = m_platform.files->chooseProjectSavePath();
-        if (!path.isEmpty() && !saveProject(path)) m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
-    });
-    file->addAction(tr("Export &PNG..."), this, [this] {
-        const QString path = m_platform.files->chooseExportPath(QStringLiteral("PNG"), tr("PNG (*.png)"));
-        if (!path.isEmpty() && !exportPNG(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export PNG."));
-    });
-    file->addAction(tr("Export &JPEG..."), this, [this] {
-        const QString path = m_platform.files->chooseExportPath(QStringLiteral("JPEG"), tr("JPEG (*.jpg *.jpeg)"));
-        if (!path.isEmpty() && !exportJPEG(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export JPEG."));
-    });
-    file->addAction(tr("Export &TIFF..."), this, [this] {
-        const QString path = m_platform.files->chooseExportPath(QStringLiteral("TIFF"), tr("TIFF (*.tiff *.tif)"));
-        if (!path.isEmpty() && !exportTIFF(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export TIFF."));
-    });
-    file->addAction(tr("Export &WebP..."), this, [this] {
-        const QString path = m_platform.files->chooseExportPath(QStringLiteral("WebP"), tr("WebP (*.webp)"));
-        if (!path.isEmpty() && !exportWebP(path)) m_platform.notifier->warn(tr("Export failed"), tr("Could not export WebP."));
-    });
-    file->addSeparator();
-    file->addAction(tr("&Quit"), QKeySequence::Quit, this, &QWidget::close);
-
-    QMenu *edit = menuBar()->addMenu(tr("&Edit"));
-    edit->addAction(tr("&Undo"), QKeySequence::Undo, this, [this] {
-        if (!m_painting && cmd(m_sessionHandle, R"({"version":1,"action":"undo"})") == 0) refreshImage();
-    });
-    edit->addAction(tr("&Redo"), QKeySequence::Redo, this, [this] {
-        if (!m_painting && cmd(m_sessionHandle, R"({"version":1,"action":"redo"})") == 0) refreshImage();
-    });
-    edit->addSeparator();
-    edit->addAction(tr("&Copy"), QKeySequence::Copy, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0) {
-            if (!m_image.isNull()) {
-                m_platform.clipboard->setImage(m_image);
-            }
-            statusBar()->showMessage(tr("Copied to clipboard."), 1500);
-        }
-    });
-    edit->addAction(tr("Copy &Merged"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0) {
-            if (!m_image.isNull()) {
-                m_platform.clipboard->setImage(m_image);
-            }
-            statusBar()->showMessage(tr("Copied merged to clipboard."), 1500);
-        }
-    });
-    edit->addAction(tr("Cu&t"), QKeySequence::Cut, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"cut"})") == 0) refreshImage();
-    });
-    edit->addAction(tr("&Paste"), QKeySequence::Paste, this, [this] {
-        {
-            const QImage img = m_platform.clipboard->image();
-            if (!img.isNull()) {
-                QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
-                std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
-                const uint8_t *src = rgba.constBits();
-                for (size_t i = 0; i < premul.size(); i += 4) {
-                    uint8_t a = src[i + 3];
-                    premul[i] = (src[i] * a + 127) / 255;
-                    premul[i + 1] = (src[i + 1] * a + 127) / 255;
-                    premul[i + 2] = (src[i + 2] * a + 127) / 255;
-                    premul[i + 3] = a;
-                }
-                std::string name = "Pasted Layer";
-                if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
-                                                   rgba.width(), rgba.height(),
-                                                   reinterpret_cast<const uint8_t*>(name.data()), name.size(), 0) == 0) {
-                    refreshImage();
-                    refreshLayers();
-                    return;
-                }
-            }
-        }
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"paste"})") == 0) refreshImage();
-    });
-    edit->addAction(tr("Duplicate Layer"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"duplicateLayer"})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    edit->addAction(tr("Content-Aware &Fill"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"contentFill"})") == 0) refreshImage();
-    })->setObjectName("edit.contentFill");
-    edit->addSeparator();
-    auto *cmdPaletteAction = new QAction(tr("&Command Palette..."), this);
-    cmdPaletteAction->setObjectName("commandPalette");
-    cmdPaletteAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P), QKeySequence(Qt::Key_F1)});
-    connect(cmdPaletteAction, &QAction::triggered, this, [this] { showCommandPalette(); });
-    addAction(cmdPaletteAction);
-    edit->addAction(cmdPaletteAction);
-
-    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
-    viewMenu->addAction(tr("Fit on Screen"), QKeySequence(Qt::CTRL | Qt::Key_0), this, &SessionWindow::fitCanvas);
-    viewMenu->addAction(tr("Actual Pixels (100%)"), QKeySequence(Qt::CTRL | Qt::Key_1), this, &SessionWindow::actualPixels);
-    viewMenu->addAction(tr("Zoom &In"), QKeySequence::ZoomIn, this, [this] { zoomBy(1.25); });
-    viewMenu->addAction(tr("Zoom &Out"), QKeySequence::ZoomOut, this, [this] { zoomBy(1.0 / 1.25); });
-
-    QMenu *layer = menuBar()->addMenu(tr("&Layer"));
-    layer->addAction(tr("&New Layer"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("New &Folder / Group"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"addGroup"})") == 0) { refreshImage(); refreshLayers(); }
-    })->setObjectName("layer.addGroup");
-    layer->addAction(tr("&Delete Layer"), QKeySequence::Delete, this, [this] {
-        deleteSelectedLayers();
-    });
-    layer->addAction(tr("Flip Layer &Horizontal"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"flipLayer","horizontally":true})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("Flip Layer &Vertical"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"flipLayer","horizontally":false})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("Add Rectangle"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"addShape","kind":"Rectangle","x":8,"y":8,"width":48,"height":32,"parameters":{"red":1,"green":1,"blue":1,"cornerRadius":0}})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("Add Ellipse"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"addShape","kind":"Ellipse","x":8,"y":8,"width":48,"height":32,"parameters":{"red":1,"green":1,"blue":1}})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("Add Reveal Mask"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"addRevealMask"})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("Add Hide Mask"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"addHideMask"})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("Invert Mask"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"invertMask"})") == 0) refreshImage();
-    });
-    layer->addAction(tr("Delete Mask"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteMask"})") == 0) { refreshImage(); refreshLayers(); }
-    });
-    layer->addAction(tr("Remove &Background"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"removeBackground"})") == 0) { refreshImage(); refreshLayers(); }
-    })->setObjectName("layer.removeBackground");
-    QMenu *tool = menuBar()->addMenu(tr("&Tool"));
-    auto addToolAct = [&](const QString &title, QKeySequence shortcut, Tool t, const char *objName) {
-        auto *act = tool->addAction(title, shortcut, this, [this, t] { setTool(t); });
-        act->setIcon(makeToolIcon(t));
-        QString cleanTitle = title;
-        cleanTitle.remove('&');
-        act->setToolTip(QString("%1 (%2)").arg(cleanTitle).arg(shortcut.toString(QKeySequence::NativeText)));
-        act->setObjectName(objName);
-        act->setCheckable(true);
-        toolGroup->addAction(act);
-        toolsBar->addAction(act);
-        m_toolActions[t] = act;
-        if (t == Tool::Brush) act->setChecked(true);
-        return act;
-    };
-
-    auto *actMove = addToolAct(tr("&Move Tool"), QKeySequence(Qt::Key_V), Tool::Move, "tool.move");
-    auto *actBrush = addToolAct(tr("&Brush"), QKeySequence(Qt::Key_B), Tool::Brush, "tool.brush");
-    auto *actEraser = addToolAct(tr("&Eraser"), QKeySequence(Qt::Key_E), Tool::Eraser, "tool.eraser");
-    toolsBar->addSeparator();
-    auto *actRect = addToolAct(tr("&Rectangular Marquee"), QKeySequence(Qt::Key_M), Tool::RectSelect, "tool.rectSelect");
-    auto *actEllipse = addToolAct(tr("Elliptical &Marquee"), QKeySequence(Qt::SHIFT | Qt::Key_M), Tool::EllipseSelect, "tool.ellipseSelect");
-    auto *actLasso = addToolAct(tr("&Lasso"), QKeySequence(Qt::Key_L), Tool::Lasso, "tool.lasso");
-    auto *actWand = addToolAct(tr("Magic &Wand"), QKeySequence(Qt::Key_W), Tool::MagicWand, "tool.magicWand");
-    toolsBar->addSeparator();
-    auto *actClone = addToolAct(tr("&Clone Stamp"), QKeySequence(Qt::Key_S), Tool::CloneStamp, "tool.cloneStamp");
-    auto *actHeal = addToolAct(tr("Spot &Healing"), QKeySequence(Qt::Key_J), Tool::SpotHealing, "tool.spotHealing");
-    auto *actCrop = addToolAct(tr("&Crop"), QKeySequence(Qt::Key_C), Tool::Crop, "tool.crop");
-
-    tool->addSeparator();
-    tool->addAction(tr("Paint"), this, [this] { m_brushMode = "Paint"; setTool(Tool::Brush); });
-    tool->addAction(tr("Smudge (Warp)"), this, [this] { m_brushMode = "Smudge"; setTool(Tool::Brush); });
-    tool->addAction(tr("Liquify (Warp)"), this, [this] { m_brushMode = "Liquify"; setTool(Tool::Brush); });
-    QMenu *filter = menuBar()->addMenu(tr("&Filter"));
-    for (const QString &kind : {QString("Gaussian Blur"), QString("Motion Blur"), QString("Add Noise"),
-                                QString("Lens Correction"), QString("Grain"), QString("Exposure")}) {
-        auto *action = filter->addAction(kind, this, [this, kind] { showFilterDialog(kind); });
-        action->setObjectName("filter." + kind);
-    }
-    QMenu *adjust = menuBar()->addMenu(tr("&Adjust"));
-    for (const QString &kind : {QString("Levels"), QString("Hue/Saturation"), QString("Curves"),
-                                QString("Exposure"), QString("Gradient Map"), QString("Grain")}) {
-        auto *action = adjust->addAction(kind, this, [this, kind] { showAdjustDialog(kind); });
-        action->setObjectName("adjust." + kind);
-    }
-    QMenu *imageMenu = menuBar()->addMenu(tr("&Image"));
-    imageMenu->addAction(tr("Canvas Size…"), this, [this] { showSizeDialog(false); })->setObjectName("canvasSize");
-    imageMenu->addAction(tr("Image Size…"), this, [this] { showSizeDialog(true); })->setObjectName("imageSize");
-
-    auto *dock = new QDockWidget(tr("Layers"), this);
+    m_layersDock = new QDockWidget(tr("Layers"), this);
+    auto *dock = m_layersDock;
     dock->setObjectName("dock.layers");
     auto *panel = new QWidget(dock);
     auto *layout = new QVBoxLayout(panel);
@@ -649,7 +570,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     // Floating "Adjustments" palette: one row per adjustment, opens its sheet.
     {
-        auto *adjDock = new QDockWidget(tr("Adjustments"), this);
+        m_adjustmentsDock = new QDockWidget(tr("Adjustments"), this);
+        auto *adjDock = m_adjustmentsDock;
         adjDock->setObjectName("dock.adjustments");
         adjDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetMovable);
         auto *body = new QWidget(adjDock);
@@ -722,8 +644,6 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         QAction *toggle = adjDock->toggleViewAction();
         toggle->setText(tr("Adjustments Panel"));
         toggle->setObjectName("view.adjustmentsPanel");
-        viewMenu->addSeparator();
-        viewMenu->addAction(toggle);
     }
 
     connect(m_layersView->selectionModel(), &QItemSelectionModel::currentChanged,
@@ -780,20 +700,10 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     connect(m_maskCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (sendCommand({{"action", "setMaskEnabled"}, {"enabled", on}})) refreshImage();
     });
-    refreshLayers();
-
-    QMenu *select = menuBar()->addMenu(tr("&Select"));
-    select->addAction(tr("Rectangle Selection"), this, [this] { selectRegion(true); })->setObjectName("select.rectangle");
-    select->addAction(tr("Ellipse Selection"), this, [this] { selectRegion(false); })->setObjectName("select.ellipse");
-    select->addAction(tr("Deselect"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})") == 0) { refreshImage(); refreshLayers(); } })->setObjectName("select.deselect");
-
-    imageMenu->addSeparator();
-    imageMenu->addAction(tr("Fill Foreground"), this, [this] { if (sendCommand({{"action", "fillForeground"}, {"parameters", QJsonObject{{"red", m_brushColor.redF()}, {"green", m_brushColor.greenF()}, {"blue", m_brushColor.blueF()}}}})) refreshImage(); })->setObjectName("fill.foreground");
-    imageMenu->addAction(tr("Fill Background"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"fillBackground"})") == 0) refreshImage(); })->setObjectName("fill.background");
-    imageMenu->addAction(tr("Clear Selection"), this, [this] { if (cmd(m_sessionHandle, R"({"version":1,"action":"clearSelection"})") == 0) refreshImage(); })->setObjectName("fill.clear");
-
     setupHeaderBar();
     setupOptionsBar();
+    createMenus();
+    refreshLayers();
     updateOptionsBar();
     updateStatusTelemetry();
 
@@ -806,6 +716,816 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
 SessionWindow::~SessionWindow() {
     if (m_sessionHandle != 0) compositor_session_close(m_sessionHandle);
+}
+
+void SessionWindow::swapPaletteColors() {
+    std::swap(m_brushColor, m_backgroundColor);
+    if (m_brushColorButton) {
+        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_brushColor.name()));
+    }
+    if (m_bgColorButton) {
+        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+    }
+    updateOptionsBar();
+}
+
+void SessionWindow::resetPaletteColors() {
+    m_brushColor = QColor(0, 0, 0);
+    m_backgroundColor = QColor(255, 255, 255);
+    if (m_brushColorButton) {
+        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_brushColor.name()));
+    }
+    if (m_bgColorButton) {
+        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+    }
+    updateOptionsBar();
+}
+
+void SessionWindow::setBackgroundColor(const QColor &color) {
+    m_backgroundColor = color;
+    if (m_bgColorButton) {
+        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+    }
+}
+
+void SessionWindow::pickBackgroundColor() {
+    const QColor color = m_platform.colors ? m_platform.colors->pick(m_backgroundColor, tr("Background color")) : QColorDialog::getColor(m_backgroundColor, this, tr("Background color"));
+    if (color.isValid()) setBackgroundColor(color);
+}
+
+void SessionWindow::keyPressEvent(QKeyEvent *event) {
+    if (event->modifiers() == Qt::NoModifier) {
+        if (event->key() == Qt::Key_X) {
+            swapPaletteColors();
+            event->accept();
+            return;
+        } else if (event->key() == Qt::Key_D) {
+            resetPaletteColors();
+            event->accept();
+            return;
+        } else if (event->key() == Qt::Key_BracketLeft) {
+            setBrushDiameter(std::max(1, m_brushDiameter - 5));
+            event->accept();
+            return;
+        } else if (event->key() == Qt::Key_BracketRight) {
+            setBrushDiameter(std::min(500, m_brushDiameter + 5));
+            event->accept();
+            return;
+        }
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
+void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
+    const bool canUndo = state.value("canUndo").toBool(false);
+    const QString undoName = state.value("undoName").toString();
+    const bool canRedo = state.value("canRedo").toBool(false);
+    const QString redoName = state.value("redoName").toString();
+    const bool hasSelection = state.value("hasSelection").toBool(false);
+    const bool canTransformSelection = state.value("canTransformSelection").toBool(false);
+    const bool isMaskSelected = state.value("isMaskSelected").toBool(false);
+    const bool activeLayerIsVisible = state.value("activeLayerIsVisible").toBool(true);
+    const bool activeLayerHasMask = state.value("activeLayerHasMask").toBool(false);
+    const bool activeLayerHasParent = state.value("activeLayerHasParent").toBool(false);
+    const bool activeLayerIsClipped = state.value("activeLayerIsClipped").toBool(false);
+    const bool canToggleClippingMask = state.value("canToggleClippingMask").toBool(false);
+    const bool canMergeLayers = state.value("canMergeLayers").toBool(false);
+    const QString mergeTitle = state.value("mergeTitle").toString("Merge Down");
+    const bool canMoveActiveLayerUp = state.value("canMoveActiveLayerUp").toBool(false);
+    const bool canMoveActiveLayerDown = state.value("canMoveActiveLayerDown").toBool(false);
+    const QString activeLayerID = state.value("activeLayerID").toString();
+
+    // 1. Undo / Redo
+    if (m_actUndo) {
+        m_actUndo->setEnabled(canUndo);
+        m_actUndo->setText(canUndo && !undoName.isEmpty() ? QString("Undo %1").arg(undoName) : tr("Undo"));
+    }
+    if (m_actRedo) {
+        m_actRedo->setEnabled(canRedo);
+        m_actRedo->setText(canRedo && !redoName.isEmpty() ? QString("Redo %1").arg(redoName) : tr("Redo"));
+    }
+
+    // 2. Invert: isMaskSelected ? "Invert Mask" : "Invert"
+    if (m_actInvert) {
+        m_actInvert->setText(isMaskSelected ? tr("Invert Mask") : tr("Invert"));
+    }
+
+    // 3. Transform: canTransformSelection ? "Transform Selection" : "Transform Layer"
+    if (m_actTransform) {
+        m_actTransform->setText(canTransformSelection ? tr("Transform Selection") : tr("Transform Layer"));
+    }
+
+    // 4. Duplicate: selection == nil ? "Duplicate Layer" : "Layer via Copy"
+    if (m_actDuplicate) {
+        m_actDuplicate->setText(hasSelection ? tr("Layer via Copy") : tr("Duplicate Layer"));
+    }
+
+    // 5. Clipping Mask: activeLayerIsClipped ? "Release Clipping Mask" : "Create Clipping Mask"
+    if (m_actClippingMask) {
+        m_actClippingMask->setText(activeLayerIsClipped ? tr("Release Clipping Mask") : tr("Create Clipping Mask"));
+        m_actClippingMask->setEnabled(canToggleClippingMask);
+    }
+
+    // 6. Layer Visibility: activeLayerIsVisible == false ? "Show Layer" : "Hide Layer"
+    if (m_actShowHideLayer) {
+        m_actShowHideLayer->setText(activeLayerIsVisible ? tr("Hide Layer") : tr("Show Layer"));
+        m_actShowHideLayer->setEnabled(!activeLayerID.isEmpty());
+    }
+
+    // 7. Move out of folder
+    if (m_actMoveOutOfFolder) {
+        m_actMoveOutOfFolder->setEnabled(activeLayerHasParent);
+    }
+
+    // 8. Move Up / Down
+    if (m_actMoveLayerUp) m_actMoveLayerUp->setEnabled(canMoveActiveLayerUp);
+    if (m_actMoveLayerDown) m_actMoveLayerDown->setEnabled(canMoveActiveLayerDown);
+
+    // 9. Merge: session.mergeTitle
+    if (m_actMerge) {
+        m_actMerge->setText(mergeTitle.isEmpty() ? tr("Merge Down") : mergeTitle);
+        m_actMerge->setEnabled(canMergeLayers);
+    }
+
+    // 10. Delete: isMaskSelected && activeLayerHasMask ? "Delete Layer Mask" : (selectedLayers > 1 ? "Delete Layers" : "Delete Layer")
+    if (m_actDelete) {
+        int selectedCount = 1;
+        if (m_layersView && m_layersView->selectionModel()) {
+            selectedCount = std::max(1, static_cast<int>(m_layersView->selectionModel()->selectedRows().size()));
+        }
+        if (isMaskSelected && activeLayerHasMask) {
+            m_actDelete->setText(tr("Delete Layer Mask"));
+        } else if (selectedCount > 1) {
+            m_actDelete->setText(tr("Delete Layers"));
+        } else {
+            m_actDelete->setText(tr("Delete Layer"));
+        }
+        m_actDelete->setEnabled(!activeLayerID.isEmpty());
+    }
+
+    // 11. Selection commands enable/disable
+    if (m_actDeselect) m_actDeselect->setEnabled(hasSelection);
+    if (m_actInverse) m_actInverse->setEnabled(hasSelection);
+    if (m_actClearSelection) m_actClearSelection->setEnabled(hasSelection);
+}
+
+void SessionWindow::createMenus() {
+    // --- File ---
+    auto *file = menuBar()->addMenu(tr("&File"));
+    file->addAction(tr("New Canvas…"), QKeySequence::New, this, [this] {
+        const QJsonObject state = sessionState();
+        if (state.value("busy").toBool()) return;
+        SizeDialog dialog(state, false, this, m_platform.colors);
+        if (dialog.exec() == QDialog::Accepted) {
+            if (sendCommand(dialog.command())) {
+                refreshImage();
+                refreshLayers();
+            }
+        }
+    })->setObjectName("file.new");
+
+    file->addAction(tr("Open Project…"), QKeySequence::Open, this, [this] {
+        const QString path = m_platform.files->chooseProjectToOpen();
+        if (!path.isEmpty() && !loadProject(path)) {
+            m_platform.notifier->warn(tr("Open failed"), tr("Could not load project."));
+        }
+    })->setObjectName("file.openProject");
+
+    file->addAction(tr("Import Images…"), this, [this] {
+        const QString path = m_platform.files->chooseImageToOpen();
+        if (!path.isEmpty()) {
+            QImageReader reader(path);
+            const QImage decoded = reader.read();
+            if (!decoded.isNull()) {
+                const QImage rgba = decoded.convertToFormat(QImage::Format_RGBA8888);
+                std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
+                for (int y = 0; y < rgba.height(); ++y) {
+                    const uint8_t *src = rgba.constScanLine(y);
+                    uint8_t *dst = premul.data() + y * rgba.width() * 4;
+                    for (int x = 0; x < rgba.width(); ++x) {
+                        const uint8_t a = src[x * 4 + 3];
+                        dst[x * 4] = static_cast<uint8_t>((src[x * 4] * a + 127) / 255);
+                        dst[x * 4 + 1] = static_cast<uint8_t>((src[x * 4 + 1] * a + 127) / 255);
+                        dst[x * 4 + 2] = static_cast<uint8_t>((src[x * 4 + 2] * a + 127) / 255);
+                        dst[x * 4 + 3] = a;
+                    }
+                }
+                std::string name = QFileInfo(path).fileName().toStdString();
+                if (name.empty()) name = "Imported Layer";
+                if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
+                                                   rgba.width(), rgba.height(),
+                                                   reinterpret_cast<const uint8_t *>(name.data()), name.size(), 0) == 0) {
+                    refreshImage();
+                    refreshLayers();
+                }
+            }
+        }
+    })->setObjectName("file.importImages");
+
+    file->addSeparator();
+
+    file->addAction(tr("Save"), QKeySequence::Save, this, [this] {
+        const QString path = m_platform.files->chooseProjectSavePath();
+        if (!path.isEmpty() && !saveProject(path)) {
+            m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
+        }
+    })->setObjectName("file.save");
+
+    file->addAction(tr("Save As…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this, [this] {
+        const QString path = m_platform.files->chooseProjectSavePath();
+        if (!path.isEmpty() && !saveProject(path)) {
+            m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
+        }
+    })->setObjectName("file.saveAs");
+
+    file->addSeparator();
+
+    file->addAction(tr("Export PNG…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E), this, [this] {
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("PNG"), tr("PNG (*.png)"));
+        if (!path.isEmpty() && !exportPNG(path)) {
+            m_platform.notifier->warn(tr("Export failed"), tr("Could not export PNG."));
+        }
+    })->setObjectName("file.exportPNG");
+
+    file->addAction(tr("Export JPEG…"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_S), this, [this] {
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("JPEG"), tr("JPEG (*.jpg *.jpeg)"));
+        if (!path.isEmpty() && !exportJPEG(path)) {
+            m_platform.notifier->warn(tr("Export failed"), tr("Could not export JPEG."));
+        }
+    })->setObjectName("file.exportJPEG");
+
+    file->addAction(tr("Export TIFF…"), this, [this] {
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("TIFF"), tr("TIFF (*.tiff *.tif)"));
+        if (!path.isEmpty() && !exportTIFF(path)) {
+            m_platform.notifier->warn(tr("Export failed"), tr("Could not export TIFF."));
+        }
+    })->setObjectName("file.exportTIFF");
+
+    file->addAction(tr("Export WebP…"), this, [this] {
+        const QString path = m_platform.files->chooseExportPath(QStringLiteral("WebP"), tr("WebP (*.webp)"));
+        if (!path.isEmpty() && !exportWebP(path)) {
+            m_platform.notifier->warn(tr("Export failed"), tr("Could not export WebP."));
+        }
+    })->setObjectName("file.exportWebP");
+
+    file->addSeparator();
+
+    file->addAction(tr("Close Project"), QKeySequence::Close, this, [this] {
+        close();
+    })->setObjectName("file.closeProject");
+
+    file->addSeparator();
+
+    file->addAction(tr("Quit"), QKeySequence::Quit, this, &QWidget::close)->setObjectName("file.quit");
+
+    // --- Edit ---
+    auto *edit = menuBar()->addMenu(tr("&Edit"));
+    m_actUndo = edit->addAction(tr("Undo"), QKeySequence::Undo, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"undo"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actUndo->setObjectName("edit.undo");
+
+    m_actRedo = edit->addAction(tr("Redo"), QKeySequence::Redo, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"redo"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actRedo->setObjectName("edit.redo");
+
+    edit->addSeparator();
+
+    m_actCut = edit->addAction(tr("Cut"), QKeySequence::Cut, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"cut"})") == 0) refreshImage();
+    });
+    m_actCut->setObjectName("edit.cut");
+
+    m_actCopy = edit->addAction(tr("Copy"), QKeySequence::Copy, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0) {
+            if (!m_image.isNull()) m_platform.clipboard->setImage(m_image);
+            statusBar()->showMessage(tr("Copied to clipboard."), 1500);
+        }
+    });
+    m_actCopy->setObjectName("edit.copy");
+
+    m_actCopyMerged = edit->addAction(tr("Copy Merged"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0) {
+            if (!m_image.isNull()) m_platform.clipboard->setImage(m_image);
+            statusBar()->showMessage(tr("Copied merged to clipboard."), 1500);
+        }
+    });
+    m_actCopyMerged->setObjectName("edit.copyMerged");
+
+    m_actPaste = edit->addAction(tr("Paste"), QKeySequence::Paste, this, [this] {
+        const QImage img = m_platform.clipboard->image();
+        if (!img.isNull()) {
+            QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+            std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
+            for (int y = 0; y < rgba.height(); ++y) {
+                const uint8_t *src = rgba.constScanLine(y);
+                uint8_t *dst = premul.data() + y * rgba.width() * 4;
+                for (int x = 0; x < rgba.width(); ++x) {
+                    const uint8_t a = src[x * 4 + 3];
+                    dst[x * 4] = static_cast<uint8_t>((src[x * 4] * a + 127) / 255);
+                    dst[x * 4 + 1] = static_cast<uint8_t>((src[x * 4 + 1] * a + 127) / 255);
+                    dst[x * 4 + 2] = static_cast<uint8_t>((src[x * 4 + 2] * a + 127) / 255);
+                    dst[x * 4 + 3] = a;
+                }
+            }
+            std::string name = "Pasted Layer";
+            if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
+                                               rgba.width(), rgba.height(),
+                                               reinterpret_cast<const uint8_t *>(name.data()), name.size(), 0) == 0) {
+                refreshImage();
+                refreshLayers();
+            }
+        }
+    });
+    m_actPaste->setObjectName("edit.paste");
+
+    edit->addSeparator();
+
+    edit->addAction(tr("Keyboard Shortcuts…"), this, [this] {
+        QMessageBox::information(this, tr("Keyboard Shortcuts"),
+            tr("<b>Tools:</b><br>"
+               "V - Move<br>"
+               "M - Rect / Ellipse Marquee<br>"
+               "L - Lasso<br>"
+               "W - Magic Wand<br>"
+               "C - Crop<br>"
+               "B - Brush<br>"
+               "E - Eraser<br>"
+               "J - Spot Healing<br>"
+               "S - Clone Stamp<br>"
+               "R - Smear / Blur<br>"
+               "G - Gradient<br>"
+               "U - Shape<br>"
+               "T - Type<br>"
+               "I - Eyedropper<br>"
+               "H - Hand<br>"
+               "Z - Zoom<br><br>"
+               "<b>Color & Brush:</b><br>"
+               "X - Swap Colors<br>"
+               "D - Default Black/White<br>"
+               "[ / ] - Decrease / Increase Brush Size<br><br>"
+               "<b>Menus:</b><br>"
+               "Ctrl+Z / Ctrl+Shift+Z - Undo / Redo<br>"
+               "Ctrl+T - Transform<br>"
+               "Ctrl+J - Duplicate Layer<br>"
+               "Ctrl+E - Merge Down / Layers<br>"
+               "Ctrl+A / Ctrl+D - Select All / Deselect<br>"
+               "Ctrl+Shift+I - Invert Selection"));
+    })->setObjectName("edit.shortcuts");
+
+    edit->addSeparator();
+
+    m_actFillFG = edit->addAction(tr("Fill with Foreground Color"), QKeySequence(Qt::ALT | Qt::Key_Delete), this, [this] {
+        if (sendCommand({{"action", "fillForeground"}, {"parameters", QJsonObject{{"red", m_brushColor.redF()}, {"green", m_brushColor.greenF()}, {"blue", m_brushColor.blueF()}}}})) {
+            refreshImage();
+        }
+    });
+    m_actFillFG->setObjectName("fill.foreground");
+
+    m_actFillBG = edit->addAction(tr("Fill with Background Color"), QKeySequence(Qt::CTRL | Qt::Key_Delete), this, [this] {
+        if (sendCommand({{"action", "fillBackground"}, {"parameters", QJsonObject{{"red", m_backgroundColor.redF()}, {"green", m_backgroundColor.greenF()}, {"blue", m_backgroundColor.blueF()}}}})) {
+            refreshImage();
+        }
+    });
+    m_actFillBG->setObjectName("fill.background");
+
+    m_actClearSelection = edit->addAction(tr("Clear Selection Pixels"), QKeySequence::Delete, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"clearSelection"})") == 0) refreshImage();
+    });
+    m_actClearSelection->setObjectName("fill.clear");
+
+    m_actContentAwareFill = edit->addAction(tr("Content-Aware Fill…"), QKeySequence(Qt::SHIFT | Qt::Key_Delete), this, [this] {
+        showFilterDialog("Content-Aware Fill");
+    });
+    m_actContentAwareFill->setObjectName("edit.contentFill");
+
+    edit->addSeparator();
+
+    edit->addAction(tr("Command Palette…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P), this, [this] {
+        showCommandPalette();
+    })->setObjectName("commandPalette");
+
+    // --- View ---
+    auto *view = menuBar()->addMenu(tr("&View"));
+    view->addAction(tr("Fit Canvas"), QKeySequence(Qt::CTRL | Qt::Key_0), this, &SessionWindow::fitCanvas)->setObjectName("view.fitCanvas");
+    view->addAction(tr("Actual Pixels"), QKeySequence(Qt::CTRL | Qt::Key_1), this, &SessionWindow::actualPixels)->setObjectName("view.actualPixels");
+    view->addAction(tr("Zoom In"), QKeySequence::ZoomIn, this, [this] { zoomBy(1.25); })->setObjectName("view.zoomIn");
+    view->addAction(tr("Zoom Out"), QKeySequence::ZoomOut, this, [this] { zoomBy(1.0 / 1.25); })->setObjectName("view.zoomOut");
+
+    view->addSeparator();
+
+    auto *actPixelGrid = view->addAction(tr("Pixel Grid (800% and above)"));
+    actPixelGrid->setCheckable(true);
+    actPixelGrid->setChecked(true);
+    actPixelGrid->setObjectName("view.pixelGrid");
+
+    auto *actSnap = view->addAction(tr("Snap"));
+    actSnap->setCheckable(true);
+    actSnap->setChecked(true);
+    actSnap->setObjectName("view.snap");
+
+    auto *actTransformControls = view->addAction(tr("Show Transform Controls"), QKeySequence(Qt::CTRL | Qt::Key_H), this, [this](bool) {
+        if (m_canvasWidget) m_canvasWidget->update();
+    });
+    actTransformControls->setCheckable(true);
+    actTransformControls->setChecked(true);
+    actTransformControls->setObjectName("view.transformControls");
+
+    view->addSeparator();
+
+    auto *showMenu = view->addMenu(tr("Show"));
+    auto *actShowGrid = showMenu->addAction(tr("Grid"), QKeySequence(Qt::CTRL | Qt::Key_Apostrophe));
+    actShowGrid->setCheckable(true);
+    actShowGrid->setObjectName("view.showGrid");
+    auto *actShowGuides = showMenu->addAction(tr("Guides"), QKeySequence(Qt::CTRL | Qt::Key_Semicolon));
+    actShowGuides->setCheckable(true);
+    actShowGuides->setChecked(true);
+    actShowGuides->setObjectName("view.showGuides");
+
+    auto *actRulers = view->addAction(tr("Rulers"), QKeySequence(Qt::CTRL | Qt::Key_R));
+    actRulers->setCheckable(true);
+    actRulers->setObjectName("view.rulers");
+
+    view->addSeparator();
+
+    auto *snapMenu = view->addMenu(tr("Snap To"));
+    auto *snapGuides = snapMenu->addAction(tr("Guides")); snapGuides->setCheckable(true); snapGuides->setChecked(true);
+    auto *snapGrid = snapMenu->addAction(tr("Grid")); snapGrid->setCheckable(true);
+    auto *snapLayers = snapMenu->addAction(tr("Layers")); snapLayers->setCheckable(true); snapLayers->setChecked(true);
+    auto *snapDocBounds = snapMenu->addAction(tr("Document Bounds")); snapDocBounds->setCheckable(true); snapDocBounds->setChecked(true);
+
+    view->addSeparator();
+
+    auto *actLockGuides = view->addAction(tr("Lock Guides"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Semicolon));
+    actLockGuides->setCheckable(true);
+    actLockGuides->setObjectName("view.lockGuides");
+
+    view->addAction(tr("Clear Guides"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"clearGuides"})") == 0) {
+            if (m_canvasWidget) m_canvasWidget->update();
+        }
+    })->setObjectName("view.clearGuides");
+
+    // --- Select ---
+    auto *select = menuBar()->addMenu(tr("&Select"));
+    m_actSelectAll = select->addAction(tr("All"), QKeySequence::SelectAll, this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"selectAll"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actSelectAll->setObjectName("select.all");
+
+    m_actDeselect = select->addAction(tr("Deselect"), QKeySequence(Qt::CTRL | Qt::Key_D), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actDeselect->setObjectName("select.deselect");
+
+    m_actInverse = select->addAction(tr("Inverse"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"invertSelection"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actInverse->setObjectName("select.inverse");
+
+    m_actLayerPixels = select->addAction(tr("Layer's Pixels"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"loadLayerSelection"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actLayerPixels->setObjectName("select.layerPixels");
+
+    m_actSelectSubject = select->addAction(tr("Subject"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_A), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"selectSubject"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actSelectSubject->setObjectName("select.subject");
+
+    m_actMaskBlackAreas = select->addAction(tr("Mask's Black Areas"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"loadMaskSelection"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actMaskBlackAreas->setObjectName("select.maskBlackAreas");
+
+    select->addSeparator();
+
+    m_actExpandSelection = select->addAction(tr("Expand…"), this, [this] {
+        bool ok = false;
+        const int px = QInputDialog::getInt(this, tr("Expand Selection"), tr("Expand by (pixels):"), 1, 1, 500, 1, &ok);
+        if (ok && px > 0) {
+            if (sendCommand({{"action", "expandSelection"}, {"parameters", QJsonObject{{"amount", px}}}})) {
+                refreshImage();
+                refreshLayers();
+            }
+        }
+    });
+    m_actExpandSelection->setObjectName("select.expand");
+
+    m_actContractSelection = select->addAction(tr("Contract…"), this, [this] {
+        bool ok = false;
+        const int px = QInputDialog::getInt(this, tr("Contract Selection"), tr("Contract by (pixels):"), 1, 1, 500, 1, &ok);
+        if (ok && px > 0) {
+            if (sendCommand({{"action", "contractSelection"}, {"parameters", QJsonObject{{"amount", px}}}})) {
+                refreshImage();
+                refreshLayers();
+            }
+        }
+    });
+    m_actContractSelection->setObjectName("select.contract");
+
+    m_actFeatherSelection = select->addAction(tr("Feather…"), this, [this] {
+        bool ok = false;
+        const int px = QInputDialog::getInt(this, tr("Feather Selection"), tr("Feather radius (pixels):"), 1, 1, 500, 1, &ok);
+        if (ok && px > 0) {
+            if (sendCommand({{"action", "featherSelection"}, {"parameters", QJsonObject{{"amount", px}}}})) {
+                refreshImage();
+                refreshLayers();
+            }
+        }
+    });
+    m_actFeatherSelection->setObjectName("select.feather");
+
+    select->addSeparator();
+
+    // Preserved for automation compatibility:
+    select->addAction(tr("Rectangle Selection"), this, [this] { selectRegion(true); })->setObjectName("select.rectangle");
+    select->addAction(tr("Ellipse Selection"), this, [this] { selectRegion(false); })->setObjectName("select.ellipse");
+
+    // --- Image ---
+    auto *image = menuBar()->addMenu(tr("&Image"));
+    image->addAction(tr("Curves…"), QKeySequence(Qt::CTRL | Qt::Key_M), this, [this] { showAdjustDialog("Curves"); })->setObjectName("adjust.Curves");
+    image->addAction(tr("Levels…"), QKeySequence(Qt::CTRL | Qt::Key_L), this, [this] { showAdjustDialog("Levels"); })->setObjectName("adjust.Levels");
+    image->addAction(tr("Hue/Saturation…"), QKeySequence(Qt::CTRL | Qt::Key_U), this, [this] { showAdjustDialog("Hue/Saturation"); })->setObjectName("adjust.Hue/Saturation");
+    for (const QString &kind : {QString("Black & White"), QString("Color Balance"), QString("Exposure"), QString("Gradient Map"), QString("Grain")}) {
+        auto *act = image->addAction(kind + "…", this, [this, kind] { showAdjustDialog(kind); });
+        act->setObjectName("adjust." + kind);
+    }
+
+    image->addSeparator();
+
+    m_actInvert = image->addAction(tr("Invert"), QKeySequence(Qt::CTRL | Qt::Key_I), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"invert"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actInvert->setObjectName("image.invert");
+
+    image->addSeparator();
+
+    image->addAction(tr("Canvas Size…"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_C), this, [this] { showSizeDialog(false); })->setObjectName("canvasSize");
+    image->addAction(tr("Image Size…"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_I), this, [this] { showSizeDialog(true); })->setObjectName("imageSize");
+
+    image->addSeparator();
+
+    image->addAction(tr("Flip Canvas Horizontal"), this, [this] {
+        if (sendCommand({{"action", "flipCanvas"}, {"horizontally", true}})) refreshImage();
+    })->setObjectName("image.flipH");
+    image->addAction(tr("Flip Canvas Vertical"), this, [this] {
+        if (sendCommand({{"action", "flipCanvas"}, {"horizontally", false}})) refreshImage();
+    })->setObjectName("image.flipV");
+
+    // --- Filter ---
+    auto *filter = menuBar()->addMenu(tr("&Filter"));
+    for (const QString &kind : {QString("Gaussian Blur"), QString("Motion Blur"), QString("Add Noise"), QString("Lens Correction")}) {
+        auto *action = filter->addAction(kind + "…", this, [this, kind] { showFilterDialog(kind); });
+        action->setObjectName("filter." + kind);
+    }
+    filter->addAction(tr("Remove Background…"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"removeBackground"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    })->setObjectName("filter.Remove Background");
+
+    // --- Layer ---
+    auto *layer = menuBar()->addMenu(tr("&Layer"));
+    auto *adjMenu = layer->addMenu(tr("New Adjustment Layer"));
+    for (const QString &kind : {QString("Hue/Saturation"), QString("Levels"), QString("Curves"), QString("Exposure"),
+                                QString("Gradient Map"), QString("Grain"), QString("Invert"), QString("Black & White"), QString("Color Balance")}) {
+        adjMenu->addAction(kind == "Invert" ? kind : kind + "…", this, [this, kind] {
+            showAdjustDialog(kind);
+        })->setObjectName("layer.adjust." + kind);
+    }
+
+    layer->addAction(tr("Edit Adjustment…"), this, [this] {
+        const QJsonObject state = sessionState();
+        const QString active = state.value("activeLayerID").toString();
+        for (const QJsonValue &v : state.value("layers").toArray()) {
+            const QJsonObject l = v.toObject();
+            if (l.value("id").toString() == active && l.contains("adjustment")) {
+                const QString kind = l.value("adjustment").toObject().value("kind").toString();
+                if (!kind.isEmpty()) showAdjustDialog(kind);
+                break;
+            }
+        }
+    })->setObjectName("layer.editAdjustment");
+
+    layer->addSeparator();
+
+    m_actTransform = layer->addAction(tr("Transform Layer"), QKeySequence(Qt::CTRL | Qt::Key_T), this, [this] {
+        setTool(Tool::Move);
+    });
+    m_actTransform->setObjectName("layer.transform");
+
+    m_actDuplicate = layer->addAction(tr("Duplicate Layer"), QKeySequence(Qt::CTRL | Qt::Key_J), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"duplicateLayer"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actDuplicate->setObjectName("layer.duplicate");
+
+    layer->addSeparator();
+
+    m_actClippingMask = layer->addAction(tr("Create Clipping Mask"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_G), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"toggleClippingMask"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actClippingMask->setObjectName("layer.clippingMask");
+
+    layer->addSeparator();
+
+    m_actGroupLayers = layer->addAction(tr("Group Selected Layers"), QKeySequence(Qt::CTRL | Qt::Key_G), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addGroup"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actGroupLayers->setObjectName("layer.addGroup");
+
+    m_actMoveOutOfFolder = layer->addAction(tr("Move Out of Folder"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"moveActiveLayerOutOfGroup"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actMoveOutOfFolder->setObjectName("layer.moveOutOfFolder");
+
+    m_actNewBlankLayer = layer->addAction(tr("New Blank Layer"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actNewBlankLayer->setObjectName("layer.new");
+
+    m_actRenameLayer = layer->addAction(tr("Rename Layer…"), this, [this] {
+        if (m_layersView) m_layersView->edit(m_layersView->currentIndex());
+    });
+    m_actRenameLayer->setObjectName("layer.rename");
+
+    m_actShowHideLayer = layer->addAction(tr("Show Layer"), this, [this] {
+        const QJsonObject state = sessionState();
+        const bool vis = state.value("activeLayerIsVisible").toBool(true);
+        if (setLayerFlag("setVisible", !vis)) refreshImage();
+    });
+    m_actShowHideLayer->setObjectName("layer.showHide");
+
+    layer->addSeparator();
+
+    m_actMoveLayerUp = layer->addAction(tr("Move Layer Up"), QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this, [this] {
+        if (sendCommand({{"action", "moveActiveLayer"}, {"value", 1}})) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actMoveLayerUp->setObjectName("layer.moveUp");
+
+    m_actMoveLayerDown = layer->addAction(tr("Move Layer Down"), QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this, [this] {
+        if (sendCommand({{"action", "moveActiveLayer"}, {"value", -1}})) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actMoveLayerDown->setObjectName("layer.moveDown");
+
+    layer->addSeparator();
+
+    m_actMerge = layer->addAction(tr("Merge Down"), QKeySequence(Qt::CTRL | Qt::Key_E), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"mergeLayers"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    });
+    m_actMerge->setObjectName("layer.merge");
+
+    layer->addSeparator();
+
+    m_actFlipLayerH = layer->addAction(tr("Flip Layer Horizontal"), this, [this] {
+        if (sendCommand({{"action", "flipLayer"}, {"horizontally", true}})) refreshImage();
+    });
+    m_actFlipLayerH->setObjectName("layer.flipH");
+
+    m_actFlipLayerV = layer->addAction(tr("Flip Layer Vertical"), this, [this] {
+        if (sendCommand({{"action", "flipLayer"}, {"horizontally", false}})) refreshImage();
+    });
+    m_actFlipLayerV->setObjectName("layer.flipV");
+
+    layer->addSeparator();
+
+    auto *maskMenu = layer->addMenu(tr("Layer Mask"));
+    maskMenu->addAction(tr("Add Reveal Mask"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addRevealMask"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    })->setObjectName("layer.addRevealMask");
+
+    maskMenu->addAction(tr("Add Hide Mask"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"addHideMask"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    })->setObjectName("layer.addHideMask");
+
+    maskMenu->addAction(tr("Invert Mask"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"invertMask"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    })->setObjectName("layer.invertMask");
+
+    maskMenu->addAction(tr("Delete Mask"), this, [this] {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"deleteMask"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+    })->setObjectName("layer.deleteMask");
+
+    layer->addSeparator();
+
+    m_actDelete = layer->addAction(tr("Delete Layer"), QKeySequence::Delete, this, [this] {
+        deleteSelectedLayers();
+    });
+    m_actDelete->setObjectName("layer.delete");
+
+    // --- Window ---
+    auto *window = menuBar()->addMenu(tr("&Window"));
+    window->addAction(tr("Reset Workspace Layout"), this, [this] {
+        if (m_toolsBar) m_toolsBar->show();
+        if (m_optionsToolBar) m_optionsToolBar->show();
+        if (m_layersDock) m_layersDock->show();
+    })->setObjectName("window.resetLayout");
+
+    window->addSeparator();
+
+    if (m_toolsBar) {
+        auto *actTools = window->addAction(tr("Tools"));
+        actTools->setCheckable(true);
+        actTools->setChecked(m_toolsBar->isVisible());
+        connect(actTools, &QAction::toggled, m_toolsBar, &QWidget::setVisible);
+        connect(m_toolsBar, &QToolBar::visibilityChanged, actTools, &QAction::setChecked);
+    }
+    if (m_optionsToolBar) {
+        auto *actOptions = window->addAction(tr("Options Bar"));
+        actOptions->setCheckable(true);
+        actOptions->setChecked(m_optionsToolBar->isVisible());
+        connect(actOptions, &QAction::toggled, m_optionsToolBar, &QWidget::setVisible);
+        connect(m_optionsToolBar, &QToolBar::visibilityChanged, actOptions, &QAction::setChecked);
+    }
+    if (m_layersDock) {
+        auto *actLayers = window->addAction(tr("Layers"));
+        actLayers->setCheckable(true);
+        actLayers->setChecked(m_layersDock->isVisible());
+        connect(actLayers, &QAction::toggled, m_layersDock, &QWidget::setVisible);
+        connect(m_layersDock, &QDockWidget::visibilityChanged, actLayers, &QAction::setChecked);
+    }
+    if (m_adjustmentsDock) {
+        window->addAction(m_adjustmentsDock->toggleViewAction());
+    }
+
+    // --- Help ---
+    auto *help = menuBar()->addMenu(tr("&Help"));
+    help->addAction(tr("About Compositor"), this, [this] {
+        QMessageBox::about(this, tr("About Compositor"),
+            tr("<h3>Compositor</h3>"
+               "<p>Professional Non-Destructive Image Editor.</p>"
+               "<p>Native GNU/Linux port powered by Qt 6, Skia, and unmodified upstream Swift engine.</p>"));
+    })->setObjectName("help.about");
+
+    help->addAction(tr("Check for Updates…"), this, [this] {
+        QMessageBox::information(this, tr("Check for Updates"),
+            tr("You are running the latest version of Compositor for GNU/Linux."));
+    })->setObjectName("help.updates");
 }
 
 namespace {
@@ -1206,6 +1926,7 @@ void SessionWindow::refreshLayers() {
     }
 
     m_syncingLayers = false;
+    refreshMenuTitles(state.object());
 }
 
 void SessionWindow::selectLayerRow(int row) {
@@ -1451,6 +2172,42 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         }
         break;
     }
+    case Tool::Blur: {
+        const QString json = QString(
+            R"({"version":1,"action":"brushBegin","kind":"Blur","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5}})")
+            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
+            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3);
+        const QByteArray bytes = json.toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+            m_painting = true;
+            refreshImage();
+        }
+        break;
+    }
+    case Tool::Eyedropper: {
+        const int px = qFloor(point.x()), py = qFloor(point.y());
+        if (!m_image.isNull() && px >= 0 && px < m_image.width() && py >= 0 && py < m_image.height()) {
+            const QColor c = m_image.pixelColor(px, py);
+            setBrushColor(c);
+        }
+        break;
+    }
+    case Tool::Zoom: {
+        if (event->modifiers() & Qt::AltModifier) {
+            zoomBy(0.8);
+        } else {
+            zoomBy(1.25);
+        }
+        break;
+    }
+    case Tool::Hand: {
+        m_painting = true;
+        break;
+    }
+    case Tool::Gradient:
+    case Tool::Shape:
+    case Tool::Type:
+        break;
     }
 }
 
@@ -1464,7 +2221,7 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
         }
     } else if (m_tool == Tool::Lasso) {
         m_lassoPoints.push_back(point);
-    } else if (m_tool == Tool::Brush || m_tool == Tool::Eraser || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing) {
+    } else if (m_tool == Tool::Brush || m_tool == Tool::Eraser || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing || m_tool == Tool::Blur) {
         const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3})")
             .arg(m_brushMode == "Paint" ? "brushMove" : "warpMove")
             .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
@@ -1537,6 +2294,7 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         commitLassoSelection();
         break;
     }
+    case Tool::Blur:
     case Tool::Brush:
     case Tool::Eraser:
     case Tool::CloneStamp:
@@ -1547,6 +2305,7 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         break;
     }
     case Tool::MagicWand:
+    default:
         break;
     }
 }

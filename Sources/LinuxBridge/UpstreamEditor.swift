@@ -67,6 +67,19 @@ private struct State: Encodable {
     let busy: Bool
     let layers: [Layer]
     let error: String?
+    let hasSelection: Bool
+    let canTransformSelection: Bool
+    let isMaskSelected: Bool
+    let activeLayerIsVisible: Bool
+    let activeLayerIsGroup: Bool
+    let activeLayerHasMask: Bool
+    let activeLayerHasParent: Bool
+    let activeLayerIsClipped: Bool
+    let canToggleClippingMask: Bool
+    let canMergeLayers: Bool
+    let mergeTitle: String
+    let canMoveActiveLayerUp: Bool
+    let canMoveActiveLayerDown: Bool
 }
 
 /// Result codes shared with the C ABI: 0 ok, -1 invalid argument, -2 no document, -3 busy, -4 unsupported version,
@@ -80,9 +93,11 @@ final class UpstreamEditor {
         "new", "addLayer", "addGroup", "groupSelectedLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
         "setOpacity", "setBlendMode", "setSelectedOpacity", "cycleBlendMode", "flipLayer", "flipCanvas", "undo", "redo",
         "addRevealMask", "addHideMask", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
-        "selectRectangle", "selectEllipse", "selectLasso", "deselect", "expandSelection", "contractSelection",
+        "selectAll", "deselect", "invertSelection", "loadLayerSelection", "loadMaskSelection", "selectSubject", "featherSelection",
+        "selectRectangle", "selectEllipse", "selectLasso", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
-        "duplicateLayer", "layerViaCopy", "brushBegin", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
+        "duplicateLayer", "layerViaCopy", "toggleClippingMask", "moveActiveLayer", "moveActiveLayerOutOfGroup", "mergeLayers",
+        "brushBegin", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
         "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
         "setMaskSelected", "invertMask", "transform", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
@@ -171,7 +186,19 @@ final class UpstreamEditor {
             let path = CGMutablePath()
             path.addLines(between: points); path.closeSubpath()
             select(path, mode: SelectionMode(rawValue: command.kind ?? "New") ?? .replace)
+        case "selectAll": s.selectAll()
         case "deselect": s.deselect()
+        case "invertSelection": s.invertSelection()
+        case "loadLayerSelection":
+            guard let id = s.activeLayerID else { return fail(-5, "no layer") }
+            s.loadLayerSelection(layerID: id)
+        case "loadMaskSelection":
+            guard let id = s.activeLayerID else { return fail(-5, "no layer") }
+            s.loadMaskSelection(layerID: id)
+        case "selectSubject":
+            await s.selectSubject()
+        case "featherSelection":
+            s.featherSelection(by: Int(command.parameters?["amount"] ?? 1))
         case "expandSelection": s.expandSelection(by: Int(command.parameters?["amount"] ?? 1))
         case "contractSelection": s.contractSelection(by: Int(command.parameters?["amount"] ?? 1))
         case "fillForeground", "fillBackground":
@@ -189,6 +216,15 @@ final class UpstreamEditor {
         case "paste": s.paste()
         case "duplicateLayer": s.duplicateActiveLayer()
         case "layerViaCopy": s.layerViaCopy()
+        case "toggleClippingMask":
+            guard let id = s.activeLayerID else { return fail(-5, "no layer") }
+            s.toggleClippingMask(id)
+        case "moveActiveLayer":
+            s.moveActiveLayer(by: Int(command.value ?? 1))
+        case "moveActiveLayerOutOfGroup":
+            s.moveActiveLayerOutOfGroup()
+        case "mergeLayers":
+            s.mergeLayers()
         case "cloneSetSource":
             guard let point = point(command) else { return fail(-1, "invalid point") }
             s.setCloneSource(point)
@@ -442,6 +478,7 @@ final class UpstreamEditor {
 
     func stateJSON() throws -> Data {
         let s = session
+        let active = s.activeLayer
         let state = State(width: s.document?.width ?? 0, height: s.document?.height ?? 0, resolution: s.document?.resolution ?? 72,
             activeLayerID: s.activeLayerID, modified: s.history.isModified, canUndo: s.history.canUndo, canRedo: s.history.canRedo,
             undoName: s.history.undoName, redoName: s.history.redoName,
@@ -449,7 +486,20 @@ final class UpstreamEditor {
             layers: (s.document?.layers ?? []).map { State.Layer(id: $0.id, name: $0.name, visible: $0.isVisible, opacity: $0.opacity,
                 blendMode: $0.blendMode.rawValue, parentID: $0.parentID, isGroup: $0.isGroup, hasMask: $0.mask != nil,
                 maskEnabled: $0.mask?.isEnabled, maskLinked: $0.mask?.isLinked, maskPlacement: $0.mask?.placement,
-                transform: s.displayedTransform(for: $0)) }, error: error)
+                transform: s.displayedTransform(for: $0)) }, error: error,
+            hasSelection: s.selection != nil,
+            canTransformSelection: s.canTransformSelection,
+            isMaskSelected: s.isMaskSelected,
+            activeLayerIsVisible: active?.isVisible ?? true,
+            activeLayerIsGroup: active?.isGroup ?? false,
+            activeLayerHasMask: active?.mask != nil,
+            activeLayerHasParent: active?.parentID != nil,
+            activeLayerIsClipped: active?.maskSourceID != nil,
+            canToggleClippingMask: s.activeLayerID.map { s.canToggleClippingMask($0) } ?? false,
+            canMergeLayers: s.canMergeLayers,
+            mergeTitle: s.mergeTitle,
+            canMoveActiveLayerUp: s.canMoveActiveLayer(by: 1),
+            canMoveActiveLayerDown: s.canMoveActiveLayer(by: -1))
         return try JSONEncoder().encode(state)
     }
 
