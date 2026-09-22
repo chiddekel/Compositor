@@ -55,6 +55,13 @@ modules:
     buildsystem: simple
     # Skia needs python3 + ninja from the SDK. Vulkan headers/loader come
     # from the Freedesktop 26.08 SDK (vulkan 1.4.357 pkgconfig).
+    # git-sync-deps below clones Skia's own third-party dependencies (not vendored in the
+    # canvaskit/0.42.0 tarball), so this module alone needs build-time network access. This is the
+    # sandboxed build environment's network, unrelated to the finished app's runtime sandbox (which
+    # stays locked down: no --share=network there, see the top-level finish-args/§8.6 note above).
+    build-options:
+      build-args:
+        - --share=network
     build-commands:
       - python3 tools/git-sync-deps
       - |
