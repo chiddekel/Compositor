@@ -477,19 +477,32 @@ final class UpstreamEditor {
         return 0
     }
 
-    /// The project as the canvas shows it right now: pending transforms applied and live filter, levels and hue/saturation
-    /// previews standing in for the layer they preview (upstream's canvas draws them the same way).
+    /// The project as the canvas shows it right now: pending transforms applied, live filter/levels/hue-saturation
+    /// previews standing in for the layer they preview, and an in-progress brush stroke's touched tiles composited
+    /// in (all the way upstream's own canvas draws them: `EditorCanvas.swift` calls this same `BrushStroke.paintSnapshot()`
+    /// for its live paint, we just call it from here instead of an NSView draw pass).
     func displayedSnapshot() -> ProjectSnapshot? {
         let s = session
         guard var snapshot = s.projectSnapshot(), let document = s.document else { return nil }
         var images = snapshot.images
+        var masks = snapshot.masks
         var manifest = snapshot.manifest
+        let stroke = s.brushStroke
         for (index, layer) in document.layers.enumerated() {
-            let shown = s.displayedTransform(for: layer)
+            var shown = s.displayedTransform(for: layer)
             let preview = s.filterEdit?.previewImage(for: layer.id) ?? s.levels?.previewImage(for: layer.id)
                 ?? s.hueSaturation?.previewImage(for: layer.id)
             if let preview, let asset = layer.asset {
                 images[layer.id] = ImportedImage(image: preview, thumbnail: asset.thumbnail, name: asset.name)
+            } else if let stroke, stroke.layer.id == layer.id, !stroke.isMask, let painted = try? stroke.paintSnapshot() {
+                // A stroke can grow the layer's painted bounds beyond its committed transform (a brush dab
+                // outside the current edges); paintSnapshot() reports the new transform for exactly that,
+                // the same value BrushCommit.Input.sourceRect/transform would carry at commit time.
+                images[layer.id] = painted.asset
+                shown = painted.transform
+            } else if let stroke, stroke.layer.id == layer.id, stroke.isMask, let painted = try? stroke.paintSnapshot() {
+                // Mask strokes are placed in the mask's own pixel grid (maskPlacement), not the layer transform.
+                masks[layer.id] = painted.asset
             }
             if shown != layer.transform {
                 let record = manifest.layers[index]
@@ -500,7 +513,7 @@ final class UpstreamEditor {
                     shape: record.shape, effects: record.effects, text: record.text)
             }
         }
-        snapshot = ProjectSnapshot(manifest: manifest, images: images, masks: snapshot.masks)
+        snapshot = ProjectSnapshot(manifest: manifest, images: images, masks: masks)
         return snapshot
     }
 
