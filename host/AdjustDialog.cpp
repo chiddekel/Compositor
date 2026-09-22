@@ -1,6 +1,7 @@
 #include "EditorDialogs.h"
 #include "QtPlatformServices.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QColor>
 #include <QColorDialog>
@@ -23,6 +24,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <memory>
 #include <vector>
@@ -538,6 +540,35 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, 
         range->setObjectName("range"); range->setAccessibleName("Range");
         for (int i = 0; i < 7; ++i) range->addItem(hueBandKey(i));
         form->addRow(tr("&Range"), range);
+        // Quick-pick swatches (docs/references/hue-saturation.png): Master (hand/wheel) plus the six colour
+        // bands, each a coloured button that jumps `range` to that band — the combo above stays as the
+        // accessible/keyboard-driven equivalent, both drive the same index.
+        auto *swatchRow = new QHBoxLayout;
+        swatchRow->setSpacing(4);
+        auto *swatchGroup = new QButtonGroup(this);
+        swatchGroup->setExclusive(true);
+        static const QColor swatchColors[7] = {
+            QColor(0x3a, 0x3a, 0x3e), QColor(0xe0, 0x3c, 0x31), QColor(0xf2, 0xc9, 0x1c),
+            QColor(0x4c, 0xaf, 0x50), QColor(0x26, 0xc6, 0xda), QColor(0x3f, 0x51, 0xb5), QColor(0xe0, 0x3f, 0xc4)};
+        for (int i = 0; i < 7; ++i) {
+            auto *swatch = new QToolButton(this);
+            swatch->setCheckable(true);
+            swatch->setChecked(i == 0);
+            swatch->setFixedSize(28, 22);
+            swatch->setToolTip(hueBandKey(i));
+            swatch->setObjectName(QString("swatch.%1").arg(i));
+            const QColor &c = swatchColors[i];
+            swatch->setStyleSheet(QString("QToolButton { background: %1; border: 1px solid #18181a; border-radius: 3px; }"
+                                          "QToolButton:checked { border: 2px solid #f2f2f5; }").arg(c.name()));
+            swatchGroup->addButton(swatch, i);
+            swatchRow->addWidget(swatch);
+        }
+        swatchRow->addStretch();
+        extras->addLayout(swatchRow);
+        connect(swatchGroup, &QButtonGroup::idClicked, this, [=](int id) { range->setCurrentIndex(id); });
+        connect(range, qOverload<int>(&QComboBox::currentIndexChanged), this, [=](int index) {
+            if (auto *button = swatchGroup->button(index)) button->setChecked(true);
+        });
         auto *hue = new QDoubleSpinBox(this), *sat = new QDoubleSpinBox(this), *light = new QDoubleSpinBox(this);
         auto addHsv = [=](QDoubleSpinBox *box, const QString &label, double min, double max) {
             box->setObjectName(label); box->setAccessibleName(label);
