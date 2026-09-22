@@ -11,6 +11,8 @@ struct FilterSheet: View {
         session.updateFilter(value, preview: edit?.preview ?? true)
     }
 
+    private var isCameraRaw: Bool { edit?.kind == .cameraRaw }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             switch edit?.kind ?? .gaussianBlur {
@@ -37,6 +39,9 @@ struct FilterSheet: View {
                     control("Hue", \.blackWhite.tintHue, range: 0...360, unit: "°", decimals: 0, logarithmic: false)
                     control("Saturation", \.blackWhite.tintSaturation, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 }
+            case .cameraRaw:
+                CameraRawControls(session: session)
+                    .frame(maxHeight: .infinity, alignment: .top)
             case .colorBalance:
                 Text("Shadows").font(.headline)
                 control("Cyan / Red", \.colorBalance.shadowCyanRed, range: ColorBalanceSettings.range, unit: "", decimals: 0, logarithmic: false)
@@ -118,7 +123,10 @@ struct FilterSheet: View {
                     .disabled(edit?.kind.isAutomatic == true && (edit?.preparing == true || edit?.previewError != nil))
             }
         }
-        .padding(24).frame(width: 380).fixedSize()
+        .padding(24)
+        .frame(width: isCameraRaw ? FloatingPanelController.dockedWidth : 380)
+        .frame(maxHeight: isCameraRaw ? .infinity : nil, alignment: .top)
+        .fixedSize(horizontal: false, vertical: !isCameraRaw)
 
         .disabled(edit?.committing == true)
         // The app's color picker, open on a Gradient Map end, previews its working color live.

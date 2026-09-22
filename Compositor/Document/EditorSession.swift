@@ -914,4 +914,12 @@ final class EditorSession {
         guard let document else { return }
         viewport.setZoom(value, anchoredAt: anchor ?? viewport.center, documentSize: document.size)
     }
+
+    /// Step through stable keyboard zoom levels while keeping the viewport center fixed.
+    func zoomKeyboard(by step: Int) {
+        guard let document, step != 0 else { return }
+        let target = viewport.keyboardZoomTarget(by: step)
+        guard target != viewport.zoom else { return }
+        viewport.setZoom(target, anchoredAt: viewport.center, documentSize: document.size)
+    }
 }
