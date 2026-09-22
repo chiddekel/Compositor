@@ -293,9 +293,13 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, 
     const AdjustServices::SampleRequest requestSample = services.requestSample;
     std::shared_ptr<IColorPickerService> colors = services.colors ? services.colors : PlatformServices::qtDefaults().colors;
     setObjectName("adjustDialog"); setWindowTitle(kind);
-    setMinimumWidth(kind == "Levels" ? 340 : 360);
-    auto *layout = new QVBoxLayout(this);
+    setMinimumWidth(kind == "Levels" ? 460 : 480);
+    // Photoshop-style two-column shell: controls on the left, OK/Cancel stacked
+    // in a right-hand rail (matches docs/references/{levels,hue-saturation}.png).
+    auto *root = new QHBoxLayout(this);
+    auto *layout = new QVBoxLayout;
     layout->setSpacing(10);
+    root->addLayout(layout, 1);
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignLeft);
     form->setHorizontalSpacing(12);
@@ -324,11 +328,19 @@ AdjustDialog::AdjustDialog(const QString &kind, Submit submit, QWidget *parent, 
         if (ok) setProperty("previewFailed", false);
         return ok;
     };
-    auto *preview = new QCheckBox(tr("Preview"), this);
-    preview->setObjectName("preview"); preview->setChecked(true); layout->addWidget(preview);
     auto *error = new QLabel(this); error->setWordWrap(true); layout->addWidget(error);
+
+    // Right-hand rail: OK/Cancel stacked, Preview pinned to the bottom (as in the macOS reference).
+    auto *rail = new QVBoxLayout;
+    rail->setSpacing(8);
+    root->addLayout(rail);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    layout->addWidget(buttons);
+    buttons->setOrientation(Qt::Vertical);
+    rail->addWidget(buttons);
+    rail->addStretch(1);
+    auto *preview = new QCheckBox(tr("Preview"), this);
+    preview->setObjectName("preview"); preview->setChecked(true);
+    rail->addWidget(preview);
 
     if (kind == "Levels") {
         auto *channel = new QComboBox(this);
