@@ -1268,6 +1268,39 @@ void SessionWindow::paintStroke(double x1, double y1, double x2, double y2) {
     if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(R"({"version":1,"action":"brushEnd"})"), std::strlen(R"({"version":1,"action":"brushEnd"})")) == 0) refreshImage();
 }
 
+// Same command mousePressEvent's CloneStamp branch sends for an Option-click.
+void SessionWindow::setCloneSource(double x, double y) {
+    const QByteArray bytes = QString(R"({"version":1,"action":"cloneSetSource","x":%1,"y":%2})")
+        .arg(x, 0, 'f', 4).arg(y, 0, 'f', 4).toUtf8();
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) m_hasCloneSource = true;
+}
+
+// Same commands mousePressEvent's CloneStamp branch sends for a stroke, plus the move/end paintStroke sends.
+void SessionWindow::cloneStroke(double x1, double y1, double x2, double y2) {
+    const QByteArray begin = QString(
+        R"({"version":1,"action":"brushBegin","kind":"Clone","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"aligned":1,"sampleAllLayers":0}})")
+        .arg(x1, 0, 'f', 4).arg(y1, 0, 'f', 4)
+        .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3).toUtf8();
+    const QByteArray move = QString(R"({"version":1,"action":"brushMove","x":%1,"y":%2})")
+        .arg(x2, 0, 'f', 4).arg(y2, 0, 'f', 4).toUtf8();
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(begin.constData()), begin.size()) != 0) return;
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(move.constData()), move.size()) != 0) return;
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(R"({"version":1,"action":"brushEnd"})"), std::strlen(R"({"version":1,"action":"brushEnd"})")) == 0) refreshImage();
+}
+
+// Same commands mousePressEvent's SpotHealing branch sends for a stroke, plus the move/end paintStroke sends.
+void SessionWindow::healStroke(double x1, double y1, double x2, double y2) {
+    const QByteArray begin = QString(
+        R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":0,"green":0,"blue":0,"healing":1,"healingMode":0}})")
+        .arg(x1, 0, 'f', 4).arg(y1, 0, 'f', 4)
+        .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3).toUtf8();
+    const QByteArray move = QString(R"({"version":1,"action":"brushMove","x":%1,"y":%2})")
+        .arg(x2, 0, 'f', 4).arg(y2, 0, 'f', 4).toUtf8();
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(begin.constData()), begin.size()) != 0) return;
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(move.constData()), move.size()) != 0) return;
+    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(R"({"version":1,"action":"brushEnd"})"), std::strlen(R"({"version":1,"action":"brushEnd"})")) == 0) refreshImage();
+}
+
 void SessionWindow::setTool(Tool tool) {
     m_tool = tool;
     if (m_toolActions.contains(tool) && !m_toolActions[tool]->isChecked()) {
@@ -1362,18 +1395,25 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
     }
     case Tool::CloneStamp: {
         if (event->modifiers() & Qt::AltModifier) {
-            m_cloneSource = point;
-            m_hasCloneSource = true;
-            statusBar()->showMessage(tr("Clone Stamp source set to (%1, %2)").arg(qRound(point.x())).arg(qRound(point.y())), 2000);
+            // Upstream's EditorSession tracks the source and the aligned offset itself (EditorSession.setCloneSource);
+            // the host no longer computes or sends an offset.
+            const QString json = QString(R"({"version":1,"action":"cloneSetSource","x":%1,"y":%2})")
+                .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
+            const QByteArray bytes = json.toUtf8();
+            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+                m_hasCloneSource = true;
+                statusBar()->showMessage(tr("Clone Stamp source set to (%1, %2)").arg(qRound(point.x())).arg(qRound(point.y())), 2000);
+            }
             return;
         }
-        const double offX = m_hasCloneSource ? (m_cloneSource.x() - point.x()) : 0;
-        const double offY = m_hasCloneSource ? (m_cloneSource.y() - point.y()) : 0;
+        if (!m_hasCloneSource) {
+            statusBar()->showMessage(tr("Option-click where Clone Stamp should copy from first."), 2000);
+            return;
+        }
         const QString json = QString(
-            R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":0,"green":0,"blue":0,"cloneOffsetX":%6,"cloneOffsetY":%7,"sampleAllLayers":0}})")
+            R"({"version":1,"action":"brushBegin","kind":"Clone","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"aligned":1,"sampleAllLayers":0}})")
             .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
-            .arg(offX, 0, 'f', 4).arg(offY, 0, 'f', 4);
+            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3);
         const QByteArray bytes = json.toUtf8();
         if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
             m_painting = true;

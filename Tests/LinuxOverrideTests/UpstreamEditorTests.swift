@@ -136,6 +136,31 @@ struct UpstreamEditorTests {
         #expect(state(e)["busy"] as? Bool == false)
     }
 
+    @Test func healingAndCloneStamp() async throws {
+        let e = loaded()
+        // Spot Healing: paint over a patch, the pixels should change and the stroke should have committed.
+        let beforeHeal = try e.renderRGBA().bytes
+        await send(e, cmd("brushBegin", #""x":20,"y":20,"parameters":{"diameter":14,"healing":1,"healingMode":0}"#),
+                   cmd("brushMove", #""x":24,"y":20"#), cmd("brushEnd"))
+        #expect(try e.renderRGBA().bytes != beforeHeal, "spot healing changed pixels")
+        #expect(state(e)["undoName"] as? String == "Spot Healing")
+        await send(e, cmd("undo"))
+
+        // Clone Stamp without a source is refused, not silently ignored.
+        #expect(await send(e, cmd("brushBegin", #""x":10,"y":10,"kind":"Clone","parameters":{"diameter":10}"#)) == [-5])
+
+        // With a source set, cloning copies pixels from the source offset onto the stroke's path.
+        await send(e, cmd("cloneSetSource", #""x":2,"y":2"#))
+        let ref = pattern(40, 30)
+        await send(e, cmd("brushBegin", #""x":30,"y":20,"kind":"Clone","parameters":{"diameter":10,"aligned":1}"#),
+                   cmd("brushMove", #""x":32,"y":20"#), cmd("brushEnd"))
+        #expect(state(e)["undoName"] as? String == "Clone Stamp")
+        let out = try e.renderRGBA().bytes
+        // The source (near 2,2, opaque left half) painted onto the stroke at (30,20) (right half, was semi-transparent).
+        #expect(pixel(out, 30, 20)[3] == 255, "cloned from the opaque source region")
+        #expect(pixel(out, 30, 20) != pixel(ref, 30, 20), "the destination pixel changed")
+    }
+
     @Test func cutIsCopyThenClear() async throws {
         let a = loaded(), b = loaded()
         let rect = cmd("selectRectangle", #""x":6,"y":5,"width":18,"height":14"#)

@@ -314,6 +314,23 @@ extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
         const QImage painted = exported(window, temporary.filePath("brush.png"));
         require(countPainted(painted) > 0, "palette stroke did not paint");
 
+        // Clone Stamp: clone the opaque diagonal stroke onto a still-blank corner (source-over onto transparent is
+        // a real, visible change, unlike cloning from transparent onto opaque — which upstream correctly no-ops).
+        window.setTool(SessionWindow::Tool::CloneStamp);
+        window.cloneStroke(58, 58, 58, 58);
+        const QImage beforeSource = exported(window, temporary.filePath("clone-before.png"));
+        require(qAlpha(beforeSource.pixel(58, 58)) == 0, "a clone stroke with no source set changed the image");
+        window.setCloneSource(20, 20);
+        window.cloneStroke(58, 58, 58, 58);
+        const QImage cloned = exported(window, temporary.filePath("clone-after.png"));
+        require(qAlpha(cloned.pixel(58, 58)) > 0, "clone stroke did not carry the opaque source's pixels");
+
+        // Spot Healing: any stroke should change the pixels it covers.
+        window.setTool(SessionWindow::Tool::SpotHealing);
+        window.healStroke(20, 20, 24, 20);
+        const QImage healed = exported(window, temporary.filePath("healed.png"));
+        require(healed != cloned, "spot healing stroke did not paint");
+
         auto *visible = window.findChild<QCheckBox *>("layer.visible");
         require(visible, "visibility checkbox missing");
         visible->setChecked(false); QApplication::processEvents();
@@ -328,7 +345,8 @@ extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
         fill->trigger(); QApplication::processEvents();
         const QImage filled = exported(window, temporary.filePath("filled.png"));
         require(countPainted(filled) > 0, "selection fill did not paint");
-        qInfo("Qt brush palette journey OK (diameter/hardness/opacity, color, blend, paint, visible, select, fill)");
+
+        qInfo("Qt brush palette journey OK (diameter/hardness/opacity, color, blend, paint, visible, select, fill, clone, heal)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt brush palette journey failed: %s", e.what()); return 1;

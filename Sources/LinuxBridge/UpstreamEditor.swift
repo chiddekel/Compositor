@@ -82,7 +82,7 @@ final class UpstreamEditor {
         "addRevealMask", "addHideMask", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
         "selectRectangle", "selectEllipse", "selectLasso", "deselect", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
-        "duplicateLayer", "layerViaCopy", "brushBegin", "brushMove", "brushEnd", "brushCancel", "magicWand",
+        "duplicateLayer", "layerViaCopy", "brushBegin", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
         "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
         "setMaskSelected", "invertMask", "transform", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
@@ -189,12 +189,20 @@ final class UpstreamEditor {
         case "paste": s.paste()
         case "duplicateLayer": s.duplicateActiveLayer()
         case "layerViaCopy": s.layerViaCopy()
+        case "cloneSetSource":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            s.setCloneSource(point)
         case "brushBegin":
             let p = command.parameters ?? [:]
             guard s.document != nil, let point = point(command) else { return fail(-1, "invalid brush start") }
-            // Healing and clone need their own tool state; not mapped yet.
-            guard (p["healing"] ?? 0) == 0, p["cloneOffsetX"] == nil else { return fail(-7, "healing and clone stamp are not supported by the upstream bridge yet") }
-            s.selectTool(.brush)
+            let healing = (p["healing"] ?? 0) != 0
+            let cloning = command.kind == "Clone"
+            if cloning, s.cloneSource == nil { return fail(-5, "no clone source set (send cloneSetSource first)") }
+            s.selectTool(healing ? .spotHealing : cloning ? .cloneStamp : .brush)
+            if healing, let modeIndex = p["healingMode"], (0..<SpotHealingMode.allCases.count).contains(Int(modeIndex)) {
+                s.spotHealingMode = SpotHealingMode.allCases[Int(modeIndex)]
+            }
+            if cloning { s.cloneSettings.aligned = (p["aligned"] ?? 1) != 0; s.cloneSettings.sampleAllLayers = (p["sampleAllLayers"] ?? 0) != 0 }
             var settings = BrushSettings()
             settings.diameter = p["diameter"] ?? 40; settings.hardness = p["hardness"] ?? 1; settings.opacity = p["opacity"] ?? 1
             settings.red = p["red"] ?? 0; settings.green = p["green"] ?? 0; settings.blue = p["blue"] ?? 0
@@ -204,6 +212,7 @@ final class UpstreamEditor {
             // A mask stroke paints white (reveal) or black (hide): upstream keeps that choice as the mask palette.
             if s.isMaskSelected { s.maskPaintWhite = (0.2126 * settings.red + 0.7152 * settings.green + 0.0722 * settings.blue) > 0.5 }
             s.beginBrush(at: point)
+            guard s.brushStroke != nil else { return fail(-5, cloning ? "clone stamp could not start (out of range?)" : "brush could not start") }
         case "brushMove":
             guard let point = point(command) else { return fail(-1, "invalid point") }
             s.continueBrush(at: point)

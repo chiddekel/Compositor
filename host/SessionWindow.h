@@ -86,6 +86,11 @@ public:
     // through brushBegin/brushMove/brushEnd. Public so smokes can drive the
     // same code path the mouse handlers use.
     void paintStroke(double x1, double y1, double x2, double y2);
+    // Same commands the CloneStamp/SpotHealing branches of mousePressEvent send; factored out so smoke tests exercise
+    // the exact wire protocol without simulating screen-space mouse events.
+    void setCloneSource(double x, double y);
+    void cloneStroke(double x1, double y1, double x2, double y2);
+    void healStroke(double x1, double y1, double x2, double y2);
 
     enum class Tool {
         Brush,
@@ -160,7 +165,8 @@ private:
     QPointF m_dragStart;
     QPointF m_currentPoint;
     std::vector<QPointF> m_lassoPoints;
-    QPointF m_cloneSource = QPointF(0, 0);
+    // The source's own point/offset live server-side (EditorSession.cloneSource/cloneOffset); this only tracks
+    // whether one has been set, so a stroke before an Option-click is refused with a message instead of a silent no-op.
     bool m_hasCloneSource = false;
     QString m_brushMode = "Paint";
     QTreeView *m_layersView = nullptr;
