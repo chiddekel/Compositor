@@ -1,26 +1,14 @@
 // STAND-INS for UI types the unmodified canvas view refers to (Compositor/UI is not compiled on Linux):
-//   CanvasRulerNSView (UI/CanvasRulers.swift)          — the rulers NSView; the canvas only checks `view is CanvasRulerNSView`
-//   FloatingPanelController (UI/FloatingPanel.swift)    — brings a floating panel back to the front after canvas edits
-//   ColorPickerPanelController (UI/ColorPickerSheet.swift) — same for the colour picker panel
-// The Qt shell provides the real panels; these are inert so focus requests are no-ops until it registers a handler.
+//   CanvasRulerNSView (UI/CanvasRulers.swift)          — the rulers NSView; the canvas only checks `view is CanvasRulerNSView`.
+//     The real file's `draw(_:)` needs NSString.draw/size, NSFont.monospacedDigitSystemFont, NSAffineTransform.concat
+//     — real AppKit text-drawing compat, a separate sub-project from SwiftUI compat; tried and reverted, see the plan.
+// `FloatingPanelController`/`ColorPickerPanelController` are wired in for real (Compositor/UI/FloatingPanel.swift,
+// ColorPickerSheet.swift) — their `NSPanel`s never actually become visible without a real display, so `show`/
+// `makeKeyAndOrderFront`/etc. all still end up as no-ops in practice, same effect the old stand-ins had.
 
 import Foundation
 import AppKit
 import SwiftUI
-
-@MainActor final class CanvasRulerNSView: NSView {}
-
-@MainActor final class FloatingPanelController {
-    init(name: String) {}
-    /// Installed by the host so the canvas can ask a panel to take focus back.
-    static var onRefocus: ((NSUserInterfaceItemIdentifier) -> Void)?
-    static func refocus(_ identifier: NSUserInterfaceItemIdentifier) { onRefocus?(identifier) }
-}
-
-@MainActor enum ColorPickerPanelController {
-    static var onRefocus: (() -> Void)?
-    static func refocus() { onRefocus?() }
-}
 
 /// STAND-IN for the model part of UI/KeyboardShortcuts.swift (the file also holds the SwiftUI editor). Canvas and text
 /// editing route events through it so user-remapped shortcuts reach the canvas as their original chords. With no
@@ -30,6 +18,20 @@ import SwiftUI
     private init() {}
     func canvasEvent(_ event: NSEvent) -> NSEvent? { event }
     func textEvent(_ event: NSEvent) -> NSEvent? { event }
+}
+
+struct BlendModePicker: View {
+    let session: EditorSession
+    var body: some View {
+        Picker("Blend mode", selection: Binding(
+            get: { session.activeLayer?.blendMode ?? .normal },
+            set: { session.setLayerBlendMode($0); session.refreshCanvasPreview?() }
+        )) {
+            ForEach(LayerBlendMode.allCases, id: \.self) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+    }
 }
 
 /// STAND-IN for UI/LayersPanel.swift (the SwiftUI layers list). Tests only build it to host next to the canvas.
@@ -44,6 +46,10 @@ extension LayersPanel: HostedNativeContent {
         table.session = session
         return table
     }
+}
+
+extension LayersPanel: PrimitiveView {
+    func _makeNode(children: [RenderNode]) -> RenderNode { RenderNode(kind: "_Native") }
 }
 
 /// STAND-IN for the `NSTableView` subclass in UI/NativeLayerList.swift, whose key handling (tool keys, nudges while the

@@ -46,9 +46,9 @@ option(COMPOSITOR_REQUIRE_VENDORED_DEPS OFF)
 #     (refuses to link the forbidden host-system Qt).
 #   - COMPOSITOR_BUILD_HOST=ON: local-dev escape hatch, accept host Qt6.
 if(COMPOSITOR_BUILD_HOST)
-    find_package(Qt6 COMPONENTS Widgets QUIET)
+    find_package(Qt6 COMPONENTS Widgets DBus QUIET)
 else()
-    find_package(Qt6 COMPONENTS Widgets QUIET)
+    find_package(Qt6 COMPONENTS Widgets DBus QUIET)
     if(Qt6_FOUND AND NOT DEFINED ENV{FLATPAK_ID})
         message(FATAL_ERROR
             "Qt6 was found (at ${Qt6_DIR}) but this is a host-system Qt, not the "
@@ -290,9 +290,9 @@ if(Qt6_FOUND)
     # generates SessionWindow's moc (the SwiftPM build uses the committed
     # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc). The
     # richer MainWindow (C-kernels Qt shell) is the C++-only compositor exe's window.
-    add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp host/QtImageIO.cpp)
+    add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp host/QtImageIO.cpp host/FlatpakUpdateService.cpp host/SwiftUIQtRenderer.cpp)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
-    target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets)
+    target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets Qt6::DBus)
     if(COMPOSITOR_ENABLE_SKIA_GPU AND DEFINED ENV{FLATPAK_ID})
         target_compile_definitions(CompositorHostRun PRIVATE COMPOSITOR_SKIA_BRIDGE=1)
         target_link_libraries(CompositorHostRun PUBLIC CompositorSkiaBridge)

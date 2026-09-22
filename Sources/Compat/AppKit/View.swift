@@ -212,7 +212,8 @@ public final class NSTrackingArea {
 
 public enum NSAccessibility {
     public struct Role: RawRepresentable, Sendable { public let rawValue: String; public init(rawValue: String) { self.rawValue = rawValue }
-        public static let button = Role(rawValue: "AXButton"), image = Role(rawValue: "AXImage"), group = Role(rawValue: "AXGroup") }
+        public static let button = Role(rawValue: "AXButton"), image = Role(rawValue: "AXImage"), group = Role(rawValue: "AXGroup")
+        public static let unknown = Role(rawValue: "AXUnknown") }
 }
 
 @MainActor open class NSViewController: NSResponder {
@@ -353,6 +354,7 @@ public struct NSScreen {
 @MainActor public final class NSApplicationShared {
     public var currentEvent: NSEvent?
     public var keyWindow: NSWindow?
+    public var mainWindow: NSWindow?
     public func sendEvent(_ event: NSEvent) { (event.window ?? keyWindow)?.sendEvent(event) }
     /// Live windows, oldest first.
     public var windows: [NSWindow] { NSWindow.allWindows }

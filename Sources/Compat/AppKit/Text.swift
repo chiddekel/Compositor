@@ -21,6 +21,7 @@ open class NSFont: @unchecked Sendable {
     private init(system size: CGFloat) { fontName = "System"; pointSize = size }
     public static func systemFont(ofSize size: CGFloat) -> NSFont { NSFont(system: size) }
     public static func systemFont(ofSize size: CGFloat, weight: Weight) -> NSFont { NSFont(system: size) }
+    public static func monospacedDigitSystemFont(ofSize size: CGFloat, weight: Weight = .regular) -> NSFont { NSFont(system: size) }
 }
 
 public enum NSTextAlignment: Int, Sendable { case left, right, center, justified, natural }
@@ -195,4 +196,37 @@ open class NSTextStorage {
     }
 
     open func setAttributes(_ attributes: [NSAttributedString.Key: Any]?, range: NSRange) {}
+}
+
+extension NSString {
+    public func size(withAttributes attrs: [NSAttributedString.Key: Any]? = nil) -> CGSize {
+        let font = (attrs?[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
+        let w = CGFloat(length) * font.pointSize * 0.55
+        let h = font.pointSize * 1.2
+        return CGSize(width: w, height: h)
+    }
+
+    public func draw(at point: CGPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let font = (attrs?[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
+        let color = (attrs?[.foregroundColor] as? NSColor) ?? NSColor.black
+        context.setFillColor(color.cgColor)
+        // Delegate to NSLayoutManager glyph rasterizer
+        let storage = NSTextStorage(attributedString: NSAttributedString(string: self as String, attributes: attrs ?? [:]))
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.drawGlyphs(forGlyphRange: NSRange(location: 0, length: length), at: point)
+    }
+}
+
+extension String {
+    public func size(withAttributes attrs: [NSAttributedString.Key: Any]? = nil) -> CGSize {
+        (self as NSString).size(withAttributes: attrs)
+    }
+
+    public func draw(at point: CGPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
+        (self as NSString).draw(at: point, withAttributes: attrs)
+    }
 }

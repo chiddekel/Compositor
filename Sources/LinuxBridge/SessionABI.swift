@@ -8,23 +8,28 @@
 import Foundation
 import CoreGraphics
 
-private final class Entry {
+// Not `private`: SwiftUIBridge.swift's `compositor_session_render_tree` reuses this same handle/session registry
+// (a Qt-visible tree of the same session's panels, not a separate one) rather than duplicating it.
+final class Entry {
     let editor = UpstreamEditor()
     var rendered: (bytes: [UInt8], width: Int, height: Int)?
+    /// The last resolved SwiftUI tree's action handlers, per panel: panel name -> node id -> handler key -> closure.
+    /// Populated by `SwiftUIBridge.swift`'s `resolvePanel`, read by `compositor_session_dispatch_swiftui_action`.
+    var actionHandlers: [String: [String: [String: (Any) -> Void]]] = [:]
 }
 
-private enum Sessions {
+enum Sessions {
     nonisolated(unsafe) static var next: UInt64 = 1
     nonisolated(unsafe) static var entries: [UInt64: Entry] = [:]
 }
 
 /// Runs `body` on the main actor from a C entry point (which the shell calls on the main thread).
-private func onMain<Result>(_ body: @MainActor () -> Result) -> Result {
+func onMain<Result>(_ body: @MainActor () -> Result) -> Result {
     if Thread.isMainThread { return MainActor.assumeIsolated(body) }
     return DispatchQueue.main.sync { MainActor.assumeIsolated(body) }
 }
 
-private func withEntry(_ handle: UInt64, _ body: @MainActor (Entry) -> Int64) -> Int64 {
+func withEntry(_ handle: UInt64, _ body: @MainActor (Entry) -> Int64) -> Int64 {
     onMain {
         guard let entry = Sessions.entries[handle] else { return -6 }
         return body(entry)

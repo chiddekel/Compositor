@@ -560,6 +560,9 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
             w3.setTool(SessionWindow::Tool::RectSelect); QApplication::processEvents();
             drag(at(50, 4), at(58, 12));   // 8x8 at (50,4)
             for (auto *spin : w3.findChildren<QSpinBox *>()) if (spin->suffix() == " px" && spin->value() == 1 && spin->width() <= 60 && spin->isEnabledTo(spin->window())) { spin->setValue(6); break; }
+
+
+
             button("Expand")->click(); QApplication::processEvents();
             const QImage grown = fillAndExport("grown.png");
             require(filled(grown, 46, 8) && filled(grown, 55, 8), "Expand did not grow the selection");

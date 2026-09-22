@@ -72,6 +72,8 @@ public:
 
 }  // namespace qtplatform
 
+#include "FlatpakUpdateService.h"
+
 inline PlatformServices PlatformServices::qtDefaults() {
     PlatformServices services;
     services.files = std::make_shared<qtplatform::FileDialogs>();
@@ -79,6 +81,7 @@ inline PlatformServices PlatformServices::qtDefaults() {
     services.colors = std::make_shared<qtplatform::ColorPicker>();
     services.notifier = std::make_shared<qtplatform::Notifier>();
     services.storage = std::make_shared<qtplatform::Storage>();
+    services.updates = std::make_shared<qtplatform::FlatpakUpdateService>();
     return services;
 }
 
@@ -90,5 +93,6 @@ inline PlatformServices PlatformServices::withDefaults() const {
     if (!merged.colors) merged.colors = fallback.colors;
     if (!merged.notifier) merged.notifier = fallback.notifier;
     if (!merged.storage) merged.storage = fallback.storage;
+    if (!merged.updates) merged.updates = fallback.updates;
     return merged;
 }

@@ -24,6 +24,8 @@
 #include <QPointF>
 #include <QJsonObject>
 #include "interfaces/IPlatformServices.h"
+#include "ParityMetrics.h"
+#include "ParityPalette.h"
 
 class QTreeView;
 class QStandardItemModel;
@@ -56,6 +58,14 @@ public:
     // Platform services are injected (DIP); omitted members fall back to the Qt implementations.
     explicit SessionWindow(QWidget *parent = nullptr, PlatformServices services = {});
     ~SessionWindow() override;
+
+    // Document management
+    void initDemoDocument();
+    void createNewDocument(int width, int height);
+    bool hasDocument() const { return m_hasDocument; }
+    // Exposes the Swift session handle so a debug-only caller (host_run.cpp's COMPOSITOR_GRAB_SWIFTUI_TREE path)
+    // can render a SwiftUI-compat panel standalone, against this same session, without a second one.
+    uint64_t sessionHandle() const { return m_sessionHandle; }
 
     // File operations (IO milestone)
     bool exportPNG(const QString &path);
@@ -94,27 +104,74 @@ public:
     void healStroke(double x1, double y1, double x2, double y2);
 
     enum class Tool {
-        Brush,
-        Eraser,
-        Move,
-        RectSelect,
-        EllipseSelect,
-        Lasso,
-        MagicWand,
-        CloneStamp,
-        SpotHealing,
-        Crop,
-        Blur,
-        Gradient,
-        Shape,
-        Type,
-        Eyedropper,
-        Hand,
-        Zoom
+        Move = 0,    // V (default)
+        Marquee,     // M (Rectangle / Ellipse mode)
+        Lasso,       // L (Freehand / Polygonal mode)
+        Magic,       // W (Wand / Object mode)
+        Crop,        // C
+        Brush,       // B (Eraser is a mode: E)
+        SpotHealing, // J
+        CloneStamp,  // S
+        Smear,       // R (Liquify / Blur / Smudge mode)
+        Gradient,    // G
+        Shape,       // U (Rectangle / Ellipse / Line mode)
+        Type,        // T
+        Eyedropper,  // I
+        Hand,        // H (Space temporary hand)
+        Zoom,        // Z
+        Idle,
+        // Compatibility aliases
+        Eraser = Brush,
+        RectSelect = Marquee,
+        EllipseSelect = Marquee,
+        MagicWand = Magic,
+        Blur = Smear
     };
+
+    enum class MarqueeMode { Rectangle, Ellipse };
+    enum class LassoMode { Freehand, Polygonal };
+    enum class MagicMode { Wand, Object };
+    enum class BrushToolMode { Paint, Erase };
+    enum class SmearMode { Liquify, Blur, Smudge };
+    enum class SpotHealingMode { ContentAware, CreateTexture, ProximityMatch };
+    enum class ShapeMode { Rectangle, Ellipse, Line };
 
     void setTool(Tool tool);
     Tool currentTool() const { return m_tool; }
+
+    void setMarqueeMode(MarqueeMode mode);
+    MarqueeMode marqueeMode() const { return m_marqueeMode; }
+    void cycleMarqueeMode();
+
+    void setLassoMode(LassoMode mode);
+    LassoMode lassoMode() const { return m_lassoMode; }
+    void cycleLassoMode();
+
+    void setMagicMode(MagicMode mode);
+    MagicMode magicMode() const { return m_magicMode; }
+    void toggleMagicMode();
+
+    void setBrushToolMode(BrushToolMode mode);
+    BrushToolMode brushToolMode() const { return m_brushToolMode; }
+
+    void setSmearMode(SmearMode mode);
+    SmearMode smearMode() const { return m_smearMode; }
+
+    void setSpotHealingMode(SpotHealingMode mode);
+    SpotHealingMode spotHealingMode() const { return m_spotHealingMode; }
+
+    void setShapeMode(ShapeMode mode);
+    ShapeMode shapeMode() const { return m_shapeMode; }
+    void cycleShapeMode();
+
+    // Pending Crop controls
+    void applyCrop();
+    void cancelCrop();
+    bool hasPendingCrop() const { return m_hasPendingCrop; }
+    QRectF pendingCropRect() const { return m_pendingCropRect; }
+
+    // Space-hand controls
+    bool isSpaceHandActive() const { return m_spaceHandActive; }
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -126,6 +183,7 @@ protected:
     void dropEvent(QDropEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
 
     friend class SessionCanvasWidget;
     void canvasPaintEvent(QPaintEvent *event, QWidget *canvas);
@@ -167,6 +225,8 @@ private:
     void setupHeaderBar();
     void setupOptionsBar();
     void updateOptionsBar();
+    void updateToolRail();
+    void syncToolFromSession();
     void updateStatusTelemetry();
     void fitCanvas();
     void actualPixels();
@@ -176,7 +236,22 @@ private:
     QImage m_image;
     uint64_t m_sessionHandle = 0;
     bool m_painting = false;
-    Tool m_tool = Tool::Brush;
+    Tool m_tool = Tool::Move;
+    MarqueeMode m_marqueeMode = MarqueeMode::Rectangle;
+    LassoMode m_lassoMode = LassoMode::Freehand;
+    MagicMode m_magicMode = MagicMode::Wand;
+    BrushToolMode m_brushToolMode = BrushToolMode::Paint;
+    SmearMode m_smearMode = SmearMode::Liquify;
+    SpotHealingMode m_spotHealingMode = SpotHealingMode::ContentAware;
+    ShapeMode m_shapeMode = ShapeMode::Rectangle;
+    QRectF m_pendingCropRect;
+    bool m_hasPendingCrop = false;
+    QString m_cropRatio = "Free";
+    Tool m_preSpaceTool = Tool::Move;
+    bool m_spaceHandActive = false;
+    QPointF m_panOffset{0, 0};
+    bool m_hasDocument = false;
+
     QPointF m_dragStart;
     QPointF m_currentPoint;
     std::vector<QPointF> m_lassoPoints;
@@ -196,8 +271,8 @@ private:
     QSlider *m_brushOpacitySlider = nullptr;
     QCheckBox *m_visibleCheck = nullptr;
     QCheckBox *m_maskCheck = nullptr;
-    QColor m_brushColor = QColor(255, 0, 0);
-    QColor m_backgroundColor = QColor(255, 255, 255);
+    QColor m_brushColor = ParityPalette::defaultForeground();
+    QColor m_backgroundColor = ParityPalette::defaultBackground();
     QPushButton *m_bgColorButton = nullptr;
     int m_brushDiameter = 16;
     int m_brushHardness = 100;
@@ -212,6 +287,12 @@ private:
     QDockWidget *m_layersDock = nullptr;
     QDockWidget *m_adjustmentsDock = nullptr;
     QStackedWidget *m_optionsStack = nullptr;
+    QWidget *m_swiftUIOptionsContainer = nullptr;
+    QWidget *m_swiftUICurrentToolHeader = nullptr;
+    QWidget *m_swiftUIToolRailContainer = nullptr;
+    QWidget *m_swiftUICurrentToolRail = nullptr;
+    QWidget *m_swiftUIStatusBarContainer = nullptr;
+    QWidget *m_swiftUICurrentStatusBar = nullptr;
     QTabBar *m_documentTabBar = nullptr;
     QLabel *m_statusZoomLabel = nullptr;
     QLabel *m_statusDimsLabel = nullptr;
@@ -292,4 +373,26 @@ private:
     void drawTransformControls(QPainter &painter) const;
     void previewGeometry(const LayerGeometry &geometry);
     LayerGeometry draggedGeometry(const QPointF &documentPoint, Qt::KeyboardModifiers modifiers) const;
+
+    // Tool parameter state
+    int m_magicTolerance = 32;
+    bool m_magicContiguous = true;
+    bool m_magicSampleAll = false;
+    bool m_cloneAligned = true;
+    bool m_cloneSampleAll = false;
+    QString m_gradientType = "Linear";
+    int m_gradientOpacity = 100;
+    bool m_gradientReverse = false;
+    int m_shapeStrokeWidth = 1;
+    int m_shapeRadius = 0;
+    int m_typeFontSize = 24;
+    QString m_typeFontFamily;
+    int m_typeAlignment = 0;
+    int m_eyedropperSampleSize = 1;
+    bool m_eyedropperSampleAll = false;
+    int m_cropHandle = -1;
+    QPointF m_panStart;
+
+    int hitTestCropHandle(const QPointF &canvasPoint) const;
+    void drawCropOverlay(QPainter &painter) const;
 };

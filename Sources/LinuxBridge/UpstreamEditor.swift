@@ -80,6 +80,7 @@ private struct State: Encodable {
     let mergeTitle: String
     let canMoveActiveLayerUp: Bool
     let canMoveActiveLayerDown: Bool
+    let tool: String
 }
 
 /// Result codes shared with the C ABI: 0 ok, -1 invalid argument, -2 no document, -3 busy, -4 unsupported version,
@@ -102,7 +103,7 @@ final class UpstreamEditor {
         "setMaskSelected", "invertMask", "transform", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
-        "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte",
+        "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
     ]
 
     /// The adjustment as it was when editing began, for cancel.
@@ -389,6 +390,20 @@ final class UpstreamEditor {
             settings.shiftEdge = p["shiftEdge"] ?? settings.shiftEdge
             s.updateFilter(settings, preview: true)
             await s.commitFilter()
+        case "selectTool":
+            guard let toolName = command.kind ?? command.name,
+                  let tool = NavigationTool(rawValue: toolName)
+            else { return fail(-1, "unknown tool") }
+            s.selectTool(tool)
+            if let mode = command.name {
+                if let k = LassoKind(rawValue: mode) {
+                    if tool == .marquee { s.marqueeKind = k }
+                    if tool == .lasso { s.lassoKind = k }
+                }
+                if let w = WandMode(rawValue: mode) { s.wandMode = w }
+                if let b = BrushToolMode(rawValue: mode) { s.brushMode = b }
+                if let k = ShapeKind(rawValue: mode) { s.shapeKind = k }
+            }
         default:
             return fail(-7, "Unsupported by the upstream bridge yet: \(command.action)")
         }
@@ -499,7 +514,8 @@ final class UpstreamEditor {
             canMergeLayers: s.canMergeLayers,
             mergeTitle: s.mergeTitle,
             canMoveActiveLayerUp: s.canMoveActiveLayer(by: 1),
-            canMoveActiveLayerDown: s.canMoveActiveLayer(by: -1))
+            canMoveActiveLayerDown: s.canMoveActiveLayer(by: -1),
+            tool: s.tool.rawValue)
         return try JSONEncoder().encode(state)
     }
 

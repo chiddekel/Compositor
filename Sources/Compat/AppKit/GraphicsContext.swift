@@ -23,4 +23,18 @@ public final class NSGraphicsContext: @unchecked Sendable {
         current?.cgContext.restoreGState()
         current = stack.popLast() ?? nil
     }
+
+    public func saveGraphicsState() { Self.saveGraphicsState() }
+    public func restoreGraphicsState() { Self.restoreGraphicsState() }
+}
+
+extension NSAffineTransform {
+    public func concat() {
+        let t = CGAffineTransform(
+            a: transformStruct.m11, b: transformStruct.m12,
+            c: transformStruct.m21, d: transformStruct.m22,
+            tx: transformStruct.tX, ty: transformStruct.tY
+        )
+        NSGraphicsContext.current?.cgContext.concatenate(t)
+    }
 }

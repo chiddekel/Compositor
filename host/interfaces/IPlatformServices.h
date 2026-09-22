@@ -52,6 +52,8 @@ public:
     virtual void warn(const QString &title, const QString &text) = 0;
 };
 
+#include "IUpdateService.h"
+
 class IStorageLocator {
 public:
     virtual ~IStorageLocator() = default;
@@ -67,6 +69,7 @@ struct PlatformServices {
     std::shared_ptr<IColorPickerService> colors;
     std::shared_ptr<IUserNotifier> notifier;
     std::shared_ptr<IStorageLocator> storage;
+    std::shared_ptr<IUpdateService> updates;
 
     /// Qt Widgets implementations (defined in QtPlatformServices.h).
     static PlatformServices qtDefaults();

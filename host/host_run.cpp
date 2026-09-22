@@ -25,10 +25,11 @@
 #include "compositor_host_run.h"
 #include "EditorDialogs.h"
 #include "ColorPickerDialog.h"
+#include "SwiftUIQtRenderer.h"
 #include <cmath>
 #include <QDockWidget>
 #include <vector>
-#include <QJsonObject>
+#include <QIcon>
 #include "SessionWindow.h"
 
 #if defined(COMPOSITOR_SKIA_BRIDGE)
@@ -44,6 +45,22 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
     app.setDesktopFileName("com.wonderassembly.Compositor");
+
+    QIcon appIcon;
+    const int iconSizes[] = {16, 32, 64, 128, 256, 512, 1024};
+    for (int s : iconSizes) {
+        const QString p1 = QStringLiteral("Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-%1.png").arg(s);
+        if (QFile::exists(p1)) {
+            appIcon.addFile(p1);
+        } else {
+            const QString p2 = QDir::homePath() + QStringLiteral("/.local/share/icons/hicolor/%1x%1/apps/com.wonderassembly.Compositor.png").arg(s);
+            if (QFile::exists(p2)) appIcon.addFile(p2);
+        }
+    }
+    if (!appIcon.isNull()) {
+        app.setWindowIcon(appIcon);
+    }
+
 #if defined(COMPOSITOR_SKIA_BRIDGE)
     // Plan §6 startup: try Vulkan, fall back to Raster. The renderer backs
     // the Swift CGContextCompat shim; on any failure the Swift
@@ -56,6 +73,9 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     // and paints the composited RGBA — the architecture the Flatpak build ships.
     // The richer MainWindow (C-kernels Qt shell) is the C++-only build path's window.
     SessionWindow window;
+    if (!appIcon.isNull()) {
+        window.setWindowIcon(appIcon);
+    }
     for (int i = 1; i < argc; ++i) {
         if (!argv[i]) continue;
         QString arg = QString::fromLocal8Bit(argv[i]);
@@ -70,14 +90,38 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         }
     }
     window.show();
-    // CI and Swift smoke runs use offscreen Qt. Real desktop launches keep the
-    // event loop alive; offscreen runs only need one paint pass.
     if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
-        if (qEnvironmentVariable("COMPOSITOR_GRAB_TOOL") == "move") window.setTool(SessionWindow::Tool::Move);
+        const QString toolArg = qEnvironmentVariable("COMPOSITOR_GRAB_TOOL");
+        if (toolArg == "move") window.setTool(SessionWindow::Tool::Move);
+        else if (toolArg == "brush") window.setTool(SessionWindow::Tool::Brush);
+        else if (toolArg == "crop") window.setTool(SessionWindow::Tool::Crop);
+        else if (toolArg == "zoom") window.setTool(SessionWindow::Tool::Zoom);
+        else if (toolArg == "lasso") window.setTool(SessionWindow::Tool::Lasso);
+        else if (toolArg == "marquee") window.setTool(SessionWindow::Tool::Marquee);
+        else if (toolArg == "gradient") window.setTool(SessionWindow::Tool::Gradient);
+        else if (toolArg == "shape") window.setTool(SessionWindow::Tool::Shape);
+        else if (toolArg == "type") window.setTool(SessionWindow::Tool::Type);
+        else if (toolArg == "spotHealing") window.setTool(SessionWindow::Tool::SpotHealing);
+        else if (toolArg == "cloneStamp") window.setTool(SessionWindow::Tool::CloneStamp);
         for (int i = 0; i < 10; ++i) {
             QCoreApplication::processEvents();
         }
         window.grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH"));
+        // COMPOSITOR_GRAB_SWIFTUI_TREE=<panel name, e.g. NavigationToolHeader> renders that panel standalone
+        // through the generic SwiftUI-compat -> Qt renderer (SwiftUIQtRenderer.cpp) and captures it as
+        // <path>.swiftui.png — the screenshot-diff proof point for the "Generic SwiftUI→Qt compat runtime" plan.
+        // Deliberately does not touch SessionWindow's own hand-built toolbar/panels.
+        const QString swiftUIPanel = qEnvironmentVariable("COMPOSITOR_GRAB_SWIFTUI_TREE");
+        if (!swiftUIPanel.isEmpty()) {
+            if (QWidget *rendered = swiftUIRenderPanel(window.sessionHandle(), swiftUIPanel)) {
+                rendered->resize(qMax(rendered->sizeHint().width(), 900), qMax(rendered->sizeHint().height(), 60));
+                rendered->show();
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                rendered->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".swiftui.png");
+                delete rendered;
+            }
+            return 0;
+        }
         // COMPOSITOR_GRAB_DIALOG=<Adjust kind | ColorPicker> also captures that dialog as <path>.dialog.png.
         const QString dialogKind = qEnvironmentVariable("COMPOSITOR_GRAB_DIALOG");
         if (!dialogKind.isEmpty()) {
@@ -112,7 +156,27 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         QCoreApplication::processEvents();
         return 0;
     }
-    return app.exec();
+    class QuitEventFilter : public QObject {
+    public:
+        explicit QuitEventFilter(QObject *parent = nullptr) : QObject(parent) {}
+    protected:
+        bool eventFilter(QObject *obj, QEvent *event) override {
+            if (event->type() == QEvent::Quit) {
+                fprintf(stderr, ">>> RECEIVED QEvent::Quit on %s (spontaneous=%d)\n",
+                        obj->metaObject()->className(), (int)event->spontaneous());
+            } else if (event->type() == QEvent::Close) {
+                fprintf(stderr, ">>> RECEIVED QEvent::Close on %s (spontaneous=%d)\n",
+                        obj->metaObject()->className(), (int)event->spontaneous());
+            }
+            return QObject::eventFilter(obj, event);
+        }
+    };
+    QuitEventFilter quitFilter(&app);
+    app.installEventFilter(&quitFilter);
+
+    int ret = app.exec();
+    fprintf(stderr, ">>> app.exec() returned %d\n", ret);
+    return ret;
 }
 
 extern "C" int compositor_qt_imageio_selftest(void);

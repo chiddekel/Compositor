@@ -91,6 +91,7 @@ FLATPAK_ARGS=(
     --filesystem=/tmp
     --share=ipc
     --device=dri
+    --socket=session-bus
 )
 
 if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
@@ -123,5 +124,6 @@ fi
 flatpak run "${FLATPAK_ARGS[@]}" org.kde.Sdk//6.10 -c "
     cd '$ROOT'
     $ENV_EXPORTS
-    exec /usr/lib/sdk/swift6/bin/swift run CompositorHostBootstrap \"\${@}\"
+    /usr/lib/sdk/swift6/bin/swift build --target CompositorHostBootstrap
+    exec .build/x86_64-unknown-linux-gnu/debug/CompositorHostBootstrap "\$@"
 " bash "${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}"

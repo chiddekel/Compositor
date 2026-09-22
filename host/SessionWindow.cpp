@@ -8,6 +8,7 @@
 #include "LayerItemDelegate.h"
 #include "QtPlatformServices.h"
 #include "EditorDialogs.h"
+#include "SwiftUIQtRenderer.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -55,6 +56,7 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QLineEdit>
+#include <QTextEdit>
 #include <QButtonGroup>
 #include <QFrame>
 #include <QToolButton>
@@ -167,8 +169,10 @@ private:
     SessionWindow *m_window;
 };
 
-static QIcon makeToolIcon(SessionWindow::Tool tool) {
-    QPixmap pix(22, 22);
+static QIcon makeToolIcon(SessionWindow::Tool tool,
+                          SessionWindow::MarqueeMode marqueeMode = SessionWindow::MarqueeMode::Rectangle,
+                          SessionWindow::BrushToolMode brushMode = SessionWindow::BrushToolMode::Paint) {
+    QPixmap pix(18, 18);
     pix.fill(Qt::transparent);
     QPainter p(&pix);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -176,122 +180,150 @@ static QIcon makeToolIcon(SessionWindow::Tool tool) {
 
     switch (tool) {
     case SessionWindow::Tool::Move:
-        p.drawLine(11, 3, 11, 19);
-        p.drawLine(3, 11, 19, 11);
-        p.drawLine(11, 3, 8, 6);
-        p.drawLine(11, 3, 14, 6);
-        p.drawLine(11, 19, 8, 16);
-        p.drawLine(11, 19, 14, 16);
-        p.drawLine(3, 11, 6, 8);
-        p.drawLine(3, 11, 6, 14);
-        p.drawLine(19, 11, 16, 8);
-        p.drawLine(19, 11, 16, 14);
+        p.drawLine(9, 2, 9, 16);
+        p.drawLine(2, 9, 16, 9);
+        p.drawLine(9, 2, 6, 5);
+        p.drawLine(9, 2, 12, 5);
+        p.drawLine(9, 16, 6, 13);
+        p.drawLine(9, 16, 12, 13);
+        p.drawLine(2, 9, 5, 6);
+        p.drawLine(2, 9, 5, 12);
+        p.drawLine(16, 9, 13, 6);
+        p.drawLine(16, 9, 13, 12);
         break;
-    case SessionWindow::Tool::Brush:
-        p.drawLine(15, 4, 19, 8);
-        p.drawLine(15, 4, 10, 10);
-        p.drawLine(19, 8, 13, 14);
-        p.drawLine(10, 10, 7, 16);
-        p.drawLine(13, 14, 7, 16);
-        p.setBrush(QColor(0xd0, 0xd0, 0xd5));
-        p.drawEllipse(4, 15, 4, 4);
-        break;
-    case SessionWindow::Tool::Eraser:
-        p.drawRoundedRect(4, 7, 14, 9, 2, 2);
-        p.drawLine(9, 7, 9, 16);
-        break;
-    case SessionWindow::Tool::RectSelect:
+    case SessionWindow::Tool::Marquee:
         p.setPen(QPen(QColor(0xd0, 0xd0, 0xd5), 1.5, Qt::DashLine));
-        p.drawRect(4, 4, 14, 14);
-        break;
-    case SessionWindow::Tool::EllipseSelect:
-        p.setPen(QPen(QColor(0xd0, 0xd0, 0xd5), 1.5, Qt::DashLine));
-        p.drawEllipse(4, 4, 14, 14);
+        if (marqueeMode == SessionWindow::MarqueeMode::Rectangle) {
+            p.drawRect(2, 2, 14, 14);
+        } else {
+            p.drawEllipse(2, 2, 14, 14);
+        }
         break;
     case SessionWindow::Tool::Lasso: {
         QPainterPath path;
-        path.moveTo(5, 8);
-        path.cubicTo(5, 3, 17, 3, 17, 10);
-        path.cubicTo(17, 16, 12, 18, 9, 16);
-        path.lineTo(6, 19);
+        path.moveTo(4, 7);
+        path.cubicTo(4, 2, 15, 2, 15, 8);
+        path.cubicTo(15, 14, 10, 15, 7, 13);
+        path.lineTo(4, 16);
         p.drawPath(path);
         break;
     }
-    case SessionWindow::Tool::MagicWand:
-        p.drawLine(4, 18, 15, 7);
-        p.drawLine(17, 3, 17, 7);
-        p.drawLine(15, 5, 19, 5);
-        p.drawLine(13, 3, 13, 4);
-        p.drawLine(19, 9, 19, 10);
+    case SessionWindow::Tool::Magic:
+        p.drawLine(3, 15, 13, 5);
+        p.drawLine(15, 2, 15, 5);
+        p.drawLine(13, 3, 16, 3);
+        p.drawLine(11, 2, 11, 3);
+        p.drawLine(16, 7, 16, 8);
         break;
-    case SessionWindow::Tool::CloneStamp:
-        p.drawEllipse(9, 2, 4, 4);
-        p.drawLine(11, 6, 11, 11);
-        p.drawRoundedRect(6, 11, 10, 5, 1, 1);
-        p.fillRect(4, 16, 14, 3, QColor(0xd0, 0xd0, 0xd5));
+    case SessionWindow::Tool::Crop:
+        p.drawLine(2, 5, 13, 5);
+        p.drawLine(5, 2, 5, 13);
+        p.drawLine(5, 13, 16, 13);
+        p.drawLine(13, 5, 13, 16);
+        break;
+    case SessionWindow::Tool::Brush:
+        if (brushMode == SessionWindow::BrushToolMode::Paint) {
+            p.drawLine(13, 3, 16, 6);
+            p.drawLine(13, 3, 9, 8);
+            p.drawLine(16, 6, 11, 11);
+            p.drawLine(9, 8, 6, 13);
+            p.drawLine(11, 11, 6, 13);
+            p.setBrush(QColor(0xd0, 0xd0, 0xd5));
+            p.drawEllipse(3, 12, 4, 4);
+        } else {
+            p.drawRoundedRect(3, 5, 12, 8, 2, 2);
+            p.drawLine(7, 5, 7, 13);
+        }
         break;
     case SessionWindow::Tool::SpotHealing:
         p.save();
-        p.translate(11, 11);
+        p.translate(9, 9);
         p.rotate(45);
-        p.drawRoundedRect(-4, -8, 8, 16, 3, 3);
+        p.drawRoundedRect(-3, -7, 6, 14, 2, 2);
         p.drawPoint(-1, 0); p.drawPoint(1, 0);
         p.restore();
         break;
-    case SessionWindow::Tool::Crop:
-        p.drawLine(3, 7, 15, 7);
-        p.drawLine(7, 3, 7, 15);
-        p.drawLine(7, 15, 19, 15);
-        p.drawLine(15, 7, 15, 19);
+    case SessionWindow::Tool::CloneStamp:
+        p.drawEllipse(7, 2, 4, 4);
+        p.drawLine(9, 6, 9, 10);
+        p.drawRoundedRect(4, 10, 10, 4, 1, 1);
+        p.fillRect(3, 14, 12, 2, QColor(0xd0, 0xd0, 0xd5));
         break;
-    case SessionWindow::Tool::Blur: {
+    case SessionWindow::Tool::Smear: {
         QPainterPath path;
-        path.moveTo(11, 4);
-        path.cubicTo(11, 4, 6, 12, 6, 15);
-        path.arcTo(6, 10, 10, 10, 180, 180);
-        path.cubicTo(16, 12, 11, 4, 11, 4);
+        path.moveTo(9, 3);
+        path.cubicTo(9, 3, 4, 10, 4, 13);
+        path.arcTo(4, 8, 10, 10, 180, 180);
+        path.cubicTo(14, 10, 9, 3, 9, 3);
         p.drawPath(path);
         break;
     }
     case SessionWindow::Tool::Gradient:
-        p.drawRect(4, 4, 14, 14);
-        p.fillRect(4, 11, 14, 7, QColor(0xd0, 0xd0, 0xd5));
+        p.drawRect(2, 2, 14, 14);
+        p.fillRect(2, 9, 14, 7, QColor(0xd0, 0xd0, 0xd5));
         break;
     case SessionWindow::Tool::Shape:
-        p.drawRect(4, 4, 9, 9);
-        p.drawEllipse(9, 9, 9, 9);
+        p.drawRect(2, 2, 8, 8);
+        p.drawEllipse(7, 7, 9, 9);
         break;
     case SessionWindow::Tool::Type:
-        p.drawLine(5, 5, 17, 5);
-        p.drawLine(11, 5, 11, 18);
-        p.drawLine(8, 18, 14, 18);
+        p.drawLine(3, 3, 15, 3);
+        p.drawLine(9, 3, 9, 15);
+        p.drawLine(6, 15, 12, 15);
         break;
     case SessionWindow::Tool::Eyedropper:
-        p.drawLine(6, 16, 8, 14);
-        p.drawLine(8, 14, 14, 8);
-        p.drawLine(14, 8, 16, 10);
-        p.drawLine(16, 10, 10, 16);
-        p.drawLine(10, 16, 6, 16);
-        p.drawLine(14, 8, 17, 5);
+        p.drawLine(4, 14, 6, 12);
+        p.drawLine(6, 12, 12, 6);
+        p.drawLine(12, 6, 14, 8);
+        p.drawLine(14, 8, 8, 14);
+        p.drawLine(8, 14, 4, 14);
+        p.drawLine(12, 6, 15, 3);
         break;
     case SessionWindow::Tool::Hand:
-        p.drawRoundedRect(7, 8, 8, 11, 2, 2);
-        p.drawLine(9, 4, 9, 8);
-        p.drawLine(11, 3, 11, 8);
-        p.drawLine(13, 4, 13, 8);
+        p.drawRoundedRect(5, 7, 8, 9, 2, 2);
+        p.drawLine(7, 3, 7, 7);
+        p.drawLine(9, 2, 9, 7);
+        p.drawLine(11, 3, 11, 7);
         break;
     case SessionWindow::Tool::Zoom:
-        p.drawEllipse(5, 5, 10, 10);
-        p.drawLine(12, 12, 18, 18);
+        p.drawEllipse(3, 3, 9, 9);
+        p.drawLine(10, 10, 15, 15);
+        break;
+    case SessionWindow::Tool::Idle:
         break;
     }
     return QIcon(pix);
 }
 
+void SessionWindow::initDemoDocument() {
+    if (m_sessionHandle == 0) m_sessionHandle = compositor_session_create();
+    cmd(m_sessionHandle, R"({"version":1,"action":"new","width":64,"height":64})");
+    cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})");
+    cmd(m_sessionHandle, R"({"version":1,"action":"brushBegin","x":8,"y":8,"parameters":{"diameter":16,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}})");
+    cmd(m_sessionHandle, R"({"version":1,"action":"brushMove","x":48,"y":48})");
+    cmd(m_sessionHandle, R"({"version":1,"action":"brushEnd"})");
+    m_image = renderToQImage(m_sessionHandle, 64, 64);
+    m_hasDocument = true;
+    refreshLayers();
+}
+
+void SessionWindow::createNewDocument(int width, int height) {
+    if (m_sessionHandle == 0) m_sessionHandle = compositor_session_create();
+    const QString json = QString(R"({"version":1,"action":"new","width":%1,"height":%2})").arg(width).arg(height);
+    const QByteArray bytes = json.toUtf8();
+    compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
+    cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})");
+    m_image = renderToQImage(m_sessionHandle, width, height);
+    m_hasDocument = true;
+    refreshImage();
+    refreshLayers();
+}
+
 SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     : QMainWindow(parent), m_platform(services.withDefaults()) {
     setWindowTitle("Compositor");
-    resize(1200, 800);
+    resize(ParityMetrics::WindowDefaultWidth, ParityMetrics::WindowDefaultHeight);
+    setMinimumSize(ParityMetrics::WindowMinWidth, ParityMetrics::WindowMinHeight);
     setAcceptDrops(true);
     m_tabletHandler = std::make_unique<PressureModulatedTabletHandler>();
     applyDarkTheme();
@@ -305,7 +337,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_toolsBar->setMovable(false);
     m_toolsBar->setOrientation(Qt::Vertical);
     m_toolsBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_toolsBar->setIconSize(QSize(22, 22));
+    m_toolsBar->setIconSize(QSize(ParityMetrics::ToolIconNominal, ParityMetrics::ToolIconNominal));
     addToolBar(Qt::LeftToolBarArea, m_toolsBar);
     auto *toolGroup = new QActionGroup(this);
     toolGroup->setExclusive(true);
@@ -322,78 +354,90 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         toolGroup->addAction(act);
         m_toolsBar->addAction(act);
         m_toolActions[t] = act;
-        if (t == Tool::Brush) act->setChecked(true);
         return act;
     };
 
-    addToolAct(tr("Move Tool"), QKeySequence(Qt::Key_V), Tool::Move, "tool.move");
-    addToolAct(tr("Rectangular Marquee"), QKeySequence(Qt::Key_M), Tool::RectSelect, "tool.rectSelect");
-    addToolAct(tr("Elliptical Marquee"), QKeySequence(Qt::SHIFT | Qt::Key_M), Tool::EllipseSelect, "tool.ellipseSelect");
-    addToolAct(tr("Lasso"), QKeySequence(Qt::Key_L), Tool::Lasso, "tool.lasso");
-    addToolAct(tr("Magic Wand"), QKeySequence(Qt::Key_W), Tool::MagicWand, "tool.magicWand");
-    m_toolsBar->addSeparator();
-    addToolAct(tr("Crop"), QKeySequence(Qt::Key_C), Tool::Crop, "tool.crop");
-    addToolAct(tr("Brush"), QKeySequence(Qt::Key_B), Tool::Brush, "tool.brush");
-    addToolAct(tr("Eraser"), QKeySequence(Qt::Key_E), Tool::Eraser, "tool.eraser");
-    addToolAct(tr("Spot Healing"), QKeySequence(Qt::Key_J), Tool::SpotHealing, "tool.spotHealing");
-    addToolAct(tr("Clone Stamp"), QKeySequence(Qt::Key_S), Tool::CloneStamp, "tool.cloneStamp");
-    addToolAct(tr("Smear / Blur"), QKeySequence(Qt::Key_R), Tool::Blur, "tool.blur");
-    m_toolsBar->addSeparator();
-    addToolAct(tr("Gradient"), QKeySequence(Qt::Key_G), Tool::Gradient, "tool.gradient");
-    addToolAct(tr("Shape"), QKeySequence(Qt::Key_U), Tool::Shape, "tool.shape");
-    addToolAct(tr("Type"), QKeySequence(Qt::Key_T), Tool::Type, "tool.type");
-    addToolAct(tr("Eyedropper"), QKeySequence(Qt::Key_I), Tool::Eyedropper, "tool.eyedropper");
-    m_toolsBar->addSeparator();
-    addToolAct(tr("Hand"), QKeySequence(Qt::Key_H), Tool::Hand, "tool.hand");
-    addToolAct(tr("Zoom"), QKeySequence(Qt::Key_Z), Tool::Zoom, "tool.zoom");
+    auto *actMove = addToolAct(tr("Move / Transform (V)"), QKeySequence(Qt::Key_V), Tool::Move, "tool.move");
+    addToolAct(tr("Marquee (M)"), QKeySequence(Qt::Key_M), Tool::Marquee, "tool.marquee");
+    addToolAct(tr("Lasso (L)"), QKeySequence(Qt::Key_L), Tool::Lasso, "tool.lasso");
+    addToolAct(tr("Magic (W)"), QKeySequence(Qt::Key_W), Tool::Magic, "tool.magic");
+    addToolAct(tr("Crop (C)"), QKeySequence(Qt::Key_C), Tool::Crop, "tool.crop");
+    addToolAct(tr("Brush (B) · Eraser (E)"), QKeySequence(Qt::Key_B), Tool::Brush, "tool.brush");
+    addToolAct(tr("Spot Healing Brush (J)"), QKeySequence(Qt::Key_J), Tool::SpotHealing, "tool.spotHealing");
+    addToolAct(tr("Clone Stamp (S)"), QKeySequence(Qt::Key_S), Tool::CloneStamp, "tool.cloneStamp");
+    addToolAct(tr("Smear (R)"), QKeySequence(Qt::Key_R), Tool::Smear, "tool.blur");
+    addToolAct(tr("Gradient (G)"), QKeySequence(Qt::Key_G), Tool::Gradient, "tool.gradient");
+    addToolAct(tr("Shape (U)"), QKeySequence(Qt::Key_U), Tool::Shape, "tool.shape");
+    addToolAct(tr("Type (T)"), QKeySequence(Qt::Key_T), Tool::Type, "tool.type");
+    addToolAct(tr("Eyedropper (I)"), QKeySequence(Qt::Key_I), Tool::Eyedropper, "tool.eyedropper");
+    addToolAct(tr("Hand (H)"), QKeySequence(Qt::Key_H), Tool::Hand, "tool.hand");
+    addToolAct(tr("Zoom (Z)"), QKeySequence(Qt::Key_Z), Tool::Zoom, "tool.zoom");
 
-    m_toolsBar->addSeparator();
+    // Hidden action aliases for compatibility with automated smoke tests looking for older names
+    auto addHiddenAlias = [&](const char *name, std::function<void()> slot) {
+        auto *act = new QAction(this);
+        act->setObjectName(name);
+        connect(act, &QAction::triggered, this, slot);
+        addAction(act);
+    };
+    addHiddenAlias("tool.rectSelect", [this] { setMarqueeMode(MarqueeMode::Rectangle); setTool(Tool::Marquee); });
+    addHiddenAlias("tool.ellipseSelect", [this] { setMarqueeMode(MarqueeMode::Ellipse); setTool(Tool::Marquee); });
+    addHiddenAlias("tool.magicWand", [this] { setMagicMode(MagicMode::Wand); setTool(Tool::Magic); });
+    addHiddenAlias("tool.eraser", [this] { setBrushToolMode(BrushToolMode::Erase); setTool(Tool::Brush); });
+
     auto *paletteWidget = new QWidget(m_toolsBar);
     paletteWidget->setObjectName("palette.controls");
-    paletteWidget->setFixedSize(36, 42);
+    paletteWidget->setFixedSize(ParityMetrics::PaletteFrameWidth, ParityMetrics::PaletteFrameHeight);
 
     m_bgColorButton = new QPushButton(paletteWidget);
     m_bgColorButton->setObjectName("palette.background");
-    m_bgColorButton->setGeometry(10, 16, 22, 22);
-    m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+    m_bgColorButton->setGeometry(12, 12, ParityMetrics::SwatchSize, ParityMetrics::SwatchSize);
+    m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #ffffff; border-radius: %2px;").arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
     m_bgColorButton->setToolTip(tr("Background color (click to change)"));
     connect(m_bgColorButton, &QPushButton::clicked, this, &SessionWindow::pickBackgroundColor);
 
     m_brushColorButton = new QPushButton(paletteWidget);
     m_brushColorButton->setObjectName("brush.color");
-    m_brushColorButton->setGeometry(2, 4, 22, 22);
-    m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_brushColor.name()));
+    m_brushColorButton->setGeometry(0, 0, ParityMetrics::SwatchSize, ParityMetrics::SwatchSize);
+    m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #ffffff; border-radius: %2px;").arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
     m_brushColorButton->setToolTip(tr("Foreground color (click to change)"));
     connect(m_brushColorButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
 
     auto *btnSwap = new QToolButton(paletteWidget);
-    btnSwap->setGeometry(23, 0, 13, 13);
+    btnSwap->setGeometry(27, -3, ParityMetrics::SwapIconSize, ParityMetrics::SwapIconSize);
     btnSwap->setAutoRaise(true);
     btnSwap->setText(QString::fromUtf8("⇄"));
-    btnSwap->setStyleSheet("color: #a0a0a5; font-size: 10px; border: none; padding: 0px;");
+    btnSwap->setStyleSheet("color: #f5f5f7; font-size: 10px; font-weight: bold; border: none; padding: 0px;");
     btnSwap->setToolTip(tr("Swap colors (X)"));
     connect(btnSwap, &QToolButton::clicked, this, &SessionWindow::swapPaletteColors);
 
     auto *btnReset = new QToolButton(paletteWidget);
-    btnReset->setGeometry(0, 28, 12, 12);
+    btnReset->setGeometry(-1, 27, ParityMetrics::ResetIconSize, ParityMetrics::ResetIconSize);
     btnReset->setAutoRaise(true);
     btnReset->setText(QString::fromUtf8("⟲"));
-    btnReset->setStyleSheet("color: #a0a0a5; font-size: 9px; border: none; padding: 0px;");
+    btnReset->setStyleSheet("color: #f5f5f7; font-size: 9px; font-weight: bold; border: none; padding: 0px;");
     btnReset->setToolTip(tr("Default black/white (D)"));
     connect(btnReset, &QToolButton::clicked, this, &SessionWindow::resetPaletteColors);
 
     m_toolsBar->addWidget(paletteWidget);
 
-    // Drive the Swift editor core through the C ABI: create a canvas, paint a red
-    // stroke, render, and hold the composited RGBA as a QImage for paintEvent.
     m_sessionHandle = compositor_session_create();
-    cmd(m_sessionHandle, R"({"version":1,"action":"new","width":64,"height":64})");
-    cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})");
-    cmd(m_sessionHandle, R"({"version":1,"action":"brushBegin","x":8,"y":8,"parameters":{"diameter":16,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}})");
-    cmd(m_sessionHandle, R"({"version":1,"action":"brushMove","x":48,"y":48})");
-    cmd(m_sessionHandle, R"({"version":1,"action":"brushEnd"})");
+    const bool isSmokeTest = qApp && (
+        qApp->arguments().contains("--dialog-smoke") ||
+        qApp->arguments().contains("--brush-smoke") ||
+        qApp->arguments().contains("--layers-smoke") ||
+        qApp->arguments().contains("--io-smoke") ||
+        qEnvironmentVariableIsSet("COMPOSITOR_DEMO_CANVAS")
+    );
+    if (isSmokeTest) {
+        initDemoDocument();
+        setBrushColor(QColor(255, 0, 0));
+    } else {
+        m_hasDocument = false;
+    }
 
-    m_image = renderToQImage(m_sessionHandle, 64, 64);
+    actMove->setChecked(true);
+    setTool(Tool::Move);
 
     m_layersDock = new QDockWidget(tr("Layers"), this);
     auto *dock = m_layersDock;
@@ -705,7 +749,18 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     createMenus();
     refreshLayers();
     updateOptionsBar();
+    updateToolRail();
     updateStatusTelemetry();
+
+    registerSwiftUIActionListener([this](uint64_t handle, const QString &panel) {
+        if (handle != m_sessionHandle) return;
+        if (panel == "ToolRail") {
+            syncToolFromSession();
+        } else if (panel == "ToolHeaders") {
+            updateOptionsBar();
+            refreshImage();
+        }
+    });
 
     m_autosaveTimer = new QTimer(this);
     m_autosaveTimer->setObjectName("autosaveTimer");
@@ -718,25 +773,129 @@ SessionWindow::~SessionWindow() {
     if (m_sessionHandle != 0) compositor_session_close(m_sessionHandle);
 }
 
+void SessionWindow::setMarqueeMode(MarqueeMode mode) {
+    m_marqueeMode = mode;
+    if (m_toolActions.contains(Tool::Marquee)) {
+        m_toolActions[Tool::Marquee]->setIcon(makeToolIcon(Tool::Marquee, m_marqueeMode, m_brushToolMode));
+        m_toolActions[Tool::Marquee]->setToolTip(mode == MarqueeMode::Rectangle
+            ? tr("Rectangular Marquee (M)") : tr("Elliptical Marquee (M)"));
+    }
+    updateOptionsBar();
+}
+
+void SessionWindow::cycleMarqueeMode() {
+    setMarqueeMode(m_marqueeMode == MarqueeMode::Rectangle ? MarqueeMode::Ellipse : MarqueeMode::Rectangle);
+}
+
+void SessionWindow::setLassoMode(LassoMode mode) {
+    m_lassoMode = mode;
+    m_polygonalLasso = (mode == LassoMode::Polygonal);
+    if (m_toolActions.contains(Tool::Lasso)) {
+        m_toolActions[Tool::Lasso]->setToolTip(mode == LassoMode::Freehand
+            ? tr("Lasso (L)") : tr("Polygonal Lasso (L)"));
+    }
+    updateOptionsBar();
+}
+
+void SessionWindow::cycleLassoMode() {
+    setLassoMode(m_lassoMode == LassoMode::Freehand ? LassoMode::Polygonal : LassoMode::Freehand);
+}
+
+void SessionWindow::setMagicMode(MagicMode mode) {
+    m_magicMode = mode;
+    if (m_toolActions.contains(Tool::Magic)) {
+        m_toolActions[Tool::Magic]->setToolTip(mode == MagicMode::Wand
+            ? tr("Magic Wand (W)") : tr("Magic Object (W)"));
+    }
+    updateOptionsBar();
+}
+
+void SessionWindow::toggleMagicMode() {
+    setMagicMode(m_magicMode == MagicMode::Wand ? MagicMode::Object : MagicMode::Wand);
+}
+
+void SessionWindow::setBrushToolMode(BrushToolMode mode) {
+    m_brushToolMode = mode;
+    m_brushMode = (mode == BrushToolMode::Erase) ? "Erase" : "Paint";
+    if (m_toolActions.contains(Tool::Brush)) {
+        m_toolActions[Tool::Brush]->setIcon(makeToolIcon(Tool::Brush, m_marqueeMode, m_brushToolMode));
+        m_toolActions[Tool::Brush]->setToolTip(mode == BrushToolMode::Erase
+            ? tr("Eraser (E)") : tr("Brush (B) · Eraser (E)"));
+    }
+    updateOptionsBar();
+}
+
+void SessionWindow::setSmearMode(SmearMode mode) {
+    m_smearMode = mode;
+    updateOptionsBar();
+}
+
+void SessionWindow::setSpotHealingMode(SpotHealingMode mode) {
+    m_spotHealingMode = mode;
+    updateOptionsBar();
+}
+
+void SessionWindow::setShapeMode(ShapeMode mode) {
+    m_shapeMode = mode;
+    updateOptionsBar();
+}
+
+void SessionWindow::cycleShapeMode() {
+    switch (m_shapeMode) {
+    case ShapeMode::Rectangle: setShapeMode(ShapeMode::Ellipse); break;
+    case ShapeMode::Ellipse: setShapeMode(ShapeMode::Line); break;
+    case ShapeMode::Line: setShapeMode(ShapeMode::Rectangle); break;
+    }
+}
+
+void SessionWindow::applyCrop() {
+    if (!m_hasPendingCrop) return;
+    const double x = std::max(0.0, m_pendingCropRect.x());
+    const double y = std::max(0.0, m_pendingCropRect.y());
+    const int w = qRound(m_pendingCropRect.width());
+    const int h = qRound(m_pendingCropRect.height());
+    if (w > 0 && h > 0) {
+        const QString json = QString(R"({"version":1,"action":"cropCanvas","x":%1,"y":%2,"width":%3,"height":%4})")
+            .arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h);
+        const QByteArray bytes = json.toUtf8();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+            refreshImage();
+        }
+    }
+    m_hasPendingCrop = false;
+    m_pendingCropRect = QRectF();
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::cancelCrop() {
+    m_hasPendingCrop = false;
+    m_pendingCropRect = QRectF();
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
 void SessionWindow::swapPaletteColors() {
     std::swap(m_brushColor, m_backgroundColor);
     if (m_brushColorButton) {
-        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_brushColor.name()));
+        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
+            .arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
     }
     if (m_bgColorButton) {
-        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
+            .arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
     }
     updateOptionsBar();
 }
 
 void SessionWindow::resetPaletteColors() {
-    m_brushColor = QColor(0, 0, 0);
-    m_backgroundColor = QColor(255, 255, 255);
+    m_brushColor = ParityPalette::defaultForeground();
+    m_backgroundColor = ParityPalette::defaultBackground();
     if (m_brushColorButton) {
-        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_brushColor.name()));
+        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
+            .arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
     }
     if (m_bgColorButton) {
-        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
+            .arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
     }
     updateOptionsBar();
 }
@@ -744,7 +903,8 @@ void SessionWindow::resetPaletteColors() {
 void SessionWindow::setBackgroundColor(const QColor &color) {
     m_backgroundColor = color;
     if (m_bgColorButton) {
-        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #d0d0d5; border-radius: 4px;").arg(m_backgroundColor.name()));
+        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
+            .arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
     }
 }
 
@@ -754,26 +914,159 @@ void SessionWindow::pickBackgroundColor() {
 }
 
 void SessionWindow::keyPressEvent(QKeyEvent *event) {
+    // Responder check: editable text controls handle their own keys
+    QWidget *focus = QApplication::focusWidget();
+    if (focus && (qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus) || qobject_cast<QTextEdit *>(focus))) {
+        QMainWindow::keyPressEvent(event);
+        return;
+    }
+
     if (event->modifiers() == Qt::NoModifier) {
-        if (event->key() == Qt::Key_X) {
+        switch (event->key()) {
+        case Qt::Key_V:
+            setTool(Tool::Move);
+            event->accept();
+            return;
+        case Qt::Key_M:
+            if (m_tool == Tool::Marquee) cycleMarqueeMode();
+            else setTool(Tool::Marquee);
+            event->accept();
+            return;
+        case Qt::Key_L:
+            if (m_tool == Tool::Lasso) cycleLassoMode();
+            else setTool(Tool::Lasso);
+            event->accept();
+            return;
+        case Qt::Key_W:
+            setTool(Tool::Magic);
+            event->accept();
+            return;
+        case Qt::Key_Tab:
+            if (m_tool == Tool::Magic) {
+                toggleMagicMode();
+                event->accept();
+                return;
+            }
+            break;
+        case Qt::Key_C:
+            setTool(Tool::Crop);
+            event->accept();
+            return;
+        case Qt::Key_B:
+            setBrushToolMode(BrushToolMode::Paint);
+            setTool(Tool::Brush);
+            event->accept();
+            return;
+        case Qt::Key_E:
+            setBrushToolMode(BrushToolMode::Erase);
+            setTool(Tool::Brush);
+            event->accept();
+            return;
+        case Qt::Key_J:
+            setTool(Tool::SpotHealing);
+            event->accept();
+            return;
+        case Qt::Key_S:
+            setTool(Tool::CloneStamp);
+            event->accept();
+            return;
+        case Qt::Key_R:
+            setTool(Tool::Smear);
+            event->accept();
+            return;
+        case Qt::Key_G:
+            setTool(Tool::Gradient);
+            event->accept();
+            return;
+        case Qt::Key_U:
+            setTool(Tool::Shape);
+            event->accept();
+            return;
+        case Qt::Key_T:
+            setTool(Tool::Type);
+            event->accept();
+            return;
+        case Qt::Key_I:
+            setTool(Tool::Eyedropper);
+            event->accept();
+            return;
+        case Qt::Key_H:
+            setTool(Tool::Hand);
+            event->accept();
+            return;
+        case Qt::Key_Z:
+            setTool(Tool::Zoom);
+            event->accept();
+            return;
+        case Qt::Key_X:
             swapPaletteColors();
             event->accept();
             return;
-        } else if (event->key() == Qt::Key_D) {
+        case Qt::Key_D:
             resetPaletteColors();
             event->accept();
             return;
-        } else if (event->key() == Qt::Key_BracketLeft) {
+        case Qt::Key_BracketLeft:
             setBrushDiameter(std::max(1, m_brushDiameter - 5));
             event->accept();
             return;
-        } else if (event->key() == Qt::Key_BracketRight) {
+        case Qt::Key_BracketRight:
             setBrushDiameter(std::min(500, m_brushDiameter + 5));
+            event->accept();
+            return;
+        case Qt::Key_Space:
+            if (!event->isAutoRepeat() && !m_spaceHandActive && m_tool != Tool::Hand) {
+                m_preSpaceTool = m_tool;
+                m_spaceHandActive = true;
+                setTool(Tool::Hand);
+                event->accept();
+                return;
+            }
+            break;
+        case Qt::Key_Escape:
+            if (m_hasPendingCrop) {
+                cancelCrop();
+                event->accept();
+                return;
+            }
+            break;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            if (m_hasPendingCrop) {
+                applyCrop();
+                event->accept();
+                return;
+            }
+            break;
+        default:
+            break;
+        }
+    } else if (event->modifiers() == Qt::ShiftModifier) {
+        if (event->key() == Qt::Key_U) {
+            cycleShapeMode();
+            event->accept();
+            return;
+        } else if (event->key() == Qt::Key_BracketLeft) {
+            setBrushHardness(std::max(0, m_brushHardness - 10));
+            event->accept();
+            return;
+        } else if (event->key() == Qt::Key_BracketRight) {
+            setBrushHardness(std::min(100, m_brushHardness + 10));
             event->accept();
             return;
         }
     }
     QMainWindow::keyPressEvent(event);
+}
+
+void SessionWindow::keyReleaseEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Space && m_spaceHandActive && !event->isAutoRepeat()) {
+        m_spaceHandActive = false;
+        setTool(m_preSpaceTool);
+        event->accept();
+        return;
+    }
+    QMainWindow::keyReleaseEvent(event);
 }
 
 void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
@@ -870,6 +1163,7 @@ void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
 }
 
 void SessionWindow::createMenus() {
+    menuBar()->setNativeMenuBar(true);
     // --- File ---
     auto *file = menuBar()->addMenu(tr("&File"));
     file->addAction(tr("New Canvas…"), QKeySequence::New, this, [this] {
@@ -1523,8 +1817,12 @@ void SessionWindow::createMenus() {
     })->setObjectName("help.about");
 
     help->addAction(tr("Check for Updates…"), this, [this] {
-        QMessageBox::information(this, tr("Check for Updates"),
-            tr("You are running the latest version of Compositor for GNU/Linux."));
+        if (m_platform.updates) {
+            m_platform.updates->checkForUpdates(true);
+        } else {
+            QMessageBox::information(this, tr("Check for Updates"),
+                tr("You are running the latest version of Compositor for GNU/Linux."));
+        }
     })->setObjectName("help.updates");
 }
 
@@ -1566,7 +1864,8 @@ QRectF SessionWindow::canvasTargetRect() const {
     }
     const double displayW = m_image.width() * scale;
     const double displayH = m_image.height() * scale;
-    return QRectF((canvasSize.width() - displayW) / 2.0, (canvasSize.height() - displayH) / 2.0,
+    return QRectF((canvasSize.width() - displayW) / 2.0 + m_panOffset.x(),
+                  (canvasSize.height() - displayH) / 2.0 + m_panOffset.y(),
                   displayW, displayH);
 }
 
@@ -1625,6 +1924,7 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     p.drawRect(targetI.adjusted(0, 0, -1, -1));
 
     drawTransformControls(p);
+    drawCropOverlay(p);
 
     if (m_tool == Tool::Lasso && !m_lassoPoints.empty()) {
         QPolygonF outline;
@@ -1641,14 +1941,14 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         p.restore();
     }
 
-    // Interactive drag feedback (selection / crop marquee)
-    if (m_painting && (m_tool == Tool::RectSelect || m_tool == Tool::EllipseSelect || m_tool == Tool::Crop)) {
+    // Interactive drag feedback (selection marquee)
+    if (m_painting && m_tool == Tool::Marquee) {
         const QPointF startCanvas = documentToCanvasPoint(m_dragStart);
         const QPointF currentCanvas = documentToCanvasPoint(m_currentPoint);
         QRectF selRect(startCanvas, currentCanvas);
         selRect = selRect.normalized();
         p.setPen(QPen(Qt::white, 1, Qt::DashLine));
-        if (m_tool == Tool::EllipseSelect) {
+        if (m_marqueeMode == MarqueeMode::Ellipse) {
             p.drawEllipse(selRect);
         } else {
             p.drawRect(selRect);
@@ -2023,12 +2323,47 @@ void SessionWindow::healStroke(double x1, double y1, double x2, double y2) {
 }
 
 void SessionWindow::setTool(Tool tool) {
+    if (m_tool == Tool::Crop && tool != Tool::Crop) {
+        cancelCrop();
+    }
     m_tool = tool;
     if (m_toolActions.contains(tool) && !m_toolActions[tool]->isChecked()) {
         m_toolActions[tool]->setChecked(true);
     }
+    if (m_tool == Tool::Crop && !m_image.isNull() && !m_hasPendingCrop) {
+        m_pendingCropRect = QRectF(0, 0, m_image.width(), m_image.height());
+        m_hasPendingCrop = true;
+    }
+    if (m_sessionHandle != 0) {
+        const char *toolName = "move";
+        switch (tool) {
+        case Tool::Move: toolName = "move"; break;
+        case Tool::Marquee: toolName = "marquee"; break;
+        case Tool::Lasso: toolName = "lasso"; break;
+        case Tool::Magic: toolName = "wand"; break;
+        case Tool::Crop: toolName = "crop"; break;
+        case Tool::Brush: toolName = "brush"; break;
+        case Tool::SpotHealing: toolName = "spotHealing"; break;
+        case Tool::CloneStamp: toolName = "cloneStamp"; break;
+        case Tool::Smear: toolName = "blur"; break;
+        case Tool::Gradient: toolName = "gradient"; break;
+        case Tool::Shape: toolName = "shape"; break;
+        case Tool::Type: toolName = "type"; break;
+        case Tool::Eyedropper: toolName = "eyedropper"; break;
+        case Tool::Hand: toolName = "hand"; break;
+        case Tool::Zoom: toolName = "zoom"; break;
+        case Tool::Idle: toolName = "idle"; break;
+        }
+        QJsonObject cmdObj;
+        cmdObj["version"] = 1;
+        cmdObj["action"] = "selectTool";
+        cmdObj["kind"] = toolName;
+        sendCommand(cmdObj);
+    }
     updateOptionsBar();
+    updateToolRail();
     updateStatusTelemetry();
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 void SessionWindow::mousePressEvent(QMouseEvent *event) {
@@ -2073,11 +2408,29 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         m_painting = true;
         break;
     }
-    case Tool::RectSelect:
-    case Tool::EllipseSelect:
-    case Tool::Crop:
+    case Tool::Marquee:
         m_painting = true;
         break;
+    case Tool::Crop: {
+        m_painting = true;
+        if (!m_hasPendingCrop || m_pendingCropRect.isEmpty()) {
+            if (!m_image.isNull()) {
+                m_pendingCropRect = QRectF(0, 0, m_image.width(), m_image.height());
+                m_hasPendingCrop = true;
+            }
+        }
+        m_cropHandle = hitTestCropHandle(event->position());
+        if (m_cropHandle < 0) {
+            m_dragStart = point;
+            m_pendingCropRect = QRectF(point, point);
+            m_cropHandle = 4;
+            m_hasPendingCrop = true;
+        } else {
+            m_dragStart = point;
+        }
+        if (m_canvasWidget) m_canvasWidget->update();
+        break;
+    }
     case Tool::Lasso: {
         if (!m_polygonalLasso) {
             m_lassoPoints.clear();
@@ -2105,9 +2458,12 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         m_lastPolyClick = now;
         break;
     }
-    case Tool::MagicWand: {
-        const QString json = QString(R"({"version":1,"action":"magicWand","x":%1,"y":%2,"kind":"%3","parameters":{"tolerance":32,"contiguous":1,"sampleAllLayers":0}})")
-            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_selectionMode);
+    case Tool::Magic: {
+        const int contig = m_magicContiguous ? 1 : 0;
+        const int sampleAll = m_magicSampleAll ? 1 : 0;
+        const QString json = QString(R"({"version":1,"action":"magicWand","x":%1,"y":%2,"kind":"%3","parameters":{"tolerance":%4,"contiguous":%5,"sampleAllLayers":%6}})")
+            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_selectionMode)
+            .arg(m_magicTolerance).arg(contig).arg(sampleAll);
         const QByteArray bytes = json.toUtf8();
         if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
             refreshImage();
@@ -2131,10 +2487,13 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
             statusBar()->showMessage(tr("Option-click where Clone Stamp should copy from first."), 2000);
             return;
         }
+        const int aligned = m_cloneAligned ? 1 : 0;
+        const int sampleAll = m_cloneSampleAll ? 1 : 0;
         const QString json = QString(
-            R"({"version":1,"action":"brushBegin","kind":"Clone","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"aligned":1,"sampleAllLayers":0}})")
+            R"({"version":1,"action":"brushBegin","kind":"Clone","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"aligned":%6,"sampleAllLayers":%7}})")
             .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3);
+            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
+            .arg(aligned).arg(sampleAll);
         const QByteArray bytes = json.toUtf8();
         if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
             m_painting = true;
@@ -2143,10 +2502,14 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         break;
     }
     case Tool::SpotHealing: {
+        int healingMode = 0;
+        if (m_spotHealingMode == SpotHealingMode::CreateTexture) healingMode = 1;
+        else if (m_spotHealingMode == SpotHealingMode::ProximityMatch) healingMode = 2;
         const QString json = QString(
-            R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":0,"green":0,"blue":0,"healing":1,"healingMode":0}})")
+            R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":0,"green":0,"blue":0,"healing":1,"healingMode":%6}})")
             .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3);
+            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
+            .arg(healingMode);
         const QByteArray bytes = json.toUtf8();
         if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
             m_painting = true;
@@ -2154,10 +2517,9 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         }
         break;
     }
-    case Tool::Eraser:
     case Tool::Brush: {
         const bool warp = m_brushMode != "Paint";
-        const int erasing = (m_tool == Tool::Eraser) ? 1 : 0;
+        const int erasing = (m_brushToolMode == BrushToolMode::Erase) ? 1 : 0;
         const QString json = warp
             ? QString(R"({"version":1,"action":"warpBegin","kind":"%1","x":%2,"y":%3,"parameters":{"diameter":%4,"hardness":%5,"opacity":1}})")
                 .arg(m_brushMode).arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3)
@@ -2172,7 +2534,7 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         }
         break;
     }
-    case Tool::Blur: {
+    case Tool::Smear: {
         const QString json = QString(
             R"({"version":1,"action":"brushBegin","kind":"Blur","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5}})")
             .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
@@ -2202,11 +2564,14 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
     }
     case Tool::Hand: {
         m_painting = true;
+        m_panStart = event->position();
         break;
     }
     case Tool::Gradient:
     case Tool::Shape:
     case Tool::Type:
+    case Tool::Idle:
+    default:
         break;
     }
 }
@@ -2214,6 +2579,36 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
 void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
     if (!m_painting) return;
     const QPointF point = documentPoint(event->position());
+    if (m_tool == Tool::Hand || m_spaceHandActive) {
+        const QPointF delta = event->position() - m_panStart;
+        m_panStart = event->position();
+        m_panOffset += delta;
+        if (m_canvasWidget) m_canvasWidget->update();
+        return;
+    }
+    if (m_tool == Tool::Crop && m_hasPendingCrop) {
+        QRectF r = m_pendingCropRect;
+        const double dx = point.x() - m_dragStart.x();
+        const double dy = point.y() - m_dragStart.y();
+        m_dragStart = point;
+        if (m_cropHandle == 8) {
+            r.translate(dx, dy);
+        } else {
+            switch (m_cropHandle) {
+            case 0: r.setTopLeft(r.topLeft() + QPointF(dx, dy)); break;
+            case 1: r.setTop(r.top() + dy); break;
+            case 2: r.setTopRight(r.topRight() + QPointF(dx, dy)); break;
+            case 3: r.setRight(r.right() + dx); break;
+            case 4: r.setBottomRight(r.bottomRight() + QPointF(dx, dy)); break;
+            case 5: r.setBottom(r.bottom() + dy); break;
+            case 6: r.setBottomLeft(r.bottomLeft() + QPointF(dx, dy)); break;
+            case 7: r.setLeft(r.left() + dx); break;
+            }
+        }
+        m_pendingCropRect = r.normalized();
+        if (m_canvasWidget) m_canvasWidget->update();
+        return;
+    }
     if (m_tool == Tool::Move) {
         if (m_transformHandle >= 0) {
             m_transformDraft = draggedGeometry(point, event->modifiers());
@@ -2221,7 +2616,7 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
         }
     } else if (m_tool == Tool::Lasso) {
         m_lassoPoints.push_back(point);
-    } else if (m_tool == Tool::Brush || m_tool == Tool::Eraser || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing || m_tool == Tool::Blur) {
+    } else if (m_tool == Tool::Brush || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing || m_tool == Tool::Smear) {
         const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3})")
             .arg(m_brushMode == "Paint" ? "brushMove" : "warpMove")
             .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
@@ -2257,14 +2652,13 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         }
         break;
     }
-    case Tool::RectSelect:
-    case Tool::EllipseSelect: {
+    case Tool::Marquee: {
         const double x = std::min(m_dragStart.x(), point.x());
         const double y = std::min(m_dragStart.y(), point.y());
         const int w = qRound(std::abs(point.x() - m_dragStart.x()));
         const int h = qRound(std::abs(point.y() - m_dragStart.y()));
         if (w > 0 && h > 0) {
-            const char *action = (m_tool == Tool::RectSelect) ? "selectRectangle" : "selectEllipse";
+            const char *action = (m_marqueeMode == MarqueeMode::Rectangle) ? "selectRectangle" : "selectEllipse";
             const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3,"width":%4,"height":%5,"kind":"%6"})")
                 .arg(action).arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h).arg(m_selectionMode);
             const QByteArray bytes = json.toUtf8();
@@ -2275,18 +2669,8 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         break;
     }
     case Tool::Crop: {
-        const double x = std::max(0.0, std::min(m_dragStart.x(), point.x()));
-        const double y = std::max(0.0, std::min(m_dragStart.y(), point.y()));
-        const int w = qRound(std::abs(point.x() - m_dragStart.x()));
-        const int h = qRound(std::abs(point.y() - m_dragStart.y()));
-        if (w > 0 && h > 0) {
-            const QString json = QString(R"({"version":1,"action":"cropCanvas","x":%1,"y":%2,"width":%3,"height":%4})")
-                .arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h);
-            const QByteArray bytes = json.toUtf8();
-            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-                refreshImage();
-            }
-        }
+        m_cropHandle = -1;
+        if (m_canvasWidget) m_canvasWidget->update();
         break;
     }
     case Tool::Lasso: {
@@ -2294,9 +2678,8 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         commitLassoSelection();
         break;
     }
-    case Tool::Blur:
+    case Tool::Smear:
     case Tool::Brush:
-    case Tool::Eraser:
     case Tool::CloneStamp:
     case Tool::SpotHealing: {
         const char *action = m_brushMode == "Paint" ? "brushEnd" : "warpEnd";
@@ -2304,7 +2687,7 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
         break;
     }
-    case Tool::MagicWand:
+    case Tool::Magic:
     default:
         break;
     }
@@ -2312,12 +2695,12 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
 
 void SessionWindow::tabletEvent(QTabletEvent *event) {
     const QPointF point = documentPoint(event->position());
-    if (m_tool == Tool::Brush || m_tool == Tool::Eraser) {
+    if (m_tool == Tool::Brush) {
         switch (event->type()) {
         case QEvent::TabletPress:
             if (m_tabletHandler && m_tabletHandler->handleTabletPress(event, m_sessionHandle, point, m_brushDiameter,
                                                                       m_brushHardness, m_brushOpacity, m_brushColor,
-                                                                      m_tool == Tool::Eraser)) {
+                                                                      m_brushToolMode == BrushToolMode::Erase)) {
                 m_painting = true;
                 refreshImage();
                 event->accept();
@@ -2731,6 +3114,7 @@ void SessionWindow::clearAutosave() {
 }
 
 void SessionWindow::closeEvent(QCloseEvent *event) {
+    fprintf(stderr, ">>> SessionWindow::closeEvent called! spontaneous=%d\n", (int)event->spontaneous());
     clearAutosave();
     QMainWindow::closeEvent(event);
 }
@@ -2869,25 +3253,99 @@ SessionWindow::LayerGeometry SessionWindow::draggedGeometry(const QPointF &point
     return g;
 }
 
+int SessionWindow::hitTestCropHandle(const QPointF &canvasPoint) const {
+    if (!m_hasPendingCrop || m_pendingCropRect.isEmpty() || m_image.isNull()) return -1;
+    const double reach = 10.0;
+    const QRectF cRect(documentToCanvasPoint(m_pendingCropRect.topLeft()),
+                       documentToCanvasPoint(m_pendingCropRect.bottomRight()));
+    const QRectF norm = cRect.normalized();
+    const QPointF handles[8] = {
+        norm.topLeft(),
+        QPointF(norm.center().x(), norm.top()),
+        norm.topRight(),
+        QPointF(norm.right(), norm.center().y()),
+        norm.bottomRight(),
+        QPointF(norm.center().x(), norm.bottom()),
+        norm.bottomLeft(),
+        QPointF(norm.left(), norm.center().y())
+    };
+    for (int i = 0; i < 8; ++i) {
+        if (QLineF(canvasPoint, handles[i]).length() <= reach) return i;
+    }
+    if (norm.contains(canvasPoint)) return 8; // Body move
+    return -1;
+}
+
+void SessionWindow::drawCropOverlay(QPainter &p) const {
+    if (m_tool != Tool::Crop || !m_hasPendingCrop || m_pendingCropRect.isEmpty() || m_image.isNull()) return;
+    const QRectF target = canvasTargetRect();
+    const QRectF cRect(documentToCanvasPoint(m_pendingCropRect.topLeft()),
+                       documentToCanvasPoint(m_pendingCropRect.bottomRight()));
+    const QRectF norm = cRect.normalized().intersected(target);
+    if (norm.isEmpty()) return;
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    // Dim outer canvas area
+    QPainterPath dimPath;
+    dimPath.addRect(target);
+    dimPath.addRect(norm);
+    p.fillPath(dimPath, QColor(0, 0, 0, 140));
+
+    // Rule-of-thirds grid
+    p.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt::SolidLine));
+    const double w3 = norm.width() / 3.0;
+    const double h3 = norm.height() / 3.0;
+    p.drawLine(QPointF(norm.left() + w3, norm.top()), QPointF(norm.left() + w3, norm.bottom()));
+    p.drawLine(QPointF(norm.left() + w3 * 2, norm.top()), QPointF(norm.left() + w3 * 2, norm.bottom()));
+    p.drawLine(QPointF(norm.left(), norm.top() + h3), QPointF(norm.right(), norm.top() + h3));
+    p.drawLine(QPointF(norm.left(), norm.top() + h3 * 2), QPointF(norm.right(), norm.top() + h3 * 2));
+
+    // White border
+    p.setPen(QPen(Qt::white, 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(norm);
+
+    // Corner / edge handles
+    p.setPen(QPen(QColor(0x30, 0x30, 0x30), 1));
+    p.setBrush(Qt::white);
+    const QPointF handles[8] = {
+        norm.topLeft(),
+        QPointF(norm.center().x(), norm.top()),
+        norm.topRight(),
+        QPointF(norm.right(), norm.center().y()),
+        norm.bottomRight(),
+        QPointF(norm.center().x(), norm.bottom()),
+        norm.bottomLeft(),
+        QPointF(norm.left(), norm.center().y())
+    };
+    for (const QPointF &pt : handles) {
+        p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8));
+    }
+    p.restore();
+}
+
 void SessionWindow::applyDarkTheme() {
     const QString qss = QString::fromUtf8(R"(
         QMainWindow {
-            background-color: #1c1d1f;
-            color: #e5e5e7;
+            background-color: #1e1e1e;
+            color: #f5f5f7;
         }
         QWidget {
-            color: #e5e5e7;
+            color: #f5f5f7;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             font-size: 12px;
         }
         QMenuBar {
             background-color: #1e1e20;
-            color: #d0d0d5;
+            color: #f5f5f7;
             border-bottom: 1px solid #141416;
             padding: 2px 6px;
         }
         QMenuBar::item {
             background: transparent;
+            color: #f5f5f7;
             padding: 4px 8px;
             border-radius: 4px;
         }
@@ -2897,7 +3355,7 @@ void SessionWindow::applyDarkTheme() {
         }
         QMenu {
             background-color: #242427;
-            color: #e0e0e5;
+            color: #f5f5f7;
             border: 1px solid #38383c;
             border-radius: 6px;
             padding: 4px;
@@ -2905,6 +3363,7 @@ void SessionWindow::applyDarkTheme() {
         QMenu::item {
             padding: 5px 24px 5px 12px;
             border-radius: 4px;
+            color: #f5f5f7;
         }
         QMenu::item:selected {
             background-color: #007aff;
@@ -2924,29 +3383,50 @@ void SessionWindow::applyDarkTheme() {
         QToolBar#toolbar.tools {
             background-color: #1e1e20;
             border-right: 1px solid #141416;
-            spacing: 2px;
-            padding: 4px;
-            width: 44px;
+            spacing: 10px;
+            padding-top: 16px;
+            padding-bottom: 12px;
+            width: 56px;
+            min-width: 56px;
+            max-width: 56px;
         }
         QToolBar#toolbar.tools QToolButton {
             background: transparent;
-            color: #c0c0c5;
+            color: #f5f5f7;
             border: 1px solid transparent;
-            border-radius: 5px;
-            padding: 5px;
-            margin: 1px 2px;
-            min-width: 28px;
-            min-height: 28px;
-            font-size: 11px;
+            border-radius: 7px;
+            padding: 0px;
+            margin: 0px auto;
+            width: 36px;
+            height: 36px;
+            min-width: 36px;
+            min-height: 36px;
+            max-width: 36px;
+            max-height: 36px;
         }
         QToolBar#toolbar.tools QToolButton:hover {
-            background-color: #2c2c30;
+            background-color: rgba(255, 255, 255, 0.08);
             color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.10);
         }
         QToolBar#toolbar.tools QToolButton:checked {
-            background-color: #38393e;
+            background-color: rgba(255, 255, 255, 0.15);
             color: #ffffff;
-            border: 1px solid #4a4b52;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 7px;
+        }
+        QStatusBar {
+            background-color: #1e1e20;
+            color: #f5f5f7;
+            min-height: 30px;
+            max-height: 30px;
+            padding: 0px 18px;
+            border-top: 1px solid #141416;
+        }
+        QStatusBar QLabel {
+            font-size: 11px;
+            color: #e5e5e7;
+            padding: 0px;
         }
         QToolBar::separator {
             background-color: #2d2d30;
@@ -2955,12 +3435,12 @@ void SessionWindow::applyDarkTheme() {
         }
         QDockWidget {
             background-color: #1e1e20;
-            color: #e0e0e5;
+            color: #f5f5f7;
             border: none;
         }
         QDockWidget::title {
             background-color: #1e1e20;
-            color: #e0e0e5;
+            color: #ffffff;
             padding: 8px 12px;
             border-bottom: 1px solid #141416;
             font-weight: 600;
@@ -2973,7 +3453,7 @@ void SessionWindow::applyDarkTheme() {
         QTreeView {
             background-color: #1a1a1c;
             alternate-background-color: #202023;
-            color: #dcdce0;
+            color: #ffffff;
             border: none;
             outline: 0;
             selection-background-color: #3a3b3f;
@@ -2982,23 +3462,12 @@ void SessionWindow::applyDarkTheme() {
         }
         QHeaderView::section {
             background-color: #1e1e20;
-            color: #88888c;
+            color: #d0d0d5;
             padding: 4px 8px;
             border: none;
             border-bottom: 1px solid #28282c;
             font-size: 11px;
             font-weight: 600;
-        }
-        QStatusBar {
-            background-color: #1e1e20;
-            color: #88888c;
-            border-top: 1px solid #141416;
-            font-size: 11px;
-            min-height: 24px;
-        }
-        QStatusBar QLabel {
-            color: #88888c;
-            font-size: 11px;
         }
         QSlider::groove:horizontal {
             height: 4px;
@@ -3022,15 +3491,15 @@ void SessionWindow::applyDarkTheme() {
         }
         QComboBox {
             background-color: #28282b;
-            color: #e0e0e5;
-            border: 1px solid #38383c;
+            color: #ffffff;
+            border: 1px solid #444448;
             border-radius: 4px;
             padding: 3px 8px;
             min-height: 18px;
             font-size: 11px;
         }
         QComboBox:hover {
-            border-color: #4a4a50;
+            border-color: #5a5a60;
         }
         QComboBox::drop-down {
             subcontrol-origin: padding;
@@ -3040,14 +3509,14 @@ void SessionWindow::applyDarkTheme() {
         }
         QComboBox QAbstractItemView {
             background-color: #242427;
-            color: #e0e0e5;
+            color: #ffffff;
             border: 1px solid #38383c;
             selection-background-color: #007aff;
             selection-color: #ffffff;
             padding: 4px;
         }
         QCheckBox {
-            color: #d0d0d5;
+            color: #f5f5f7;
             font-size: 11px;
             spacing: 6px;
         }
@@ -3067,8 +3536,8 @@ void SessionWindow::applyDarkTheme() {
         }
         QSpinBox, QDoubleSpinBox, QLineEdit {
             background-color: #28282b;
-            color: #e0e0e5;
-            border: 1px solid #38383c;
+            color: #ffffff;
+            border: 1px solid #444448;
             border-radius: 4px;
             padding: 2px 4px;
             font-size: 11px;
@@ -3078,16 +3547,17 @@ void SessionWindow::applyDarkTheme() {
         }
         QPushButton {
             background-color: #2a2a2d;
-            color: #d0d0d5;
+            color: #ffffff;
             border: 1px solid #38383c;
             border-radius: 4px;
             padding: 4px 10px;
             font-size: 11px;
+            font-weight: 500;
         }
         QPushButton:hover {
             background-color: #35353a;
             color: #ffffff;
-            border-color: #48484f;
+            border-color: #55555c;
         }
         QPushButton:pressed {
             background-color: #1f1f22;
@@ -3191,13 +3661,13 @@ void SessionWindow::setupOptionsBar() {
     const QString pillActive = "background: #007aff; color: #ffffff; border: 1px solid #0062cc; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 500;";
     const QString pillInactive = "background: #28282b; color: #a0a0a5; border: 1px solid #38383c; border-radius: 4px; padding: 2px 8px; font-size: 11px;";
 
-    // Page 0: Move / Transform
+    // Page 0: Move (Tool::Move = 0)
     auto *pageMove = new QWidget(m_optionsStack);
     auto *layoutMove = new QHBoxLayout(pageMove);
     layoutMove->setContentsMargins(0, 0, 0, 0);
     layoutMove->setSpacing(8);
 
-    auto *lblMoveTitle = new QLabel(tr("Move / Transform"), pageMove);
+    auto *lblMoveTitle = new QLabel(tr("Move"), pageMove);
     lblMoveTitle->setStyleSheet(titleStyle);
     layoutMove->addWidget(lblMoveTitle);
 
@@ -3207,8 +3677,9 @@ void SessionWindow::setupOptionsBar() {
     m_autoSelectCheck = chkAutoSelect;
     layoutMove->addWidget(chkAutoSelect);
 
-    auto *chkIgnoreTrans = new QCheckBox(tr("Ignore Transparent Pixels"), pageMove);
-    layoutMove->addWidget(chkIgnoreTrans);
+    auto *comboAutoSelectType = new QComboBox(pageMove);
+    comboAutoSelectType->addItems({tr("Layer"), tr("Group")});
+    layoutMove->addWidget(comboAutoSelectType);
 
     auto *chkShowControls = new QCheckBox(tr("Show Controls"), pageMove);
     chkShowControls->setChecked(true);
@@ -3266,11 +3737,262 @@ void SessionWindow::setupOptionsBar() {
         spin->setKeyboardTracking(false);
         connect(spin, &QSpinBox::valueChanged, this, [this, field] { applyTransformFields(field); });
     }
-
     layoutMove->addStretch();
     m_optionsStack->addWidget(pageMove);
 
-    // Page 1: Brush / Eraser
+    // Page 1: Marquee (Tool::Marquee = 1)
+    auto *pageMarquee = new QWidget(m_optionsStack);
+    auto *layoutMarquee = new QHBoxLayout(pageMarquee);
+    layoutMarquee->setContentsMargins(0, 0, 0, 0);
+    layoutMarquee->setSpacing(8);
+
+    auto *lblMarqueeTitle = new QLabel(tr("Marquee"), pageMarquee);
+    lblMarqueeTitle->setStyleSheet(titleStyle);
+    layoutMarquee->addWidget(lblMarqueeTitle);
+
+    auto *marqueeGroup = new QWidget(pageMarquee);
+    marqueeGroup->setObjectName("select.marqueeGroup");
+    auto *mqLayout = new QHBoxLayout(marqueeGroup);
+    mqLayout->setContentsMargins(0, 0, 0, 0);
+    mqLayout->setSpacing(4);
+    auto *btnMqRect = new QPushButton(tr("Rectangle"), marqueeGroup);
+    btnMqRect->setStyleSheet(m_marqueeMode == MarqueeMode::Rectangle ? pillActive : pillInactive);
+    auto *btnMqEllipse = new QPushButton(tr("Ellipse"), marqueeGroup);
+    btnMqEllipse->setStyleSheet(m_marqueeMode == MarqueeMode::Ellipse ? pillActive : pillInactive);
+    connect(btnMqRect, &QPushButton::clicked, this, [this, btnMqRect, btnMqEllipse, pillActive, pillInactive] {
+        btnMqRect->setStyleSheet(pillActive); btnMqEllipse->setStyleSheet(pillInactive);
+        setMarqueeMode(MarqueeMode::Rectangle);
+    });
+    connect(btnMqEllipse, &QPushButton::clicked, this, [this, btnMqRect, btnMqEllipse, pillActive, pillInactive] {
+        btnMqRect->setStyleSheet(pillInactive); btnMqEllipse->setStyleSheet(pillActive);
+        setMarqueeMode(MarqueeMode::Ellipse);
+    });
+    mqLayout->addWidget(btnMqRect);
+    mqLayout->addWidget(btnMqEllipse);
+    layoutMarquee->addWidget(marqueeGroup);
+
+    auto makeCombineButtons = [&](QWidget *parent, QHBoxLayout *layout) {
+        auto *btnNew = new QPushButton(tr("New"), parent);
+        btnNew->setStyleSheet(pillActive);
+        auto *btnAdd = new QPushButton(tr("Add"), parent);
+        btnAdd->setStyleSheet(pillInactive);
+        auto *btnSub = new QPushButton(tr("Subtract"), parent);
+        btnSub->setStyleSheet(pillInactive);
+        connect(btnNew, &QPushButton::clicked, this, [this, btnNew, btnAdd, btnSub, pillActive, pillInactive] {
+            m_selectionMode = "New";
+            btnNew->setStyleSheet(pillActive); btnAdd->setStyleSheet(pillInactive); btnSub->setStyleSheet(pillInactive);
+        });
+        connect(btnAdd, &QPushButton::clicked, this, [this, btnNew, btnAdd, btnSub, pillActive, pillInactive] {
+            m_selectionMode = "Add";
+            btnNew->setStyleSheet(pillInactive); btnAdd->setStyleSheet(pillActive); btnSub->setStyleSheet(pillInactive);
+        });
+        connect(btnSub, &QPushButton::clicked, this, [this, btnNew, btnAdd, btnSub, pillActive, pillInactive] {
+            m_selectionMode = "Subtract";
+            btnNew->setStyleSheet(pillInactive); btnAdd->setStyleSheet(pillInactive); btnSub->setStyleSheet(pillActive);
+        });
+        layout->addWidget(btnNew);
+        layout->addWidget(btnAdd);
+        layout->addWidget(btnSub);
+    };
+    makeCombineButtons(pageMarquee, layoutMarquee);
+
+    auto *chkMqAA = new QCheckBox(tr("Anti-alias"), pageMarquee);
+    chkMqAA->setChecked(true);
+    layoutMarquee->addWidget(chkMqAA);
+
+    auto *btnExpand = new QPushButton(tr("Expand"), pageMarquee);
+    btnExpand->setStyleSheet(btnStyle);
+    layoutMarquee->addWidget(btnExpand);
+    auto *spinExpand = new QSpinBox(pageMarquee);
+    spinExpand->setRange(1, 250);
+    spinExpand->setValue(1);
+    spinExpand->setSuffix(tr(" px"));
+    spinExpand->setFixedWidth(54);
+    spinExpand->setStyleSheet(spinStyle);
+    layoutMarquee->addWidget(spinExpand);
+    connect(btnExpand, &QPushButton::clicked, this, [this, spinExpand] {
+        if (sendCommand({{"action", "expandSelection"}, {"parameters", QJsonObject{{"amount", spinExpand->value()}}}})) refreshImage();
+    });
+
+
+
+
+    auto *btnContract = new QPushButton(tr("Contract"), pageMarquee);
+    btnContract->setStyleSheet(btnStyle);
+    layoutMarquee->addWidget(btnContract);
+    auto *spinContract = new QSpinBox(pageMarquee);
+    spinContract->setRange(1, 250);
+    spinContract->setValue(1);
+    spinContract->setSuffix(tr(" px"));
+    spinContract->setFixedWidth(54);
+    spinContract->setStyleSheet(spinStyle);
+    layoutMarquee->addWidget(spinContract);
+    connect(btnContract, &QPushButton::clicked, this, [this, spinContract] {
+        if (sendCommand({{"action", "contractSelection"}, {"parameters", QJsonObject{{"amount", spinContract->value()}}}})) refreshImage();
+    });
+
+    auto *btnMqDeselect = new QPushButton(tr("Deselect"), pageMarquee);
+    btnMqDeselect->setStyleSheet(btnStyle);
+    connect(btnMqDeselect, &QPushButton::clicked, this, [this] {
+        cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})");
+        refreshImage();
+    });
+    layoutMarquee->addWidget(btnMqDeselect);
+
+
+    layoutMarquee->addStretch();
+    m_optionsStack->addWidget(pageMarquee);
+
+    // Page 2: Lasso (Tool::Lasso = 2)
+    auto *pageLasso = new QWidget(m_optionsStack);
+    auto *layoutLasso = new QHBoxLayout(pageLasso);
+    layoutLasso->setContentsMargins(0, 0, 0, 0);
+    layoutLasso->setSpacing(8);
+
+    auto *lblLassoTitle = new QLabel(tr("Lasso"), pageLasso);
+    lblLassoTitle->setStyleSheet(titleStyle);
+    layoutLasso->addWidget(lblLassoTitle);
+
+    auto *lassoGroup = new QWidget(pageLasso);
+    lassoGroup->setObjectName("select.lassoGroup");
+    auto *lsLayout = new QHBoxLayout(lassoGroup);
+    lsLayout->setContentsMargins(0, 0, 0, 0);
+    lsLayout->setSpacing(4);
+    auto *btnFreehand = new QPushButton(tr("Freehand"), lassoGroup);
+    btnFreehand->setObjectName("select.freehand");
+    btnFreehand->setStyleSheet(pillActive);
+    auto *btnPolygonal = new QPushButton(tr("Polygonal"), lassoGroup);
+    btnPolygonal->setObjectName("select.polygonal");
+    btnPolygonal->setStyleSheet(pillInactive);
+    connect(btnFreehand, &QPushButton::clicked, this, [this, btnFreehand, btnPolygonal, pillActive, pillInactive] {
+        m_polygonalLasso = false; m_polyActive = false; m_lassoPoints.clear();
+        btnFreehand->setStyleSheet(pillActive); btnPolygonal->setStyleSheet(pillInactive);
+        if (m_canvasWidget) m_canvasWidget->update();
+    });
+    connect(btnPolygonal, &QPushButton::clicked, this, [this, btnFreehand, btnPolygonal, pillActive, pillInactive] {
+        m_polygonalLasso = true; m_polyActive = false; m_lassoPoints.clear();
+        btnFreehand->setStyleSheet(pillInactive); btnPolygonal->setStyleSheet(pillActive);
+        if (m_canvasWidget) m_canvasWidget->update();
+    });
+    lsLayout->addWidget(btnFreehand);
+    lsLayout->addWidget(btnPolygonal);
+    layoutLasso->addWidget(lassoGroup);
+
+    makeCombineButtons(pageLasso, layoutLasso);
+
+    auto *chkLassoAA = new QCheckBox(tr("Anti-alias"), pageLasso);
+    chkLassoAA->setChecked(true);
+    layoutLasso->addWidget(chkLassoAA);
+
+    auto *btnLsDeselect = new QPushButton(tr("Deselect"), pageLasso);
+    btnLsDeselect->setStyleSheet(btnStyle);
+    connect(btnLsDeselect, &QPushButton::clicked, this, [this] {
+        cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})");
+        refreshImage();
+    });
+    layoutLasso->addWidget(btnLsDeselect);
+
+    layoutLasso->addStretch();
+    m_optionsStack->addWidget(pageLasso);
+
+    // Page 3: Magic (Tool::Magic = 3)
+    auto *pageMagic = new QWidget(m_optionsStack);
+    auto *layoutMagic = new QHBoxLayout(pageMagic);
+    layoutMagic->setContentsMargins(0, 0, 0, 0);
+    layoutMagic->setSpacing(8);
+
+    auto *lblMagicTitle = new QLabel(tr("Magic"), pageMagic);
+    lblMagicTitle->setStyleSheet(titleStyle);
+    layoutMagic->addWidget(lblMagicTitle);
+
+    auto *btnWand = new QPushButton(tr("Wand"), pageMagic);
+    btnWand->setStyleSheet(m_magicMode == MagicMode::Wand ? pillActive : pillInactive);
+    auto *btnObj = new QPushButton(tr("Object"), pageMagic);
+    btnObj->setStyleSheet(m_magicMode == MagicMode::Object ? pillActive : pillInactive);
+    connect(btnWand, &QPushButton::clicked, this, [this, btnWand, btnObj, pillActive, pillInactive] {
+        btnWand->setStyleSheet(pillActive); btnObj->setStyleSheet(pillInactive);
+        setMagicMode(MagicMode::Wand);
+    });
+    connect(btnObj, &QPushButton::clicked, this, [this, btnWand, btnObj, pillActive, pillInactive] {
+        btnWand->setStyleSheet(pillInactive); btnObj->setStyleSheet(pillActive);
+        setMagicMode(MagicMode::Object);
+    });
+    layoutMagic->addWidget(btnWand);
+    layoutMagic->addWidget(btnObj);
+
+    makeCombineButtons(pageMagic, layoutMagic);
+
+    auto *lblTol = new QLabel(tr("Tolerance"), pageMagic);
+    lblTol->setStyleSheet(labelStyle);
+    layoutMagic->addWidget(lblTol);
+    auto *spinTol = new QSpinBox(pageMagic);
+    spinTol->setRange(0, 255);
+    spinTol->setValue(m_magicTolerance);
+    spinTol->setFixedWidth(50);
+    spinTol->setStyleSheet(spinStyle);
+    connect(spinTol, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        m_magicTolerance = val;
+    });
+    layoutMagic->addWidget(spinTol);
+
+    auto *chkWandContig = new QCheckBox(tr("Contiguous"), pageMagic);
+    chkWandContig->setChecked(m_magicContiguous);
+    connect(chkWandContig, &QCheckBox::toggled, this, [this](bool val) {
+        m_magicContiguous = val;
+    });
+    layoutMagic->addWidget(chkWandContig);
+
+    auto *chkWandSample = new QCheckBox(tr("Sample All Layers"), pageMagic);
+    chkWandSample->setChecked(m_magicSampleAll);
+    connect(chkWandSample, &QCheckBox::toggled, this, [this](bool val) {
+        m_magicSampleAll = val;
+    });
+    layoutMagic->addWidget(chkWandSample);
+
+    auto *btnMgDeselect = new QPushButton(tr("Deselect"), pageMagic);
+    btnMgDeselect->setStyleSheet(btnStyle);
+    connect(btnMgDeselect, &QPushButton::clicked, this, [this] {
+        cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})");
+        refreshImage();
+    });
+    layoutMagic->addWidget(btnMgDeselect);
+
+    layoutMagic->addStretch();
+    m_optionsStack->addWidget(pageMagic);
+
+    // Page 4: Crop (Tool::Crop = 4)
+    auto *pageCrop = new QWidget(m_optionsStack);
+    auto *layoutCrop = new QHBoxLayout(pageCrop);
+    layoutCrop->setContentsMargins(0, 0, 0, 0);
+    layoutCrop->setSpacing(8);
+
+    auto *lblCropTitle = new QLabel(tr("Crop"), pageCrop);
+    lblCropTitle->setStyleSheet(titleStyle);
+    layoutCrop->addWidget(lblCropTitle);
+
+    auto *lblRatio = new QLabel(tr("Ratio"), pageCrop);
+    lblRatio->setStyleSheet(labelStyle);
+    layoutCrop->addWidget(lblRatio);
+    auto *comboRatio = new QComboBox(pageCrop);
+    comboRatio->addItems({tr("Free"), tr("Original"), tr("1:1"), tr("4:3"), tr("16:9")});
+    connect(comboRatio, &QComboBox::currentTextChanged, this, [this](const QString &ratio) {
+        m_cropRatio = ratio;
+    });
+    layoutCrop->addWidget(comboRatio);
+
+    auto *btnApplyCrop = new QPushButton(tr("Apply Crop"), pageCrop);
+    btnApplyCrop->setStyleSheet(btnStyle);
+    connect(btnApplyCrop, &QPushButton::clicked, this, &SessionWindow::applyCrop);
+    auto *btnCancelCrop = new QPushButton(tr("Cancel"), pageCrop);
+    btnCancelCrop->setStyleSheet(btnStyle);
+    connect(btnCancelCrop, &QPushButton::clicked, this, &SessionWindow::cancelCrop);
+    layoutCrop->addWidget(btnApplyCrop);
+    layoutCrop->addWidget(btnCancelCrop);
+
+    layoutCrop->addStretch();
+    m_optionsStack->addWidget(pageCrop);
+
+    // Page 5: Brush (Tool::Brush = 5)
     auto *pageBrush = new QWidget(m_optionsStack);
     auto *layoutBrush = new QHBoxLayout(pageBrush);
     layoutBrush->setContentsMargins(0, 0, 0, 0);
@@ -3282,29 +4004,16 @@ void SessionWindow::setupOptionsBar() {
     layoutBrush->addWidget(lblBrushTitle);
 
     auto *btnPaintMode = new QPushButton(tr("Paint"), pageBrush);
-    btnPaintMode->setCheckable(true);
-    btnPaintMode->setChecked(true);
     btnPaintMode->setStyleSheet(pillActive);
     auto *btnEraseMode = new QPushButton(tr("Erase"), pageBrush);
-    btnEraseMode->setCheckable(true);
-    btnEraseMode->setChecked(false);
     btnEraseMode->setStyleSheet(pillInactive);
-
     connect(btnPaintMode, &QPushButton::clicked, this, [this, btnPaintMode, btnEraseMode, pillActive, pillInactive] {
-        m_brushMode = "Paint";
-        btnPaintMode->setChecked(true);
-        btnEraseMode->setChecked(false);
-        btnPaintMode->setStyleSheet(pillActive);
-        btnEraseMode->setStyleSheet(pillInactive);
-        setTool(Tool::Brush);
+        btnPaintMode->setStyleSheet(pillActive); btnEraseMode->setStyleSheet(pillInactive);
+        setBrushToolMode(BrushToolMode::Paint);
     });
     connect(btnEraseMode, &QPushButton::clicked, this, [this, btnPaintMode, btnEraseMode, pillActive, pillInactive] {
-        m_brushMode = "Paint";
-        btnPaintMode->setChecked(false);
-        btnEraseMode->setChecked(true);
-        btnPaintMode->setStyleSheet(pillInactive);
-        btnEraseMode->setStyleSheet(pillActive);
-        setTool(Tool::Eraser);
+        btnPaintMode->setStyleSheet(pillInactive); btnEraseMode->setStyleSheet(pillActive);
+        setBrushToolMode(BrushToolMode::Erase);
     });
     layoutBrush->addWidget(btnPaintMode);
     layoutBrush->addWidget(btnEraseMode);
@@ -3408,166 +4117,54 @@ void SessionWindow::setupOptionsBar() {
     layoutBrush->addStretch();
     m_optionsStack->addWidget(pageBrush);
 
-    // Page 2: Selection
-    auto *pageSelect = new QWidget(m_optionsStack);
-    auto *layoutSelect = new QHBoxLayout(pageSelect);
-    layoutSelect->setContentsMargins(0, 0, 0, 0);
-    layoutSelect->setSpacing(8);
+    // Page 6: Spot Healing (Tool::SpotHealing = 6)
+    auto *pageSpot = new QWidget(m_optionsStack);
+    auto *layoutSpot = new QHBoxLayout(pageSpot);
+    layoutSpot->setContentsMargins(0, 0, 0, 0);
+    layoutSpot->setSpacing(8);
 
-    auto *lblSelectTitle = new QLabel(tr("Selection"), pageSelect);
-    lblSelectTitle->setObjectName("options.selectTitle");
-    lblSelectTitle->setStyleSheet(titleStyle);
-    layoutSelect->addWidget(lblSelectTitle);
+    auto *lblSpotTitle = new QLabel(tr("Spot Healing"), pageSpot);
+    lblSpotTitle->setStyleSheet(titleStyle);
+    layoutSpot->addWidget(lblSpotTitle);
 
-    auto *btnRect = new QPushButton(tr("Rectangle"), pageSelect);
-    btnRect->setStyleSheet(pillActive);
-    auto *btnEllipse = new QPushButton(tr("Ellipse"), pageSelect);
-    btnEllipse->setStyleSheet(pillInactive);
-    connect(btnRect, &QPushButton::clicked, this, [this, btnRect, btnEllipse, pillActive, pillInactive] {
-        btnRect->setStyleSheet(pillActive);
-        btnEllipse->setStyleSheet(pillInactive);
-        setTool(Tool::RectSelect);
+    auto *lblSpotMode = new QLabel(tr("Mode:"), pageSpot);
+    lblSpotMode->setStyleSheet(labelStyle);
+    layoutSpot->addWidget(lblSpotMode);
+    auto *comboSpotMode = new QComboBox(pageSpot);
+    comboSpotMode->addItems({tr("Content-Aware"), tr("Create Texture"), tr("Proximity Match")});
+    connect(comboSpotMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        if (idx == 0) setSpotHealingMode(SpotHealingMode::ContentAware);
+        else if (idx == 1) setSpotHealingMode(SpotHealingMode::CreateTexture);
+        else setSpotHealingMode(SpotHealingMode::ProximityMatch);
     });
-    connect(btnEllipse, &QPushButton::clicked, this, [this, btnRect, btnEllipse, pillActive, pillInactive] {
-        btnRect->setStyleSheet(pillInactive);
-        btnEllipse->setStyleSheet(pillActive);
-        setTool(Tool::EllipseSelect);
-    });
-    auto *marqueeGroup = new QWidget(pageSelect);
-    marqueeGroup->setObjectName("select.marqueeGroup");
-    auto *marqueeLayout = new QHBoxLayout(marqueeGroup);
-    marqueeLayout->setContentsMargins(0, 0, 0, 0);
-    marqueeLayout->setSpacing(8);
-    marqueeLayout->addWidget(btnRect);
-    marqueeLayout->addWidget(btnEllipse);
-    layoutSelect->addWidget(marqueeGroup);
+    layoutSpot->addWidget(comboSpotMode);
 
-    auto *lassoGroup = new QWidget(pageSelect);
-    lassoGroup->setObjectName("select.lassoGroup");
-    auto *lassoLayout = new QHBoxLayout(lassoGroup);
-    lassoLayout->setContentsMargins(0, 0, 0, 0);
-    lassoLayout->setSpacing(8);
-    auto *btnFreehand = new QPushButton(tr("Freehand"), lassoGroup);
-    btnFreehand->setObjectName("select.freehand");
-    btnFreehand->setStyleSheet(pillActive);
-    auto *btnPolygonal = new QPushButton(tr("Polygonal"), lassoGroup);
-    btnPolygonal->setObjectName("select.polygonal");
-    btnPolygonal->setStyleSheet(pillInactive);
-    connect(btnFreehand, &QPushButton::clicked, this, [this, btnFreehand, btnPolygonal, pillActive, pillInactive] {
-        m_polygonalLasso = false; m_polyActive = false; m_lassoPoints.clear();
-        btnFreehand->setStyleSheet(pillActive); btnPolygonal->setStyleSheet(pillInactive);
-        if (m_canvasWidget) m_canvasWidget->update();
+    auto *lblSpotSize = new QLabel(tr("Size"), pageSpot);
+    lblSpotSize->setStyleSheet(labelStyle);
+    layoutSpot->addWidget(lblSpotSize);
+    auto *sliderSpotSize = new QSlider(Qt::Horizontal, pageSpot);
+    sliderSpotSize->setRange(1, 256);
+    sliderSpotSize->setValue(m_brushDiameter);
+    sliderSpotSize->setFixedWidth(90);
+    layoutSpot->addWidget(sliderSpotSize);
+    auto *spinSpotSize = new QSpinBox(pageSpot);
+    spinSpotSize->setRange(1, 2000);
+    spinSpotSize->setValue(m_brushDiameter);
+    spinSpotSize->setSuffix(tr(" px"));
+    spinSpotSize->setFixedWidth(60);
+    spinSpotSize->setStyleSheet(spinStyle);
+    layoutSpot->addWidget(spinSpotSize);
+    connect(sliderSpotSize, &QSlider::valueChanged, this, [this, spinSpotSize](int val) {
+        spinSpotSize->setValue(val); setBrushDiameter(val);
     });
-    connect(btnPolygonal, &QPushButton::clicked, this, [this, btnFreehand, btnPolygonal, pillActive, pillInactive] {
-        m_polygonalLasso = true; m_polyActive = false; m_lassoPoints.clear();
-        btnFreehand->setStyleSheet(pillInactive); btnPolygonal->setStyleSheet(pillActive);
-        if (m_canvasWidget) m_canvasWidget->update();
-    });
-    lassoLayout->addWidget(btnFreehand);
-    lassoLayout->addWidget(btnPolygonal);
-    layoutSelect->addWidget(lassoGroup);
-    lassoGroup->hide();
-
-    auto *btnNewSel = new QPushButton(tr("New"), pageSelect);
-    btnNewSel->setStyleSheet(pillActive);
-    auto *btnAddSel = new QPushButton(tr("Add"), pageSelect);
-    btnAddSel->setStyleSheet(pillInactive);
-    auto *btnSubSel = new QPushButton(tr("Subtract"), pageSelect);
-    btnSubSel->setStyleSheet(pillInactive);
-    connect(btnNewSel, &QPushButton::clicked, this, [this, btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
-        m_selectionMode = "New";
-        btnNewSel->setStyleSheet(pillActive); btnAddSel->setStyleSheet(pillInactive); btnSubSel->setStyleSheet(pillInactive);
-    });
-    connect(btnAddSel, &QPushButton::clicked, this, [this, btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
-        m_selectionMode = "Add";
-        btnNewSel->setStyleSheet(pillInactive); btnAddSel->setStyleSheet(pillActive); btnSubSel->setStyleSheet(pillInactive);
-    });
-    connect(btnSubSel, &QPushButton::clicked, this, [this, btnNewSel, btnAddSel, btnSubSel, pillActive, pillInactive] {
-        m_selectionMode = "Subtract";
-        btnNewSel->setStyleSheet(pillInactive); btnAddSel->setStyleSheet(pillInactive); btnSubSel->setStyleSheet(pillActive);
-    });
-    layoutSelect->addWidget(btnNewSel);
-    layoutSelect->addWidget(btnAddSel);
-    layoutSelect->addWidget(btnSubSel);
-
-    auto *chkAntiAlias = new QCheckBox(tr("Anti-alias"), pageSelect);
-    chkAntiAlias->setChecked(true);
-    layoutSelect->addWidget(chkAntiAlias);
-
-    auto *btnExpand = new QPushButton(tr("Expand"), pageSelect);
-    btnExpand->setStyleSheet(btnStyle);
-    layoutSelect->addWidget(btnExpand);
-    auto *spinExpand = new QSpinBox(pageSelect);
-    spinExpand->setRange(1, 250);
-    spinExpand->setValue(1);
-    spinExpand->setSuffix(tr(" px"));
-    spinExpand->setFixedWidth(54);
-    spinExpand->setStyleSheet(spinStyle);
-    layoutSelect->addWidget(spinExpand);
-    connect(btnExpand, &QPushButton::clicked, this, [this, spinExpand] {
-        if (sendCommand({{"action", "expandSelection"}, {"parameters", QJsonObject{{"amount", spinExpand->value()}}}})) refreshImage();
+    connect(spinSpotSize, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, sliderSpotSize](int val) {
+        sliderSpotSize->setValue(std::min(val, 256)); setBrushDiameter(val);
     });
 
-    auto *btnContract = new QPushButton(tr("Contract"), pageSelect);
-    btnContract->setStyleSheet(btnStyle);
-    layoutSelect->addWidget(btnContract);
-    auto *spinContract = new QSpinBox(pageSelect);
-    spinContract->setRange(1, 250);
-    spinContract->setValue(1);
-    spinContract->setSuffix(tr(" px"));
-    spinContract->setFixedWidth(54);
-    spinContract->setStyleSheet(spinStyle);
-    layoutSelect->addWidget(spinContract);
-    connect(btnContract, &QPushButton::clicked, this, [this, spinContract] {
-        if (sendCommand({{"action", "contractSelection"}, {"parameters", QJsonObject{{"amount", spinContract->value()}}}})) refreshImage();
-    });
+    layoutSpot->addStretch();
+    m_optionsStack->addWidget(pageSpot);
 
-    auto *btnDeselect = new QPushButton(tr("Deselect"), pageSelect);
-    btnDeselect->setStyleSheet(btnStyle);
-    connect(btnDeselect, &QPushButton::clicked, this, [this] {
-        cmd(m_sessionHandle, R"({"version":1,"action":"deselect"})");
-        refreshImage();
-    });
-    layoutSelect->addWidget(btnDeselect);
-
-    layoutSelect->addStretch();
-    m_optionsStack->addWidget(pageSelect);
-
-    // Page 3: Magic Wand
-    auto *pageWand = new QWidget(m_optionsStack);
-    auto *layoutWand = new QHBoxLayout(pageWand);
-    layoutWand->setContentsMargins(0, 0, 0, 0);
-    layoutWand->setSpacing(8);
-
-    auto *lblWandTitle = new QLabel(tr("Magic Wand"), pageWand);
-    lblWandTitle->setStyleSheet(titleStyle);
-    layoutWand->addWidget(lblWandTitle);
-
-    auto *lblTol = new QLabel(tr("Tolerance"), pageWand);
-    lblTol->setStyleSheet(labelStyle);
-    layoutWand->addWidget(lblTol);
-    auto *spinTol = new QSpinBox(pageWand);
-    spinTol->setRange(0, 255);
-    spinTol->setValue(32);
-    spinTol->setFixedWidth(50);
-    spinTol->setStyleSheet(spinStyle);
-    layoutWand->addWidget(spinTol);
-
-    auto *chkWandContig = new QCheckBox(tr("Contiguous"), pageWand);
-    chkWandContig->setChecked(true);
-    layoutWand->addWidget(chkWandContig);
-
-    auto *chkWandAA = new QCheckBox(tr("Anti-alias"), pageWand);
-    chkWandAA->setChecked(true);
-    layoutWand->addWidget(chkWandAA);
-
-    auto *chkWandSample = new QCheckBox(tr("Sample All Layers"), pageWand);
-    layoutWand->addWidget(chkWandSample);
-
-    layoutWand->addStretch();
-    m_optionsStack->addWidget(pageWand);
-
-    // Page 4: Clone Stamp / Spot Healing
+    // Page 7: Clone Stamp (Tool::CloneStamp = 7)
     auto *pageClone = new QWidget(m_optionsStack);
     auto *layoutClone = new QHBoxLayout(pageClone);
     layoutClone->setContentsMargins(0, 0, 0, 0);
@@ -3579,7 +4176,8 @@ void SessionWindow::setupOptionsBar() {
     layoutClone->addWidget(lblCloneTitle);
 
     auto *chkAligned = new QCheckBox(tr("Aligned"), pageClone);
-    chkAligned->setChecked(true);
+    chkAligned->setChecked(m_cloneAligned);
+    connect(chkAligned, &QCheckBox::toggled, this, [this](bool val) { m_cloneAligned = val; });
     layoutClone->addWidget(chkAligned);
 
     auto *lblSample = new QLabel(tr("Sample:"), pageClone);
@@ -3587,90 +4185,393 @@ void SessionWindow::setupOptionsBar() {
     layoutClone->addWidget(lblSample);
     auto *comboSample = new QComboBox(pageClone);
     comboSample->addItems({tr("Current Layer"), tr("All Layers")});
+    connect(comboSample, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        m_cloneSampleAll = (idx == 1);
+    });
     layoutClone->addWidget(comboSample);
 
     layoutClone->addStretch();
     m_optionsStack->addWidget(pageClone);
 
-    // Page 5: Crop
-    auto *pageCrop = new QWidget(m_optionsStack);
-    auto *layoutCrop = new QHBoxLayout(pageCrop);
-    layoutCrop->setContentsMargins(0, 0, 0, 0);
-    layoutCrop->setSpacing(8);
+    // Page 8: Smear (Tool::Smear = 8)
+    auto *pageSmear = new QWidget(m_optionsStack);
+    auto *layoutSmear = new QHBoxLayout(pageSmear);
+    layoutSmear->setContentsMargins(0, 0, 0, 0);
+    layoutSmear->setSpacing(8);
 
-    auto *lblCropTitle = new QLabel(tr("Crop"), pageCrop);
-    lblCropTitle->setStyleSheet(titleStyle);
-    layoutCrop->addWidget(lblCropTitle);
+    auto *lblSmearTitle = new QLabel(tr("Smear"), pageSmear);
+    lblSmearTitle->setStyleSheet(titleStyle);
+    layoutSmear->addWidget(lblSmearTitle);
 
-    auto *lblRatio = new QLabel(tr("Ratio"), pageCrop);
-    lblRatio->setStyleSheet(labelStyle);
-    layoutCrop->addWidget(lblRatio);
-    auto *comboRatio = new QComboBox(pageCrop);
-    comboRatio->addItems({tr("Free"), tr("Original"), tr("1:1"), tr("4:3"), tr("16:9")});
-    layoutCrop->addWidget(comboRatio);
+    auto *lblSmearMode = new QLabel(tr("Mode:"), pageSmear);
+    lblSmearMode->setStyleSheet(labelStyle);
+    layoutSmear->addWidget(lblSmearMode);
+    auto *comboSmearMode = new QComboBox(pageSmear);
+    comboSmearMode->addItems({tr("Liquify"), tr("Blur"), tr("Smudge")});
+    connect(comboSmearMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        if (idx == 0) setSmearMode(SmearMode::Liquify);
+        else if (idx == 1) setSmearMode(SmearMode::Blur);
+        else setSmearMode(SmearMode::Smudge);
+    });
+    layoutSmear->addWidget(comboSmearMode);
 
-    auto *btnApplyCrop = new QPushButton(tr("Apply Crop"), pageCrop);
-    btnApplyCrop->setStyleSheet(btnStyle);
-    auto *btnCancelCrop = new QPushButton(tr("Cancel"), pageCrop);
-    btnCancelCrop->setStyleSheet(btnStyle);
-    layoutCrop->addWidget(btnApplyCrop);
-    layoutCrop->addWidget(btnCancelCrop);
+    auto *lblSmearSize = new QLabel(tr("Size"), pageSmear);
+    lblSmearSize->setStyleSheet(labelStyle);
+    layoutSmear->addWidget(lblSmearSize);
+    auto *sliderSmearSize = new QSlider(Qt::Horizontal, pageSmear);
+    sliderSmearSize->setRange(1, 256);
+    sliderSmearSize->setValue(m_brushDiameter);
+    sliderSmearSize->setFixedWidth(90);
+    layoutSmear->addWidget(sliderSmearSize);
+    connect(sliderSmearSize, &QSlider::valueChanged, this, [this](int val) { setBrushDiameter(val); });
 
-    layoutCrop->addStretch();
-    m_optionsStack->addWidget(pageCrop);
+    layoutSmear->addStretch();
+    m_optionsStack->addWidget(pageSmear);
 
-    // Page 6: Default / Idle
+    // Page 9: Gradient (Tool::Gradient = 9)
+    auto *pageGradient = new QWidget(m_optionsStack);
+    auto *layoutGradient = new QHBoxLayout(pageGradient);
+    layoutGradient->setContentsMargins(0, 0, 0, 0);
+    layoutGradient->setSpacing(8);
+
+    auto *lblGradTitle = new QLabel(tr("Gradient"), pageGradient);
+    lblGradTitle->setStyleSheet(titleStyle);
+    layoutGradient->addWidget(lblGradTitle);
+
+    auto *comboGradType = new QComboBox(pageGradient);
+    comboGradType->addItems({tr("Linear"), tr("Radial"), tr("Angle"), tr("Reflected"), tr("Diamond")});
+    connect(comboGradType, &QComboBox::currentTextChanged, this, [this](const QString &t) { m_gradientType = t; });
+    layoutGradient->addWidget(comboGradType);
+
+    auto *lblGradBlend = new QLabel(tr("Blend:"), pageGradient);
+    lblGradBlend->setStyleSheet(labelStyle);
+    layoutGradient->addWidget(lblGradBlend);
+    auto *comboGradBlend = new QComboBox(pageGradient);
+    comboGradBlend->addItems(blendModes());
+    layoutGradient->addWidget(comboGradBlend);
+
+    auto *lblGradOpac = new QLabel(tr("Opacity:"), pageGradient);
+    lblGradOpac->setStyleSheet(labelStyle);
+    layoutGradient->addWidget(lblGradOpac);
+    auto *spinGradOpac = new QSpinBox(pageGradient);
+    spinGradOpac->setRange(0, 100);
+    spinGradOpac->setValue(m_gradientOpacity);
+    spinGradOpac->setSuffix(tr(" %"));
+    spinGradOpac->setFixedWidth(54);
+    spinGradOpac->setStyleSheet(spinStyle);
+    connect(spinGradOpac, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) { m_gradientOpacity = val; });
+    layoutGradient->addWidget(spinGradOpac);
+
+    auto *chkGradReverse = new QCheckBox(tr("Reverse"), pageGradient);
+    chkGradReverse->setChecked(m_gradientReverse);
+    connect(chkGradReverse, &QCheckBox::toggled, this, [this](bool val) { m_gradientReverse = val; });
+    layoutGradient->addWidget(chkGradReverse);
+
+    layoutGradient->addStretch();
+    m_optionsStack->addWidget(pageGradient);
+
+    // Page 10: Shape (Tool::Shape = 10)
+    auto *pageShape = new QWidget(m_optionsStack);
+    auto *layoutShape = new QHBoxLayout(pageShape);
+    layoutShape->setContentsMargins(0, 0, 0, 0);
+    layoutShape->setSpacing(8);
+
+    auto *lblShapeTitle = new QLabel(tr("Shape"), pageShape);
+    lblShapeTitle->setStyleSheet(titleStyle);
+    layoutShape->addWidget(lblShapeTitle);
+
+    auto *comboShapeMode = new QComboBox(pageShape);
+    comboShapeMode->addItems({tr("Rectangle"), tr("Ellipse"), tr("Line")});
+    connect(comboShapeMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        if (idx == 0) setShapeMode(ShapeMode::Rectangle);
+        else if (idx == 1) setShapeMode(ShapeMode::Ellipse);
+        else setShapeMode(ShapeMode::Line);
+    });
+    layoutShape->addWidget(comboShapeMode);
+
+    auto *lblStrokeW = new QLabel(tr("Stroke:"), pageShape);
+    lblStrokeW->setStyleSheet(labelStyle);
+    layoutShape->addWidget(lblStrokeW);
+    auto *spinStrokeW = new QSpinBox(pageShape);
+    spinStrokeW->setRange(0, 100);
+    spinStrokeW->setValue(m_shapeStrokeWidth);
+    spinStrokeW->setSuffix(tr(" px"));
+    spinStrokeW->setFixedWidth(64);
+    spinStrokeW->setStyleSheet(spinStyle);
+    connect(spinStrokeW, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) { m_shapeStrokeWidth = val; });
+    layoutShape->addWidget(spinStrokeW);
+
+    auto *lblRadius = new QLabel(tr("Radius:"), pageShape);
+    lblRadius->setStyleSheet(labelStyle);
+    layoutShape->addWidget(lblRadius);
+    auto *spinRadius = new QSpinBox(pageShape);
+    spinRadius->setRange(0, 100);
+    spinRadius->setValue(m_shapeRadius);
+    spinRadius->setSuffix(tr(" px"));
+    spinRadius->setFixedWidth(54);
+    spinRadius->setStyleSheet(spinStyle);
+    connect(spinRadius, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) { m_shapeRadius = val; });
+    layoutShape->addWidget(spinRadius);
+
+    layoutShape->addStretch();
+    m_optionsStack->addWidget(pageShape);
+
+    // Page 11: Type (Tool::Type = 11)
+    auto *pageType = new QWidget(m_optionsStack);
+    auto *layoutType = new QHBoxLayout(pageType);
+    layoutType->setContentsMargins(0, 0, 0, 0);
+    layoutType->setSpacing(8);
+
+    auto *lblTypeTitle = new QLabel(tr("Type"), pageType);
+    lblTypeTitle->setStyleSheet(titleStyle);
+    layoutType->addWidget(lblTypeTitle);
+
+    auto *comboFont = new QComboBox(pageType);
+    comboFont->addItems({tr("System Default"), tr("Sans Serif"), tr("Serif"), tr("Monospace")});
+    layoutType->addWidget(comboFont);
+
+    auto *lblTypeSize = new QLabel(tr("Size:"), pageType);
+    lblTypeSize->setStyleSheet(labelStyle);
+    layoutType->addWidget(lblTypeSize);
+    auto *spinTypeSize = new QSpinBox(pageType);
+    spinTypeSize->setRange(6, 288);
+    spinTypeSize->setValue(m_typeFontSize);
+    spinTypeSize->setSuffix(tr(" pt"));
+    spinTypeSize->setFixedWidth(58);
+    spinTypeSize->setStyleSheet(spinStyle);
+    connect(spinTypeSize, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) { m_typeFontSize = val; });
+    layoutType->addWidget(spinTypeSize);
+
+    auto *btnAlignLeft = new QPushButton(tr("Left"), pageType);
+    btnAlignLeft->setStyleSheet(pillActive);
+    auto *btnAlignCenter = new QPushButton(tr("Center"), pageType);
+    btnAlignCenter->setStyleSheet(pillInactive);
+    auto *btnAlignRight = new QPushButton(tr("Right"), pageType);
+    btnAlignRight->setStyleSheet(pillInactive);
+    connect(btnAlignLeft, &QPushButton::clicked, this, [this, btnAlignLeft, btnAlignCenter, btnAlignRight, pillActive, pillInactive] {
+        m_typeAlignment = 0;
+        btnAlignLeft->setStyleSheet(pillActive); btnAlignCenter->setStyleSheet(pillInactive); btnAlignRight->setStyleSheet(pillInactive);
+    });
+    connect(btnAlignCenter, &QPushButton::clicked, this, [this, btnAlignLeft, btnAlignCenter, btnAlignRight, pillActive, pillInactive] {
+        m_typeAlignment = 1;
+        btnAlignLeft->setStyleSheet(pillInactive); btnAlignCenter->setStyleSheet(pillActive); btnAlignRight->setStyleSheet(pillInactive);
+    });
+    connect(btnAlignRight, &QPushButton::clicked, this, [this, btnAlignLeft, btnAlignCenter, btnAlignRight, pillActive, pillInactive] {
+        m_typeAlignment = 2;
+        btnAlignLeft->setStyleSheet(pillInactive); btnAlignCenter->setStyleSheet(pillInactive); btnAlignRight->setStyleSheet(pillActive);
+    });
+    layoutType->addWidget(btnAlignLeft);
+    layoutType->addWidget(btnAlignCenter);
+    layoutType->addWidget(btnAlignRight);
+
+    layoutType->addStretch();
+    m_optionsStack->addWidget(pageType);
+
+    // Page 12: Eyedropper (Tool::Eyedropper = 12)
+    auto *pageEye = new QWidget(m_optionsStack);
+    auto *layoutEye = new QHBoxLayout(pageEye);
+    layoutEye->setContentsMargins(0, 0, 0, 0);
+    layoutEye->setSpacing(8);
+
+    auto *lblEyeTitle = new QLabel(tr("Eyedropper"), pageEye);
+    lblEyeTitle->setStyleSheet(titleStyle);
+    layoutEye->addWidget(lblEyeTitle);
+
+    auto *lblSampleSz = new QLabel(tr("Sample Size:"), pageEye);
+    lblSampleSz->setStyleSheet(labelStyle);
+    layoutEye->addWidget(lblSampleSz);
+    auto *comboEyeSz = new QComboBox(pageEye);
+    comboEyeSz->addItems({tr("Point Sample"), tr("3 by 3 Average"), tr("5 by 5 Average")});
+    connect(comboEyeSz, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        m_eyedropperSampleSize = idx;
+    });
+    layoutEye->addWidget(comboEyeSz);
+
+    auto *lblEyeSample = new QLabel(tr("Sample:"), pageEye);
+    lblEyeSample->setStyleSheet(labelStyle);
+    layoutEye->addWidget(lblEyeSample);
+    auto *comboEyeSample = new QComboBox(pageEye);
+    comboEyeSample->addItems({tr("All Layers"), tr("Current Layer")});
+    connect(comboEyeSample, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        m_eyedropperSampleAll = (idx == 0);
+    });
+    layoutEye->addWidget(comboEyeSample);
+
+    layoutEye->addStretch();
+    m_optionsStack->addWidget(pageEye);
+
+    // Page 13: Hand (Tool::Hand = 13)
+    auto *pageHand = new QWidget(m_optionsStack);
+    auto *layoutHand = new QHBoxLayout(pageHand);
+    layoutHand->setContentsMargins(0, 0, 0, 0);
+    layoutHand->setSpacing(8);
+
+    auto *lblHandTitle = new QLabel(tr("Hand"), pageHand);
+    lblHandTitle->setStyleSheet(titleStyle);
+    layoutHand->addWidget(lblHandTitle);
+
+    auto *btnFit = new QPushButton(tr("Fit on Screen"), pageHand);
+    btnFit->setStyleSheet(btnStyle);
+    connect(btnFit, &QPushButton::clicked, this, &SessionWindow::fitCanvas);
+    layoutHand->addWidget(btnFit);
+
+    auto *btnActual = new QPushButton(tr("100%"), pageHand);
+    btnActual->setStyleSheet(btnStyle);
+    connect(btnActual, &QPushButton::clicked, this, &SessionWindow::actualPixels);
+    layoutHand->addWidget(btnActual);
+
+    auto *lblHandHint = new QLabel(tr("Drag canvas to pan · Hold Space to pan from any tool"), pageHand);
+    lblHandHint->setStyleSheet(labelStyle);
+    layoutHand->addWidget(lblHandHint);
+
+    layoutHand->addStretch();
+    m_optionsStack->addWidget(pageHand);
+
+    // Page 14: Zoom (Tool::Zoom = 14)
+    auto *pageZoom = new QWidget(m_optionsStack);
+    auto *layoutZoom = new QHBoxLayout(pageZoom);
+    layoutZoom->setContentsMargins(0, 0, 0, 0);
+    layoutZoom->setSpacing(8);
+
+    auto *lblZoomTitle = new QLabel(tr("Zoom"), pageZoom);
+    lblZoomTitle->setStyleSheet(titleStyle);
+    layoutZoom->addWidget(lblZoomTitle);
+
+    auto *btnZoomInTool = new QPushButton(tr("(+) Zoom In"), pageZoom);
+    btnZoomInTool->setStyleSheet(btnStyle);
+    connect(btnZoomInTool, &QPushButton::clicked, this, [this] { zoomBy(1.25); });
+    layoutZoom->addWidget(btnZoomInTool);
+
+    auto *btnZoomOutTool = new QPushButton(tr("(-) Zoom Out"), pageZoom);
+    btnZoomOutTool->setStyleSheet(btnStyle);
+    connect(btnZoomOutTool, &QPushButton::clicked, this, [this] { zoomBy(0.8); });
+    layoutZoom->addWidget(btnZoomOutTool);
+
+    auto *btnZoomFit = new QPushButton(tr("Fit on Screen"), pageZoom);
+    btnZoomFit->setStyleSheet(btnStyle);
+    connect(btnZoomFit, &QPushButton::clicked, this, &SessionWindow::fitCanvas);
+    layoutZoom->addWidget(btnZoomFit);
+
+    auto *btnZoom100 = new QPushButton(tr("100%"), pageZoom);
+    btnZoom100->setStyleSheet(btnStyle);
+    connect(btnZoom100, &QPushButton::clicked, this, &SessionWindow::actualPixels);
+    layoutZoom->addWidget(btnZoom100);
+
+    layoutZoom->addStretch();
+    m_optionsStack->addWidget(pageZoom);
+
+    // Page 15: Idle (Tool::Idle = 15)
     auto *pageIdle = new QWidget(m_optionsStack);
     auto *layoutIdle = new QHBoxLayout(pageIdle);
     layoutIdle->setContentsMargins(0, 0, 0, 0);
     layoutIdle->setSpacing(8);
-    auto *lblIdle = new QLabel(tr("Select a tool from the left toolbar"), pageIdle);
+    auto *lblIdle = new QLabel(tr("Ready · Select a tool from the tool rail"), pageIdle);
     lblIdle->setStyleSheet(labelStyle);
     layoutIdle->addWidget(lblIdle);
     layoutIdle->addStretch();
     m_optionsStack->addWidget(pageIdle);
 
     m_optionsToolBar->addWidget(m_optionsStack);
+
+    m_swiftUIOptionsContainer = new QWidget(m_optionsToolBar);
+    m_swiftUIOptionsContainer->setObjectName("swiftUIOptionsContainer");
+    m_swiftUIOptionsContainer->setFixedHeight(38);
+    auto *layoutSwiftUI = new QHBoxLayout(m_swiftUIOptionsContainer);
+    layoutSwiftUI->setContentsMargins(0, 0, 0, 0);
+    layoutSwiftUI->setSpacing(0);
+    m_optionsToolBar->addWidget(m_swiftUIOptionsContainer);
+    m_swiftUIOptionsContainer->hide();
 }
 
 void SessionWindow::updateOptionsBar() {
     if (!m_optionsStack) return;
-    switch (m_tool) {
-    case Tool::Move:
-        m_optionsStack->setCurrentIndex(0);
-        break;
-    case Tool::Brush:
-    case Tool::Eraser: {
-        m_optionsStack->setCurrentIndex(1);
-        auto *lbl = m_optionsStack->widget(1)->findChild<QLabel *>("options.brushTitle");
-        if (lbl) lbl->setText(m_tool == Tool::Eraser ? tr("Eraser") : tr("Brush"));
-        break;
+    const int idx = static_cast<int>(m_tool);
+    if (idx >= 0 && idx < m_optionsStack->count()) {
+        m_optionsStack->setCurrentIndex(idx);
     }
-    case Tool::RectSelect:
-    case Tool::EllipseSelect:
-    case Tool::Lasso: {
-        m_optionsStack->setCurrentIndex(2);
-        auto *page = m_optionsStack->widget(2);
-        if (auto *g = page->findChild<QWidget *>("select.marqueeGroup")) g->setVisible(m_tool != Tool::Lasso);
-        if (auto *g = page->findChild<QWidget *>("select.lassoGroup")) g->setVisible(m_tool == Tool::Lasso);
-        break;
+    if (m_tool == Tool::Brush && m_optionsStack->count() > 5) {
+        auto *lbl = m_optionsStack->widget(5)->findChild<QLabel *>("options.brushTitle");
+        if (lbl) lbl->setText(m_brushToolMode == BrushToolMode::Erase ? tr("Eraser") : tr("Brush"));
     }
-    case Tool::MagicWand:
-        m_optionsStack->setCurrentIndex(3);
-        break;
-    case Tool::CloneStamp:
-    case Tool::SpotHealing: {
-        m_optionsStack->setCurrentIndex(4);
-        auto *lbl = m_optionsStack->widget(4)->findChild<QLabel *>("options.cloneTitle");
-        if (lbl) lbl->setText(m_tool == Tool::SpotHealing ? tr("Spot Healing") : tr("Clone Stamp"));
-        break;
+    if (m_brushColorButton) {
+        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #101012; border-radius: 3px;").arg(m_brushColor.name()));
     }
-    case Tool::Crop:
-        m_optionsStack->setCurrentIndex(5);
-        break;
-    default:
-        m_optionsStack->setCurrentIndex(6);
-        break;
+
+    if (m_sessionHandle != 0 && m_swiftUIOptionsContainer) {
+        QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("ToolHeaders"));
+        if (rendered) {
+            if (m_swiftUICurrentToolHeader) {
+                m_swiftUIOptionsContainer->layout()->removeWidget(m_swiftUICurrentToolHeader);
+                delete m_swiftUICurrentToolHeader;
+                m_swiftUICurrentToolHeader = nullptr;
+            }
+            m_swiftUICurrentToolHeader = rendered;
+            m_swiftUIOptionsContainer->layout()->addWidget(rendered);
+            rendered->show();
+            m_swiftUIOptionsContainer->show();
+            m_optionsStack->hide();
+        } else {
+            if (m_swiftUICurrentToolHeader) {
+                m_swiftUIOptionsContainer->layout()->removeWidget(m_swiftUICurrentToolHeader);
+                delete m_swiftUICurrentToolHeader;
+                m_swiftUICurrentToolHeader = nullptr;
+            }
+            m_swiftUIOptionsContainer->hide();
+            m_optionsStack->show();
+        }
+    }
+}
+
+void SessionWindow::updateToolRail() {
+    if (m_sessionHandle == 0 || !m_toolsBar) return;
+    if (!m_swiftUIToolRailContainer) {
+        m_swiftUIToolRailContainer = new QWidget(m_toolsBar);
+        m_swiftUIToolRailContainer->setObjectName("swiftUIToolRailContainer");
+        auto *layout = new QVBoxLayout(m_swiftUIToolRailContainer);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        m_toolsBar->insertWidget(m_toolsBar->actions().isEmpty() ? nullptr : m_toolsBar->actions().first(), m_swiftUIToolRailContainer);
+    }
+    QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("ToolRail"));
+    if (rendered) {
+        if (m_swiftUICurrentToolRail) {
+            m_swiftUIToolRailContainer->layout()->removeWidget(m_swiftUICurrentToolRail);
+            delete m_swiftUICurrentToolRail;
+            m_swiftUICurrentToolRail = nullptr;
+        }
+        m_swiftUICurrentToolRail = rendered;
+        m_swiftUIToolRailContainer->layout()->addWidget(rendered);
+        rendered->show();
+        m_swiftUIToolRailContainer->show();
+        for (auto *act : m_toolActions.values()) act->setVisible(false);
+        if (auto *pal = m_toolsBar->findChild<QWidget *>("palette.controls")) pal->hide();
+    }
+}
+
+void SessionWindow::syncToolFromSession() {
+    if (m_sessionHandle == 0) return;
+    const auto state = sessionState();
+    const QString toolStr = state.value("tool").toString();
+    if (toolStr.isEmpty()) return;
+    Tool t = m_tool;
+    if (toolStr == "move") t = Tool::Move;
+    else if (toolStr == "marquee") t = Tool::Marquee;
+    else if (toolStr == "lasso") t = Tool::Lasso;
+    else if (toolStr == "wand") t = Tool::Magic;
+    else if (toolStr == "crop") t = Tool::Crop;
+    else if (toolStr == "brush") t = Tool::Brush;
+    else if (toolStr == "spotHealing") t = Tool::SpotHealing;
+    else if (toolStr == "cloneStamp") t = Tool::CloneStamp;
+    else if (toolStr == "blur") t = Tool::Smear;
+    else if (toolStr == "gradient") t = Tool::Gradient;
+    else if (toolStr == "shape") t = Tool::Shape;
+    else if (toolStr == "type") t = Tool::Type;
+    else if (toolStr == "eyedropper") t = Tool::Eyedropper;
+    else if (toolStr == "hand") t = Tool::Hand;
+    else if (toolStr == "zoom") t = Tool::Zoom;
+    else if (toolStr == "idle") t = Tool::Idle;
+    if (t != m_tool) {
+        setTool(t);
     }
 }
 
@@ -3724,17 +4625,17 @@ void SessionWindow::updateStatusTelemetry() {
         hint = tr("Click to select · Click outside to deselect · Drag to move · Handles to resize · Space to pan");
         break;
     case Tool::Brush:
-        hint = tr("Drag on canvas to paint · [ and ] resize brush · 1–9 opacity · Space to pan");
+        if (m_brushToolMode == BrushToolMode::Erase) {
+            hint = tr("Drag on canvas to erase · [ and ] resize eraser · 1–9 opacity · Space to pan");
+        } else {
+            hint = tr("Drag on canvas to paint · [ and ] resize brush · 1–9 opacity · Space to pan");
+        }
         break;
-    case Tool::Eraser:
-        hint = tr("Drag on canvas to erase · [ and ] resize eraser · 1–9 opacity · Space to pan");
-        break;
-    case Tool::RectSelect:
-    case Tool::EllipseSelect:
+    case Tool::Marquee:
     case Tool::Lasso:
         hint = tr("Drag to select · Drag inside to move · Shift add · Option subtract · Ctrl+D deselect");
         break;
-    case Tool::MagicWand:
+    case Tool::Magic:
         hint = tr("Click to select region · Shift add · Option subtract · Ctrl+D deselect");
         break;
     case Tool::CloneStamp:
@@ -3746,21 +4647,82 @@ void SessionWindow::updateStatusTelemetry() {
     case Tool::Crop:
         hint = tr("Drag to define crop region · Apply to crop canvas · Esc to cancel");
         break;
+    case Tool::Smear:
+        hint = tr("Drag to smudge or liquify pixels");
+        break;
+    case Tool::Gradient:
+        hint = tr("Drag to apply gradient");
+        break;
+    case Tool::Shape:
+        hint = tr("Drag to draw shape");
+        break;
+    case Tool::Type:
+        hint = tr("Click on canvas to add text layer");
+        break;
+    case Tool::Eyedropper:
+        hint = tr("Click on canvas to sample color");
+        break;
+    case Tool::Hand:
+        hint = tr("Drag to pan canvas");
+        break;
+    case Tool::Zoom:
+        hint = tr("Click to zoom in · Option-click to zoom out");
+        break;
     default:
         hint = tr("Ready");
         break;
     }
     m_statusHintsLabel->setText(hint);
+
+    if (m_sessionHandle != 0) {
+        if (!m_swiftUIStatusBarContainer) {
+            m_swiftUIStatusBarContainer = new QWidget(this);
+            m_swiftUIStatusBarContainer->setObjectName("swiftUIStatusBarContainer");
+            auto *layout = new QHBoxLayout(m_swiftUIStatusBarContainer);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(0);
+            statusBar()->addWidget(m_swiftUIStatusBarContainer, 1);
+        }
+        QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("StatusBar"));
+        if (rendered) {
+            if (m_swiftUICurrentStatusBar) {
+                m_swiftUIStatusBarContainer->layout()->removeWidget(m_swiftUICurrentStatusBar);
+                delete m_swiftUICurrentStatusBar;
+                m_swiftUICurrentStatusBar = nullptr;
+            }
+            m_swiftUICurrentStatusBar = rendered;
+            m_swiftUIStatusBarContainer->layout()->addWidget(rendered);
+            rendered->show();
+            m_swiftUIStatusBarContainer->show();
+            m_statusZoomLabel->hide();
+            m_statusDimsLabel->hide();
+            m_statusProfileLabel->hide();
+            m_statusHintsLabel->hide();
+        } else {
+            if (m_swiftUICurrentStatusBar) {
+                m_swiftUIStatusBarContainer->layout()->removeWidget(m_swiftUICurrentStatusBar);
+                delete m_swiftUICurrentStatusBar;
+                m_swiftUICurrentStatusBar = nullptr;
+            }
+            m_swiftUIStatusBarContainer->hide();
+            m_statusZoomLabel->show();
+            m_statusDimsLabel->show();
+            m_statusProfileLabel->show();
+            m_statusHintsLabel->show();
+        }
+    }
 }
 
 void SessionWindow::fitCanvas() {
     m_zoomLevel = 0.0;
+    m_panOffset = QPointF(0, 0);
     updateStatusTelemetry();
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
 void SessionWindow::actualPixels() {
     m_zoomLevel = 1.0;
+    m_panOffset = QPointF(0, 0);
     updateStatusTelemetry();
     if (m_canvasWidget) m_canvasWidget->update();
 }
