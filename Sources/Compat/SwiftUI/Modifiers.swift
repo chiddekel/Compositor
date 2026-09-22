@@ -2,8 +2,18 @@
 // the already-resolved child node with a `RenderModifier` — so adding a modifier here is a small, mechanical
 // addition that every panel using it picks up automatically, with no Qt-side per-panel code.
 
-public struct ModifiedContent<Content: View>: View, PrimitiveView {
-    let content: Content
+import Combine
+import UniformTypeIdentifiers
+
+/// Deliberately NOT generic over its content (real SwiftUI's `ModifiedContent<Content, Modifier>` is, but pays for
+/// it with compiler-privileged fast paths this compat layer doesn't have). A generic `ModifiedContent<Content>`
+/// nests one new type layer per modifier in a chain — `ModifiedContent<ModifiedContent<ModifiedContent<...>>>` for
+/// a 15-modifier chain — which is exactly what makes Swift's constraint solver time out on long real-world modifier
+/// chains (confirmed: `Compositor/ContentView.swift`'s `editorChrome`, ~15 modifiers deep, timed out on the generic
+/// version and compiles instantly with this one). Erasing `content` to `any View` makes every `modified(_:)` call
+/// return the *same* concrete type, so chain length no longer grows the type the solver has to explore.
+public struct ModifiedContent: View, PrimitiveView {
+    let content: any View
     let apply: (inout RenderNode) -> Void
     public var _childViews: [any View] { [content] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
@@ -14,7 +24,7 @@ public struct ModifiedContent<Content: View>: View, PrimitiveView {
 }
 
 extension View {
-    private func modified(_ apply: @escaping (inout RenderNode) -> Void) -> ModifiedContent<Self> {
+    private func modified(_ apply: @escaping (inout RenderNode) -> Void) -> ModifiedContent {
         ModifiedContent(content: self, apply: apply)
     }
 
@@ -100,6 +110,7 @@ extension View {
         modified { $0.modifiers.append(.accessibilityIdentifier(text)) }
     }
     public func accessibilityHidden(_ hidden: Bool) -> some View { self }
+    public func lineLimit(_ number: Int?) -> some View { self }
     public func accessibilityValue(_ value: String) -> some View { self }
     public func accessibilityAddTraits(_ traits: AccessibilityTraits) -> some View {
         modified {
@@ -145,16 +156,55 @@ extension View {
             if let typed = newValue as? V { action(value, typed) }
         })) }
     }
+    /// `@_disfavoredOverload`: real, load-bearing fix, not decoration. Having both this and the 2-arg overload
+    /// above visible as equally-good candidates is what made Swift's constraint solver time out on
+    /// `Compositor/ContentView.swift`'s `body` (11 chained `.onChange` calls, all 2-arg) — confirmed by removing
+    /// this overload entirely, which made the exact same "unable to type-check in reasonable time" error vanish
+    /// (25s build vs. 2+ minutes at a 1000x-raised solver threshold that still failed). `@_disfavoredOverload`
+    /// tells the solver to only consider this one after every other candidate fails, so the 11 two-argument call
+    /// sites resolve immediately without it in the running, while `TransformInspector.swift`'s three genuine
+    /// zero-argument calls still resolve correctly (just as the last candidate tried, not the first).
+    @_disfavoredOverload
     public func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping () -> Void) -> some View {
         modified { $0.modifiers.append(.sink("onChange", { _ in action() })) }
     }
     public func gesture<G>(_ gesture: G) -> some View { self }
+    public func onTapGesture(count: Int = 1, perform action: @escaping () -> Void) -> some View {
+        modified { $0.modifiers.append(.sink("onTapGesture", { _ in action() })) }
+    }
+    /// Structurally real (stores the subscription intent), but inert: firing it needs a live run loop tied to Qt's
+    /// event loop, which this compat layer doesn't wire up yet. See `Combine.swift`.
+    public func onReceive<P: CombinePublisher>(_ publisher: P, perform action: @escaping (P.Output) -> Void) -> some View { self }
+    public func mask<V: View>(alignment: Alignment = .center, @ViewBuilder _ mask: () -> V) -> some View { self }
+    public func onScrollGeometryChange<T: Equatable>(for type: T.Type, of transform: @escaping (ScrollGeometry) -> T,
+                                                      action: @escaping (T, T) -> Void) -> some View { self }
+    /// Structurally real; actually recognising a drag-and-drop gesture needs a Qt-side drag backend this compat
+    /// layer doesn't have yet, so `delegate`'s callbacks never fire. Same honesty as `.onReceive` above.
+    public func onDrop(of types: [String], delegate: any DropDelegate) -> some View { self }
+    public func onDrop(of types: [String], isTargeted: Binding<Bool>? = nil,
+                       perform action: @escaping ([NSItemProvider], CGPoint) -> Bool) -> some View { self }
     public func animation<V: Equatable>(_ animation: StyleToken?, value: V) -> some View { self }
     public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View { self }
     public func aspectRatio(contentMode: ContentMode) -> some View { self }
     public func popover<V: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> V) -> some View { self }
     public func clipped() -> some View { self }
     public func scrollBounceBehavior(_ behavior: ScrollBounceBehavior, axes: Axis.Set = [.vertical]) -> some View { self }
+    public func allowsHitTesting(_ enabled: Bool) -> some View { self }
+    public func preferredColorScheme(_ colorScheme: ColorScheme?) -> some View { self }
+    public func navigationTitle(_ title: String) -> some View { self }
+    public func sharedBackgroundVisibility(_ visibility: StyleToken) -> some View { self }
+    public func pointerStyle(_ style: PointerStyle) -> some View { self }
+    /// The general form (`GeometryProxy`), distinct from `.onScrollGeometryChange` above. The Qt renderer doesn't
+    /// feed real per-frame layout back into Swift yet, so `transform` only ever sees `GeometryProxy`'s zero-origin
+    /// placeholder rect — structurally real, not yet live, the same honesty as `.onReceive`/`.onDrop`.
+    public func onGeometryChange<T: Equatable>(for type: T.Type, of transform: @escaping (GeometryProxy) -> T,
+                                                action: @escaping (T) -> Void) -> some View { self }
+    public func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { self }
+    public func fileImporter(isPresented: Binding<Bool>, allowedContentTypes: [UTType], allowsMultipleSelection: Bool = false,
+                              onCompletion: @escaping (Result<[URL], any Error>) -> Void) -> some View { self }
+    public func alert<A: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder actions: () -> A) -> some View { self }
+    public func alert<A: View, M: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder actions: () -> A,
+                                         @ViewBuilder message: () -> M) -> some View { self }
 
 
     /// Applies a custom `ViewModifier` (the mechanism `Compositor/UI`'s own modifiers — e.g. `NewProjectDropTarget`
@@ -227,12 +277,43 @@ public struct DropInfo {
     public func itemProviders(for types: [String]) -> [NSItemProvider] { [] }
 }
 
-extension View {
-    public func onReceive<P: Publisher>(_ publisher: P, perform action: @escaping (P.Output) -> Void) -> some View { self }
-    public func mask<Mask: View>(@ViewBuilder _ mask: () -> Mask) -> some View { self }
-    public func onScrollGeometryChange<T: Equatable>(for type: T.Type, of transform: @escaping (ScrollGeometry) -> T, action: @escaping (T, T) -> Void) -> some View { self }
-    public func onDrop(of supportedTypes: [String], isTargeted: Binding<Bool>? = nil, perform action: @escaping ([NSItemProvider]) -> Bool) -> some View { self }
-    public func onDrop(of supportedTypes: [String], delegate: DropDelegate) -> some View { self }
+/// `.toolbar { }`'s content: the Qt renderer doesn't host a native toolbar yet (the panels this unblocks —
+/// `ContentView.swift`'s New/zoom/tab-strip controls — render fine as ordinary tree nodes; only their placement
+/// in a system toolbar bar is inert), so these resolve their content like `Group` and carry no placement of their
+/// own. Structurally real, matching the rest of this file's honesty about what's live vs. what only type-checks.
+public struct ToolbarItemPlacement: Sendable, Equatable {
+    let name: String
+    public init(_ name: String) { self.name = name }
+    public static let navigation = ToolbarItemPlacement("navigation")
+    public static let primaryAction = ToolbarItemPlacement("primaryAction")
+    public static let automatic = ToolbarItemPlacement("automatic")
 }
 
+public struct ToolbarItem<Content: View>: View, _ViewListProviding {
+    let content: Content
+    public init(placement: ToolbarItemPlacement = .automatic, @ViewBuilder content: () -> Content) { self.content = content() }
+    public var _viewList: [any View] { [content] }
+}
+
+public struct ToolbarItemGroup<Content: View>: View, _ViewListProviding {
+    let content: Content
+    public init(placement: ToolbarItemPlacement = .automatic, @ViewBuilder content: () -> Content) { self.content = content() }
+    public var _viewList: [any View] { [content] }
+}
+
+public struct ToolbarSpacer: View, PrimitiveView {
+    public enum Sizing { case fixed, flexible }
+    public init(_ sizing: Sizing = .flexible, placement: ToolbarItemPlacement = .automatic) {}
+    public func _makeNode(children: [RenderNode]) -> RenderNode { RenderNode(kind: "Spacer") }
+}
+
+public enum ColorScheme: Sendable { case light, dark }
+
+/// `NSCursor`-shaped pointer hints (`.pointerStyle(.columnResize)` on a resize handle) — inert: the Qt renderer
+/// doesn't wire cursor changes to hover state yet.
+public struct PointerStyle: Sendable {
+    public static let columnResize = PointerStyle()
+    public static let horizontalResize = PointerStyle()
+    public static let verticalResize = PointerStyle()
+}
 

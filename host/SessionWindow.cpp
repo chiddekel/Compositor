@@ -298,7 +298,8 @@ static QIcon makeToolIcon(SessionWindow::Tool tool,
 void SessionWindow::initDemoDocument() {
     if (m_sessionHandle == 0) m_sessionHandle = compositor_session_create();
     cmd(m_sessionHandle, R"({"version":1,"action":"new","width":64,"height":64})");
-    cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})");
+    // "new" already creates a blank "Layer 1" (Sources/LinuxBridge/UpstreamEditor.swift passes
+    // emptyLayer: true) — an explicit addLayer here used to be needed but now just adds a duplicate.
     cmd(m_sessionHandle, R"({"version":1,"action":"brushBegin","x":8,"y":8,"parameters":{"diameter":16,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}})");
     cmd(m_sessionHandle, R"({"version":1,"action":"brushMove","x":48,"y":48})");
     cmd(m_sessionHandle, R"({"version":1,"action":"brushEnd"})");
@@ -312,11 +313,16 @@ void SessionWindow::createNewDocument(int width, int height) {
     const QString json = QString(R"({"version":1,"action":"new","width":%1,"height":%2})").arg(width).arg(height);
     const QByteArray bytes = json.toUtf8();
     compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
-    cmd(m_sessionHandle, R"({"version":1,"action":"addLayer"})");
+    // "new" already creates a blank "Layer 1" (emptyLayer: true) — no explicit addLayer needed here.
     m_image = renderToQImage(m_sessionHandle, width, height);
     m_hasDocument = true;
+    m_zoomLevel = 0.0;
+    m_panOffset = QPointF(0, 0);
     refreshImage();
     refreshLayers();
+    if (m_documentTabBar && m_documentTabBar->count() > 0) {
+        m_documentTabBar->setTabText(0, tr("Untitled 1"));
+    }
 }
 
 SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
@@ -433,7 +439,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         initDemoDocument();
         setBrushColor(QColor(255, 0, 0));
     } else {
-        m_hasDocument = false;
+        createNewDocument(1024, 768);
+        setBrushColor(QColor(0, 0, 0));
     }
 
     actMove->setChecked(true);
@@ -1163,7 +1170,7 @@ void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
 }
 
 void SessionWindow::createMenus() {
-    menuBar()->setNativeMenuBar(true);
+    menuBar()->setNativeMenuBar(false);
     // --- File ---
     auto *file = menuBar()->addMenu(tr("&File"));
     file->addAction(tr("New Canvas…"), QKeySequence::New, this, [this] {
@@ -3327,6 +3334,27 @@ void SessionWindow::drawCropOverlay(QPainter &p) const {
 }
 
 void SessionWindow::applyDarkTheme() {
+    QPalette darkPalette;
+    darkPalette.setColor(QPalette::Window, QColor(0x1e, 0x1e, 0x20));
+    darkPalette.setColor(QPalette::WindowText, QColor(0xf5, 0xf5, 0xf7));
+    darkPalette.setColor(QPalette::Base, QColor(0x24, 0x24, 0x27));
+    darkPalette.setColor(QPalette::AlternateBase, QColor(0x2a, 0x2a, 0x2d));
+    darkPalette.setColor(QPalette::ToolTipBase, QColor(0x1e, 0x1e, 0x20));
+    darkPalette.setColor(QPalette::ToolTipText, QColor(0xf5, 0xf5, 0xf7));
+    darkPalette.setColor(QPalette::Text, QColor(0xf5, 0xf5, 0xf7));
+    darkPalette.setColor(QPalette::Button, QColor(0x2a, 0x2a, 0x2d));
+    darkPalette.setColor(QPalette::ButtonText, QColor(0xf5, 0xf5, 0xf7));
+    darkPalette.setColor(QPalette::BrightText, Qt::white);
+    darkPalette.setColor(QPalette::Link, QColor(0x00, 0x7a, 0xff));
+    darkPalette.setColor(QPalette::Highlight, QColor(0x00, 0x7a, 0xff));
+    darkPalette.setColor(QPalette::HighlightedText, Qt::white);
+    darkPalette.setColor(QPalette::Disabled, QPalette::Text, QColor(0x6e, 0x6e, 0x73));
+    darkPalette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(0x6e, 0x6e, 0x73));
+    darkPalette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x6e, 0x6e, 0x73));
+    if (qApp) {
+        qApp->setPalette(darkPalette);
+    }
+
     const QString qss = QString::fromUtf8(R"(
         QMainWindow {
             background-color: #1e1e1e;
@@ -3361,18 +3389,36 @@ void SessionWindow::applyDarkTheme() {
             padding: 4px;
         }
         QMenu::item {
-            padding: 5px 24px 5px 12px;
+            padding: 5px 28px 5px 24px;
             border-radius: 4px;
             color: #f5f5f7;
+            background-color: transparent;
         }
         QMenu::item:selected {
             background-color: #007aff;
             color: #ffffff;
         }
+        QMenu::item:disabled {
+            color: #6e6e73;
+            background-color: transparent;
+        }
         QMenu::separator {
             height: 1px;
             background-color: #38383c;
             margin: 4px 8px;
+        }
+        QMenu::indicator {
+            width: 14px;
+            height: 14px;
+            left: 6px;
+        }
+        QMenu::indicator:checked {
+            background-color: #007aff;
+            border: 1px solid #007aff;
+            border-radius: 3px;
+        }
+        QMenu::right-arrow {
+            margin: 5px;
         }
         QToolBar {
             background-color: #1e1e20;
@@ -3563,6 +3609,9 @@ void SessionWindow::applyDarkTheme() {
             background-color: #1f1f22;
         }
     )");
+    if (qApp) {
+        qApp->setStyleSheet(qss);
+    }
     setStyleSheet(qss);
 }
 
@@ -3583,10 +3632,7 @@ void SessionWindow::setupHeaderBar() {
         "QPushButton:pressed { background: #202022; }"
     );
     connect(btnNew, &QPushButton::clicked, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"new","width":512,"height":512})") == 0) {
-            m_image = renderToQImage(m_sessionHandle, 512, 512);
-            refreshImage();
-        }
+        createNewDocument(1024, 768);
     });
     m_headerToolBar->addWidget(btnNew);
 
@@ -4536,7 +4582,7 @@ void SessionWindow::updateToolRail() {
     if (rendered) {
         if (m_swiftUICurrentToolRail) {
             m_swiftUIToolRailContainer->layout()->removeWidget(m_swiftUICurrentToolRail);
-            delete m_swiftUICurrentToolRail;
+            m_swiftUICurrentToolRail->deleteLater();
             m_swiftUICurrentToolRail = nullptr;
         }
         m_swiftUICurrentToolRail = rendered;
@@ -4571,7 +4617,7 @@ void SessionWindow::syncToolFromSession() {
     else if (toolStr == "zoom") t = Tool::Zoom;
     else if (toolStr == "idle") t = Tool::Idle;
     if (t != m_tool) {
-        setTool(t);
+        QMetaObject::invokeMethod(this, [this, t] { setTool(t); }, Qt::QueuedConnection);
     }
 }
 

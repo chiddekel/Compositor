@@ -65,6 +65,63 @@ final class _Box<Value>: @unchecked Sendable { var value: Value; init(_ value: V
     public var projectedValue: FocusState<Value> { self }
 }
 
+import Foundation
+
+/// Persists to `UserDefaults.standard`, matching real SwiftUI's `@AppStorage` contract for the primitive types
+/// upstream code uses it with (`Double` — `layersPanelWidth` in `ContentView.swift`).
+@propertyWrapper public struct AppStorage<Value> {
+    private let key: String
+    private let defaultValue: Value
+    private let get: (String, Value) -> Value
+    private let set: (String, Value) -> Void
+    public var wrappedValue: Value {
+        get { get(key, defaultValue) }
+        nonmutating set { set(key, newValue) }
+    }
+    public var projectedValue: Binding<Value> {
+        Binding(get: { wrappedValue }, set: { wrappedValue = $0 })
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == Double {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == Bool {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == String {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == Int {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+}
+
+/// A callable `openWindow(id:)` action, matching real SwiftUI's `OpenWindowAction`. Inert here (this compat layer
+/// hosts one Qt-owned top-level window, not a multi-`WindowGroup` scene graph) — same honesty as `.onReceive`.
+public struct OpenWindowAction {
+    public func callAsFunction(id: String) {}
+    public func callAsFunction(id: String, value: some Hashable) {}
+}
+
+public struct EnvironmentValues {
+    public var openWindow: OpenWindowAction { OpenWindowAction() }
+}
+
+/// `@Environment(\.openWindow)` — only the one key path upstream code actually reads is implemented; real SwiftUI's
+/// `EnvironmentValues` machinery (dependency injection through the view tree) isn't needed for that.
+@propertyWrapper public struct Environment<Value> {
+    private let value: Value
+    public init(_ keyPath: KeyPath<EnvironmentValues, Value>) { value = EnvironmentValues()[keyPath: keyPath] }
+    public var wrappedValue: Value { value }
+}
+
 /// Gives per-property `Binding`s into an `@Observable` reference type (`EditorSession`, ...) via dynamic member
 /// lookup — `@Bindable var session: EditorSession` then `$session.brushMode` — matching real SwiftUI's contract.
 @propertyWrapper @dynamicMemberLookup public struct Bindable<Value: AnyObject> {

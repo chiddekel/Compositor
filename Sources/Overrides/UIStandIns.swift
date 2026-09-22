@@ -10,15 +10,8 @@ import Foundation
 import AppKit
 import SwiftUI
 
-/// STAND-IN for the model part of UI/KeyboardShortcuts.swift (the file also holds the SwiftUI editor). Canvas and text
-/// editing route events through it so user-remapped shortcuts reach the canvas as their original chords. With no
-/// remapping (the Qt shell owns shortcut customisation) every event maps to itself.
-@MainActor final class ShortcutSettings {
-    static let shared = ShortcutSettings()
-    private init() {}
-    func canvasEvent(_ event: NSEvent) -> NSEvent? { event }
-    func textEvent(_ event: NSEvent) -> NSEvent? { event }
-}
+// `ShortcutSettings`/`configuredNativeShortcut`/`configuredKeyboardShortcut` are real now
+// (Sources/Overrides/KeyboardShortcuts.swift, a faithful override of Compositor/UI/KeyboardShortcuts.swift).
 
 struct BlendModePicker: View {
     let session: EditorSession
@@ -34,26 +27,14 @@ struct BlendModePicker: View {
     }
 }
 
-/// STAND-IN for UI/LayersPanel.swift (the SwiftUI layers list). Tests only build it to host next to the canvas.
-@MainActor struct LayersPanel: View {
-    let session: EditorSession
-    init(session: EditorSession) { self.session = session }
-}
-
-extension LayersPanel: HostedNativeContent {
-    func makeNativeView() -> NSView? {
-        let table = LayerTableView(frame: CGRect(x: 0, y: 0, width: 252, height: 600))
-        table.session = session
-        return table
-    }
-}
-
-extension LayersPanel: PrimitiveView {
-    func _makeNode(children: [RenderNode]) -> RenderNode { RenderNode(kind: "_Native") }
-}
+// `LayersPanel` is wired in for real (Compositor/UI/LayersPanel.swift); it uses `NativeLayerList`, which is
+// overridden (`Sources/Overrides/NativeLayerListOverride.swift` — a real functional backend swap, not a stand-in;
+// see that file for why the actual NSTableView-based `NativeLayerList.swift` is blocked).
 
 /// STAND-IN for the `NSTableView` subclass in UI/NativeLayerList.swift, whose key handling (tool keys, nudges while the
-/// layer list has focus) lives in the macOS layers panel. The Qt layers panel handles keys itself.
+/// layer list has focus) lives in the macOS layers panel. `CompositorTests/TransformTests.swift` (upstream's own,
+/// unmodified) constructs this directly, so it stays even though `NativeLayerListOverride.swift`'s `List`-based
+/// replacement no longer hosts it via `HostedNativeContent`.
 @MainActor final class LayerTableView: NSTableView {
     weak var session: EditorSession?
     override func keyDown(with event: NSEvent) {

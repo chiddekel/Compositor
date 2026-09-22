@@ -23,6 +23,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKIA_BRIDGE="${COMPOSITOR_SKIA_BRIDGE:-"$ROOT/build/lib/libCompositorSkiaBridge.so"}"
 IMAGEIO_BACKEND="${COMPOSITOR_IMAGEIO_BACKEND:-"$ROOT/build/lib/libCompositorQtImageIO.so"}"
 
+# The SDK version must match the manifest's runtime-version exactly — the binary links against whatever Qt that
+# SDK ships, and a mismatched host SDK (e.g. a different major/minor Qt) fails at dynamic-link time with a missing
+# symbol-version error. Read it from the manifest instead of hardcoding a version: we don't control which Flatpak
+# runtimes are installed on a given machine, only which one the manifest declares this app is built against.
+MANIFEST="$ROOT/com.wonderassembly.Compositor.minimal.yaml"
+SDK_VERSION="$(sed -n "s/^runtime-version: *['\"]\\?\\([0-9.]*\\)['\"]\\?.*/\\1/p" "$MANIFEST" | head -n1)"
+if [[ -z "$SDK_VERSION" ]]; then
+    echo "error: couldn't read runtime-version from $MANIFEST" >&2
+    exit 1
+fi
+SDK_REF="org.kde.Sdk//$SDK_VERSION"
+if ! flatpak info "$SDK_REF" >/dev/null 2>&1; then
+    echo "error: $SDK_REF is not installed (manifest requires it). Install with:" >&2
+    echo "  flatpak install flathub org.kde.Sdk//$SDK_VERSION" >&2
+    exit 1
+fi
+
 # Fallback to scratchpad if build/lib does not exist
 if [[ ! -f "$SKIA_BRIDGE" ]]; then
     FALLBACK_SKIA=$(find /tmp/claude-1000 -name "libCompositorSkiaBridge.so" 2>/dev/null | head -n 1 || true)
@@ -121,9 +138,13 @@ if [[ "$OFFSCREEN" -eq 1 ]]; then
     ENV_EXPORTS+=" export QT_QPA_PLATFORM=offscreen;"
 fi
 
-flatpak run "${FLATPAK_ARGS[@]}" org.kde.Sdk//6.10 -c "
+flatpak run "${FLATPAK_ARGS[@]}" "$SDK_REF" -c "
     cd '$ROOT'
     $ENV_EXPORTS
-    /usr/lib/sdk/swift6/bin/swift build --target CompositorHostBootstrap
+    # --product, not --target: for an executable target, 'swift build --target' can report success without
+    # actually invoking the final link step (confirmed — it leaves stale object files up to date and skips
+    # relinking even after 'swift package clean'), silently leaving a missing or stale binary. --product always
+    # builds and links the real deliverable.
+    /usr/lib/sdk/swift6/bin/swift build --product CompositorHostBootstrap
     exec .build/x86_64-unknown-linux-gnu/debug/CompositorHostBootstrap "\$@"
 " bash "${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}"

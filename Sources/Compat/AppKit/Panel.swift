@@ -6,8 +6,10 @@ import Foundation
 @MainActor public protocol NSWindowDelegate: AnyObject {
     func windowDidMove(_ notification: Notification)
     func windowWillClose(_ notification: Notification)
+    func windowShouldClose(_ sender: NSWindow) -> Bool
 }
 extension NSWindowDelegate {
+    public func windowShouldClose(_ sender: NSWindow) -> Bool { true }
     public func windowDidMove(_ notification: Notification) {}
     public func windowWillClose(_ notification: Notification) {}
 }

@@ -148,6 +148,7 @@ struct CompositorStatusBar: View {
     case "LevelsSheet": resolved = ViewResolver.resolve(LevelsSheet(session: session))
     case "HueSaturationSheet": resolved = ViewResolver.resolve(HueSaturationSheet(session: session))
     case "FilterSheet": resolved = ViewResolver.resolve(FilterSheet(session: session))
+    case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session))
     case "CurvesControls":
         var settings = CurvesSettings()
         let binding = Binding<CurvesSettings>(get: { settings }, set: { settings = $0 })

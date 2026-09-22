@@ -8,6 +8,7 @@
 // `invalidate()`, and `RunLoop.add`).
 
 import Foundation
+import Combine
 
 typealias Timer = MainActorTimer
 
@@ -28,4 +29,17 @@ final class MainActorTimer {
 
 extension RunLoop {
     func add(_ timer: MainActorTimer, forMode mode: RunLoop.Mode) { add(timer.inner, forMode: mode) }
+}
+
+// `Timer` (unqualified, in this module) resolves to `MainActorTimer` per the shadowing `typealias` above, so
+// `Compositor/UI/ProjectTabs.swift`'s `Timer.publish(every:on:in:).autoconnect()` needs its own `.publish`, distinct
+// from `Combine.swift`'s extension on the real `Foundation.Timer` (which nothing in this module ever sees).
+extension MainActorTimer {
+    struct TimerPublisher: CombinePublisher {
+        typealias Output = Date
+        func autoconnect() -> TimerPublisher { self }
+    }
+    static func publish(every interval: Double, on runLoop: RunLoop, in mode: RunLoop.Mode) -> TimerPublisher {
+        TimerPublisher()
+    }
 }

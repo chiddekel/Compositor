@@ -61,6 +61,10 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
         self.data = data; self.content = content
     }
     public var _viewList: [any View] { data.map { content($0) } }
+    /// Registers a reorder handler with SwiftUI's own `(IndexSet, Int) -> Void` shape. Stored for the day the Qt
+    /// renderer implements list drag-and-drop; until then this compiles and does nothing, same as `.gesture`.
+    public func onMove(perform action: @escaping (IndexSet, Int) -> Void) -> ForEach { self }
+    public func onDelete(perform action: @escaping (IndexSet) -> Void) -> ForEach { self }
 }
 
 extension ForEach where Data.Element: Identifiable, ID == Data.Element.ID {

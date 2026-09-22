@@ -125,7 +125,7 @@ final class UpstreamEditor {
         case "new":
             guard let width = command.width, let height = command.height, (1...30_000).contains(width), (1...30_000).contains(height)
             else { return fail(-1, "invalid size") }
-            s.createDocument(width: width, height: height)
+            s.createDocument(width: width, height: height, emptyLayer: true)
         case "addLayer":
             guard s.document != nil else { return fail(-2, "no document") }
             s.addBlankLayer()

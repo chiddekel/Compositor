@@ -75,7 +75,16 @@ public struct Button<Label: View>: View, PrimitiveView {
 }
 extension Button where Label == Text {
     public init(_ title: String, action: @escaping () -> Void) { self.init(action: action) { Text(title) } }
+    /// `role:` doesn't change the render tree's shape (no destructive-red styling here yet); it exists so upstream's
+    /// `Button("OK", role: .cancel) { ... }` calls compile.
+    public init(_ title: String, role: ButtonRole, action: @escaping () -> Void) { self.init(action: action) { Text(title) } }
 }
+extension Button {
+    public init(role: ButtonRole, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
+        self.init(action: action, label: label)
+    }
+}
+public enum ButtonRole: Sendable { case destructive, cancel }
 
 public struct Toggle<Label: View>: View, PrimitiveView {
     let label: Label

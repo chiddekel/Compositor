@@ -104,6 +104,14 @@ public typealias Color = StyleToken
 public typealias ShapeStyle = StyleToken
 
 extension StyleToken {
+    // Animation-shaped members (`.animation(.easeOut(duration:), value:)`). The compat layer's `.animation`
+    // modifier is inert (see Modifiers.swift), so these only need to type-check, not carry real curve data.
+    public static let linear = StyleToken("linear")
+    public static func easeIn(duration: Double = 0.35) -> StyleToken { StyleToken("easeIn") }
+    public static func easeOut(duration: Double = 0.35) -> StyleToken { StyleToken("easeOut") }
+    public static func easeInOut(duration: Double = 0.35) -> StyleToken { StyleToken("easeInOut") }
+    public static func linear(duration: Double) -> StyleToken { StyleToken("linear") }
+
     // Font.TextStyle-shaped members.
     public static let largeTitle = StyleToken("largeTitle"), title = StyleToken("title"), title2 = StyleToken("title2")
     public static let title3 = StyleToken("title3"), headline = StyleToken("headline"), subheadline = StyleToken("subheadline")
