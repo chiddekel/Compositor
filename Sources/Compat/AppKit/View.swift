@@ -73,6 +73,17 @@ public final class NSTrackingArea {
     public var window: NSWindow? { hostWindow ?? superview?.window }
     public var isHidden = false
     public var wantsLayer = false
+    public var autoresizingMask: AutoresizingMask = []
+    public struct AutoresizingMask: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let width = AutoresizingMask(rawValue: 1 << 0)
+        public static let height = AutoresizingMask(rawValue: 1 << 1)
+        public static let minXMargin = AutoresizingMask(rawValue: 1 << 2)
+        public static let minYMargin = AutoresizingMask(rawValue: 1 << 3)
+        public static let maxXMargin = AutoresizingMask(rawValue: 1 << 4)
+        public static let maxYMargin = AutoresizingMask(rawValue: 1 << 5)
+    }
     open var layer: CALayer? { wantsLayer ? backingLayer : nil }
     private lazy var backingLayer = CALayer()
     public var clipsToBounds = false

@@ -187,6 +187,10 @@ extension View {
     public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View { self }
     public func aspectRatio(contentMode: ContentMode) -> some View { self }
     public func popover<V: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> V) -> some View { self }
+    /// Right/control-click menu — inert, same honesty as `.onReceive`/`.onDrop`: the Qt renderer doesn't wire up a
+    /// context-menu gesture yet, so `content`'s actions are never reachable this way.
+    public func contextMenu<M: View>(@ViewBuilder menuItems: () -> M) -> some View { self }
+    public func simultaneousGesture<G>(_ gesture: G) -> some View { self }
     public func clipped() -> some View { self }
     public func scrollBounceBehavior(_ behavior: ScrollBounceBehavior, axes: Axis.Set = [.vertical]) -> some View { self }
     public func allowsHitTesting(_ enabled: Bool) -> some View { self }

@@ -29,6 +29,18 @@
     /// The size the hosted view would take up. No real layout engine runs the resolved tree yet, so this is a
     /// fixed placeholder rather than a measured value — enough for callers that only need *a* nonzero size.
     public var fittingSize: CGSize { CGSize(width: 320, height: 240) }
+    /// Real SwiftUI's `NSHostingSizingOptions` — controls whether AppKit measures the hosted view's intrinsic
+    /// size. No real layout engine runs here, so this is inert; it exists so `host.sizingOptions = []` compiles.
+    public var sizingOptions: NSHostingSizingOptions = .standardBounds
+}
+
+public struct NSHostingSizingOptions: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let standardBounds = NSHostingSizingOptions(rawValue: 1 << 0)
+    public static let minSize = NSHostingSizingOptions(rawValue: 1 << 1)
+    public static let maxSize = NSHostingSizingOptions(rawValue: 1 << 2)
+    public static let intrinsicContentSize = NSHostingSizingOptions(rawValue: 1 << 3)
 }
 
 /// Erases any `View` to a single concrete type, the same way real SwiftUI's `AnyView` does — needed wherever

@@ -103,6 +103,10 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         else if (toolArg == "type") window.setTool(SessionWindow::Tool::Type);
         else if (toolArg == "spotHealing") window.setTool(SessionWindow::Tool::SpotHealing);
         else if (toolArg == "cloneStamp") window.setTool(SessionWindow::Tool::CloneStamp);
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_STROKE").isEmpty()) {
+            window.setTool(SessionWindow::Tool::Brush);
+            window.paintStroke(200, 200, 600, 450);
+        }
         for (int i = 0; i < 10; ++i) {
             QCoreApplication::processEvents();
         }

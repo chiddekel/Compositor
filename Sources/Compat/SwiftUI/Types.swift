@@ -124,6 +124,7 @@ extension StyleToken {
     public static let ultraThinMaterial = StyleToken("ultraThinMaterial"), thickMaterial = StyleToken("thickMaterial")
     public static let red = StyleToken("red"), orange = StyleToken("orange"), yellow = StyleToken("yellow")
     public static let green = StyleToken("green"), blue = StyleToken("blue"), purple = StyleToken("purple")
+    public static let cyan = StyleToken("cyan")
     public static let white = StyleToken("white"), black = StyleToken("black"), gray = StyleToken("gray")
     public static let accentColor = StyleToken("accentColor")
     // Font.Weight-shaped members (also reused for `.controlSize`/similar small enums — a bare style tag either way).
@@ -136,6 +137,7 @@ extension StyleToken {
     public static let bordered = StyleToken("bordered"), borderedProminent = StyleToken("borderedProminent")
     public static let checkbox = StyleToken("checkbox"), automatic = StyleToken("automatic"), button = StyleToken("button")
     public static let segmented = StyleToken("segmented"), borderless = StyleToken("borderless"), menu = StyleToken("menu")
+    public static let radioGroup = StyleToken("radioGroup")
     public static let capsule = StyleToken("capsule")
     public static let borderlessButton = StyleToken("borderlessButton")
     // ScrollIndicatorVisibility-shaped members.
@@ -220,6 +222,9 @@ extension Shape {
     public func strokeBorder(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View { self }
     /// A filled shape tagged with its color; the Qt renderer reads `.foregroundStyle` off the node like any other.
     public func fill(_ style: ShapeStyle) -> some View { foregroundStyle(style) }
+    /// `AngularGradient`/`LinearGradient` aren't `ShapeStyle` (a concrete token here, not a protocol); tag with
+    /// the gradient's first color as a stand-in — the Qt renderer doesn't paint real gradients from this path yet.
+    public func fill(_ gradient: AngularGradient) -> some View { foregroundStyle(gradient.gradient.colors.first ?? .clear) }
     /// Not yet drawn stroke-only (see `strokeBorder` above) — compiles and shows the shape filled.
     public func stroke(_ style: ShapeStyle, lineWidth: Double = 1) -> some View { foregroundStyle(style) }
     public func stroke(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View { foregroundStyle(style) }
@@ -253,5 +258,36 @@ public struct DragGesture {
     }
     public func onEnded(_ action: @escaping (Value) -> Void) -> DragGesture {
         var copy = self; copy.onEndedAction = action; return copy
+    }
+}
+
+/// A tap that also reports where it landed — structurally real, inert like `DragGesture` when handed to
+/// `.simultaneousGesture` (which is itself inert; see Modifiers.swift).
+public struct SpatialTapGesture {
+    public struct Value: Sendable { public var location: CGPoint = .zero }
+    public let count: Int
+    var onEndedAction: ((Value) -> Void)?
+    public init(count: Int = 1, coordinateSpace: CoordinateSpace = .local) { self.count = count }
+    public func onEnded(_ action: @escaping (Value) -> Void) -> SpatialTapGesture {
+        var copy = self; copy.onEndedAction = action; return copy
+    }
+}
+
+/// Minimal `Gradient`/`AngularGradient` — enough for `AngularGradient(gradient:center:)`-style construction to
+/// type-check and resolve as a tree node; the Qt renderer doesn't paint gradients from these yet.
+public struct Gradient: Sendable {
+    public var colors: [Color]
+    public init(colors: [Color]) { self.colors = colors }
+}
+
+public struct AngularGradient: View, PrimitiveView {
+    let gradient: Gradient
+    let center: UnitPoint
+    public init(gradient: Gradient, center: UnitPoint) { self.gradient = gradient; self.center = center }
+    public init(colors: [Color], center: UnitPoint) { self.gradient = Gradient(colors: colors); self.center = center }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "AngularGradient")
+        node.stringParams["colors"] = gradient.colors.map(\.name).joined(separator: ",")
+        return node
     }
 }
