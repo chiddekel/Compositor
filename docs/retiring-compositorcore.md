@@ -27,7 +27,10 @@ The fork is gone. `Sources/CompositorCore` (72 files) was deleted; the Qt shell 
   save/reopen; io; layers; brush — including a real Clone Stamp/Spot Healing stroke through `SessionWindow`'s own
   `cloneStroke`/`healStroke`/`setCloneSource`, the same methods `mousePressEvent` calls), plus
   `Tests/LinuxOverrideTests/UpstreamEditorTests` (15 tests, began as differential tests against the fork), upstream's own
-  258 tests (up from 222 after the 1.2.0-1.2.2 merge), and 96 compat-layer tests (`Tests/CompatTests`).
+  260 tests (up from 222 after the 1.2.0-1.2.2 merge; two more count now that
+  `translucentStrokesDrawLikeOneImage`/`maskStrokesDrawLikeOneMask` are no longer skipped — the 25° tile-clip fix
+  earlier this session covered them, a stale skip in later test runs just hadn't been dropped), and 96 compat-layer
+  tests (`Tests/CompatTests`).
 
 Divergences from the old fork, upstream being the target: finer undo names and File > New undoable; `cut` is copy + clear;
 Gaussian blur grows the layer by 3 sigma; a soft mask stroke hides only the stroke; invalid sizes return -1; cloning from a

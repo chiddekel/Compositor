@@ -37,3 +37,25 @@ few edge pixels twice. The bridge now rasterizes such clips once, against the wh
 region, so a path has one answer as in Core Graphics (`HardClipConsistencyTests` locks it in). The earlier
 "Skia vs Core Graphics rasterization" wording was only half right: the fill/clip/image-draw primitives agree; the
 ancestor-dependence was the cause.
+
+## 2026-09-22 current baseline (post upstream 1.1.8 -> 1.2.2 merge, CompositorCore retirement)
+
+Run: `COMPOSITOR_SKIA_BRIDGE=<cmake-b>/libCompositorSkiaBridge.so COMPOSITOR_IMAGEIO_BACKEND=<cmake-b>/libCompositorQtImageIO.so
+QT_QPA_PLATFORM=offscreen swift test --no-parallel --skip CompatTests --skip LinuxOverrideTests --skip tiledLayersDrawLikeOneImage
+--skip gaussianBlurSoftensAHardEdge --skip moveToolNumberKeysSetSelectedLayersOpacity --skip perspectiveMappingHitsTheCorners
+--skip distortingWarpsTheLayerIntoTheShape` (the test-target name is now `CompositorUpstreamTests`, not `CompositorCoreTests`
+— that fork target no longer exists).
+
+**260 of 260 run tests pass** (up from the 211/222 baselines above; 1.2.0-1.2.2 added PSD/RAW import, Outer Glow,
+Invert/Black&White/Color Balance, and the full Photoshop blend-mode set, each with its own tests). Only 5 stale-upstream-test
+skips remain, all previously verified as genuine upstream test bugs (not Linux fidelity gaps), each documented at its
+own re-check above:
+- `gaussianBlurSoftensAHardEdgeWithoutFadingTheBordersAsOneUndoStep`
+- `moveToolNumberKeysSetSelectedLayersOpacityAsOneUndo`
+- `perspectiveMappingHitsTheCornersAndTwistedShapesAreRefused`
+- `distortingWarpsTheLayerIntoTheShapeAsOneUndoStep`
+- `tiledLayersDrawLikeOneImage` (passes; skipped only for its ~110s runtime on the software path)
+
+`translucentStrokesDrawLikeOneImage` and `maskStrokesDrawLikeOneMask` are NOT in this list — they were fixed by the
+hard-clip region change and pass (confirmed by running `TiledLayerTests` alone, 6/6, ~8 min). A stale `--skip` for both
+had crept back into ad hoc test invocations after that fix; this entry is the correction.
