@@ -27,6 +27,8 @@ public struct UTType: Hashable, Sendable {
         "public.file-url": Info(ext: [], mime: nil, parents: ["public.url"]),
         "public.url": Info(ext: [], mime: nil, parents: ["public.data"]),
         "com.apple.package": Info(ext: [], mime: nil, parents: ["public.item"]),
+        "public.camera-raw-image": Info(ext: ["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "pef", "srw"],
+                                        mime: nil, parents: ["public.image"]),
     ]
     /// Types an app declares for itself (exported/imported) are registered here.
     nonisolated(unsafe) private static var declared: [String: Info] = [:]
@@ -93,4 +95,5 @@ public struct UTType: Hashable, Sendable {
     public static let fileURL = UTType("public.file-url")!
     public static let url = UTType("public.url")!
     public static let package = UTType("com.apple.package")!
+    public static let rawImage = UTType("public.camera-raw-image")!
 }

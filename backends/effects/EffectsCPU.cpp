@@ -125,6 +125,20 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
                 blur(scratch, second, w, h, p->shadow_sigma, radius, false);
             }
         }
+        Plane outer;
+        if (p->has_outer) {
+            // The shape softened omnidirectionally, with the shape's own interior excluded (no offset, unlike a shadow).
+            outer.resize(count);
+            if (p->outer_sigma > 0.01f) {
+                Plane scratch(count);
+                const int radius = std::max(1, static_cast<int>(std::lround(p->outer_sigma * 3.0f)));
+                blur(first, scratch, w, h, p->outer_sigma, radius, true);
+                blur(scratch, outer, w, h, p->outer_sigma, radius, false);
+            } else {
+                outer = first;
+            }
+            for (size_t i = 0; i < count; ++i) outer[i] = clamp01(outer[i] * (1.0f - first[i]));
+        }
         Plane inner;
         if (p->has_inner) {
             Plane moved(count), softened(count);
@@ -154,6 +168,7 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
                     cb = c.b * coverage + cb * (1.0f - coverage);
                     alpha = coverage + alpha * (1.0f - coverage);
                 };
+                if (p->has_outer) over(p->outer, clamp01(outer[i] * p->outer.opacity));
                 if (p->has_stroke && !p->stroke_inside) over(p->stroke, strokeCoverage);
                 const float sr = pixels[i * 4] / 255.0f, sg = pixels[i * 4 + 1] / 255.0f, sb = pixels[i * 4 + 2] / 255.0f,
                             sa = pixels[i * 4 + 3] / 255.0f;

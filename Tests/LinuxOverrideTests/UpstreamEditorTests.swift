@@ -58,7 +58,7 @@ struct UpstreamEditorTests {
         #expect(top["name"] as? String == "Sky" && top["visible"] as? Bool == false)
         #expect(top["opacity"] as? Double == 0.4 && top["blendMode"] as? String == "Multiply")
         await send(e, cmd("cycleBlendMode"), cmd("flipLayer"), cmd("flipCanvas", #""horizontally":false"#))
-        #expect(layers(e).last?["blendMode"] as? String == "Screen")
+        #expect(layers(e).last?["blendMode"] as? String == "Color Burn", "Multiply cycles to the next mode in LayerBlendMode.allCases")
         #expect(((layers(e).last?["transform"] as? [String: Any])?["flipY"] as? Int) == 1 || ((layers(e).last?["transform"] as? [String: Any])?["flipY"] as? Bool) == true)
         await send(e, cmd("deleteLayer"))
         #expect(layers(e).count == 1)

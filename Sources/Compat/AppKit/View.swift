@@ -27,6 +27,9 @@ public struct Selector: Hashable, ExpressibleByStringLiteral, Sendable {
     open func rightMouseDown(with event: NSEvent) {}
     open func rightMouseUp(with event: NSEvent) {}
     open func rightMouseDragged(with event: NSEvent) {}
+    open func otherMouseDown(with event: NSEvent) {}
+    open func otherMouseUp(with event: NSEvent) {}
+    open func otherMouseDragged(with event: NSEvent) {}
     open func scrollWheel(with event: NSEvent) {}
     open func magnify(with event: NSEvent) {}
     open func keyDown(with event: NSEvent) {}

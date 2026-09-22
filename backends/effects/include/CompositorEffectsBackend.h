@@ -24,6 +24,9 @@ typedef struct CompositorEffectsParams {
     int32_t has_inner;
     float inner_dx, inner_dy, inner_sigma;
     CompositorEffectColor inner;
+    int32_t has_outer;
+    float outer_sigma;                          // outer glow's blur; upstream: OuterGlowEffect.size / 2
+    CompositorEffectColor outer;
 } CompositorEffectsParams;
 
 // The OpenCV tier: the heavy passes as OpenCV operators on float planes. -2 when the build has no OpenCV.

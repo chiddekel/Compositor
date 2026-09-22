@@ -446,3 +446,20 @@ public final class CIContext: @unchecked Sendable {
         }
     }
 }
+
+/// Decodes and develops camera RAW files (`Compositor/IO/RawImporter.swift`). Apple's own RAWFilter has no open
+/// equivalent bundled here yet — every initialiser fails, so `RawImporter` reports RAW files unreadable rather than
+/// mis-decoding them. A real backend (e.g. LibRaw) would replace this file only; upstream's `RawImporter.swift` and
+/// its UI stay unmodified either way.
+public final class CIRAWFilter: @unchecked Sendable {
+    public var exposure: Float = 0
+    public var neutralTemperature: Float = 5000
+    public var neutralTint: Float = 0
+    public var boostAmount: Float = 1
+    public var scaleFactor: Float = 1
+    public var isDraftModeEnabled = false
+    public var nativeSize: CGSize { .zero }
+    public var outputImage: CIImage? { nil }
+
+    public init?(imageURL: URL) { nil }
+}

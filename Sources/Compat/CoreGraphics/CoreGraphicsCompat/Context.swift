@@ -332,6 +332,11 @@ public final class CGContext: @unchecked Sendable {
         }
     }
 
+    /// Fills each rect independently, as Apple's `fill(_ rects: [CGRect])` does (not their union).
+    public func fill(_ rects: [CGRect]) {
+        for rect in rects { fill(rect) }
+    }
+
     /// A hard-edged rect fill under a rotated or skewed transform. Skia rounds an aliased fill's edge differently from an
     /// aliased clip's, and Core Graphics does not: a fill and a clip to the same rect cover the same pixels. Code that
     /// clears a region and then draws into a clip of it (upstream's tiled renderer) depends on that, or a seam pixel is

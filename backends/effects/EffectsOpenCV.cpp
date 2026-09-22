@@ -48,7 +48,7 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
         cv::Mat first;
         cv::extractChannel(rgba, first, 3);
         first.convertTo(first, CV_32F, 1.0 / 255.0);
-        cv::Mat ring, shadow, inner;
+        cv::Mat ring, shadow, inner, outer;
         if (p->has_stroke) {
             const cv::Mat moved = spread(first, static_cast<int>(std::max(1u, p->stroke_reach)), p->stroke_inside != 0);
             cv::Mat difference = p->stroke_inside ? first - moved : moved - first;
@@ -66,8 +66,15 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
             cv::max(inner, 0.0, inner);
             cv::min(inner, 1.0, inner);
         }
-        // Shadow behind, outside stroke over it, the layer's pixels over that, then a colour overlay, an inner shadow
-        // and an inside stroke on top.
+        if (p->has_outer) {
+            // The shape softened omnidirectionally (no offset), with the shape's own interior excluded.
+            cv::Mat moved = p->outer_sigma > 0.01f ? blur(first, p->outer_sigma) : first.clone();
+            outer = moved.mul(1.0 - first);
+            cv::max(outer, 0.0, outer);
+            cv::min(outer, 1.0, outer);
+        }
+        // Shadow behind, the glow around it, outside stroke over that, the layer's pixels over that, then a colour
+        // overlay, an inner shadow and an inside stroke on top.
         cv::parallel_for_(cv::Range(0, h), [&](const cv::Range &rows) {
             for (int y = rows.start; y < rows.end; ++y) {
                 const uint8_t *src = pixels + static_cast<size_t>(y) * w * 4;
@@ -84,6 +91,7 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
                         const float coverage = clamp01(shadow.at<float>(y, x) * p->shadow.opacity);
                         cr = p->shadow.r * coverage; cg = p->shadow.g * coverage; cb = p->shadow.b * coverage; alpha = coverage;
                     }
+                    if (p->has_outer) over(p->outer, clamp01(outer.at<float>(y, x) * p->outer.opacity));
                     const float strokeCoverage = p->has_stroke ? clamp01(ring.at<float>(y, x) * p->stroke.opacity) : 0.0f;
                     if (p->has_stroke && !p->stroke_inside) over(p->stroke, strokeCoverage);
                     const float sa = src[x * 4 + 3] / 255.0f;

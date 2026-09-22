@@ -67,12 +67,12 @@ struct Buffer {
 struct GpuParams {
     uint32_t width, height, strokeReach, flags;
     float shadowDx, shadowDy, shadowSigma, innerDx;
-    float innerDy, innerSigma, pad0, pad1;
-    float stroke[4], shadow[4], overlay[4], inner[4];
+    float innerDy, innerSigma, outerSigma, pad1;
+    float stroke[4], shadow[4], overlay[4], inner[4], outer[4];
 };
-static_assert(sizeof(GpuParams) == 112, "Params block layout mismatch");
+static_assert(sizeof(GpuParams) == 128, "Params block layout mismatch");
 
-constexpr uint32_t kBindings = 9;          // pixels, result, six planes, params
+constexpr uint32_t kBindings = 11;         // pixels, result, eight planes, params
 constexpr size_t kMaxPixels = 100000000;
 }  // namespace
 
@@ -175,11 +175,11 @@ struct CompositorVulkanEffects {
         GpuParams g{};
         g.width = p.width; g.height = p.height; g.strokeReach = std::max(1u, p.stroke_reach);
         g.flags = (p.has_stroke ? 1u : 0u) | (p.stroke_inside ? 2u : 0u) | (p.has_shadow ? 4u : 0u) |
-                  (p.has_overlay ? 8u : 0u) | (p.has_inner ? 16u : 0u);
+                  (p.has_overlay ? 8u : 0u) | (p.has_inner ? 16u : 0u) | (p.has_outer ? 32u : 0u);
         g.shadowDx = p.shadow_dx; g.shadowDy = p.shadow_dy; g.shadowSigma = p.shadow_sigma;
-        g.innerDx = p.inner_dx; g.innerDy = p.inner_dy; g.innerSigma = p.inner_sigma;
+        g.innerDx = p.inner_dx; g.innerDy = p.inner_dy; g.innerSigma = p.inner_sigma; g.outerSigma = p.outer_sigma;
         auto put = [](float (&to)[4], const CompositorEffectColor &c) { to[0] = c.r; to[1] = c.g; to[2] = c.b; to[3] = c.opacity; };
-        put(g.stroke, p.stroke); put(g.shadow, p.shadow); put(g.overlay, p.overlay); put(g.inner, p.inner);
+        put(g.stroke, p.stroke); put(g.shadow, p.shadow); put(g.overlay, p.overlay); put(g.inner, p.inner); put(g.outer, p.outer);
         return g;
     }
 
@@ -188,7 +188,8 @@ struct CompositorVulkanEffects {
         const VkDeviceSize planeBytes = count * sizeof(float), pixelBytes = count * 4;
         if (planeBytes > properties.limits.maxStorageBufferRange) throw std::runtime_error("Image too large for this device");
         std::array<std::unique_ptr<Buffer>, kBindings> buffers;
-        const VkDeviceSize sizes[kBindings] = {pixelBytes, pixelBytes, planeBytes, planeBytes, planeBytes, planeBytes, planeBytes, planeBytes, sizeof(GpuParams)};
+        const VkDeviceSize sizes[kBindings] = {pixelBytes, pixelBytes, planeBytes, planeBytes, planeBytes, planeBytes,
+                                               planeBytes, planeBytes, planeBytes, planeBytes, sizeof(GpuParams)};
         VkDescriptorBufferInfo bufferInfo[kBindings]{}; VkWriteDescriptorSet writes[kBindings]{};
         for (uint32_t i = 0; i < kBindings; ++i) {
             buffers[i] = std::make_unique<Buffer>(); buffers[i]->create(device, physical, sizes[i]);
@@ -199,15 +200,21 @@ struct CompositorVulkanEffects {
         vkUpdateDescriptorSets(device, kBindings, writes, 0, nullptr);
         std::memcpy(buffers[0]->mapped, pixels, pixelBytes);
         const GpuParams gpu = gpuParams(p);
-        std::memcpy(buffers[8]->mapped, &gpu, sizeof gpu);
-        buffers[0]->flush(); buffers[8]->flush();
+        std::memcpy(buffers[10]->mapped, &gpu, sizeof gpu);
+        buffers[0]->flush(); buffers[10]->flush();
 
-        // The same sequence as the C++ tier: alpha; stroke reach + ring; shadow move + blur; inner move + blur + inside; compose.
+        // The same sequence as the C++ tier: alpha; stroke reach + ring; shadow move + blur; inner move + blur + inside;
+        // outer glow blur + exclude interior; compose.
         std::vector<uint32_t> passes{0};
         if (p.has_stroke) passes.insert(passes.end(), {1, 2, 3});
         if (p.has_shadow) { passes.push_back(4); if (p.shadow_sigma > 0.01f) passes.insert(passes.end(), {5, 6}); }
         if (p.has_inner) { passes.push_back(7); if (p.inner_sigma > 0.01f) passes.insert(passes.end(), {8, 9}); passes.push_back(10); }
-        passes.push_back(11);
+        if (p.has_outer) {
+            if (p.outer_sigma > 0.01f) passes.insert(passes.end(), {11, 12});
+            else { passes.push_back(14); }   // pass 14: p7 = p0 (copy, no blur) before the exclude step
+            passes.push_back(13);
+        }
+        passes.push_back(99);   // compose (any value the switch doesn't name explicitly)
 
         check(vkResetFences(device, 1, &fence)); check(vkResetCommandBuffer(command, 0));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;

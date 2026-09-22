@@ -168,6 +168,11 @@ final class CEffectsBackend: LayerEffectsBackend {
             p.inner_sigma = Float(inner.blur / 2)
             p.inner = color(inner.color, inner.opacity)
         }
+        if let glow = effects.outerGlow, glow.isEnabled, glow.opacity > 0 {
+            p.has_outer = 1
+            p.outer_sigma = Float(glow.size / 2)
+            p.outer = color(glow.color, glow.opacity)
+        }
         return p
     }
 }

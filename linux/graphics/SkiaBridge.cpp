@@ -1264,7 +1264,7 @@ int compositor_skia_effects_render(const CompositorEffectsParams *p, const uint8
         SkCanvas *canvas = result->getCanvas();
         canvas->clear(SK_ColorTRANSPARENT);
 
-        sk_sp<SkImage> shadow, ring, inner;
+        sk_sp<SkImage> shadow, ring, inner, outer;
         if (p->has_stroke) {
             const float reach = static_cast<float>(std::max(1u, p->stroke_reach));
             sk_sp<SkImage> moved = effects_apply(shape, p->stroke_inside ? SkImageFilters::Erode(reach, reach, nullptr)
@@ -1292,9 +1292,18 @@ int compositor_skia_effects_render(const CompositorEffectsParams *p, const uint8
             inner = inside ? effects_apply(inside, effects_tint(p->inner), w, h) : nullptr;
             if (!inner) return -2;
         }
-        // Shadow behind, outside stroke over it, the layer's pixels over that, then a colour overlay, an inner shadow
-        // and an inside stroke on top.
+        if (p->has_outer) {
+            // The shape softened omnidirectionally (no offset), with the shape's own interior excluded: moved * (1 - shape).
+            sk_sp<SkImage> moved = p->outer_sigma > 0.01f ? effects_apply(shape, effects_blur(p->outer_sigma), w, h) : shape;
+            sk_sp<SkImage> excluded = moved ? effects_apply(shape,
+                SkImageFilters::Arithmetic(-1, 1, 0, 0, false, SkImageFilters::Image(shape, SkSamplingOptions()), SkImageFilters::Image(moved, SkSamplingOptions())), w, h) : nullptr;
+            outer = excluded ? effects_apply(excluded, effects_tint(p->outer), w, h) : nullptr;
+            if (!outer) return -2;
+        }
+        // Shadow behind, the glow around it, outside stroke over that, the layer's pixels over that, then a colour
+        // overlay, an inner shadow and an inside stroke on top.
         if (shadow) canvas->drawImage(shadow, 0, 0);
+        if (outer) canvas->drawImage(outer, 0, 0);
         if (ring && !p->stroke_inside) canvas->drawImage(ring, 0, 0);
         canvas->drawImage(source, 0, 0);
         if (p->has_overlay) canvas->drawImage(effects_apply(shape, effects_tint(p->overlay), w, h), 0, 0);
