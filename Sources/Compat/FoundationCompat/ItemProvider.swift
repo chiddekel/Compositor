@@ -10,10 +10,10 @@ open class NSItemProvider {
     /// `NSItemProvider(item:typeIdentifier:)`: a URL becomes its absolute string, `Data` is kept as is.
     public convenience init(item: NSSecureCoding?, typeIdentifier: String?) {
         var reps: [String: Data] = [:]
+        // `item` is typed as the `NSSecureCoding` existential; only the `NS*` reference types actually conform to it
+        // (the `URL`/`Data` value types don't), so those are the only casts that can ever match.
         if let typeIdentifier {
-            if let url = item as? URL { reps[typeIdentifier] = Data(url.absoluteString.utf8) }
-            else if let nsurl = item as? NSURL { reps[typeIdentifier] = Data((nsurl.absoluteString ?? "").utf8) }
-            else if let data = item as? Data { reps[typeIdentifier] = data }
+            if let nsurl = item as? NSURL { reps[typeIdentifier] = Data(nsurl.absoluteString.utf8) }
             else if let nsdata = item as? NSData { reps[typeIdentifier] = nsdata as Data }
         }
         self.init(representations: reps)
