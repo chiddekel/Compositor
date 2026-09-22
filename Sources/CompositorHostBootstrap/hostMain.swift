@@ -61,9 +61,18 @@ struct HostBootstrap {
             print("CompositorHostBootstrap: Qt brush smoke OK")
             return
         }
-        // `compositor_session_command` uses Foundation's JSONDecoder internally;
-        // from a Swift main that is bootstrapped, it works (it traps from a
-        // C++ main). This first call is the architectural proof.
+        if CommandLine.arguments.contains("--session-smoke") {
+            runSessionSmoke()
+            print("CompositorHostBootstrap: session journey OK (create/new/paint/render/undo/redo/close)")
+            return
+        }
+
+        // Run the Qt host window/event loop
+        let qt = compositor_host_run(CommandLine.argc, CommandLine.unsafeArgv)
+        guard qt == 0 else { fail("compositor_host_run returned \(qt)") }
+    }
+
+    private static func runSessionSmoke() {
         let h = compositorSessionCreate()
         guard h != 0 else { fail("session create returned 0") }
 
@@ -80,7 +89,6 @@ struct HostBootstrap {
         guard cmd(#"{"version":1,"action":"brushMove","x":2,"y":2}"#) == 0 else { fail("brush move") }
         guard cmd(#"{"version":1,"action":"brushEnd"}"#) == 0 else { fail("brush end") }
 
-        // State query (Foundation JSONEncoder on the Swift side of the ABI).
         let stateN = compositorSessionState(h, nil, 0)
         guard stateN > 0 else { fail("state byte count") }
         var stateBytes = [UInt8](repeating: 0, count: Int(stateN))
@@ -91,7 +99,6 @@ struct HostBootstrap {
         guard stateJSON.contains(#""width":4"#) else { fail("state width, got: \(stateJSON)") }
         guard stateJSON.contains(#""canUndo":true"#) else { fail("state canUndo, got: \(stateJSON)") }
 
-        // Render (64 bytes premultiplied RGBA) and check for red paint.
         var pixels = [UInt8](repeating: 0, count: 64)
         let n = pixels.withUnsafeMutableBufferPointer { buf in
             compositorSessionRender(h, buf.baseAddress, 64)
@@ -103,7 +110,6 @@ struct HostBootstrap {
         }
         guard hasRed else { fail("render shows red paint after stroke") }
 
-        // Undo -> blank; redo -> red.
         guard cmd(#"{"version":1,"action":"undo"}"#) == 0 else { fail("undo") }
         _ = pixels.withUnsafeMutableBufferPointer { buf in compositorSessionRender(h, buf.baseAddress, 64) }
         var blank = true
@@ -120,18 +126,7 @@ struct HostBootstrap {
         guard red2 else { fail("render red after redo") }
 
         compositorSessionClose(h)
-        // Closed handle rejects commands (-6).
         guard cmd(#"{"version":1,"action":"undo"}"#) == -6 else { fail("closed handle rejected") }
-
-        print("CompositorHostBootstrap: session journey OK (create/new/paint/render/undo/redo/close)")
-
-        // Full Swift-main -> Qt proof: initialize Qt from the Swift-driven entry
-        // point. Headless (QT_QPA_PLATFORM=offscreen); host_run returns 0 without
-        // entering the event loop. A non-zero return here would mean Qt itself
-        // failed to initialize from the Swift main.
-        let qt = compositor_host_run(CommandLine.argc, CommandLine.unsafeArgv)
-        guard qt == 0 else { fail("compositor_host_run returned \(qt)") }
-        print("CompositorHostBootstrap: Qt host entry OK")
     }
 
     private static func fail(_ msg: String) -> Never {

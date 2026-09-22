@@ -168,62 +168,106 @@ public func vImageMatrixMultiply_ARGB8888(_ src: UnsafePointer<vImage_Buffer>, _
     let width = Int(s.width)
     let height = Int(s.height)
 
+    // Fast-path: premultiplied invert (the exact matrix PixelInvert uses).
+    let isInvert = divisor == 256 &&
+        m0 == -256 && m1 == 0 && m2 == 0 && m3 == 0 &&
+        m4 == 0 && m5 == -256 && m6 == 0 && m7 == 0 &&
+        m8 == 0 && m9 == 0 && m10 == -256 && m11 == 0 &&
+        m12 == 256 && m13 == 256 && m14 == 256 && m15 == 256 &&
+        pre0 == 0 && pre1 == 0 && pre2 == 0 && pre3 == 0 &&
+        post0 == 0 && post1 == 0 && post2 == 0 && post3 == 0
+
+    let chunks = min(height, max(1, ProcessInfo.processInfo.activeProcessorCount * 2))
+    let chunkSize = (height + chunks - 1) / chunks
+
+    if isInvert {
+        DispatchQueue.concurrentPerform(iterations: chunks) { c in
+            let startY = c * chunkSize
+            guard startY < height else { return }
+            let endY = min(height, startY + chunkSize)
+            for y in startY..<endY {
+                var srcP = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
+                var dstP = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
+                for _ in 0..<width {
+                    let a = srcP[3]
+                    dstP[0] = a - srcP[0]
+                    dstP[1] = a - srcP[1]
+                    dstP[2] = a - srcP[2]
+                    dstP[3] = a
+                    srcP += 4
+                    dstP += 4
+                }
+            }
+        }
+        return kvImageNoError
+    }
+
     if divisor == 256 {
-        DispatchQueue.concurrentPerform(iterations: height) { y in
-            var srcP = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
-            var dstP = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
-            for _ in 0..<width {
-                let px0 = Int32(srcP[0]) + pre0
-                let px1 = Int32(srcP[1]) + pre1
-                let px2 = Int32(srcP[2]) + pre2
-                let px3 = Int32(srcP[3]) + pre3
+        DispatchQueue.concurrentPerform(iterations: chunks) { c in
+            let startY = c * chunkSize
+            guard startY < height else { return }
+            let endY = min(height, startY + chunkSize)
+            for y in startY..<endY {
+                var srcP = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
+                var dstP = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
+                for _ in 0..<width {
+                    let px0 = Int32(srcP[0]) + pre0
+                    let px1 = Int32(srcP[1]) + pre1
+                    let px2 = Int32(srcP[2]) + pre2
+                    let px3 = Int32(srcP[3]) + pre3
 
-                let sum0 = px0 * m0 + px1 * m4 + px2 * m8 + px3 * m12 + post0
-                let sum1 = px0 * m1 + px1 * m5 + px2 * m9 + px3 * m13 + post1
-                let sum2 = px0 * m2 + px1 * m6 + px2 * m10 + px3 * m14 + post2
-                let sum3 = px0 * m3 + px1 * m7 + px2 * m11 + px3 * m15 + post3
+                    let sum0 = px0 * m0 + px1 * m4 + px2 * m8 + px3 * m12 + post0
+                    let sum1 = px0 * m1 + px1 * m5 + px2 * m9 + px3 * m13 + post1
+                    let sum2 = px0 * m2 + px1 * m6 + px2 * m10 + px3 * m14 + post2
+                    let sum3 = px0 * m3 + px1 * m7 + px2 * m11 + px3 * m15 + post3
 
-                let v0 = sum0 >= 0 ? (sum0 + 128) >> 8 : -((-sum0 + 128) >> 8)
-                let v1 = sum1 >= 0 ? (sum1 + 128) >> 8 : -((-sum1 + 128) >> 8)
-                let v2 = sum2 >= 0 ? (sum2 + 128) >> 8 : -((-sum2 + 128) >> 8)
-                let v3 = sum3 >= 0 ? (sum3 + 128) >> 8 : -((-sum3 + 128) >> 8)
+                    let v0 = sum0 >= 0 ? (sum0 + 128) >> 8 : -((-sum0 + 128) >> 8)
+                    let v1 = sum1 >= 0 ? (sum1 + 128) >> 8 : -((-sum1 + 128) >> 8)
+                    let v2 = sum2 >= 0 ? (sum2 + 128) >> 8 : -((-sum2 + 128) >> 8)
+                    let v3 = sum3 >= 0 ? (sum3 + 128) >> 8 : -((-sum3 + 128) >> 8)
 
-                dstP[0] = UInt8(max(0, min(255, v0)))
-                dstP[1] = UInt8(max(0, min(255, v1)))
-                dstP[2] = UInt8(max(0, min(255, v2)))
-                dstP[3] = UInt8(max(0, min(255, v3)))
+                    dstP[0] = UInt8(max(0, min(255, v0)))
+                    dstP[1] = UInt8(max(0, min(255, v1)))
+                    dstP[2] = UInt8(max(0, min(255, v2)))
+                    dstP[3] = UInt8(max(0, min(255, v3)))
 
-                srcP += 4
-                dstP += 4
+                    srcP += 4
+                    dstP += 4
+                }
             }
         }
     } else {
-        DispatchQueue.concurrentPerform(iterations: height) { y in
-            var srcP = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
-            var dstP = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
-            for _ in 0..<width {
-                let px0 = Int32(srcP[0]) + pre0
-                let px1 = Int32(srcP[1]) + pre1
-                let px2 = Int32(srcP[2]) + pre2
-                let px3 = Int32(srcP[3]) + pre3
+        DispatchQueue.concurrentPerform(iterations: chunks) { c in
+            let startY = c * chunkSize
+            guard startY < height else { return }
+            let endY = min(height, startY + chunkSize)
+            for y in startY..<endY {
+                var srcP = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
+                var dstP = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
+                for _ in 0..<width {
+                    let px0 = Int32(srcP[0]) + pre0
+                    let px1 = Int32(srcP[1]) + pre1
+                    let px2 = Int32(srcP[2]) + pre2
+                    let px3 = Int32(srcP[3]) + pre3
 
-                let sum0 = px0 * m0 + px1 * m4 + px2 * m8 + px3 * m12 + post0
-                let sum1 = px0 * m1 + px1 * m5 + px2 * m9 + px3 * m13 + post1
-                let sum2 = px0 * m2 + px1 * m6 + px2 * m10 + px3 * m14 + post2
-                let sum3 = px0 * m3 + px1 * m7 + px2 * m11 + px3 * m15 + post3
+                    let sum0 = px0 * m0 + px1 * m4 + px2 * m8 + px3 * m12 + post0
+                    let sum1 = px0 * m1 + px1 * m5 + px2 * m9 + px3 * m13 + post1
+                    let sum2 = px0 * m2 + px1 * m6 + px2 * m10 + px3 * m14 + post2
+                    let sum3 = px0 * m3 + px1 * m7 + px2 * m11 + px3 * m15 + post3
 
-                let v0 = sum0 >= 0 ? (sum0 + halfDivisor) / divisor : -((-sum0 + halfDivisor) / divisor)
-                let v1 = sum1 >= 0 ? (sum1 + halfDivisor) / divisor : -((-sum1 + halfDivisor) / divisor)
-                let v2 = sum2 >= 0 ? (sum2 + halfDivisor) / divisor : -((-sum2 + halfDivisor) / divisor)
-                let v3 = sum3 >= 0 ? (sum3 + halfDivisor) / divisor : -((-sum3 + halfDivisor) / divisor)
+                    let v0 = sum0 >= 0 ? (sum0 + halfDivisor) / divisor : -((-sum0 + halfDivisor) / divisor)
+                    let v1 = sum1 >= 0 ? (sum1 + halfDivisor) / divisor : -((-sum1 + halfDivisor) / divisor)
+                    let v2 = sum2 >= 0 ? (sum2 + halfDivisor) / divisor : -((-sum2 + halfDivisor) / divisor)
+                    let v3 = sum3 >= 0 ? (sum3 + halfDivisor) / divisor : -((-sum3 + halfDivisor) / divisor)
 
-                dstP[0] = UInt8(max(0, min(255, v0)))
-                dstP[1] = UInt8(max(0, min(255, v1)))
-                dstP[2] = UInt8(max(0, min(255, v2)))
-                dstP[3] = UInt8(max(0, min(255, v3)))
+                    dstP[0] = UInt8(max(0, min(255, v0)))
+                    dstP[1] = UInt8(max(0, min(255, v1)))
+                    dstP[2] = UInt8(max(0, min(255, v2)))
+                    dstP[3] = UInt8(max(0, min(255, v3)))
 
-                srcP += 4
-                dstP += 4
+                    srcP += 4
+                    dstP += 4
+                }
             }
         }
     }

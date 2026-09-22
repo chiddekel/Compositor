@@ -7,5 +7,5 @@ Exec=compositor
 Icon=com.wonderassembly.Compositor
 Terminal=false
 Categories=Graphics;Photography;2DGraphics;RasterGraphics;
-MimeType=image/png;image/jpeg;image/tiff;
+MimeType=application/x-compositor-project;image/png;image/jpeg;image/tiff;image/webp;
 Keywords=photo;editor;image;layers;compositing;

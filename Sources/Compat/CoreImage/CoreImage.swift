@@ -196,29 +196,36 @@ public final class CIImage: @unchecked Sendable {
             bytes.withUnsafeBufferPointer { bBuf in
                 byteToFloatTable.withUnsafeBufferPointer { lutBuf in
                     guard let rPtr = rBuf.baseAddress, let bPtr = bBuf.baseAddress, let lut = lutBuf.baseAddress else { return }
-                    DispatchQueue.concurrentPerform(iterations: h) { y in
-                        // CGImage rows run top-down; CI rows run bottom-up.
-                        let dst = (h - 1 - y) * w * 4
-                        let srcRow = y * stride
-                        if gray {
-                            var srcP = bPtr + srcRow
-                            var dstP = rPtr + dst
-                            for _ in 0..<w {
-                                let v = lut[Int(srcP[0])]
-                                dstP[0] = v; dstP[1] = v; dstP[2] = v; dstP[3] = 1.0
-                                srcP += 1
-                                dstP += 4
-                            }
-                        } else {
-                            var srcP = bPtr + srcRow
-                            var dstP = rPtr + dst
-                            for _ in 0..<w {
-                                dstP[0] = lut[Int(srcP[0])]
-                                dstP[1] = lut[Int(srcP[1])]
-                                dstP[2] = lut[Int(srcP[2])]
-                                dstP[3] = lut[Int(srcP[3])]
-                                srcP += 4
-                                dstP += 4
+                    let chunks = min(h, max(1, ProcessInfo.processInfo.activeProcessorCount * 2))
+                    let chunkSize = (h + chunks - 1) / chunks
+                    DispatchQueue.concurrentPerform(iterations: chunks) { c in
+                        let startY = c * chunkSize
+                        guard startY < h else { return }
+                        let endY = min(h, startY + chunkSize)
+                        for y in startY..<endY {
+                            // CGImage rows run top-down; CI rows run bottom-up.
+                            let dst = (h - 1 - y) * w * 4
+                            let srcRow = y * stride
+                            if gray {
+                                var srcP = bPtr + srcRow
+                                var dstP = rPtr + dst
+                                for _ in 0..<w {
+                                    let v = lut[Int(srcP[0])]
+                                    dstP[0] = v; dstP[1] = v; dstP[2] = v; dstP[3] = 1.0
+                                    srcP += 1
+                                    dstP += 4
+                                }
+                            } else {
+                                var srcP = bPtr + srcRow
+                                var dstP = rPtr + dst
+                                for _ in 0..<w {
+                                    dstP[0] = lut[Int(srcP[0])]
+                                    dstP[1] = lut[Int(srcP[1])]
+                                    dstP[2] = lut[Int(srcP[2])]
+                                    dstP[3] = lut[Int(srcP[3])]
+                                    srcP += 4
+                                    dstP += 4
+                                }
                             }
                         }
                     }
@@ -377,13 +384,20 @@ public final class CIContext: @unchecked Sendable {
             plane.withUnsafeMutableBufferPointer { pBuf in
                 r.data.withUnsafeBufferPointer { rBuf in
                     guard let pPtr = pBuf.baseAddress, let rPtr = rBuf.baseAddress else { return }
-                    DispatchQueue.concurrentPerform(iterations: h) { y in
-                        let srcRow = (h - 1 - y) * w * 4
-                        let dstRow = y * w
-                        for x in 0..<w {
-                            let i = srcRow + x * 4
-                            let v = format == .A8 ? rPtr[i + 3] : 0.2126 * rPtr[i] + 0.7152 * rPtr[i + 1] + 0.0722 * rPtr[i + 2]
-                            pPtr[dstRow + x] = UInt8(max(0, min(255, Int32(v * 255.0 + 0.5))))
+                    let chunks = min(h, max(1, ProcessInfo.processInfo.activeProcessorCount * 2))
+                    let chunkSize = (h + chunks - 1) / chunks
+                    DispatchQueue.concurrentPerform(iterations: chunks) { c in
+                        let startY = c * chunkSize
+                        guard startY < h else { return }
+                        let endY = min(h, startY + chunkSize)
+                        for y in startY..<endY {
+                            let srcRow = (h - 1 - y) * w * 4
+                            let dstRow = y * w
+                            for x in 0..<w {
+                                let i = srcRow + x * 4
+                                let v = format == .A8 ? rPtr[i + 3] : 0.2126 * rPtr[i] + 0.7152 * rPtr[i + 1] + 0.0722 * rPtr[i + 2]
+                                pPtr[dstRow + x] = UInt8(max(0, min(255, Int32(v * 255.0 + 0.5))))
+                            }
                         }
                     }
                 }
@@ -394,38 +408,45 @@ public final class CIContext: @unchecked Sendable {
         out.withUnsafeMutableBufferPointer { oBuf in
             r.data.withUnsafeBufferPointer { rBuf in
                 guard let oPtr = oBuf.baseAddress, let rPtr = rBuf.baseAddress else { return }
-                DispatchQueue.concurrentPerform(iterations: h) { y in
-                    let srcRow = (h - 1 - y) * w * 4
-                    let dstRow = y * w * 4
-                    var srcP = rPtr + srcRow
-                    var dstP = oPtr + dstRow
-                    for _ in 0..<w {
-                        let a = srcP[3]
-                        if a >= 1.0 {
-                            let r255 = srcP[0] * 255.0 + 0.5
-                            let g255 = srcP[1] * 255.0 + 0.5
-                            let b255 = srcP[2] * 255.0 + 0.5
-                            dstP[0] = UInt8(max(0, min(255, Int32(r255))))
-                            dstP[1] = UInt8(max(0, min(255, Int32(g255))))
-                            dstP[2] = UInt8(max(0, min(255, Int32(b255))))
-                            dstP[3] = 255
-                        } else if a <= 0.0 {
-                            dstP[0] = 0
-                            dstP[1] = 0
-                            dstP[2] = 0
-                            dstP[3] = 0
-                        } else {
-                            let a255 = a * 255.0 + 0.5
-                            let r255 = min(srcP[0], a) * 255.0 + 0.5
-                            let g255 = min(srcP[1], a) * 255.0 + 0.5
-                            let b255 = min(srcP[2], a) * 255.0 + 0.5
-                            dstP[0] = UInt8(max(0, min(255, Int32(r255))))
-                            dstP[1] = UInt8(max(0, min(255, Int32(g255))))
-                            dstP[2] = UInt8(max(0, min(255, Int32(b255))))
-                            dstP[3] = UInt8(max(0, min(255, Int32(a255))))
+                let chunks = min(h, max(1, ProcessInfo.processInfo.activeProcessorCount * 2))
+                let chunkSize = (h + chunks - 1) / chunks
+                DispatchQueue.concurrentPerform(iterations: chunks) { c in
+                    let startY = c * chunkSize
+                    guard startY < h else { return }
+                    let endY = min(h, startY + chunkSize)
+                    for y in startY..<endY {
+                        let srcRow = (h - 1 - y) * w * 4
+                        let dstRow = y * w * 4
+                        var srcP = rPtr + srcRow
+                        var dstP = oPtr + dstRow
+                        for _ in 0..<w {
+                            let a = srcP[3]
+                            if a >= 1.0 {
+                                let r255 = srcP[0] * 255.0 + 0.5
+                                let g255 = srcP[1] * 255.0 + 0.5
+                                let b255 = srcP[2] * 255.0 + 0.5
+                                dstP[0] = UInt8(max(0, min(255, Int32(r255))))
+                                dstP[1] = UInt8(max(0, min(255, Int32(g255))))
+                                dstP[2] = UInt8(max(0, min(255, Int32(b255))))
+                                dstP[3] = 255
+                            } else if a <= 0.0 {
+                                dstP[0] = 0
+                                dstP[1] = 0
+                                dstP[2] = 0
+                                dstP[3] = 0
+                            } else {
+                                let a255 = a * 255.0 + 0.5
+                                let r255 = min(srcP[0], a) * 255.0 + 0.5
+                                let g255 = min(srcP[1], a) * 255.0 + 0.5
+                                let b255 = min(srcP[2], a) * 255.0 + 0.5
+                                dstP[0] = UInt8(max(0, min(255, Int32(r255))))
+                                dstP[1] = UInt8(max(0, min(255, Int32(g255))))
+                                dstP[2] = UInt8(max(0, min(255, Int32(b255))))
+                                dstP[3] = UInt8(max(0, min(255, Int32(a255))))
+                            }
+                            srcP += 4
+                            dstP += 4
                         }
-                        srcP += 4
-                        dstP += 4
                     }
                 }
             }

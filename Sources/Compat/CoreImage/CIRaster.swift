@@ -228,31 +228,38 @@ enum RasterFilters {
                               let inPtr = inBuf.baseAddress,
                               let bgPtr = bgBuf.baseAddress,
                               let mskPtr = mskBuf.baseAddress else { return }
-                        DispatchQueue.concurrentPerform(iterations: h) { y in
-                            let rowStart = y * w * 4
-                            var outP = outPtr + rowStart
-                            var inP = inPtr + rowStart
-                            var bgP = bgPtr + rowStart
-                            var mskP = mskPtr + rowStart
-                            for _ in 0..<w {
-                                let ma = mskP[3]
-                                if ma <= 0 {
-                                    outP[0] = bgP[0]; outP[1] = bgP[1]; outP[2] = bgP[2]; outP[3] = bgP[3]
-                                } else {
-                                    let m = ma == 1.0 ? mskP[0] : mskP[0] / ma
-                                    if m <= 0.0 {
+                        let chunks = min(h, max(1, ProcessInfo.processInfo.activeProcessorCount * 2))
+                        let chunkSize = (h + chunks - 1) / chunks
+                        DispatchQueue.concurrentPerform(iterations: chunks) { c in
+                            let startY = c * chunkSize
+                            guard startY < h else { return }
+                            let endY = min(h, startY + chunkSize)
+                            for y in startY..<endY {
+                                let rowStart = y * w * 4
+                                var outP = outPtr + rowStart
+                                var inP = inPtr + rowStart
+                                var bgP = bgPtr + rowStart
+                                var mskP = mskPtr + rowStart
+                                for _ in 0..<w {
+                                    let ma = mskP[3]
+                                    if ma <= 0 {
                                         outP[0] = bgP[0]; outP[1] = bgP[1]; outP[2] = bgP[2]; outP[3] = bgP[3]
-                                    } else if m >= 1.0 {
-                                        outP[0] = inP[0]; outP[1] = inP[1]; outP[2] = inP[2]; outP[3] = inP[3]
                                     } else {
-                                        let invM = 1.0 - m
-                                        outP[0] = inP[0] * m + bgP[0] * invM
-                                        outP[1] = inP[1] * m + bgP[1] * invM
-                                        outP[2] = inP[2] * m + bgP[2] * invM
-                                        outP[3] = inP[3] * m + bgP[3] * invM
+                                        let m = ma == 1.0 ? mskP[0] : mskP[0] / ma
+                                        if m <= 0.0 {
+                                            outP[0] = bgP[0]; outP[1] = bgP[1]; outP[2] = bgP[2]; outP[3] = bgP[3]
+                                        } else if m >= 1.0 {
+                                            outP[0] = inP[0]; outP[1] = inP[1]; outP[2] = inP[2]; outP[3] = inP[3]
+                                        } else {
+                                            let invM = 1.0 - m
+                                            outP[0] = inP[0] * m + bgP[0] * invM
+                                            outP[1] = inP[1] * m + bgP[1] * invM
+                                            outP[2] = inP[2] * m + bgP[2] * invM
+                                            outP[3] = inP[3] * m + bgP[3] * invM
+                                        }
                                     }
+                                    outP += 4; inP += 4; bgP += 4; mskP += 4
                                 }
-                                outP += 4; inP += 4; bgP += 4; mskP += 4
                             }
                         }
                     }

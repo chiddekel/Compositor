@@ -56,6 +56,19 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     // and paints the composited RGBA — the architecture the Flatpak build ships.
     // The richer MainWindow (C-kernels Qt shell) is the C++-only build path's window.
     SessionWindow window;
+    for (int i = 1; i < argc; ++i) {
+        if (!argv[i]) continue;
+        QString arg = QString::fromLocal8Bit(argv[i]);
+        if (arg.startsWith(QLatin1Char('-'))) continue;
+        if (QFile::exists(arg)) {
+            if (arg.endsWith(QStringLiteral(".cproject"), Qt::CaseInsensitive)) {
+                window.loadProject(arg);
+            } else {
+                window.importImage(arg);
+            }
+            break;
+        }
+    }
     window.show();
     // CI and Swift smoke runs use offscreen Qt. Real desktop launches keep the
     // event loop alive; offscreen runs only need one paint pass.
