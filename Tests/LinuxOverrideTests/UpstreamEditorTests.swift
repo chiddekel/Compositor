@@ -161,6 +161,22 @@ struct UpstreamEditorTests {
         #expect(pixel(out, 30, 20) != pixel(ref, 30, 20), "the destination pixel changed")
     }
 
+    /// A stroke's paint must show up before `brushEnd` commits it — `displayedSnapshot()` composes
+    /// `BrushStroke.paintSnapshot()` (the same method upstream's own `EditorCanvas` uses for live paint)
+    /// alongside the filter/levels/hue-saturation preview branch.
+    @Test func liveStrokeShowsBeforeCommit() async throws {
+        let e = loaded()
+        let before = try e.renderRGBA().bytes
+        #expect(await send(e, cmd("brushBegin", #""x":20,"y":15,"parameters":{"diameter":16,"hardness":1,"opacity":1,"red":0,"green":1,"blue":0}"#),
+                            cmd("brushMove", #""x":24,"y":15"#)) == [0, 0], "stroke starts and moves without committing")
+        let midStroke = try e.renderRGBA().bytes
+        #expect(midStroke != before, "the in-progress stroke is visible before brushEnd")
+        #expect(pixel(midStroke, 20, 15)[1] > pixel(before, 20, 15)[1], "green paint shows at the dab")
+        await send(e, cmd("brushEnd"))
+        let committed = try e.renderRGBA().bytes
+        #expect(committed == midStroke, "the committed render matches what was already shown mid-stroke")
+    }
+
     @Test func cutIsCopyThenClear() async throws {
         let a = loaded(), b = loaded()
         let rect = cmd("selectRectangle", #""x":6,"y":5,"width":18,"height":14"#)
