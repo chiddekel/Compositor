@@ -3991,7 +3991,7 @@ void SessionWindow::setupHeaderBar() {
         dot->setCursor(Qt::PointingHandCursor);
         dot->setStyleSheet(QString(
             "QPushButton { background: %1; border: 1px solid rgba(0, 0, 0, 0.35); border-radius: 6px; padding: 0px; margin: 0px; } "
-            "QPushButton:hover { filter: brightness(1.2); }"
+            "QPushButton:hover { border: 1px solid rgba(0, 0, 0, 0.6); }"
         ).arg(colorHex));
         connect(dot, &QPushButton::clicked, this, clickAction);
         return dot;
@@ -4964,7 +4964,7 @@ void SessionWindow::updateOptionsBar() {
         if (rendered) {
             if (m_swiftUICurrentToolHeader) {
                 m_swiftUIOptionsContainer->layout()->removeWidget(m_swiftUICurrentToolHeader);
-                delete m_swiftUICurrentToolHeader;
+                retireRenderedPanel(m_swiftUICurrentToolHeader);
                 m_swiftUICurrentToolHeader = nullptr;
             }
             m_swiftUICurrentToolHeader = rendered;
@@ -4977,7 +4977,7 @@ void SessionWindow::updateOptionsBar() {
         } else {
             if (m_swiftUICurrentToolHeader) {
                 m_swiftUIOptionsContainer->layout()->removeWidget(m_swiftUICurrentToolHeader);
-                delete m_swiftUICurrentToolHeader;
+                retireRenderedPanel(m_swiftUICurrentToolHeader);
                 m_swiftUICurrentToolHeader = nullptr;
             }
             m_swiftUIOptionsContainer->hide();
@@ -4986,6 +4986,16 @@ void SessionWindow::updateOptionsBar() {
             m_optionsStack->show();
         }
     }
+}
+
+// A re-rendered SwiftUI panel replaces the previous one, often from inside one of that panel's own button handlers
+// (the click that changed the state). Deleting it there frees the widget whose signal is still running — a
+// use-after-free — and deleteLater() alone leaves it visible, stacked over its replacement, until the event loop
+// comes back round. So: take it out of sight now, free it later.
+void SessionWindow::retireRenderedPanel(QWidget *panel) {
+    if (!panel) return;
+    panel->hide();
+    panel->deleteLater();
 }
 
 void SessionWindow::updateToolRail() {
@@ -5026,7 +5036,7 @@ void SessionWindow::updateToolRail() {
         }
         if (m_swiftUICurrentToolRail) {
             m_swiftUIToolRailContainer->layout()->removeWidget(m_swiftUICurrentToolRail);
-            m_swiftUICurrentToolRail->deleteLater();
+            retireRenderedPanel(m_swiftUICurrentToolRail);
             m_swiftUICurrentToolRail = nullptr;
         }
         m_swiftUICurrentToolRail = rendered;
@@ -5045,7 +5055,7 @@ void SessionWindow::updateLayersPanel() {
     if (rendered) {
         if (m_swiftUICurrentLayersPanel) {
             m_swiftUILayersContainer->layout()->removeWidget(m_swiftUICurrentLayersPanel);
-            m_swiftUICurrentLayersPanel->deleteLater();
+            retireRenderedPanel(m_swiftUICurrentLayersPanel);
             m_swiftUICurrentLayersPanel = nullptr;
         }
         m_swiftUICurrentLayersPanel = rendered;
@@ -5217,7 +5227,7 @@ void SessionWindow::updateStatusTelemetry() {
         if (rendered) {
             if (m_swiftUICurrentStatusBar) {
                 m_swiftUIStatusBarContainer->layout()->removeWidget(m_swiftUICurrentStatusBar);
-                delete m_swiftUICurrentStatusBar;
+                retireRenderedPanel(m_swiftUICurrentStatusBar);
                 m_swiftUICurrentStatusBar = nullptr;
             }
             m_swiftUICurrentStatusBar = rendered;
@@ -5231,7 +5241,7 @@ void SessionWindow::updateStatusTelemetry() {
         } else {
             if (m_swiftUICurrentStatusBar) {
                 m_swiftUIStatusBarContainer->layout()->removeWidget(m_swiftUICurrentStatusBar);
-                delete m_swiftUICurrentStatusBar;
+                retireRenderedPanel(m_swiftUICurrentStatusBar);
                 m_swiftUICurrentStatusBar = nullptr;
             }
             m_swiftUIStatusBarContainer->hide();

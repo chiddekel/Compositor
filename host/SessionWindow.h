@@ -232,6 +232,7 @@ private:
     // Coalesces mid-stroke redraws to one render per frame; see scheduleStrokeRefresh() in SessionWindow.cpp.
     void scheduleStrokeRefresh();
     bool isBrushStrokeActive() const;
+    void retireRenderedPanel(QWidget *panel);
     void refreshLayers();
     void selectLayerRow(int row);
     void setOpacityFromSlider(int value);
