@@ -8,11 +8,20 @@
 #include <QImageReader>
 #include <QImageWriter>
 #include <QPainter>
+#include <QFont>
+#include <QFontMetricsF>
+#include <QGuiApplication>
+#include <QString>
+#include <QStringList>
+#include <QTextLayout>
+#include <QTextOption>
+#include <cmath>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include <memory>
 
 // HEIF/HEIC/AVIF go through libheif directly: the Qt plugin for them is not dependable (it swaps the dimensions of a
 // 64x32 image on a round trip). libheif is optional; without it those formats are simply not handled here.
@@ -274,9 +283,120 @@ int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_
     return 0;
 }
 
+// ---- Text: real fonts for the compat text system (AppKit's NSLayoutManager / NSString measuring and drawing) ----
+
+// "Helvetica-BoldOblique" -> family Helvetica, bold, italic: how PostScript names carry the face.
+QFont fontFor(const char *name, double pixelSize) {
+    QString family = QString::fromUtf8(name ? name : "");
+    QString face;
+    const qsizetype dash = family.lastIndexOf('-');
+    if (dash > 0) { face = family.mid(dash + 1).toLower(); family = family.left(dash); }
+    if (family.isEmpty() || family == QLatin1String("System") || family.startsWith('.')) family = QStringLiteral("Sans Serif");
+    QFont font(family);
+    font.setPixelSize(std::max(1, int(std::lround(pixelSize))));
+    if (face.contains(QLatin1String("black")) || face.contains(QLatin1String("heavy"))) font.setWeight(QFont::Black);
+    else if (face.contains(QLatin1String("bold"))) font.setWeight(QFont::Bold);
+    else if (face.contains(QLatin1String("semibold")) || face.contains(QLatin1String("demi"))) font.setWeight(QFont::DemiBold);
+    else if (face.contains(QLatin1String("medium"))) font.setWeight(QFont::Medium);
+    else if (face.contains(QLatin1String("light"))) font.setWeight(QFont::Light);
+    if (face.contains(QLatin1String("italic")) || face.contains(QLatin1String("oblique"))) font.setItalic(true);
+    return font;
+}
+
+struct TextLines {
+    std::vector<std::unique_ptr<QTextLayout>> paragraphs;
+    double width = 0, height = 0, lineHeight = 0, baseline = 0;
+};
+
+// Lays the text out as AppKit does with a fixed line height (min = max): each line `lineHeight` tall, its baseline
+// `lineHeight - descent` down, wrapping at `maxWidth` when positive; tracking is extra space after every character.
+TextLines layOut(const char *utf8, const char *fontName, double pixelSize, double tracking, double lineHeight, double maxWidth) {
+    TextLines out;
+    const QFont font = [&] { QFont f = fontFor(fontName, pixelSize); f.setLetterSpacing(QFont::AbsoluteSpacing, tracking); return f; }();
+    const QFontMetricsF metrics(font);
+    out.lineHeight = lineHeight > 0 ? lineHeight : pixelSize * 1.2;
+    out.baseline = out.lineHeight - metrics.descent();
+    const QStringList paragraphs = QString::fromUtf8(utf8 ? utf8 : "").split('\n');
+    int lines = 0;
+    for (const QString &text : paragraphs) {
+        auto layout = std::make_unique<QTextLayout>(text, font);
+        QTextOption option;
+        option.setWrapMode(maxWidth > 0 ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
+        layout->setTextOption(option);
+        layout->beginLayout();
+        for (;;) {
+            QTextLine line = layout->createLine();
+            if (!line.isValid()) break;
+            line.setLineWidth(maxWidth > 0 ? maxWidth : 1e7);
+            line.setPosition(QPointF(0, lines * out.lineHeight + out.baseline - line.ascent()));
+            out.width = std::max(out.width, double(line.naturalTextWidth()));
+            ++lines;
+        }
+        layout->endLayout();
+        out.paragraphs.push_back(std::move(layout));
+    }
+    out.height = std::max(1, lines) * out.lineHeight;
+    return out;
+}
+
+int32_t textLayout(const char *text, const char *fontName, double pixelSize, double tracking, double lineHeight,
+                   double maxWidth, double *width, double *height, double *baseline) {
+    if (!qGuiApp) return -2;   // fonts need a QGuiApplication (the shell has one; bare test processes may not)
+    const TextLines lines = layOut(text, fontName, pixelSize, tracking, lineHeight, maxWidth);
+    if (width) *width = lines.width;
+    if (height) *height = lines.height;
+    if (baseline) *baseline = lines.baseline;
+    return 0;
+}
+
+// Draws the laid-out text, premultiplied RGBA8, `boxWidth` wide (alignment within it) — malloc'd, the caller frees.
+int32_t textRender(const char *text, const char *fontName, double pixelSize, double tracking, double lineHeight,
+                   double maxWidth, int32_t alignment, double boxWidth, double r, double g, double b, double a,
+                   uint8_t **pixels, int32_t *outWidth, int32_t *outHeight) {
+    if (!qGuiApp || !pixels || !outWidth || !outHeight) return -2;
+    const TextLines lines = layOut(text, fontName, pixelSize, tracking, lineHeight, maxWidth);
+    const double width = std::max(boxWidth, lines.width);
+    const int w = std::max(1, int(std::ceil(width))), h = std::max(1, int(std::ceil(lines.height)));
+    if (qint64(w) * h > 200000000) return -1;
+    QImage image(w, h, QImage::Format_RGBA8888_Premultiplied);
+    image.fill(Qt::transparent);
+    {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::TextAntialiasing, true);
+        painter.setPen(QColor::fromRgbF(float(r), float(g), float(b), float(a)));
+        for (const auto &layout : lines.paragraphs) {
+            for (int i = 0; i < layout->lineCount(); ++i) {
+                const QTextLine line = layout->lineAt(i);
+                const double slack = width - line.naturalTextWidth();
+                const double x = alignment == 1 ? slack / 2 : alignment == 2 ? slack : 0;
+                line.draw(&painter, QPointF(x, 0));
+            }
+        }
+    }
+    const size_t bytes = size_t(w) * h * 4;
+    auto *copy = static_cast<uint8_t *>(std::malloc(bytes));
+    if (!copy) return -3;
+    for (int y = 0; y < h; ++y) std::memcpy(copy + size_t(y) * w * 4, image.constScanLine(y), size_t(w) * 4);
+    *pixels = copy; *outWidth = w; *outHeight = h;
+    return 0;
+}
+
 }  // namespace
 
+typedef int32_t (*CompositorTextLayoutFn)(const char *, const char *, double, double, double, double, double *, double *, double *);
+typedef int32_t (*CompositorTextRenderFn)(const char *, const char *, double, double, double, double, int32_t, double,
+                                          double, double, double, double, uint8_t **, int32_t *, int32_t *);
+extern "C" __attribute__((weak)) void compositor_text_register(CompositorTextLayoutFn layout, CompositorTextRenderFn render);
+
+extern "C" int compositor_qt_text_functions(CompositorTextLayoutFn *layout, CompositorTextRenderFn *render) {
+    if (!layout || !render) return 0;
+    *layout = textLayout;
+    *render = textRender;
+    return 1;
+}
+
 extern "C" int compositor_qt_imageio_install(void) {
+    if (compositor_text_register) compositor_text_register(textLayout, textRender);
     if (!compositor_imageio_register) return 0;
     compositor_imageio_register(decodeImage, encodeImage);
     return 1;

@@ -55,6 +55,12 @@ extension NSAttributedString {
     /// Approximate measure (0.55 em per character, one line height per line) until real shaping is available.
     public func boundingRect(with size: CGSize, options: NSStringDrawingOptions = []) -> CGRect {
         let attrs = length > 0 ? attributes(at: 0, effectiveRange: nil) : [:]
+        if let font = attrs[.font] as? NSFont,
+           let real = TextBackend.layout(string, font: font, tracking: (attrs[.kern] as? CGFloat) ?? 0,
+                                         lineHeight: (attrs[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0,
+                                         maxWidth: size.width >= 1e5 ? 0 : size.width) {
+            return CGRect(x: 0, y: 0, width: min(real.width, size.width), height: min(real.height, size.height))
+        }
         let point = (attrs[.font] as? NSFont)?.pointSize ?? 12
         let lines = string.split(separator: "\n", omittingEmptySubsequences: false)
         let widest = lines.map { CGFloat($0.count) * point * 0.55 }.max() ?? 0
@@ -123,6 +129,13 @@ open class NSLayoutManager {
     /// The glyph's origin (baseline) relative to its line fragment.
     open func location(forGlyphAt glyphIndex: Int) -> CGPoint {
         let p = placement(ofGlyphAt: glyphIndex)
+        let attrString = textStorage?.attributedString ?? NSAttributedString(string: "")
+        let attrs = attrString.length > 0 ? attrString.attributes(at: 0, effectiveRange: nil) : [:]
+        if let font = attrs[.font] as? NSFont,
+           let real = TextBackend.layout(attrString.string, font: font, tracking: (attrs[.kern] as? CGFloat) ?? 0,
+                                         lineHeight: p.lineHeight, maxWidth: 0) {
+            return CGPoint(x: p.x, y: real.baseline)
+        }
         return CGPoint(x: p.x, y: p.pointSize * 0.8)
     }
 
@@ -142,6 +155,23 @@ open class NSLayoutManager {
 
         let pointSize = font.pointSize > 0 ? font.pointSize : 12
         let lineHeight = (paragraph?.minimumLineHeight ?? 0) > 0 ? paragraph!.minimumLineHeight : pointSize * 1.2
+
+        // Real fonts when the host's text engine is there: laid out and drawn by it, placed at `origin`, the way
+        // upstream's text layers draw (a flipped context, y growing down from the text's top-left).
+        let wrapWidth = containerWidth >= 1e5 ? 0 : containerWidth
+        let alignment: Int32 = paragraph?.alignment == .center ? 1 : paragraph?.alignment == .right ? 2 : 0
+        if let image = TextBackend.render(fullString, font: font, tracking: tracking, lineHeight: lineHeight, maxWidth: wrapWidth,
+                                          alignment: alignment, boxWidth: wrapWidth, color: color) {
+            let rect = CGRect(x: origin.x, y: origin.y, width: CGFloat(image.width), height: CGFloat(image.height))
+            context.saveGState()
+            // CGContext draws an image with its first row at the rect's max y; in this y-down space that is upside
+            // down, so flip about the rect to put the first row at the top.
+            context.translateBy(x: 0, y: rect.minY + rect.maxY)
+            context.scaleBy(x: 1, y: -1)
+            context.draw(image, in: rect)
+            context.restoreGState()
+            return
+        }
 
         context.setFillColor(color.cgColor)
 
@@ -237,6 +267,10 @@ open class NSTextStorage {
 extension NSString {
     public func size(withAttributes attrs: [NSAttributedString.Key: Any]? = nil) -> CGSize {
         let font = (attrs?[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
+        if let real = TextBackend.layout(self as String, font: font, tracking: (attrs?[.kern] as? CGFloat) ?? 0,
+                                         lineHeight: 0, maxWidth: 0) {
+            return CGSize(width: real.width, height: real.height)
+        }
         let w = CGFloat(length) * font.pointSize * 0.55
         let h = font.pointSize * 1.2
         return CGSize(width: w, height: h)
