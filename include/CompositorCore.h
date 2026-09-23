@@ -54,6 +54,9 @@ int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capaci
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
 /* Moves whenever the next compositor_session_render would differ from the last (cheap: no pixels touched). */
 int64_t compositor_session_render_revision(uint64_t handle);
+/* Photoshop import: called with a JSON array of {"layer","message"} conversions to confirm; return non-zero to import. */
+typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
+void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 /* Mid-stroke partial render: the document area the brush changed since the last call, as premultiplied RGBA8 of
  * that area's size; rect receives x, y, width, height (document pixels). Returns the byte count (0: nothing changed)
  * or -3 when no region is tracked (not in a brush stroke) — then render the whole document instead. */

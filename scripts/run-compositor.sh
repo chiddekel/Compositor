@@ -149,6 +149,7 @@ flatpak run "${FLATPAK_ARGS[@]}" "$SDK_REF" -c "
     # actually invoking the final link step (confirmed — it leaves stale object files up to date and skips
     # relinking even after 'swift package clean'), silently leaving a missing or stale binary. --product always
     # builds and links the real deliverable.
-    /usr/lib/sdk/swift6/bin/swift build -c $CONFIG --product CompositorHostBootstrap
+    # A failed build must not fall through to running the previous binary (stale code passing for new).
+    /usr/lib/sdk/swift6/bin/swift build -c $CONFIG --product CompositorHostBootstrap || exit 1
     exec .build/x86_64-unknown-linux-gnu/$CONFIG/CompositorHostBootstrap "\$@"
 " bash "${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}"

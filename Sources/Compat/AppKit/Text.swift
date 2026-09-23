@@ -14,8 +14,9 @@ open class NSFont: @unchecked Sendable {
     }
     public let fontName: String
     public let pointSize: CGFloat
+    /// Nil when no installed font answers to `name`, as in AppKit (a document naming a font this machine lacks).
     public init?(name: String, size: CGFloat) {
-        guard !name.isEmpty else { return nil }
+        guard !name.isEmpty, InstalledFonts.contains(name) else { return nil }
         fontName = name; pointSize = size
     }
     private init(system size: CGFloat) { fontName = "System"; pointSize = size }
@@ -89,6 +90,41 @@ open class NSLayoutManager {
     }
 
     open func ensureLayout(for container: NSTextContainer) {}
+
+    /// The line a glyph sits on and its origin in that line, laid out exactly as `drawGlyphs` draws: fixed advances
+    /// (0.55 em plus tracking), lines `minimumLineHeight` or 1.2 em apart, wrapping at the container's width, each
+    /// glyph drawn in an em-tall box from the line's top — so its baseline is about 0.8 em down.
+    private func placement(ofGlyphAt index: Int) -> (line: Int, x: CGFloat, lineHeight: CGFloat, pointSize: CGFloat, width: CGFloat) {
+        let attrString = textStorage?.attributedString ?? NSAttributedString(string: "")
+        let attrs = attrString.length > 0 ? attrString.attributes(at: 0, effectiveRange: nil) : [:]
+        let font = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
+        let paragraph = attrs[.paragraphStyle] as? NSParagraphStyle
+        let tracking = (attrs[.kern] as? CGFloat) ?? 0
+        let pointSize = font.pointSize > 0 ? font.pointSize : 12
+        let lineHeight = (paragraph?.minimumLineHeight ?? 0) > 0 ? paragraph!.minimumLineHeight : pointSize * 1.2
+        let containerWidth = textContainers.first?.size.width ?? .greatestFiniteMagnitude
+        let advance = pointSize * 0.55 + tracking
+        var line = 0, x: CGFloat = 0
+        for (i, ch) in attrString.string.enumerated() {
+            if i == index { break }
+            if ch == "\n" { line += 1; x = 0; continue }
+            if ch != " ", x + advance > containerWidth, x > 0 { line += 1; x = 0 }
+            x += advance
+        }
+        return (line, x, lineHeight, pointSize, containerWidth)
+    }
+
+    open func lineFragmentRect(forGlyphAt glyphIndex: Int, effectiveRange: UnsafeMutablePointer<NSRange>?) -> CGRect {
+        let p = placement(ofGlyphAt: glyphIndex)
+        effectiveRange?.pointee = NSRange(location: 0, length: numberOfGlyphs)
+        return CGRect(x: 0, y: CGFloat(p.line) * p.lineHeight, width: p.width == .greatestFiniteMagnitude ? 0 : p.width, height: p.lineHeight)
+    }
+
+    /// The glyph's origin (baseline) relative to its line fragment.
+    open func location(forGlyphAt glyphIndex: Int) -> CGPoint {
+        let p = placement(ofGlyphAt: glyphIndex)
+        return CGPoint(x: p.x, y: p.pointSize * 0.8)
+    }
 
     open func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         guard let storage = textStorage,

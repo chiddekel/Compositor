@@ -39,6 +39,8 @@ private struct Command: Decodable {
     var adjustment: LayerAdjustment?
     /// "new" only: start with a blank "Layer 1", as upstream's New Canvas sheet asks (`emptyLayer: true`).
     var emptyLayer: Bool?
+    /// "importFiles": absolute paths of the files to bring in.
+    var paths: [String]?
 }
 
 private struct State: Encodable {
@@ -125,7 +127,7 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker",
+        "closeColorPicker", "importFiles",
     ]
 
     /// The adjustment as it was when editing began, for cancel.
@@ -263,6 +265,19 @@ final class UpstreamEditor {
                 s.previewTextColor(); s.previewEffectColor(); s.previewGradientMapColor(); s.previewVignetteColor()
             }
         case "closeColorPicker": s.closeColorPicker(commit: command.enabled ?? false)
+        // Upstream's own importer (EditorSession.importImages): PNG/JPEG/TIFF/HEIC through ImageIO, Photoshop PSD and PSB
+        // with their layers, masks and editable text, camera RAW. `enabled` = replace the document (the shell's Open
+        // Image); otherwise the files come in as layers, as a drop onto the canvas does.
+        case "importFiles":
+            guard let paths = command.paths, !paths.isEmpty else { return fail(-1, "paths required") }
+            ImportPrompts.install(on: s)
+            if command.enabled == true, s.document != nil { s.clearProject() }
+            await s.importImages(paths.map { URL(fileURLWithPath: $0) })
+            if let message = s.importError {
+                s.importError = nil   // reported to the shell; left set, it would block editing
+                return fail(-5, message)
+            }
+            guard s.document != nil else { return fail(-5, "nothing could be imported") }
         case "fillForeground", "fillBackground":
             let background = command.action == "fillBackground"
             let p = command.parameters ?? [:]

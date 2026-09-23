@@ -74,6 +74,8 @@ public:
     bool exportTIFF(const QString &path);
     bool exportWebP(const QString &path, int quality = 85);
     bool importImage(const QString &path);
+    // Upstream's importer (PSD/PSB with layers and text, RAW, HEIC): replace = open as the document, else add layers.
+    bool importWithUpstream(const QStringList &paths, bool replace);
     bool saveProject(const QString &path);
     bool loadProject(const QString &path);
 

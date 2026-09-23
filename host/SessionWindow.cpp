@@ -4,6 +4,8 @@
 
 #include "SessionWindow.h"
 #include "PerfTrace.h"
+
+static bool needsUpstreamImporter(const QString &path);
 #include "ImageExporters.h"
 #include "TabletHandler.h"
 #include "LayerItemDelegate.h"
@@ -85,6 +87,8 @@ void compositor_session_close(uint64_t handle);
 int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t count);
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_render_revision(uint64_t handle);
+typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
+void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
@@ -1472,6 +1476,10 @@ void SessionWindow::createMenus() {
 
     file->addAction(tr("Import Images…"), this, [this] {
         const QString path = m_platform.files->chooseImageToOpen();
+        if (!path.isEmpty() && needsUpstreamImporter(path)) {   // PSD/PSB/RAW/HEIC: upstream's importer, as layers
+            importWithUpstream({path}, false);
+            return;
+        }
         if (!path.isEmpty()) {
             QImageReader reader(path);
             const QImage decoded = reader.read();
@@ -3162,8 +3170,52 @@ bool SessionWindow::exportWebP(const QString &path, int quality) {
 // IO milestone: Import image using Qt's QImageReader
 // (replaces macOS CGImageSource/CoreImage). Loads image, converts to
 // premultiplied RGBA, and imports via compositor_session_import_rgba.
+// Upstream's Photoshop import asks before converting what it can't keep (smart objects, unsupported blend modes,
+// missing fonts, ...): the list comes here and is shown as upstream's sheet shows it.
+static int32_t confirmPhotoshopConversions(const uint8_t *json, size_t length) {
+    const QJsonArray rows = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char *>(json), qsizetype(length))).array();
+    QStringList lines;
+    for (const QJsonValue &row : rows) {
+        const QJsonObject o = row.toObject();
+        lines << QStringLiteral("• %1: %2").arg(o.value("layer").toString(), o.value("message").toString());
+    }
+    // Headless runs (smoke tests, screenshots) answer Import without a dialog, listing what was converted.
+    if (qEnvironmentVariableIsSet("COMPOSITOR_AUTO_CONFIRM_IMPORT")) {
+        for (const QString &line : lines) fprintf(stderr, "Import conversion: %s\n", qPrintable(line));
+        return 1;
+    }
+    QMessageBox box(QApplication::activeWindow());
+    box.setText(QObject::tr("Some parts of this Photoshop file will be converted"));
+    box.setInformativeText(lines.join('\n'));
+    QPushButton *import = box.addButton(QObject::tr("Import"), QMessageBox::AcceptRole);
+    box.addButton(QObject::tr("Cancel"), QMessageBox::RejectRole);
+    box.setDefaultButton(import);
+    box.exec();
+    return box.clickedButton() == import ? 1 : 0;
+}
+
+/// Files Qt's image readers don't handle — Photoshop documents, camera RAW, HEIC — go through upstream's importer,
+/// which keeps a PSD's layers, masks and text rather than a flattened picture.
+static bool needsUpstreamImporter(const QString &path) {
+    static const QStringList upstreamOnly = {"psd", "psb", "heic", "heif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "srf",
+                                             "sr2", "orf", "raf", "rw2", "pef", "srw", "x3f", "3fr", "iiq", "erf", "kdc", "mos", "mrw"};
+    return upstreamOnly.contains(QFileInfo(path).suffix().toLower());
+}
+
+bool SessionWindow::importWithUpstream(const QStringList &paths, bool replace) {
+    if (m_sessionHandle == 0 || paths.isEmpty()) return false;
+    compositor_set_conversion_prompt(&confirmPhotoshopConversions);
+    QJsonArray list;
+    for (const QString &path : paths) list.append(QFileInfo(path).absoluteFilePath());
+    const bool ok = sendCommand({{"action", "importFiles"}, {"paths", list}, {"enabled", replace}});
+    refreshImage();
+    refreshLayers();
+    return ok;
+}
+
 bool SessionWindow::importImage(const QString &path) {
     if (m_sessionHandle == 0) return false;
+    if (needsUpstreamImporter(path)) return importWithUpstream({path}, true);
 
     QImageReader reader(path);
     reader.setAutoTransform(true); // Handle EXIF orientation
