@@ -246,6 +246,7 @@ final class EditorSession {
     @ObservationIgnored var selectionMoveOrigin: DocumentSelection?
     var pixelMove: PixelMove?
     @ObservationIgnored var pixelClipboard: PixelClipboard?
+    @ObservationIgnored var copiedLayer: CopiedLayer?
     var levels: LevelsEdit? { didSet { resumeFileRequests() } }
     var hueSaturation: HueSaturationEdit?
     /// The open filter (Filter menu), and the settings the next one starts from.
@@ -346,7 +347,14 @@ final class EditorSession {
         if value.isBrushTool { _ = MetalBrushCoverage.shared }
         if value == .crop, cropRect == nil, let document {
             cropRatioChoice = "Free"
-            cropRect = CGRect(origin: .zero, size: document.size)
+            let canvas = CGRect(origin: .zero, size: document.size)
+            // With a selection, the crop starts at its bounds, as Photoshop's does: C, then Return, crops to it.
+            if let selection, !selection.isEmpty {
+                let bounds = selection.path.boundingBoxOfPath.integral.intersection(canvas)
+                cropRect = CropGeometry.valid(bounds) ? bounds : canvas
+            } else {
+                cropRect = canvas
+            }
         }
     }
     /// Tab steps the current tool through its own modes — the setting sitting at the left of its tool bar. Tools
@@ -403,15 +411,12 @@ final class EditorSession {
         let targets = (document?.layers ?? []).filter { selection.contains($0.id) && !carried.contains($0.id) }.map(\.id)
         guard !targets.isEmpty else { return }
         beginEdit(targets.count > 1 ? "Duplicate Layers" : "Duplicate Layer")
-        var copies: [UUID] = []
-        for id in targets {
-            selectLayer(id)
-            duplicateActiveLayer()
-            if let copy = activeLayerID, copy != id { copies.append(copy) }
-        }
+        // Stacked as Duplicate Layer stacks them: several together above the topmost original.
+        duplicateLayers(targets)
+        let copies = selectedLayerIDs.subtracting(selection)
         guard !copies.isEmpty else { endEdit(); selectLayers(selection, primary: primary); return }
-        transformDuplicate = (copies, selection, primary)
-        selectLayers(Set(copies), primary: copies.last)
+        transformDuplicate = (Array(copies), selection, primary)
+        selectLayers(copies, primary: activeLayerID)
         beginTransform(persistent: false)
     }
     func commitTransform() {

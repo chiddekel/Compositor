@@ -824,7 +824,8 @@ final class CanvasView: NSView {
             let stroke = session.brushStroke?.layer.id == layer.id ? session.brushStroke
                 : session.gradientEdit?.raster.layer.id == layer.id ? session.gradientEdit?.raster
                 : session.pixelMove?.raster.layer.id == layer.id ? session.pixelMove?.raster : nil
-            guard layer.asset != nil || stroke != nil else { return }
+            // An empty layer has nothing to draw, unless a filter (Vignette) is previewing pixels onto it.
+            guard layer.asset != nil || stroke != nil || session.filterEdit?.previewImage(for: layer.id) != nil else { return }
             // Smudge or Liquify in progress: the layer as the stroke has reshaped it so far, across the canvas.
             if let warp = session.warpStroke, warp.layer.id == layer.id, let image = warp.image {
                 let canvas = LayerTransform(origin: .zero, size: document.size)

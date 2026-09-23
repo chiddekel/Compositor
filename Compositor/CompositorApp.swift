@@ -156,7 +156,7 @@ struct CompositorApp: App {
                         .configuredKeyboardShortcut("x")
                     Button("Copy") {
                         if NSApp.keyWindow?.firstResponder is NSTextView { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }
-                        else if session.canCopyPixels { session.copySelection() }
+                        else if session.canCopyPixels || session.canCopyLayer { session.copySelection() }
                         else { NSSound.beep() }
                     }
                         .configuredKeyboardShortcut("c")
@@ -164,6 +164,7 @@ struct CompositorApp: App {
                         .configuredKeyboardShortcut("c", modifiers: [.command, .shift]).disabled(!session.canCopyMerged)
                     Button("Paste") {
                         if NSApp.keyWindow?.firstResponder is NSTextView { NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil) }
+                        else if applicationDelegate.workspace.pasteCopiedLayer() { }
                         else if session.canPaste { session.paste() }
                         else { NSSound.beep() }
                     }
@@ -261,7 +262,7 @@ struct CompositorApp: App {
                 CommandMenu("Filter") {
                     ForEach(FilterKind.allCases.filter { $0 != .contentAwareFill && !$0.isImageAdjustment }, id: \.self) { kind in
                         Button("\(kind.rawValue)…") { session.beginFilter(kind) }
-                            .disabled(!session.canAdjustColors || session.hueSaturation != nil)
+                            .disabled(!(kind == .vignette ? session.canVignette : session.canAdjustColors) || session.hueSaturation != nil)
                     }
                 }
                 CommandMenu("Layer") {
@@ -277,7 +278,7 @@ struct CompositorApp: App {
                     Button(session.canTransformSelection ? "Transform Selection" : "Transform Layer") { session.transformCommand() }
                         .configuredKeyboardShortcut("t").disabled(!session.canTransform && !session.canTransformSelection)
                     Button(session.selection == nil ? "Duplicate Layer" : "Layer via Copy") { session.layerViaCopy() }
-                        .configuredKeyboardShortcut("j").disabled(!session.canCopyPixels && !(session.selection == nil && session.canEditLayers && session.activeLayer?.isGroup == false))
+                        .configuredKeyboardShortcut("j").disabled(!session.canCopyPixels && !(session.selection == nil && session.canEditLayers && session.activeLayer != nil))
                     Divider()
                     Button(session.activeLayer?.maskSourceID == nil ? "Create Clipping Mask" : "Release Clipping Mask") {
                         if let id = session.activeLayerID { session.toggleClippingMask(id) }

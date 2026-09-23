@@ -94,6 +94,38 @@ struct FilterSheet: View {
                 }
                 .pickerStyle(.segmented)
                 Toggle("Monochromatic", isOn: flag(\.monochromatic))
+            case .vignette:
+                HStack(spacing: 8) {
+                    Text("Color").frame(width: 95, alignment: .leading)
+                    Button { session.openVignetteColorPicker() } label: {
+                        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        shape.fill(Color(.sRGB, red: settings.vignetteColor.red,
+                                         green: settings.vignetteColor.green, blue: settings.vignetteColor.blue))
+                            .overlay { shape.inset(by: 1).strokeBorder(.white, lineWidth: 1.5) }
+                            .overlay { shape.strokeBorder(.black, lineWidth: 1) }
+                            .frame(width: 24, height: 24)
+                            .contentShape(shape)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Choose the vignette color")
+                    Spacer()
+                }
+                control("Amount", \.vignetteAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                    .help("Blend the chosen color into the edges while keeping the center unchanged")
+                control("Midpoint", \.vignetteMidpoint, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                control("Roundness", \.vignetteRoundness, range: -100...100, unit: "", decimals: 0, logarithmic: false)
+                control("Feather", \.vignetteFeather, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                control("Highlights", \.vignetteHighlights, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                    .help("Protect bright areas near the edge")
+            case .bloomGlow:
+                control("Amount", \.bloomAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                control("Radius", \.bloomRadius, range: 1...150, unit: "px", decimals: 0, logarithmic: true)
+            case .tonalContrast:
+                control("Amount", \.tonalAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                control("Shadows", \.tonalShadows, range: -100...100, unit: "%", decimals: 0, logarithmic: false)
+                control("Midtones", \.tonalMidtones, range: -100...100, unit: "%", decimals: 0, logarithmic: false)
+                control("Highlights", \.tonalHighlights, range: -100...100, unit: "%", decimals: 0, logarithmic: false)
+                control("Radius", \.tonalRadius, range: 1...100, unit: "px", decimals: 0, logarithmic: true)
             case .lensCorrection:
                 control("Remove Distortion", \.distortion, range: -100...100, unit: "", decimals: 0, logarithmic: false)
                 Text("Positive straightens lines that bow outward (barrel); negative, lines that bow inward (pincushion).")
@@ -129,8 +161,11 @@ struct FilterSheet: View {
         .fixedSize(horizontal: false, vertical: !isCameraRaw)
 
         .disabled(edit?.committing == true)
-        // The app's color picker, open on a Gradient Map end, previews its working color live.
-        .onChange(of: session.colorPicker?.color) { _, _ in session.previewGradientMapColor() }
+        // Filter colors preview live while the app's color picker is open.
+        .onChange(of: session.colorPicker?.color) { _, _ in
+            session.previewGradientMapColor()
+            session.previewVignetteColor()
+        }
     }
 
     private func flag(_ key: WritableKeyPath<FilterSettings, Bool>) -> Binding<Bool> {

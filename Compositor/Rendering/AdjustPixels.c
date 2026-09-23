@@ -408,12 +408,11 @@ static void effects_dehaze(double *r, double *g, double *b, double amount) {
     *b = camera_clamp(y2 + (*b - y2) * sat);
 }
 
-static void effects_vignette(double *r, double *g, double *b, size_t x, size_t y, size_t width, size_t height,
-                             double amount, double midpoint, double roundness, double feather, double highlights,
-                             int style) {
-    if (amount == 0 || width == 0 || height == 0) return;
-    double nx = ((double)x + 0.5) / (double)width * 2.0 - 1.0;
-    double ny = ((double)y + 0.5) / (double)height * 2.0 - 1.0;
+/// The vignette's strength at a point `px`, `py` of a `width` × `height` frame (0 at its middle, 1 past its edges).
+static double vignette_mask_at(double px, double py, double width, double height,
+                               double midpoint, double roundness, double feather) {
+    double nx = px / width * 2.0 - 1.0;
+    double ny = py / height * 2.0 - 1.0;
     double square = fmax(fabs(nx), fabs(ny));
     double circle = hypot(nx, ny) / sqrt(2.0);
     double shape = (1.0 - roundness / 100.0) * 0.5;
@@ -423,7 +422,19 @@ static void effects_vignette(double *r, double *g, double *b, size_t x, size_t y
     if (soft < 0.05) soft = 0.05;
     double t = (dist - start) / soft;
     t = camera_clamp(t);
-    double mask = t * t * (3.0 - 2.0 * t);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+static double vignette_mask(size_t x, size_t y, size_t width, size_t height,
+                            double midpoint, double roundness, double feather) {
+    return vignette_mask_at((double)x + 0.5, (double)y + 0.5, (double)width, (double)height, midpoint, roundness, feather);
+}
+
+static void effects_vignette(double *r, double *g, double *b, size_t x, size_t y, size_t width, size_t height,
+                             double amount, double midpoint, double roundness, double feather, double highlights,
+                             int style) {
+    if (amount == 0 || width == 0 || height == 0) return;
+    double mask = vignette_mask(x, y, width, height, midpoint, roundness, feather);
     double effect = (amount / 100.0) * mask;
     // Highlight Priority eases a darkening vignette off bright pixels. The other styles do not.
     if (effect < 0 && style == 0) {
@@ -444,6 +455,47 @@ static void effects_vignette(double *r, double *g, double *b, size_t x, size_t y
         *r = camera_clamp(lum + (*r - lum) * sat);
         *g = camera_clamp(lum + (*g - lum) * sat);
         *b = camera_clamp(lum + (*b - lum) * sat);
+    }
+}
+
+void adjust_colored_vignette(uint8_t *rgba, size_t width, size_t height, size_t stride,
+                             double frameX, double frameY, double frameWidth, double frameHeight, int fillsClear,
+                             double amount, double midpoint, double roundness, double feather,
+                             double highlights, double red, double green, double blue) {
+    if (!rgba || amount <= 0 || width == 0 || height == 0 || frameWidth <= 0 || frameHeight <= 0) return;
+    double strength = camera_clamp(amount / 100.0);
+    red = camera_clamp(red); green = camera_clamp(green); blue = camera_clamp(blue);
+    for (size_t y = 0; y < height; ++y) {
+        uint8_t *row = rgba + y * stride;
+        for (size_t x = 0; x < width; ++x) {
+            uint8_t *p = row + x * 4;
+            if (!p[3] && !fillsClear) continue;
+            double mask = vignette_mask_at((double)x + 0.5 - frameX, (double)y + 0.5 - frameY, frameWidth, frameHeight,
+                                           midpoint, roundness, feather);
+            if (mask <= 0) continue;
+            double alpha = p[3] / 255.0;
+            double r = 0, g = 0, b = 0, bright = 0;
+            if (p[3]) {
+                r = fmin(1.0, p[0] / (double)p[3]);
+                g = fmin(1.0, p[1] / (double)p[3]);
+                b = fmin(1.0, p[2] / (double)p[3]);
+                bright = camera_clamp((rec709(r, g, b) - 0.45) / 0.55);
+            }
+            double effect = strength * mask * (1.0 - (highlights / 100.0) * bright);
+            if (!fillsClear) {
+                // Only the pixels that are there change color; their coverage stays as it was.
+                write_premultiplied(p, r + (red - r) * effect, g + (green - g) * effect, b + (blue - b) * effect, p[3]);
+                continue;
+            }
+            // The color painted over the pixel at `effect`: an opaque pixel moves toward it, a clear one takes it on.
+            double out = alpha + effect * (1.0 - alpha);
+            if (out <= 0) continue;
+            r = (red * effect + r * alpha * (1.0 - effect)) / out;
+            g = (green * effect + g * alpha * (1.0 - effect)) / out;
+            b = (blue * effect + b * alpha * (1.0 - effect)) / out;
+            p[3] = (uint8_t)fmin(255.0, round(out * 255.0));
+            write_premultiplied(p, r, g, b, p[3]);
+        }
     }
 }
 
@@ -579,6 +631,44 @@ void adjust_camera_raw_effects(uint8_t *rgba, size_t width, size_t height, size_
     free(fine);
     free(coarse);
     free(glowPlane);
+}
+
+static double tonal_smooth(double low, double high, double value) {
+    double t = camera_clamp((value - low) / (high - low));
+    return t * t * (3.0 - 2.0 * t);
+}
+
+void adjust_tonal_contrast(uint8_t *rgba, const uint8_t *blurred, size_t width, size_t height,
+                           size_t stride, size_t blurredStride, double amount,
+                           double shadows, double midtones, double highlights) {
+    if (amount <= 0 || (shadows == 0 && midtones == 0 && highlights == 0)) return;
+    double strength = amount / 50.0;
+    for (size_t y = 0; y < height; ++y) {
+        uint8_t *row = rgba + y * stride;
+        const uint8_t *baseRow = blurred + y * blurredStride;
+        for (size_t x = 0; x < width; ++x) {
+            uint8_t *p = row + x * 4;
+            const uint8_t *base = baseRow + x * 4;
+            double alpha = p[3];
+            if (alpha == 0 || base[3] == 0) continue;
+            double r = fmin(1.0, p[0] / alpha);
+            double g = fmin(1.0, p[1] / alpha);
+            double b = fmin(1.0, p[2] / alpha);
+            double lum = rec709(r, g, b);
+            double baseLum = rec709(fmin(1.0, base[0] / (double)base[3]),
+                                    fmin(1.0, base[1] / (double)base[3]),
+                                    fmin(1.0, base[2] / (double)base[3]));
+            double shadowWeight = 1.0 - tonal_smooth(0.15, 0.5, baseLum);
+            double highlightWeight = tonal_smooth(0.5, 0.85, baseLum);
+            double midtoneWeight = 1.0 - shadowWeight - highlightWeight;
+            double weight = (shadows * shadowWeight + midtones * midtoneWeight +
+                             highlights * highlightWeight) / 100.0;
+            double detail = lum - baseLum;
+            double delta = 0.18 * tanh(detail * 6.0) * weight * strength * (4.0 * lum * (1.0 - lum));
+            write_premultiplied(p, camera_clamp(r + delta), camera_clamp(g + delta),
+                                camera_clamp(b + delta), alpha);
+        }
+    }
 }
 
 static double lut_at(const float *lut, double value) {
