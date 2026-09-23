@@ -100,6 +100,21 @@ private struct State: Encodable {
     let shapeKind: String?
     let shapeRect: [Double]?
     let shapeLine: [Double]?
+    /// The text being typed (upstream `textDraft`): where it sits and how it looks, for the shell's inline editor.
+    let textDraft: TextDraftState?
+    struct TextDraftState: Encodable {
+        let origin: [Double]
+        let size: [Double]?
+        let rotation: Double
+        let content: String
+        let fontName: String
+        let fontSize: Double
+        let color: [Double]
+        let alignment: String
+        let boxSize: [Double]?
+        let padding: Double
+        let editingLayer: Bool
+    }
 }
 
 private func rgb(_ color: PaletteColor) -> [Double] { [Double(color.red), Double(color.green), Double(color.blue)] }
@@ -136,6 +151,7 @@ final class UpstreamEditor {
         "closeColorPicker", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
+        "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textFinish", "textCancel",
     ]
 
     /// The adjustment as it was when editing began, for cancel.
@@ -309,6 +325,34 @@ final class UpstreamEditor {
             s.dragShape(to: point, square: (p["square"] ?? 0) != 0, fromCenter: (p["fromCenter"] ?? 0) != 0)
         case "shapeFinish": s.finishShape()
         case "shapeCancel": s.cancelShape()
+        // The Type tool, as upstream's EditorCanvas / InlineTextEditor drive it.
+        case "textEditAt":   // live text under the point (Type click, or Move double-click): open it for editing
+            guard let point = point(command), let document = s.document, s.canEditLayers else { return fail(-1, "invalid point") }
+            guard s.finishText() else { return fail(-5, s.brushError ?? "text could not be applied") }
+            let visible = document.effectiveVisibleIDs
+            guard let layer = document.layers.reversed().first(where: { visible.contains($0.id) && $0.liveText != nil && $0.transform.contains(point) })
+            else { return fail(-5, "no text here") }
+            s.commitTransform()
+            s.selectLayer(layer.id)
+            s.editActiveText()
+            guard s.textDraft != nil else { return fail(-5, "text could not be opened") }
+        case "textBegin":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            guard s.finishText() else { return fail(-5, s.brushError ?? "text could not be applied") }
+            s.beginText(at: point, newLayer: command.enabled ?? true)
+            guard s.textDraft != nil else { return fail(-5, "text could not start") }
+        case "textBeginBox":
+            guard let point = point(command), let w = command.width, let h = command.height else { return fail(-1, "invalid box") }
+            guard s.finishText() else { return fail(-5, s.brushError ?? "text could not be applied") }
+            s.beginText(in: CGRect(x: point.x, y: point.y, width: Double(w), height: Double(h)))
+            guard s.textDraft != nil else { return fail(-5, s.brushError ?? "text box could not start") }
+        case "textSetContent":   // InlineTextEditor.textDidChange
+            guard var draft = s.textDraft else { return fail(-5, "no text being edited") }
+            draft.style.content = command.name ?? ""
+            s.textDraft = draft
+        case "textFinish":
+            guard s.finishText() else { return fail(-5, s.brushError ?? "text could not be applied") }
+        case "textCancel": s.cancelText()
         case "fillForeground", "fillBackground":
             let background = command.action == "fillBackground"
             let p = command.parameters ?? [:]
@@ -633,7 +677,16 @@ final class UpstreamEditor {
             gradientLine: s.gradientEdit.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] },
             shapeKind: s.shapeDraft.map { $0.kind.rawValue },
             shapeRect: s.shapeDraft.map { [Double($0.rect.minX), Double($0.rect.minY), Double($0.rect.width), Double($0.rect.height)] },
-            shapeLine: s.shapeLineEnds.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] })
+            shapeLine: s.shapeLineEnds.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] },
+            textDraft: s.textDraft.map { draft in
+                let style = draft.style
+                return State.TextDraftState(origin: [Double(draft.origin.x), Double(draft.origin.y)],
+                    size: draft.transform.map { [Double($0.size.width), Double($0.size.height)] },
+                    rotation: Double(draft.transform?.rotation ?? 0), content: style.content, fontName: style.fontName,
+                    fontSize: Double(style.fontSize), color: [Double(style.red), Double(style.green), Double(style.blue)],
+                    alignment: style.alignment.rawValue, boxSize: style.boxSize.map { [Double($0.width), Double($0.height)] },
+                    padding: Double(LayerTextStyle.padding), editingLayer: draft.layerID != nil)
+            })
         return try JSONEncoder().encode(state)
     }
 
@@ -690,9 +743,11 @@ final class UpstreamEditor {
                 // Mask strokes are placed in the mask's own pixel grid (maskPlacement), not the layer transform.
                 masks[layer.id] = painted.asset
             }
-            if shown != layer.transform {
+            // Text being edited is drawn by the shell's inline editor, not from the layer (EditorCanvas skips it too).
+            let editing = s.textDraft?.layerID == layer.id
+            if shown != layer.transform || editing {
                 let record = manifest.layers[index]
-                manifest.layers[index] = ProjectLayerRecord(id: record.id, name: record.name, isVisible: record.isVisible, transform: shown,
+                manifest.layers[index] = ProjectLayerRecord(id: record.id, name: record.name, isVisible: record.isVisible && !editing, transform: shown,
                     imageFile: record.imageFile, parentID: record.parentID, isGroup: record.isGroup, opacity: record.opacity,
                     blendMode: record.blendMode, maskFile: record.maskFile, maskEnabled: record.maskEnabled, maskSourceID: record.maskSourceID,
                     adjustment: record.adjustment, maskPlacement: record.maskPlacement, maskLinked: record.maskLinked,
@@ -771,6 +826,7 @@ final class UpstreamEditor {
         let size: CGSize?
         let brushRevision: Int
         let layers: [Layer]
+        let editingTextLayer: UUID?
     }
 
     func renderKey() -> RenderKey {
@@ -788,7 +844,8 @@ final class UpstreamEditor {
                 blendMode: s.displayedBlendMode(for: layer), adjustment: layer.adjustment, effects: layer.effects,
                 maskPlacement: s.displayedMaskPlacement(for: layer), preview: preview.map { ObjectIdentifier($0) })
         }
-        return RenderKey(documentID: document?.id, size: document?.size, brushRevision: s.brushRevision, layers: layers)
+        return RenderKey(documentID: document?.id, size: document?.size, brushRevision: s.brushRevision, layers: layers,
+                         editingTextLayer: s.textDraft?.layerID)
     }
 
     /// The composite as premultiplied RGBA8 (document size), from upstream's own exporter.

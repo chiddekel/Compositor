@@ -148,10 +148,20 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 }
                 send(QEvent::MouseButtonRelease, to, Qt::NoButton);
                 for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                // COMPOSITOR_GRAB_TYPE: typed into whatever has focus (the Type tool's inline editor).
+                const QString typed = qEnvironmentVariable("COMPOSITOR_GRAB_TYPE");
+                for (const QChar c : typed) {
+                    QWidget *target = QApplication::focusWidget() ? QApplication::focusWidget() : &window;
+                    QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, QString(c));
+                    QCoreApplication::sendEvent(target, &press);
+                    for (int i = 0; i < 2; ++i) QCoreApplication::processEvents();
+                }
                 const QString key = qEnvironmentVariable("COMPOSITOR_GRAB_KEY");
                 if (!key.isEmpty()) {
-                    QKeyEvent press(QEvent::KeyPress, key == "escape" ? Qt::Key_Escape : Qt::Key_Return, Qt::NoModifier);
-                    QCoreApplication::sendEvent(&window, &press);
+                    QWidget *target = key == "ctrlreturn" && QApplication::focusWidget() ? QApplication::focusWidget() : static_cast<QWidget *>(&window);
+                    QKeyEvent press(QEvent::KeyPress, key == "escape" ? Qt::Key_Escape : Qt::Key_Return,
+                                    key == "ctrlreturn" ? Qt::ControlModifier : Qt::NoModifier);
+                    QCoreApplication::sendEvent(target, &press);
                     for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
                 }
                 const QJsonObject st = window.sessionState();

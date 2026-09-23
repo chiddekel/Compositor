@@ -14,6 +14,11 @@ static bool needsUpstreamImporter(const QString &path);
 #include "SwiftUIQtRenderer.h"
 
 #include <QPainter>
+#include <QFontMetricsF>
+#include <QTextDocument>
+#include <QTextOption>
+#include <QTextCursor>
+#include <QPlainTextEdit>
 #include <QLineF>
 #include <cmath>
 #include <QScrollArea>
@@ -166,6 +171,9 @@ protected:
     }
     void mouseReleaseEvent(QMouseEvent *event) override {
         m_window->canvasMouseReleaseEvent(event, this);
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        if (!m_window->canvasMouseDoubleClickEvent(event, this)) QWidget::mouseDoubleClickEvent(event);
     }
     void tabletEvent(QTabletEvent *event) override {
         m_window->canvasTabletEvent(event, this);
@@ -956,6 +964,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
             updateOptionsBar();
             updateLayersPanel();
         } else if (panel == "ToolHeaders") {
+            syncTextEditor();           // Done / Cancel in the Type bar, or a style change of the text being typed
             syncPaletteFromSession();   // header swatches (type color, effects) open the picker too
             syncOptionsFromSession();
             updateOptionsBar();
@@ -981,6 +990,18 @@ SessionWindow::~SessionWindow() {
 }
 
 bool SessionWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_textEditor && event->type() == QEvent::KeyPress) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        const bool apply = (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) && (key->modifiers() & Qt::ControlModifier);
+        if (key->key() == Qt::Key_Escape || apply) {   // Esc cancels, Ctrl+Return applies (Cmd+Return on macOS)
+            sendCommandQuiet({{"action", apply ? "textFinish" : "textCancel"}});
+            syncTextEditor();
+            refreshImage();
+            refreshLayers();
+            if (m_canvasWidget) m_canvasWidget->setFocus();
+            return true;
+        }
+    }
     const bool isMenuBar = watched == menuBar();
     if (watched == m_headerToolBar || isMenuBar || watched->objectName() == QLatin1String("header.dragArea")) {
         auto *mouseEvent = event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick
@@ -2264,6 +2285,14 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         p.drawEllipse(b, 5, 5);
         p.restore();
     }
+    // A text box being dragged out (upstream drawTextBoxDraft).
+    if (!m_textBoxRect.isNull()) {
+        p.save();
+        p.setPen(QPen(QColor(0, 122, 255), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(documentToCanvasPoint(m_textBoxRect.topLeft()), documentToCanvasPoint(m_textBoxRect.bottomRight())));
+        p.restore();
+    }
     // The shape being dragged, outlined until release fills it on a new layer.
     if (!m_shapeRect.isNull()) {
         p.save();
@@ -2745,6 +2774,11 @@ void SessionWindow::setTool(Tool tool) {
     if (m_tool == Tool::Crop && tool != Tool::Crop) {
         cancelCrop();
     }
+    if (m_tool == Tool::Type && tool != Tool::Type && m_textEditor && m_textEditor->isVisible()) {
+        sendCommandQuiet({{"action", "textFinish"}});   // switching tools applies the text, as upstream does
+        syncTextEditor();
+        refreshImage();
+    }
     m_tool = tool;
     if (m_toolActions.contains(tool) && !m_toolActions[tool]->isChecked()) {
         m_toolActions[tool]->setChecked(true);
@@ -3011,11 +3045,112 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         syncCanvasDrafts();
         break;
     }
-    case Tool::Type:
+    case Tool::Type: {
+        // Live text under the click opens for editing; otherwise a drag lays out a text box and a click places point
+        // text (upstream beginTextGesture / finishTextGesture).
+        if (sendCommandQuiet({{"action", "textEditAt"}, {"x", point.x()}, {"y", point.y()}})) {
+            syncTextEditor();
+            refreshImage();
+            break;
+        }
+        m_textBoxAnchor = point;
+        m_textBoxRect = QRectF(point, QSizeF(0, 0));
+        m_painting = true;
+        break;
+    }
     case Tool::Idle:
     default:
         break;
     }
+}
+
+bool SessionWindow::sendCommandQuiet(const QJsonObject &command) {
+    if (m_sessionHandle == 0) return false;
+    QJsonObject payload = command;
+    payload.insert("version", 1);
+    const QByteArray bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    return compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0;
+}
+
+/// Move tool: double-click live text to edit it without switching to Type first (upstream 1.2.9).
+bool SessionWindow::canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    if (event->button() != Qt::LeftButton || m_tool != Tool::Move) return false;
+    const QPointF point = documentPoint(event->position());
+    if (!sendCommandQuiet({{"action", "textEditAt"}, {"x", point.x()}, {"y", point.y()}})) return false;
+    m_transformHandle = -1;
+    m_painting = false;
+    setTool(Tool::Type);
+    syncTextEditor();
+    refreshImage();
+    return true;
+}
+
+/// Shows the inline text editor over the session's text draft (or hides it when there is none): the draft's font,
+/// size (at the current zoom), colour and alignment, placed where the text will be, as upstream's InlineTextEditor.
+void SessionWindow::syncTextEditor() {
+    const QJsonObject draft = sessionState().value("textDraft").toObject();
+    if (draft.isEmpty() || !m_canvasWidget || m_image.isNull()) {
+        if (m_textEditor) m_textEditor->hide();
+        return;
+    }
+    if (!m_textEditor) {
+        m_textEditor = new QPlainTextEdit(m_canvasWidget);
+        m_textEditor->setObjectName("canvas.textEditor");
+        m_textEditor->setFrameShape(QFrame::NoFrame);
+        m_textEditor->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_textEditor->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_textEditor->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+        m_textEditor->installEventFilter(this);
+        connect(m_textEditor, &QPlainTextEdit::textChanged, this, [this] {
+            if (m_syncingText) return;
+            sendCommandQuiet({{"action", "textSetContent"}, {"name", m_textEditor->toPlainText()}});
+            layoutTextEditor();
+        });
+    }
+    m_textDraft = draft;
+    const QString content = draft.value("content").toString();
+    if (m_textEditor->toPlainText() != content) {
+        m_syncingText = true;
+        m_textEditor->setPlainText(content);
+        m_textEditor->moveCursor(QTextCursor::End);   // existing text opens with the cursor after it (1.2.9)
+        m_syncingText = false;
+    }
+    layoutTextEditor();
+    m_textEditor->show();
+    m_textEditor->raise();
+    m_textEditor->setFocus();
+}
+
+void SessionWindow::layoutTextEditor() {
+    if (!m_textEditor || m_textDraft.isEmpty() || m_image.isNull()) return;
+    const QRectF target = canvasTargetRect();
+    const double scale = target.width() / m_image.width();
+    const QJsonArray origin = m_textDraft.value("origin").toArray(), color = m_textDraft.value("color").toArray();
+    const double padding = m_textDraft.value("padding").toDouble(12) * scale;
+    QFont font(m_textDraft.value("fontName").toString());
+    font.setPixelSize(std::max(1, int(std::lround(m_textDraft.value("fontSize").toDouble(72) * scale))));
+    m_textEditor->setFont(font);
+    const QColor ink = QColor::fromRgbF(color.at(0).toDouble(), color.at(1).toDouble(), color.at(2).toDouble());
+    m_textEditor->setStyleSheet(QString("QPlainTextEdit { background: transparent; color: %1; border: 1px dashed rgba(0,122,255,0.8); }").arg(ink.name()));
+    const QString alignment = m_textDraft.value("alignment").toString();
+    QTextOption option = m_textEditor->document()->defaultTextOption();
+    option.setAlignment(alignment == "Center" ? Qt::AlignHCenter : alignment == "Right" ? Qt::AlignRight : Qt::AlignLeft);
+    m_textEditor->document()->setDefaultTextOption(option);
+    m_textEditor->document()->setDocumentMargin(0);
+    const QPointF topLeft = documentToCanvasPoint(QPointF(origin.at(0).toDouble(), origin.at(1).toDouble()));
+    const QFontMetricsF metrics(font);
+    QSizeF size;
+    const QJsonArray box = m_textDraft.value("boxSize").toArray();
+    if (box.size() == 2) {
+        size = QSizeF(box[0].toDouble() * scale - 2 * padding, box[1].toDouble() * scale - 2 * padding);
+    } else {   // point text: as wide as its longest line, as tall as its lines
+        double widest = metrics.horizontalAdvance(QStringLiteral("M"));
+        const QStringList lines = m_textEditor->toPlainText().split('\n');
+        for (const QString &line : lines) widest = std::max(widest, metrics.horizontalAdvance(line));
+        size = QSizeF(widest + metrics.averageCharWidth() * 2, metrics.lineSpacing() * std::max<qsizetype>(1, lines.size()) + 4);
+    }
+    m_textEditor->setGeometry(QRectF(topLeft + QPointF(padding, padding), size).toAlignedRect());
 }
 
 /// The gradient line and shape draft the canvas overlays, read back from the session after each change.
@@ -3085,6 +3220,11 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
         scheduleStrokeRefresh();
         return;
     }
+    if (m_tool == Tool::Type) {
+        m_textBoxRect = QRectF(m_textBoxAnchor, point).normalized();
+        if (m_canvasWidget) m_canvasWidget->update();
+        return;
+    }
     if (m_tool == Tool::Shape) {
         // Shift: square / circle / 45° line; Alt: from the center (Option in upstream).
         sendCommand({{"action", "shapeDrag"}, {"x", point.x()}, {"y", point.y()},
@@ -3129,6 +3269,17 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
         sendCommand({{"action", "gradientEndDrag"}});   // a click without a line leaves nothing pending
         syncCanvasDrafts();
         refreshImage();
+        return;
+    }
+    if (m_tool == Tool::Type) {
+        const QRectF box = m_textBoxRect;
+        m_textBoxRect = QRectF();
+        const bool click = box.width() < 4 && box.height() < 4;
+        if (click) sendCommand({{"action", "textBegin"}, {"x", box.x()}, {"y", box.y()}, {"enabled", true}});
+        else sendCommand({{"action", "textBeginBox"}, {"x", box.x()}, {"y", box.y()},
+                          {"width", qRound(box.width())}, {"height", qRound(box.height())}});
+        syncTextEditor();
+        if (m_canvasWidget) m_canvasWidget->update();
         return;
     }
     if (m_tool == Tool::Shape) {

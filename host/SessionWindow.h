@@ -208,6 +208,7 @@ public:
     void canvasMousePressEvent(QMouseEvent *event, QWidget *canvas);
     void canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas);
     void canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas);
+    bool canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *canvas);
     void canvasTabletEvent(QTabletEvent *event, QWidget *canvas);
     void canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas);
     void canvasDropEvent(QDropEvent *event, QWidget *canvas);
@@ -236,6 +237,12 @@ private:
     QRectF m_shapeRect;
     QString m_shapeKind;
     QVector<double> m_shapeLine;
+    // Type tool: the inline editor over the session's text draft, the draft it shows, and a text box being dragged.
+    class QPlainTextEdit *m_textEditor = nullptr;
+    QJsonObject m_textDraft;
+    bool m_syncingText = false;
+    QPointF m_textBoxAnchor;
+    QRectF m_textBoxRect;
     int64_t m_shownRenderRevision = -1;   // compositor_session_render_revision of m_image
     uint64_t m_shownRenderHandle = 0;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
     void showSizeDialog(bool imageSize);
@@ -248,6 +255,9 @@ private:
     bool isBrushStrokeActive() const;
     void retireRenderedPanel(QWidget *panel);
     void syncCanvasDrafts();
+    bool sendCommandQuiet(const QJsonObject &command);   // no status-bar error (probing, e.g. "text here?")
+    void syncTextEditor();
+    void layoutTextEditor();
     void refreshLayers();
     void selectLayerRow(int row);
     void setOpacityFromSlider(int value);
