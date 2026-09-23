@@ -171,7 +171,11 @@ nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: U
     let panelName = String(cString: panel)
     return withEntry(handle) { entry in
         guard let wire = resolvePanel(panelName, entry: entry) else { return -1 }
-        guard let data = try? JSONEncoder().encode(wire) else { return -5 }
+        // Sorted keys: the same tree must serialise to the same bytes, so the Qt shell can skip rebuilding an unchanged
+        // panel (swiftUIRenderPanelIfChanged).
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(wire) else { return -5 }
         if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
         return Int64(data.count)
     }

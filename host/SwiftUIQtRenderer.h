@@ -21,6 +21,9 @@ QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &c
 /// against the session `sessionHandle` already identifies, as a standalone (unparented) `QWidget` tree. Returns
 /// `nullptr` if the panel name is unknown to the Swift side, the session handle is invalid, or the tree is empty.
 QWidget *swiftUIRenderPanel(uint64_t sessionHandle, const QString &panel);
+/// Like `swiftUIRenderPanel`, but returns `current` itself (repainted, not rebuilt) when the panel's resolved tree is
+/// byte-for-byte the one `current` was built from — most state changes leave most panels untouched.
+QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &panel, QWidget *current);
 
 /// Registers a listener called immediately after any SwiftUI action handler finishes dispatching.
 void registerSwiftUIActionListener(std::function<void(uint64_t handle, const QString &panel)> listener);

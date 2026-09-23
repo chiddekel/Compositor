@@ -5,6 +5,7 @@
 // every panel, no per-panel Qt glue. This is intentionally the *only* place that knows the kind→widget mapping.
 
 #include "SwiftUIQtRenderer.h"
+#include "PerfTrace.h"
 
 #include <QAction>
 #include <QBoxLayout>
@@ -170,14 +171,20 @@ private:
     double m_strokeWidth;
 };
 
-QJsonObject fetchTree(uint64_t handle, const QString &panel) {
+/// The panel's resolved tree as the Swift side serialises it (also re-registers its action handlers there).
+QByteArray fetchTreeBytes(uint64_t handle, const QString &panel) {
     const QByteArray panelUtf8 = panel.toUtf8();
     const int64_t size = compositor_session_render_tree(handle, panelUtf8.constData(), nullptr, 0);
     if (size <= 0 || size > 4 * 1024 * 1024) return {};
     QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
     if (compositor_session_render_tree(handle, panelUtf8.constData(), reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size)
         return {};
-    return QJsonDocument::fromJson(bytes).object();
+    return bytes;
+}
+
+QJsonObject fetchTree(uint64_t handle, const QString &panel) {
+    const QByteArray bytes = fetchTreeBytes(handle, panel);
+    return bytes.isEmpty() ? QJsonObject() : QJsonDocument::fromJson(bytes).object();
 }
 
 std::vector<std::function<void(uint64_t, const QString &)>> g_actionListeners;
@@ -1100,9 +1107,30 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 } // namespace
 
 QWidget *swiftUIRenderPanel(uint64_t sessionHandle, const QString &panel) {
-    const QJsonObject root = fetchTree(sessionHandle, panel);
+    return swiftUIRenderPanelIfChanged(sessionHandle, panel, nullptr);
+}
+
+QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &panel, QWidget *current) {
+    PERF_SCOPE(QStringLiteral("swiftUIRenderPanel:") + panel);
+    QByteArray bytes;
+    { PERF_SCOPE(QStringLiteral("fetchTree:") + panel); bytes = fetchTreeBytes(sessionHandle, panel); }
+    if (bytes.isEmpty()) return nullptr;
+    // Same session, same tree: the widgets already show it. Node ids are positional, so its buttons still reach the
+    // handlers the fetch just re-registered; canvases fetch their pixels at paint time, so a repaint refreshes them.
+    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle
+        && current->property("swiftUITree").toByteArray() == bytes) {
+        current->update();
+        return current;
+    }
+    const QJsonObject root = QJsonDocument::fromJson(bytes).object();
     if (root.isEmpty()) return nullptr;
-    return buildNode(sessionHandle, panel, root);
+    PERF_SCOPE(QStringLiteral("buildNode:") + panel);
+    QWidget *built = buildNode(sessionHandle, panel, root);
+    if (built) {
+        built->setProperty("swiftUIHandle", QVariant::fromValue<qulonglong>(sessionHandle));
+        built->setProperty("swiftUITree", bytes);
+    }
+    return built;
 }
 
 void registerSwiftUIActionListener(std::function<void(uint64_t, const QString &)> listener) {

@@ -223,7 +223,8 @@ private:
     void sendPaletteColor(const QColor &color, bool background);
     void presentSessionColorPicker();
     bool m_presentingColorPicker = false;
-    bool m_railFitChecked = false;   // the opening-size fit to the tool rail runs once
+    bool m_railFitChecked = false;
+    bool m_layersRefreshQueued = false;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
     void showAdjustDialog(const QString &kind);

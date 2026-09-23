@@ -3,6 +3,7 @@
 // codecs (IO milestone: file-map "IO / codec mapping" tier).
 
 #include "SessionWindow.h"
+#include "PerfTrace.h"
 #include "ImageExporters.h"
 #include "TabletHandler.h"
 #include "LayerItemDelegate.h"
@@ -128,6 +129,7 @@ static QImage straightRGBA(const std::vector<uint8_t> &premultiplied, int width,
 }
 
 static QImage renderToQImage(uint64_t h, int width, int height) {
+    PERF_SCOPE("renderToQImage");
     const int bytes = width * height * 4;
     std::vector<uint8_t> rgba(static_cast<size_t>(bytes));
     int64_t n = compositor_session_render(h, rgba.data(), rgba.size());
@@ -360,6 +362,7 @@ void SessionWindow::addDocumentTab(uint64_t handle, const QString &title, const 
 }
 
 void SessionWindow::switchToDocumentTab(int index) {
+    PERF_SCOPE("switchToDocumentTab");
     if (index < 0 || index >= static_cast<int>(m_documents.size())) return;
     if (m_activeDocumentIndex >= 0 && m_activeDocumentIndex < static_cast<int>(m_documents.size())) {
         m_documents[m_activeDocumentIndex].zoomLevel = m_zoomLevel;
@@ -1117,6 +1120,7 @@ void SessionWindow::sendPaletteColor(const QColor &color, bool background) {
 }
 
 void SessionWindow::syncPaletteFromSession() {
+    PERF_SCOPE("syncPaletteFromSession");
     if (m_sessionHandle != 0) {
         const QJsonObject state = sessionState();
         auto colorOf = [](const QJsonValue &v, const QColor &fallback) {
@@ -2159,6 +2163,7 @@ QPointF SessionWindow::documentPoint(const QPointF &windowPoint) const {
 }
 
 void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
+    PERF_SCOPE("canvasPaintEvent");
     Q_UNUSED(event);
     QPainter p(canvas);
     // Dark professional neutral workspace background
@@ -2282,6 +2287,7 @@ void SessionWindow::paintEvent(QPaintEvent *event) {
 }
 
 QJsonObject SessionWindow::sessionState() const {
+    PERF_SCOPE("sessionState");
     const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
     if (size <= 0 || size > 4 * 1024 * 1024) return {};
     QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
@@ -2290,6 +2296,7 @@ QJsonObject SessionWindow::sessionState() const {
 }
 
 bool SessionWindow::sendCommand(const QJsonObject &command) {
+    PERF_SCOPE("sendCommand");
     if (m_sessionHandle == 0) return false;
     QJsonObject payload = command;
     payload.insert("version", 1);
@@ -2301,6 +2308,7 @@ bool SessionWindow::sendCommand(const QJsonObject &command) {
 }
 
 void SessionWindow::refreshImage() {
+    PERF_SCOPE("refreshImage");
     if (m_sessionHandle == 0) return;
     if (m_strokeRefreshTimer) m_strokeRefreshTimer->stop(); // this full refresh supersedes a pending stroke redraw
     const auto state = sessionState();
@@ -2316,7 +2324,11 @@ void SessionWindow::refreshImage() {
     update();
     updateStatusTelemetry();
     updateOptionsBar();
-    QMetaObject::invokeMethod(this, [this] { refreshLayers(); }, Qt::QueuedConnection);
+    // Coalesced: many commands refresh the image, then the layers, in one turn; the layers panel rebuilds once.
+    if (!m_layersRefreshQueued) {
+        m_layersRefreshQueued = true;
+        QMetaObject::invokeMethod(this, [this] { m_layersRefreshQueued = false; refreshLayers(); }, Qt::QueuedConnection);
+    }
 }
 
 // Mid-stroke, every brushMove still reaches the session (so the stroke stays continuous), but the canvas is
@@ -2379,6 +2391,7 @@ bool SessionWindow::setLayerFlag(const char *action, bool on) {
 }
 
 void SessionWindow::refreshLayers() {
+    PERF_SCOPE("refreshLayers");
     if (!m_layersView || !m_layerModel || m_sessionHandle == 0) return;
     const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
     if (size <= 0 || size > 4 * 1024 * 1024) return;
@@ -2457,7 +2470,10 @@ void SessionWindow::refreshLayers() {
             nameItem->setToolTip(tr("Raster Layer"));
             const QByteArray idBytes = id.toUtf8();
             size_t assetW = 0, assetH = 0;
-            const int64_t assetBytes = compositor_session_export_layer(
+            // Thumbnails copy each layer's full pixels: only worth it while this legacy list is the one on screen
+            // (the SwiftUI Layers panel draws its own). Otherwise every refresh copied megabytes per layer for nothing.
+            const bool legacyListShown = m_layersStack && m_layersStack->currentWidget() == m_legacyLayersPanel;
+            const int64_t assetBytes = !legacyListShown ? 0 : compositor_session_export_layer(
                 m_sessionHandle, reinterpret_cast<const uint8_t *>(idBytes.constData()), idBytes.size(), 0,
                 nullptr, 0, &assetW, &assetH);
             if (assetBytes > 0 && assetW > 0 && assetH > 0 && layers.size() <= 64
@@ -4946,6 +4962,7 @@ void SessionWindow::setupOptionsBar() {
 }
 
 void SessionWindow::updateOptionsBar() {
+    PERF_SCOPE("updateOptionsBar");
     if (!m_optionsStack) return;
     const int idx = static_cast<int>(m_tool);
     if (idx >= 0 && idx < m_optionsStack->count()) {
@@ -4960,8 +4977,10 @@ void SessionWindow::updateOptionsBar() {
     }
 
     if (m_sessionHandle != 0 && m_swiftUIOptionsContainer) {
-        QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("ToolHeaders"));
-        if (rendered) {
+        QWidget *rendered = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("ToolHeaders"), m_swiftUICurrentToolHeader);
+        if (rendered && rendered == m_swiftUICurrentToolHeader) {
+            // Unchanged tree: the panel on screen already shows it (repainted, not rebuilt).
+        } else if (rendered) {
             if (m_swiftUICurrentToolHeader) {
                 m_swiftUIOptionsContainer->layout()->removeWidget(m_swiftUICurrentToolHeader);
                 retireRenderedPanel(m_swiftUICurrentToolHeader);
@@ -4999,6 +5018,7 @@ void SessionWindow::retireRenderedPanel(QWidget *panel) {
 }
 
 void SessionWindow::updateToolRail() {
+    PERF_SCOPE("updateToolRail");
     if (m_sessionHandle == 0 || !m_toolsBar) return;
     if (!m_swiftUIToolRailContainer) {
         m_swiftUIToolRailContainer = new QWidget(m_toolsBar);
@@ -5008,8 +5028,10 @@ void SessionWindow::updateToolRail() {
         layout->setSpacing(0);
         m_toolsBar->insertWidget(m_toolsBar->actions().isEmpty() ? nullptr : m_toolsBar->actions().first(), m_swiftUIToolRailContainer);
     }
-    QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("ToolRail"));
-    if (rendered) {
+    QWidget *rendered = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("ToolRail"), m_swiftUICurrentToolRail);
+    if (rendered && rendered == m_swiftUICurrentToolRail) {
+            // Unchanged tree: the panel on screen already shows it (repainted, not rebuilt).
+        } else if (rendered) {
         // The rail is upstream's ScrollView (taller than the default 1180x780 window, as on macOS): a re-render
         // (every palette change, tool switch) must keep where it was scrolled, or the lower tools and the colour
         // swatches jump out of view right after being used.
@@ -5050,9 +5072,12 @@ void SessionWindow::updateToolRail() {
 }
 
 void SessionWindow::updateLayersPanel() {
+    PERF_SCOPE("updateLayersPanel");
     if (m_sessionHandle == 0 || !m_layersDock || !m_layersStack) return;
-    QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("LayersPanel"));
-    if (rendered) {
+    QWidget *rendered = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("LayersPanel"), m_swiftUICurrentLayersPanel);
+    if (rendered && rendered == m_swiftUICurrentLayersPanel) {
+            // Unchanged tree: the panel on screen already shows it (repainted, not rebuilt).
+        } else if (rendered) {
         if (m_swiftUICurrentLayersPanel) {
             m_swiftUILayersContainer->layout()->removeWidget(m_swiftUICurrentLayersPanel);
             retireRenderedPanel(m_swiftUICurrentLayersPanel);
@@ -5068,6 +5093,7 @@ void SessionWindow::updateLayersPanel() {
 }
 
 void SessionWindow::syncToolFromSession() {
+    PERF_SCOPE("syncToolFromSession");
     if (m_sessionHandle == 0) return;
     const auto state = sessionState();
     const QString toolStr = state.value("tool").toString();
@@ -5095,6 +5121,7 @@ void SessionWindow::syncToolFromSession() {
 }
 
 void SessionWindow::syncOptionsFromSession() {
+    PERF_SCOPE("syncOptionsFromSession");
     if (m_sessionHandle == 0) return;
     const auto state = sessionState();
     const QString selMode = state.value("selectionMode").toString();
@@ -5116,6 +5143,7 @@ void SessionWindow::syncOptionsFromSession() {
 }
 
 void SessionWindow::updateStatusTelemetry() {
+    PERF_SCOPE("updateStatusTelemetry");
     if (!statusBar()) return;
 
     if (!m_statusZoomLabel) {
@@ -5223,8 +5251,10 @@ void SessionWindow::updateStatusTelemetry() {
             layout->setSpacing(0);
             statusBar()->addWidget(m_swiftUIStatusBarContainer, 1);
         }
-        QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("StatusBar"));
-        if (rendered) {
+        QWidget *rendered = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("StatusBar"), m_swiftUICurrentStatusBar);
+        if (rendered && rendered == m_swiftUICurrentStatusBar) {
+            // Unchanged tree: the panel on screen already shows it (repainted, not rebuilt).
+        } else if (rendered) {
             if (m_swiftUICurrentStatusBar) {
                 m_swiftUIStatusBarContainer->layout()->removeWidget(m_swiftUICurrentStatusBar);
                 retireRenderedPanel(m_swiftUICurrentStatusBar);

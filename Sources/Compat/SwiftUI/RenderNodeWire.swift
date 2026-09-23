@@ -38,7 +38,8 @@ extension RenderNode {
             }
         }
         return RenderNodeWire(id: id, kind: kind, stringParams: stringParams, doubleParams: doubleParams, boolParams: boolParams,
-                              handlerKeys: Array(keys), modifiers: modifiers.compactMap { $0.wire() },
+                              handlerKeys: keys.sorted(),   // sorted: a set's order changes between runs, and the shell compares trees byte for byte
+                              modifiers: modifiers.compactMap { $0.wire() },
                               children: children.map { $0.wire() })
     }
 }
