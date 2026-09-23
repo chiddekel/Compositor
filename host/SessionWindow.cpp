@@ -14,6 +14,7 @@
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QMouseEvent>
+#include <QWindow>
 #include <QTabletEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -328,6 +329,10 @@ void SessionWindow::createNewDocument(int width, int height) {
 SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     : QMainWindow(parent), m_platform(services.withDefaults()) {
     setWindowTitle("Compositor");
+    // The header bar (setupHeaderBar) already draws its own macOS-style traffic-light close/minimize/maximize
+    // buttons, so the native system title bar is pure duplicate chrome — hide it. Window dragging then has to
+    // come from somewhere else; the eventFilter installed on m_headerToolBar below provides it.
+    setWindowFlag(Qt::FramelessWindowHint, true);
     resize(ParityMetrics::WindowDefaultWidth, ParityMetrics::WindowDefaultHeight);
     setMinimumSize(ParityMetrics::WindowMinWidth, ParityMetrics::WindowMinHeight);
     setAcceptDrops(true);
@@ -804,6 +809,27 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
 SessionWindow::~SessionWindow() {
     if (m_sessionHandle != 0) compositor_session_close(m_sessionHandle);
+}
+
+bool SessionWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_headerToolBar) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->button() == Qt::LeftButton) {
+                if (QWindow *handle = windowHandle()) {
+                    handle->startSystemMove();
+                    return true;
+                }
+            }
+        } else if (event->type() == QEvent::MouseButtonDblClick) {
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->button() == Qt::LeftButton) {
+                if (isMaximized()) showNormal(); else showMaximized();
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void SessionWindow::setMarqueeMode(MarqueeMode mode) {
@@ -3679,6 +3705,9 @@ void SessionWindow::setupHeaderBar() {
     m_headerToolBar->setMovable(false);
     m_headerToolBar->setFixedHeight(38);
     m_headerToolBar->setStyleSheet("QToolBar { background: #1e1e20; border-bottom: 1px solid #141416; spacing: 8px; padding: 2px 10px; }");
+    // The window has no native title bar (Qt::FramelessWindowHint, see the constructor) — dragging the header
+    // bar's own empty background is the only way left to move the window. See eventFilter().
+    m_headerToolBar->installEventFilter(this);
 
     // macOS Traffic Light dots
     auto *trafficContainer = new QWidget(m_headerToolBar);

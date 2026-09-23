@@ -190,6 +190,13 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
 
+public:
+    // Drags the window when the header bar's empty background is clicked-and-dragged — the native window still
+    // has no title bar (see setWindowFlag(Qt::FramelessWindowHint) in the constructor), so this is the window's
+    // only way to move. Installed on m_headerToolBar; only fires for events sent to the toolbar itself, never to
+    // its child buttons (traffic lights, New, tabs, zoom), so those keep working normally.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
     friend class SessionCanvasWidget;
     void canvasPaintEvent(QPaintEvent *event, QWidget *canvas);
     void canvasMousePressEvent(QMouseEvent *event, QWidget *canvas);
