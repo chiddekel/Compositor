@@ -6,6 +6,10 @@
 
 #include "SwiftUIQtRenderer.h"
 #include "PerfTrace.h"
+#include <QTimer>
+#include <QTextEdit>
+#include <QAbstractSpinBox>
+#include <QApplication>
 
 #include <QAction>
 #include <QBoxLayout>
@@ -188,6 +192,11 @@ QJsonObject fetchTree(uint64_t handle, const QString &panel) {
 }
 
 std::vector<std::function<void(uint64_t, const QString &)>> g_actionListeners;
+
+/// Tells the shell a panel may need refreshing, without dispatching an action (an interaction just ended).
+void notifyListeners(uint64_t handle, const QString &panel) {
+    for (const auto &cb : g_actionListeners) cb(handle, panel);
+}
 
 void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, const QString &handlerKey, const QByteArray &payload = {}) {
     const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8(), keyUtf8 = handlerKey.toUtf8();
@@ -796,6 +805,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = checkBox;
     } else if (kind == "TextField") {
         auto *field = new QLineEdit;
+        QObject::connect(field, &QLineEdit::editingFinished, field, [handle, panel] { notifyListeners(handle, panel); });
         field->setStyleSheet("QLineEdit { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 2px 4px; font-size: 11px; } QLineEdit:focus { border-color: #007aff; }");
         const QStringList handlerKeys = [&] {
             QStringList keys;
@@ -828,8 +838,25 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         slider->setRange(0, steps);
         const double span = (upper > lower) ? (upper - lower) : 1;
         slider->setValue(static_cast<int>((doubles.value("value").toDouble() - lower) / span * steps));
-        QObject::connect(slider, &QSlider::valueChanged, slider, [handle, panel, id, lower, span](int step) {
-            dispatch(handle, panel, id, QStringLiteral("value"), jsonFragment(lower + span * step / 1000.0));
+        // A drag moves through hundreds of steps a second, each one an action plus whatever it updates. Send at most one
+        // per frame (the latest), and the exact final value on release — a drag then keeps up with the pointer.
+        auto *frame = new QTimer(slider);
+        frame->setSingleShot(true);
+        frame->setInterval(16);
+        auto send = [handle, panel, id, lower, span, slider] {
+            dispatch(handle, panel, id, QStringLiteral("value"), jsonFragment(lower + span * slider->value() / 1000.0));
+        };
+        QObject::connect(frame, &QTimer::timeout, slider, send);
+        QObject::connect(slider, &QSlider::valueChanged, slider, [slider, frame, send](int) {
+            if (!slider->isSliderDown()) { send(); return; }   // keyboard, wheel, click on the track: immediate
+            if (!frame->isActive()) frame->start();
+        });
+        // While dragging, the panel is not rebuilt (it would replace this slider under the mouse and end the drag);
+        // on release it catches up with everything the drag changed.
+        QObject::connect(slider, &QSlider::sliderReleased, slider, [handle, panel, frame, send] {
+            frame->stop();
+            send();
+            notifyListeners(handle, panel);
         });
         widget = slider;
     } else if (kind == "Picker") {
@@ -1106,12 +1133,25 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 
 } // namespace
 
+static bool isBeingManipulated(QWidget *panel) {
+    for (QSlider *slider : panel->findChildren<QSlider *>()) if (slider->isSliderDown()) return true;
+    if (QWidget *grabber = QWidget::mouseGrabber(); grabber && panel->isAncestorOf(grabber)) return true;
+    QWidget *focus = QApplication::focusWidget();
+    return focus && panel->isAncestorOf(focus)
+        && (qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus) || qobject_cast<QTextEdit *>(focus));
+}
+
 QWidget *swiftUIRenderPanel(uint64_t sessionHandle, const QString &panel) {
     return swiftUIRenderPanelIfChanged(sessionHandle, panel, nullptr);
 }
 
 QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &panel, QWidget *current) {
     PERF_SCOPE(QStringLiteral("swiftUIRenderPanel:") + panel);
+    // Mid-drag / mid-typing the panel stays as it is (see below), so don't even resolve its tree.
+    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && isBeingManipulated(current)) {
+        current->update();
+        return current;
+    }
     QByteArray bytes;
     { PERF_SCOPE(QStringLiteral("fetchTree:") + panel); bytes = fetchTreeBytes(sessionHandle, panel); }
     if (bytes.isEmpty()) return nullptr;
@@ -1119,6 +1159,12 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
     // handlers the fetch just re-registered; canvases fetch their pixels at paint time, so a repaint refreshes them.
     if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle
         && current->property("swiftUITree").toByteArray() == bytes) {
+        current->update();
+        return current;
+    }
+    // Being dragged or typed in: rebuilding now would replace the slider under the mouse (ending the drag) or the
+    // field being typed in (losing focus mid-word). Keep it; the release / end of editing refreshes the panel.
+    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && isBeingManipulated(current)) {
         current->update();
         return current;
     }

@@ -694,6 +694,51 @@ final class UpstreamEditor {
         return (raster.bytes, rect)
     }
 
+    /// Everything the composite depends on, compared by identity for pixels (an image replaced is a new object) — the
+    /// same ingredients as upstream's `EditorCanvas.DisplayState` (private there), which decides when the macOS canvas
+    /// redraws, plus the live previews `displayedSnapshot` shows. Equal keys mean an identical render, so a panel
+    /// action that changes no pixels (a brush setting, a tool, a menu) doesn't re-composite the document.
+    struct RenderKey: Equatable {
+        struct Layer: Equatable {
+            let id: UUID
+            let transform: LayerTransform
+            let image: ObjectIdentifier?
+            let mask: ObjectIdentifier?
+            let maskSourceID: UUID?
+            let parentID: UUID?
+            let isGroup: Bool
+            let visible: Bool
+            let opacity: Double
+            let blendMode: LayerBlendMode
+            let adjustment: LayerAdjustment?
+            let effects: LayerEffects?
+            let maskPlacement: LayerTransform?
+            let preview: ObjectIdentifier?
+        }
+        let documentID: UUID?
+        let size: CGSize?
+        let brushRevision: Int
+        let layers: [Layer]
+    }
+
+    func renderKey() -> RenderKey {
+        let s = session
+        let document = s.document
+        let visible = document?.effectiveVisibleIDs ?? []
+        let opacities = document?.effectiveOpacities ?? [:]
+        let layers = (document?.layers ?? []).map { layer -> RenderKey.Layer in
+            let preview = s.filterEdit?.previewImage(for: layer.id) ?? s.levels?.previewImage(for: layer.id)
+                ?? s.hueSaturation?.previewImage(for: layer.id)
+            return RenderKey.Layer(id: layer.id, transform: s.displayedTransform(for: layer),
+                image: layer.asset.map { ObjectIdentifier($0.image) }, mask: layer.mask.map { ObjectIdentifier($0.asset.image) },
+                maskSourceID: layer.maskSourceID, parentID: layer.parentID, isGroup: layer.isGroup,
+                visible: visible.contains(layer.id), opacity: opacities[layer.id] ?? layer.opacity,
+                blendMode: s.displayedBlendMode(for: layer), adjustment: layer.adjustment, effects: layer.effects,
+                maskPlacement: s.displayedMaskPlacement(for: layer), preview: preview.map { ObjectIdentifier($0) })
+        }
+        return RenderKey(documentID: document?.id, size: document?.size, brushRevision: s.brushRevision, layers: layers)
+    }
+
     /// The composite as premultiplied RGBA8 (document size), from upstream's own exporter.
     func renderRGBA() throws -> (bytes: [UInt8], width: Int, height: Int) {
         settle()

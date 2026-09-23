@@ -84,6 +84,7 @@ uint64_t compositor_session_create(void);
 void compositor_session_close(uint64_t handle);
 int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t count);
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
+int64_t compositor_session_render_revision(uint64_t handle);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
@@ -2314,8 +2315,24 @@ void SessionWindow::refreshImage() {
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
     if (width <= 0 || height <= 0 || qint64(width) * height > 200000000) return;   // upstream DocumentLimits.maxSurfacePixels
+    // Same composite as the one on screen (a brush setting, a tool, a menu changed nothing visible): no render, no
+    // conversion — only the chrome below is brought up to date.
+    const int64_t revision = compositor_session_render_revision(m_sessionHandle);
+    const bool unchanged = revision >= 0 && revision == m_shownRenderRevision && m_shownRenderHandle == m_sessionHandle
+        && m_image.width() == width && m_image.height() == height;
+    if (unchanged) {
+        updateStatusTelemetry();
+        updateOptionsBar();
+        if (!m_layersRefreshQueued) {
+            m_layersRefreshQueued = true;
+            QMetaObject::invokeMethod(this, [this] { m_layersRefreshQueued = false; refreshLayers(); }, Qt::QueuedConnection);
+        }
+        return;
+    }
     QImage rendered = renderToQImage(m_sessionHandle, width, height);
     if (rendered.isNull()) return;
+    m_shownRenderRevision = compositor_session_render_revision(m_sessionHandle);
+    m_shownRenderHandle = m_sessionHandle;
     const int dpm = qRound(state.value("resolution").toDouble(72) / 0.0254);
     rendered.setDotsPerMeterX(dpm);
     rendered.setDotsPerMeterY(dpm);

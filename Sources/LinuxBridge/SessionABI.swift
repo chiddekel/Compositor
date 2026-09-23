@@ -13,6 +13,9 @@ import CoreGraphics
 final class Entry {
     let editor: UpstreamEditor
     var rendered: (bytes: [UInt8], width: Int, height: Int)?
+    /// What `rendered` was made from, and a counter that moves whenever a new render differs.
+    var renderedKey: UpstreamEditor.RenderKey?
+    var renderRevision: Int64 = 0
     /// Document area the brush stroke in progress changed since the last `compositor_session_render_dirty`.
     var strokeDirty: CGRect?
     /// The last resolved SwiftUI tree's action handlers, per panel: panel name -> node id -> handler key -> closure.
@@ -187,11 +190,18 @@ nonisolated public func compositorSessionRender(_ handle: UInt64, _ output: Unsa
     guard capacity >= 0 else { return -1 }
     return withEntry(handle) { entry in
         let image: (bytes: [UInt8], width: Int, height: Int)
-        if let cached = entry.rendered { image = cached }
+        // Commands clear `rendered`; SwiftUI panel actions don't, because most change no pixels. Either way, a render
+        // is only redone when what it depends on (RenderKey) changed.
+        // Settle first: a filter preview being prepared finishes here, and the key must describe what is rendered.
+        entry.editor.settle()
+        let key = entry.editor.renderKey()
+        if let cached = entry.rendered, entry.renderedKey == key { image = cached }
         else {
             guard entry.editor.session.document != nil else { return -2 }
             guard let made = try? entry.editor.renderRGBA() else { return -5 }
             image = made; entry.rendered = made
+            if entry.renderedKey != key { entry.renderRevision += 1 }
+            entry.renderedKey = key
         }
         if let output, capacity >= image.bytes.count { image.bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: $0.count) } }
         return Int64(image.bytes.count)
@@ -212,6 +222,17 @@ nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: U
         rect[2] = Int32(made.rect.width); rect[3] = Int32(made.rect.height)
         entry.strokeDirty = nil
         return Int64(made.bytes.count)
+    }
+}
+
+/// Moves whenever the composite would differ from the last one `compositor_session_render` produced: computing it is
+/// cheap (no pixels), so the shell can skip re-rendering and re-converting an image that hasn't changed.
+@_cdecl("compositor_session_render_revision")
+nonisolated public func compositorSessionRenderRevision(_ handle: UInt64) -> Int64 {
+    withEntry(handle) { entry in
+        guard entry.editor.session.document != nil else { return -2 }
+        entry.editor.settle()   // same key the next render will compute (a pending preview lands first)
+        return entry.renderedKey == entry.editor.renderKey() && entry.rendered != nil ? entry.renderRevision : entry.renderRevision + 1
     }
 }
 

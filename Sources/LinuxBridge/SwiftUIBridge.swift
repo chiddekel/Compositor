@@ -222,7 +222,7 @@ nonisolated public func compositorSessionDispatchSwiftUIAction(_ handle: UInt64,
         guard let action = entry.actionHandlers[panelName]?[nodeIDString]?[handlerKeyString] else { return -1 }
         let value: Any = payloadData.isEmpty ? () : ((try? JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed])) ?? ())
         action(value)
-        entry.rendered = nil
+        // No blanket invalidation: compositor_session_render re-renders only when its RenderKey changed.
         return 0
     })
 }

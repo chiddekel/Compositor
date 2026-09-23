@@ -224,7 +224,9 @@ private:
     void presentSessionColorPicker();
     bool m_presentingColorPicker = false;
     bool m_railFitChecked = false;
-    bool m_layersRefreshQueued = false;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
+    bool m_layersRefreshQueued = false;
+    int64_t m_shownRenderRevision = -1;   // compositor_session_render_revision of m_image
+    uint64_t m_shownRenderHandle = 0;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
     void showAdjustDialog(const QString &kind);
