@@ -71,9 +71,12 @@ Open `Compositor.xcodeproj` and run the **Compositor** scheme.
 ### Linux (Flatpak)
 
 The Linux port builds entirely inside the Flatpak SDK sandbox — it never links
-the build host's installed system libraries. Qt6 comes from the KDE SDK (6.11, compatible with 6.10),
-Swift from the `swift6` SDK extension (Freedesktop 26.08 branch, Swift 6.3.3), and
-Skia + OpenCV are vendored as pinned Flatpak modules compiled into `/app`.
+the build host's installed system libraries. Qt6 comes from the KDE SDK, pinned to the exact
+`runtime-version` in the manifest (currently 6.11) — a binary built against one SDK version
+and run against another fails to link (`Qt_6.11 not found`), so always match the manifest,
+never hardcode a version in a script. Swift comes from the `swift6` SDK extension (Freedesktop
+26.08 branch, Swift 6.3.3), and Skia + OpenCV are vendored as pinned Flatpak modules compiled
+into `/app`.
 
 Install the runtime, SDK, and Swift extension (one-time):
 
@@ -95,6 +98,10 @@ Run:
 ```
 flatpak run com.wonderassembly.Compositor
 ```
+
+The window has no native title bar, matching the macOS build's look: it draws its own
+close/minimize/maximize dots in the header. Drag that header's empty background to move the
+window, and double-click it to maximize/restore.
 
 Headless smoke test (no display):
 
@@ -120,6 +127,32 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 The Skia and OpenCV source archives are not committed to the repo; `flatpak-builder`
 fetches and verifies them (pinned `sha256` in the manifest) at build time.
 Provenance records live in `third_party/skia.pinned` and `third_party/opencv.pinned`.
+
+#### Fast dev loop: `scripts/run-compositor.sh`
+
+For day-to-day work you don't need the full `flatpak-builder --install` cycle above — it
+recompiles from `com.wonderassembly.Compositor.minimal.yaml` (debug, no Skia/OpenCV source
+build) and runs the binary straight out of `.build/`, so edit-build-run is seconds, not minutes:
+
+```
+./scripts/run-compositor.sh                 # builds (if needed) and runs against your display
+./scripts/run-compositor.sh --offscreen      # headless (QT_QPA_PLATFORM=offscreen)
+```
+
+The script reads the required KDE SDK version from the manifest itself rather than assuming
+one — do the same in any script you add here, so it can't drift out of sync the way a hardcoded
+version eventually will.
+
+It also drives the Qt smoke-test suite (`host/DialogJourney.cpp`), each a real `SessionWindow`
+exercised end-to-end against fake platform services — the fastest way to check nothing broke:
+
+```
+./scripts/run-compositor.sh --offscreen --session-smoke   # new/paint/render/undo/redo/close via the Swift ABI
+./scripts/run-compositor.sh --offscreen --dialog-smoke    # resize, resolution, undo, autosave, save/reopen
+./scripts/run-compositor.sh --offscreen --io-smoke        # Qt image codec plugins
+./scripts/run-compositor.sh --offscreen --layers-smoke    # layers dock: add/duplicate/select/delete/group/mask
+./scripts/run-compositor.sh --offscreen --brush-smoke     # brush palette + blend + paint
+```
 
 ## Releasing
 

@@ -50,8 +50,11 @@ the injected storage root.
 
 - `SessionWindow` is still a large class (window, canvas events, tool logic, layers panel).
   The next SRP step is extracting the layers panel, options bar and tool controllers.
-- `MainWindow` (the C++-only build path's shell) still calls `QFileDialog`/`QMessageBox`
-  directly.
+- The old C++-only `compositor` executable (`host/main.cpp`/`MainWindow`/`CanvasWidget`, which
+  called `QFileDialog`/`QMessageBox` directly instead of going through `PlatformServices`) has
+  been removed — it never worked (a C++ `main` cannot bootstrap Foundation on the Freedesktop
+  Swift SDK) and duplicated the real Swift-`@main` entry point (`Sources/CompositorHostBootstrap`
+  -> `host/host_run.cpp` -> `SessionWindow`). `SessionWindow` is the only shell now.
 
 ## Replaceable services inside the Apple-API layer (`CompatSupport.ServiceSlot`)
 
