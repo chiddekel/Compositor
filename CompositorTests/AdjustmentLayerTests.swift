@@ -3,13 +3,6 @@ import Testing
 @testable import Compositor
 
 @MainActor struct AdjustmentLayerTests {
-    // Every CGContext silently no-ops without a resolved Skia canvas backend (no crash, no error — just blank
-    // pixels), so a misconfigured run reports wrong-value test failures instead of the real cause. Fail fast
-    // and legibly instead: see docs/upstream-test-baseline.md for the required COMPOSITOR_SKIA_BRIDGE/
-    // COMPOSITOR_IMAGEIO_BACKEND env vars.
-    init() throws {
-        try #require(CanvasBackends.isAvailable, "Skia canvas backend not loaded — set COMPOSITOR_SKIA_BRIDGE (see docs/upstream-test-baseline.md)")
-    }
     func image(_ color: PaletteColor, alpha: [UInt8] = [255,255,255,255]) throws -> ImportedImage {
         let bytes = alpha.flatMap { a in [UInt8((color.red*CGFloat(a)).rounded()), UInt8((color.green*CGFloat(a)).rounded()), UInt8((color.blue*CGFloat(a)).rounded()), a] }
         let image = try #require(CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
@@ -127,7 +120,7 @@ import Testing
     /// Invert is the one adjustment with nothing to set: adding it applies straight away rather
     /// than opening an editor, and it inverts what is underneath without touching those pixels.
     @Test func invertAppliesWithoutAnEditor() throws {
-        let fixtures = try AdjustmentLayerTests()
+        let fixtures = AdjustmentLayerTests()
         let session = EditorSession()
         session.createDocument(width: 2, height: 2)
         session.insert(try fixtures.image(.white))
@@ -163,7 +156,7 @@ import Testing
     // Invert has no settings and so no editor; it is covered on its own.
     @Test(arguments: AdjustmentKind.allCases.filter(\.isEditable))
     func sharedEditorsKeepPixelsDynamicAndSupportCancel(_ kind: AdjustmentKind) async throws {
-        let fixtures = try AdjustmentLayerTests()
+        let fixtures = AdjustmentLayerTests()
         let session = EditorSession()
         session.createDocument(width: 2, height: 2)
         let asset = try fixtures.image(.white)

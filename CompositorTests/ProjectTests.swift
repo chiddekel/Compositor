@@ -5,13 +5,6 @@ import Testing
 
 @MainActor
 struct ProjectTests {
-    // Every CGContext silently no-ops without a resolved Skia canvas backend (no crash, no error — just blank
-    // pixels), so a misconfigured run reports wrong-value test failures instead of the real cause. Fail fast
-    // and legibly instead: see docs/upstream-test-baseline.md for the required COMPOSITOR_SKIA_BRIDGE/
-    // COMPOSITOR_IMAGEIO_BACKEND env vars.
-    init() throws {
-        try #require(CanvasBackends.isAvailable, "Skia canvas backend not loaded — set COMPOSITOR_SKIA_BRIDGE (see docs/upstream-test-baseline.md)")
-    }
     private func temporaryFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("CompositorProjectTests-\(UUID())")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)

@@ -308,9 +308,8 @@ static QIcon makeToolIcon(SessionWindow::Tool tool,
 
 void SessionWindow::initDemoDocument() {
     if (m_sessionHandle == 0) m_sessionHandle = compositor_session_create();
-    cmd(m_sessionHandle, R"({"version":1,"action":"new","width":64,"height":64})");
-    // "new" already creates a blank "Layer 1" (Sources/LinuxBridge/UpstreamEditor.swift passes
-    // emptyLayer: true) — an explicit addLayer here used to be needed but now just adds a duplicate.
+    // emptyLayer: a blank "Layer 1", as upstream's New Canvas sheet creates (createDocument(emptyLayer: true)).
+    cmd(m_sessionHandle, R"({"version":1,"action":"new","width":64,"height":64,"emptyLayer":true})");
     cmd(m_sessionHandle, R"({"version":1,"action":"brushBegin","x":8,"y":8,"parameters":{"diameter":16,"hardness":1,"opacity":1,"red":1,"green":0,"blue":0,"erasing":0,"mask":0}})");
     cmd(m_sessionHandle, R"({"version":1,"action":"brushMove","x":48,"y":48})");
     cmd(m_sessionHandle, R"({"version":1,"action":"brushEnd"})");
@@ -320,7 +319,8 @@ void SessionWindow::initDemoDocument() {
 }
 
 void SessionWindow::createNewDocument(int width, int height) {
-    const QString json = QString(R"({"version":1,"action":"new","width":%1,"height":%2})").arg(width).arg(height);
+    // emptyLayer: a blank "Layer 1", as upstream's New Canvas sheet creates (createDocument(emptyLayer: true)).
+    const QString json = QString(R"({"version":1,"action":"new","width":%1,"height":%2,"emptyLayer":true})").arg(width).arg(height);
     const QByteArray bytes = json.toUtf8();
 
     if (m_documentTabBar) {
@@ -335,7 +335,6 @@ void SessionWindow::createNewDocument(int width, int height) {
     // Initial construction: the very first document, created before any tab exists.
     if (m_sessionHandle == 0) m_sessionHandle = compositor_session_create();
     compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
-    // "new" already creates a blank "Layer 1" (emptyLayer: true) — no explicit addLayer needed here.
     m_image = renderToQImage(m_sessionHandle, width, height);
     m_hasDocument = true;
     m_zoomLevel = 0.0;

@@ -42,13 +42,12 @@ struct UpstreamEditorTests {
         let e = UpstreamEditor()
         #expect(await send(e, cmd("addLayer")) == [-2], "no document yet")
         #expect(await send(e, cmd("new", #""width":120,"height":80"#), cmd("addLayer"), cmd("addLayer"), cmd("addGroup")) == [0, 0, 0, 0])
-        // "new" starts with "Layer 1", as upstream's New Canvas does (createDocument(emptyLayer: true)).
-        #expect(names(e) == ["Layer 1", "Layer 2", "Layer 3", "Folder 1"])
+        #expect(names(e) == ["Layer 1", "Layer 2", "Folder 1"])
         #expect(state(e)["width"] as? Int == 120 && state(e)["height"] as? Int == 80)
         await send(e, cmd("undo"), cmd("undo"))
-        #expect(names(e) == ["Layer 1", "Layer 2"])
+        #expect(names(e) == ["Layer 1"])
         await send(e, cmd("redo"))
-        #expect(names(e) == ["Layer 1", "Layer 2", "Layer 3"])
+        #expect(names(e) == ["Layer 1", "Layer 2"])
     }
 
     @Test func layerProperties() async throws {
@@ -62,7 +61,7 @@ struct UpstreamEditorTests {
         #expect(layers(e).last?["blendMode"] as? String == "Color Burn", "Multiply cycles to the next mode in LayerBlendMode.allCases")
         #expect(((layers(e).last?["transform"] as? [String: Any])?["flipY"] as? Int) == 1 || ((layers(e).last?["transform"] as? [String: Any])?["flipY"] as? Bool) == true)
         await send(e, cmd("deleteLayer"))
-        #expect(layers(e).count == 2, "Layer 1 (from new) and Layer 2 remain")
+        #expect(layers(e).count == 1)
     }
 
     @Test func groupingAndSelectedOpacity() async throws {
