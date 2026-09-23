@@ -269,27 +269,13 @@ if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
 endif()
 
 if(Qt6_FOUND)
-    add_executable(compositor
-        host/main.cpp
-        host/MainWindow.cpp
-        host/CanvasWidget.cpp
-        host/CanonicalBuffer.cpp)
-    # The host app is the ENG-2 composition root; the C kernels run in-process.
-    # When the Swift static lib is linked it already embeds the kernel objects
-    # (SwiftPM folds the C target into the library product), so it must come
-    # FIRST: with the kernel symbols already defined, ld never extracts the
-    # duplicate members from this project's own kernel archive, which stays in
-    # the link line for its include path.
-    target_link_libraries(compositor PRIVATE Qt6::Widgets ${COMPOSITOR_CORE_LINK} CompositorKernels)
-
     # The Swift-@main composition root (Sources/CompositorHostBootstrap) links
     # this static lib to call compositor_host_run (host/host_run.cpp) from a Swift
     # entry point that bootstraps the Swift runtime + Foundation. host_run.cpp
     # creates SessionWindow (a moc'd Q_OBJECT Qt window that drives the Swift core
     # via compositor_session_* and paints the composited RGBA); CMake's AUTOMOC
     # generates SessionWindow's moc (the SwiftPM build uses the committed
-    # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc). The
-    # richer MainWindow (C-kernels Qt shell) is the C++-only compositor exe's window.
+    # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc).
     add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp host/QtImageIO.cpp host/FlatpakUpdateService.cpp host/SwiftUIQtRenderer.cpp)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
     target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets Qt6::DBus)

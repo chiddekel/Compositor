@@ -7,8 +7,8 @@
 // SwiftPM bootstraps both when the entry point is Swift, so the composition root
 // is inverted: this Swift `@main` initializes the runtime and Foundation, then
 // drives the host through a C ABI. In the Flatpak build, `main` here calls the
-// Qt host's `compositor_host_run(argc, argv)` C entry (host/main.cpp) instead of
-// the self-test below; the Qt host in turn calls back into `compositor_session_*`.
+// Qt host's `compositor_host_run(argc, argv)` C entry (host/host_run.cpp) instead
+// of the self-test below; the Qt host in turn calls back into `compositor_session_*`.
 //
 // This target's `main` runs the same create->new->paint->render->undo->redo->
 // close journey through the real `compositor_session_*` C ABI that
