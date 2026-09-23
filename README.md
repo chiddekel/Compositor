@@ -6,6 +6,8 @@ The goal was to create a full-featured image editor that is completely free and 
 
 Because it’s open source, you can download the Xcode project and add, remove, or modify any feature to fit your workflow.
 
+**Jump to:** [Features](#features) · [macOS build](#requirements) · [**Linux port**](#linux-port) · [Releasing](#releasing) · [License](#license)
+
 ## Features
 
 ### Layers
@@ -68,48 +70,90 @@ Because it’s open source, you can download the Xcode project and add, remove, 
 
 Open `Compositor.xcodeproj` and run the **Compositor** scheme.
 
-### Linux (Flatpak)
+## Linux Port
 
-The Linux port builds entirely inside the Flatpak SDK sandbox — it never links
-the build host's installed system libraries. Qt6 comes from the KDE SDK, pinned to the exact
-`runtime-version` in the manifest (currently 6.11) — a binary built against one SDK version
-and run against another fails to link (`Qt_6.11 not found`), so always match the manifest,
-never hardcode a version in a script. Swift comes from the `swift6` SDK extension (Freedesktop
-26.08 branch, Swift 6.3.3), and Skia + OpenCV are vendored as pinned Flatpak modules compiled
-into `/app`.
+Compositor also runs on GNU/Linux, packaged as a Flatpak. The port compiles upstream's own
+Swift/SwiftUI source **unmodified** wherever possible — Linux-specific code is a generic
+AppKit/CoreGraphics/SwiftUI compatibility layer underneath it, not a per-screen rewrite —
+which is why the app looks and behaves like the macOS original, including its own drawn
+title bar (see [Quick start](#quick-start) below).
 
-Install the runtime, SDK, and Swift extension (one-time):
+> **This README is the starting point for Linux development.** Everything below links out to
+> the deeper reference docs as it goes; you shouldn't need to go spelunking through `docs/` to
+> get oriented.
+
+### Requirements
+
+- A Flatpak-capable Linux system ([flatpak.org/setup](https://flatpak.org/setup/))
+- `flathub` remote added, and these one-time installs:
+
+  ```
+  flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+  flatpak install --user flathub \
+      org.kde.Platform//6.11 org.kde.Sdk//6.11 \
+      org.freedesktop.Sdk.Extension.swift6//26.08
+  ```
+
+  The SDK/runtime version must always match the manifest's `runtime-version` — the KDE SDK
+  supplies Qt6, and a binary built against one SDK version fails to link against another
+  (`Qt_6.11 not found`). `6.11` is current as of this writing; treat the manifest, not this
+  README, as the source of truth if they ever disagree.
+
+Everything else — Swift 6.3.3, and Skia + OpenCV vendored as pinned Flatpak modules — is
+pulled in by the sandbox itself. The build **never** links the host system's own libraries.
+
+### Quick start
+
+Build, install, and run the packaged app:
 
 ```
-flatpak install --user flathub \
-    org.kde.Platform//6.11 org.kde.Sdk//6.11 \
-    org.freedesktop.Sdk.Extension.swift6//26.08
-```
-
-Build and install the app:
-
-```
-flatpak-builder --user --install --force-clean build-dir \
-    com.wonderassembly.Compositor.yaml
-```
-
-Run:
-
-```
+flatpak-builder --user --install --force-clean build-dir com.wonderassembly.Compositor.yaml
 flatpak run com.wonderassembly.Compositor
 ```
 
-The window has no native title bar, matching the macOS build's look: it draws its own
-close/minimize/maximize dots in the header. Drag that header's empty background to move the
-window, and double-click it to maximize/restore.
+The window has no native title bar — it draws its own close/minimize/maximize dots in the
+header, matching the macOS look. **Drag the header's empty background to move the window**,
+and double-click it to maximize/restore.
 
-Headless smoke test (no display):
+Headless smoke test (no display needed):
 
 ```
 QT_QPA_PLATFORM=offscreen flatpak run com.wonderassembly.Compositor --help
 ```
 
-Local development (build from the working tree inside the sandbox):
+### Fast dev loop
+
+For day-to-day work you don't need the full install cycle above. [`scripts/run-compositor.sh`](scripts/run-compositor.sh)
+rebuilds from the working tree in debug mode and runs the binary straight out of `.build/` —
+edit/build/run is seconds, not minutes:
+
+```
+./scripts/run-compositor.sh                 # builds (if needed) and runs against your display
+./scripts/run-compositor.sh --offscreen      # headless (QT_QPA_PLATFORM=offscreen)
+```
+
+The script reads the required KDE SDK version from the manifest itself instead of hardcoding
+one, so it can never drift out of sync the way a hand-pinned version eventually will — do the
+same in any tooling you add here.
+
+It also drives the Qt smoke-test suite ([`host/DialogJourney.cpp`](host/DialogJourney.cpp)),
+each a real `SessionWindow` exercised end-to-end against fake platform services — the fastest
+way to check nothing broke:
+
+| Flag | Exercises |
+|---|---|
+| `--session-smoke` | new / paint / render / undo / redo / close, via the Swift ABI |
+| `--dialog-smoke` | resize, resolution, undo, autosave, save/reopen |
+| `--io-smoke` | Qt image codec plugins |
+| `--layers-smoke` | layers dock: add / duplicate / select / delete / group / mask |
+| `--brush-smoke` | brush palette + blend + paint |
+
+```
+./scripts/run-compositor.sh --offscreen --session-smoke
+```
+
+<details>
+<summary><strong>Full local build from the working tree (what the fast dev loop automates)</strong></summary>
 
 ```
 flatpak-builder --run build-dir com.wonderassembly.Compositor.yaml bash
@@ -124,35 +168,35 @@ cmake --build build
 QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 ```
 
-The Skia and OpenCV source archives are not committed to the repo; `flatpak-builder`
-fetches and verifies them (pinned `sha256` in the manifest) at build time.
-Provenance records live in `third_party/skia.pinned` and `third_party/opencv.pinned`.
+The Skia and OpenCV source archives are not committed to the repo; `flatpak-builder` fetches
+and verifies them (pinned `sha256` in the manifest) at build time. Provenance records live in
+[`third_party/skia.pinned`](third_party/skia.pinned) and [`third_party/opencv.pinned`](third_party/opencv.pinned).
 
-#### Fast dev loop: `scripts/run-compositor.sh`
+</details>
 
-For day-to-day work you don't need the full `flatpak-builder --install` cycle above — it
-recompiles from `com.wonderassembly.Compositor.minimal.yaml` (debug, no Skia/OpenCV source
-build) and runs the binary straight out of `.build/`, so edit-build-run is seconds, not minutes:
+### Architecture & further reading
 
-```
-./scripts/run-compositor.sh                 # builds (if needed) and runs against your display
-./scripts/run-compositor.sh --offscreen      # headless (QT_QPA_PLATFORM=offscreen)
-```
+| Doc | What's in it |
+|---|---|
+| [`docs/platform-abstraction.md`](docs/platform-abstraction.md) | How every macOS API (CoreGraphics, Metal, Vision, AppKit dialogs, …) maps to its Linux/Qt equivalent behind a shared interface, SOLID-style |
+| [`docs/linux-port-file-map.md`](docs/linux-port-file-map.md) | File-by-file disposition of the upstream source tree — what's reused as-is, what's replaced, and why |
+| [`docs/project-format.md`](docs/project-format.md) | The `.comp` project package format, shared byte-for-byte between the macOS and Linux builds |
+| [`linux/upstream-parity.json`](linux/upstream-parity.json) | Live, per-file record of every `Compositor/UI/*.swift` override still needed on Linux and the reason for each one |
+| [`linux/UPSTREAM_TEST_EXCLUSIONS.md`](linux/UPSTREAM_TEST_EXCLUSIONS.md) | Every upstream test excluded on Linux, with the specific reason (never edited, only excluded with cause) |
 
-The script reads the required KDE SDK version from the manifest itself rather than assuming
-one — do the same in any script you add here, so it can't drift out of sync the way a hardcoded
-version eventually will.
+**The guiding rule for contributing to the Linux port**: prefer extending the generic
+compatibility layer (`Sources/Compat/`) over writing Linux-specific code for one panel. An
+override under `Sources/Overrides/` is a last resort, reserved for the handful of places that
+generically need the Objective-C runtime (`#selector`/`@objc` target-action) or an AppKit
+class the compat layer doesn't implement — and even then, it keeps the exact same public API
+so nothing upstream has to change to use it. `linux/upstream-parity.json` names every one of
+those and explains why.
 
-It also drives the Qt smoke-test suite (`host/DialogJourney.cpp`), each a real `SessionWindow`
-exercised end-to-end against fake platform services — the fastest way to check nothing broke:
+### Known limitations
 
-```
-./scripts/run-compositor.sh --offscreen --session-smoke   # new/paint/render/undo/redo/close via the Swift ABI
-./scripts/run-compositor.sh --offscreen --dialog-smoke    # resize, resolution, undo, autosave, save/reopen
-./scripts/run-compositor.sh --offscreen --io-smoke        # Qt image codec plugins
-./scripts/run-compositor.sh --offscreen --layers-smoke    # layers dock: add/duplicate/select/delete/group/mask
-./scripts/run-compositor.sh --offscreen --brush-smoke     # brush palette + blend + paint
-```
+- The newest upstream Camera Raw / Image Trim pixel kernels render blank on Linux — a
+  portability gap in that native pixel code or the Accelerate/vImage compatibility shim, not
+  a build or wiring issue. Tracked, not yet fixed.
 
 ## Releasing
 
