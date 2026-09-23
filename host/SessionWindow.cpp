@@ -11,6 +11,9 @@
 #include "SwiftUIQtRenderer.h"
 
 #include <QPainter>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QScreen>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QMouseEvent>
@@ -371,7 +374,7 @@ void SessionWindow::switchToDocumentTab(int index) {
     refreshImage();
     refreshLayers();
     updateOptionsBar();
-    updateToolRail();
+    syncPaletteFromSession();   // each document has its own palette; also re-renders the tool rail
     updateStatusTelemetry();
     setWindowTitle(doc.title.isEmpty() ? tr("Compositor") : tr("%1 — Compositor").arg(doc.title));
 }
@@ -555,12 +558,12 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_bgColorButton->setToolTip(tr("Background color (click to change)"));
     connect(m_bgColorButton, &QPushButton::clicked, this, &SessionWindow::pickBackgroundColor);
 
-    m_brushColorButton = new QPushButton(paletteWidget);
-    m_brushColorButton->setObjectName("brush.color");
-    m_brushColorButton->setGeometry(0, 0, ParityMetrics::SwatchSize, ParityMetrics::SwatchSize);
-    m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #ffffff; border-radius: %2px;").arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
-    m_brushColorButton->setToolTip(tr("Foreground color (click to change)"));
-    connect(m_brushColorButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
+    m_fgPaletteButton = new QPushButton(paletteWidget);
+    m_fgPaletteButton->setObjectName("palette.foreground");
+    m_fgPaletteButton->setGeometry(0, 0, ParityMetrics::SwatchSize, ParityMetrics::SwatchSize);
+    m_fgPaletteButton->setStyleSheet(QString("background-color: %1; border: 1.5px solid #ffffff; border-radius: %2px;").arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
+    m_fgPaletteButton->setToolTip(tr("Foreground color (click to change)"));
+    connect(m_fgPaletteButton, &QPushButton::clicked, this, &SessionWindow::pickBrushColor);
 
     auto *btnSwap = new QToolButton(paletteWidget);
     btnSwap->setGeometry(27, -3, ParityMetrics::SwapIconSize, ParityMetrics::SwapIconSize);
@@ -937,11 +940,13 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     registerSwiftUIActionListener([this](uint64_t handle, const QString &panel) {
         if (handle != m_sessionHandle) return;
         if (panel == "ToolRail") {
+            syncPaletteFromSession();   // swatches, swap/reset and "open the picker" live in the rail
             syncToolFromSession();
             syncOptionsFromSession();
             updateOptionsBar();
             updateLayersPanel();
         } else if (panel == "ToolHeaders") {
+            syncPaletteFromSession();   // header swatches (type color, effects) open the picker too
             syncOptionsFromSession();
             updateOptionsBar();
             refreshImage();
@@ -1092,38 +1097,70 @@ void SessionWindow::cancelCrop() {
 }
 
 void SessionWindow::swapPaletteColors() {
-    std::swap(m_brushColor, m_backgroundColor);
-    if (m_brushColorButton) {
-        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
-            .arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
-    }
-    if (m_bgColorButton) {
-        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
-            .arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
-    }
-    updateOptionsBar();
+    sendCommand({{"action", "swapPaletteColors"}});
+    syncPaletteFromSession();
 }
 
 void SessionWindow::resetPaletteColors() {
-    m_brushColor = ParityPalette::defaultForeground();
-    m_backgroundColor = ParityPalette::defaultBackground();
-    if (m_brushColorButton) {
-        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
-            .arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
-    }
-    if (m_bgColorButton) {
-        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
-            .arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
-    }
-    updateOptionsBar();
+    sendCommand({{"action", "resetPaletteColors"}});
+    syncPaletteFromSession();
 }
 
-void SessionWindow::setBackgroundColor(const QColor &color) {
-    m_backgroundColor = color;
-    if (m_bgColorButton) {
-        m_bgColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: %2px;")
-            .arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
+void SessionWindow::setBackgroundColor(const QColor &color) { sendPaletteColor(color, true); }
+
+void SessionWindow::sendPaletteColor(const QColor &color, bool background) {
+    (background ? m_backgroundColor : m_brushColor) = color;   // kept even without a session (startup)
+    if (m_sessionHandle == 0) return;
+    sendCommand({{"action", "setPaletteColor"}, {"kind", background ? "background" : "foreground"},
+                 {"parameters", QJsonObject{{"red", color.redF()}, {"green", color.greenF()}, {"blue", color.blueF()}}}});
+    syncPaletteFromSession();
+}
+
+void SessionWindow::syncPaletteFromSession() {
+    if (m_sessionHandle != 0) {
+        const QJsonObject state = sessionState();
+        auto colorOf = [](const QJsonValue &v, const QColor &fallback) {
+            const QJsonArray a = v.toArray();
+            return a.size() == 3 ? QColor::fromRgbF(a[0].toDouble(), a[1].toDouble(), a[2].toDouble()) : fallback;
+        };
+        m_brushColor = colorOf(state.value("foregroundColor"), m_brushColor);
+        m_backgroundColor = colorOf(state.value("backgroundColor"), m_backgroundColor);
+        if (!state.value("colorPickerTitle").toString().isEmpty() && !m_presentingColorPicker) {
+            // Deferred: this often runs inside a SwiftUI button's action; the picker is modal.
+            QTimer::singleShot(0, this, [this] { presentSessionColorPicker(); });
+        }
     }
+    const QString swatch("background-color: %1; border: 1.5px solid #ffffff; border-radius: %2px;");
+    if (m_fgPaletteButton) m_fgPaletteButton->setStyleSheet(swatch.arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
+    if (m_bgColorButton) m_bgColorButton->setStyleSheet(swatch.arg(m_backgroundColor.name()).arg(ParityMetrics::SwatchCornerRadius));
+    if (m_brushColorButton) {
+        m_brushColorButton->setText(QString());
+        m_brushColorButton->setStyleSheet(QString("background-color: %1; border: 1px solid #101012; border-radius: 3px;").arg(m_brushColor.name()));
+    }
+    updateToolRail();   // the SwiftUI rail's swatches are drawn from the session: re-render them
+}
+
+/// Upstream opens its own picker panel (ColorPickerPanelController) when `EditorSession.colorPicker` is set; the Qt
+/// shell presents its picker dialog for it instead and reports back OK (commit) or Cancel, like the panel does.
+void SessionWindow::presentSessionColorPicker() {
+    if (m_presentingColorPicker || m_sessionHandle == 0) return;
+    const QJsonObject state = sessionState();
+    const QString title = state.value("colorPickerTitle").toString();
+    const QJsonArray rgb = state.value("colorPickerColor").toArray();
+    if (title.isEmpty() || rgb.size() != 3) return;
+    m_presentingColorPicker = true;
+    const QColor initial = QColor::fromRgbF(rgb[0].toDouble(), rgb[1].toDouble(), rgb[2].toDouble());
+    const QColor chosen = m_platform.colors->pick(initial, title);
+    if (chosen.isValid()) {
+        sendCommand({{"action", "setColorPickerColor"},
+                     {"parameters", QJsonObject{{"red", chosen.redF()}, {"green", chosen.greenF()}, {"blue", chosen.blueF()}}}});
+    }
+    sendCommand({{"action", "closeColorPicker"}, {"enabled", chosen.isValid()}});
+    m_presentingColorPicker = false;
+    syncPaletteFromSession();
+    syncOptionsFromSession();
+    updateOptionsBar();
+    refreshImage();
 }
 
 void SessionWindow::pickBackgroundColor() {
@@ -2547,12 +2584,7 @@ void SessionWindow::pickBrushColor() {
     if (color.isValid()) setBrushColor(color);
 }
 
-void SessionWindow::setBrushColor(const QColor &color) {
-    m_brushColor = color;
-    const QString style = QString("background-color: rgb(%1, %2, %3);").arg(color.red()).arg(color.green()).arg(color.blue());
-    m_brushColorButton->setStyleSheet(style);
-    m_brushColorButton->setText(color.name());
-}
+void SessionWindow::setBrushColor(const QColor &color) { sendPaletteColor(color, false); }
 
 void SessionWindow::setBrushDiameter(int value) { m_brushDiameter = value; }
 void SessionWindow::setBrushHardness(int value) { m_brushHardness = value; }
@@ -4962,6 +4994,30 @@ void SessionWindow::updateToolRail() {
     }
     QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("ToolRail"));
     if (rendered) {
+        // The rail is upstream's ScrollView (taller than the default 1180x780 window, as on macOS): a re-render
+        // (every palette change, tool switch) must keep where it was scrolled, or the lower tools and the colour
+        // swatches jump out of view right after being used.
+        int scrolled = 0;
+        if (m_swiftUICurrentToolRail) {
+            if (auto *area = m_swiftUICurrentToolRail->findChild<QScrollArea *>()) scrolled = area->verticalScrollBar()->value();
+            else if (auto *self = qobject_cast<QScrollArea *>(m_swiftUICurrentToolRail)) scrolled = self->verticalScrollBar()->value();
+        }
+        if (auto *area = qobject_cast<QScrollArea *>(rendered) ? qobject_cast<QScrollArea *>(rendered) : rendered->findChild<QScrollArea *>()) {
+            QTimer::singleShot(0, area, [area, scrolled] { area->verticalScrollBar()->setValue(scrolled); });
+            if (!m_railFitChecked) {
+                m_railFitChecked = true;
+                // Opening size: upstream's 1180x780, grown (never past the screen) just enough that the whole rail —
+                // every tool plus the colour swatches — shows without scrolling when the screen has the room.
+                QTimer::singleShot(0, this, [this, area] {
+                    if (isMaximized() || isFullScreen() || !area->widget()) return;
+                    const int missing = area->widget()->sizeHint().height() - area->viewport()->height();
+                    if (missing <= 0) return;
+                    const QScreen *display = screen();
+                    const int limit = display ? display->availableGeometry().height() - (frameGeometry().height() - height()) : height();
+                    resize(width(), std::min(limit, height() + missing));
+                });
+            }
+        }
         if (m_swiftUICurrentToolRail) {
             m_swiftUIToolRailContainer->layout()->removeWidget(m_swiftUICurrentToolRail);
             m_swiftUICurrentToolRail->deleteLater();

@@ -95,6 +95,19 @@ QColor parseColorToken(const QString &name) {
                                     qBound(0.0, a, 1.0));
         }
     }
+    if (name.startsWith("white:")) {   // Color(white:opacity:)
+        const QStringList parts = name.section(':', 1).split(',');
+        const double w = qBound(0.0, parts.value(0).toDouble(), 1.0);
+        return QColor::fromRgbF(w, w, w, qBound(0.0, parts.size() > 1 ? parts[1].toDouble() : 1.0, 1.0));
+    }
+    if (name.startsWith("hsb:")) {     // Color(hue:saturation:brightness:opacity:), components 0...1
+        const QStringList parts = name.section(':', 1).split(',');
+        if (parts.size() >= 3) {
+            return QColor::fromHsvF(qBound(0.0, parts[0].toDouble(), 1.0), qBound(0.0, parts[1].toDouble(), 1.0),
+                                    qBound(0.0, parts[2].toDouble(), 1.0),
+                                    qBound(0.0, parts.size() > 3 ? parts[3].toDouble() : 1.0, 1.0));
+        }
+    }
     if (name.startsWith('#')) {
         return QColor(name);
     }
@@ -591,8 +604,13 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 child->setParent(container);
                 const int ox = child->property("offsetX").toInt();
                 const int oy = child->property("offsetY").toInt();
-                const int cw = child->width() > 0 ? child->width() : child->sizeHint().width();
-                const int ch = child->height() > 0 ? child->height() : child->sizeHint().height();
+                // A widget that was never laid out still has Qt's 640x480 default size, not its own: use a fixed size
+                // when it has one, else its size hint. (A 640x480 "Default colors" button on top of the palette
+                // swallowed every click, so Swap reset the colours.)
+                const bool fixed = child->minimumSize() == child->maximumSize();
+                const QSize own = fixed ? child->minimumSize() : child->sizeHint();
+                const int cw = own.width() > 0 ? own.width() : 12;
+                const int ch = own.height() > 0 ? own.height() : 12;
                 child->setGeometry(ox, oy, cw, ch);
                 maxW = qMax(maxW, ox + cw);
                 maxH = qMax(maxH, oy + ch);
@@ -617,9 +635,26 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         QString systemIcon;
         bool isToolButton = false;
         QString textLabel;
+        // A swatch button's label is a filled shape (upstream ColorPaletteControls / BrushControls): its fill is the
+        // color the swatch shows.
+        QString labelFill;
+        // The label's own fixed frame (`.frame(width:height:)` on the icon), which sizes a small icon button
+        // (the palette's 12x12 swap/reset arrows) instead of the rail's standard 36x36.
+        QSize labelFrame;
 
         std::function<void(const QJsonObject &)> extractLabel = [&](const QJsonObject &n) {
             const QString childKind = n.value("kind").toString();
+            if (!labelFrame.isValid()) {
+                for (const auto &m : n.value("modifiers").toArray()) {
+                    const QJsonObject mo = m.toObject();
+                    if (mo.value("kind").toString() != "frame") continue;
+                    const QJsonObject d = mo.value("doubleParams").toObject();
+                    if (d.contains("width") && d.contains("height") && !d.contains("maxWidth") && !d.contains("minWidth"))
+                        labelFrame = QSize(qRound(d.value("width").toDouble()), qRound(d.value("height").toDouble()));
+                }
+            }
+            const QString fill = n.value("stringParams").toObject().value("fillColor").toString();
+            if (labelFill.isEmpty() && !fill.isEmpty()) labelFill = fill;
             if (childKind == "Text") {
                 if (textLabel.isEmpty()) textLabel = n.value("stringParams").toObject().value("text").toString();
             } else if (childKind == "Image") {
@@ -676,14 +711,26 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             button->setFixedSize(24, 24);
             button->setCursor(Qt::PointingHandCursor);
             button->setText(QString());
-            button->setStyleSheet("QPushButton { background-color: #ffffff; border: 1px solid #000000; border-radius: 6px; } "
-                                  "QPushButton:hover { border: 1.5px solid #007aff; }");
+            const QColor swatch = labelFill.isEmpty() ? QColor(Qt::white) : parseColorToken(labelFill);
+            button->setStyleSheet(QString("QPushButton { background-color: %1; border: 1.5px solid #ffffff; border-radius: 6px; } "
+                                          "QPushButton:hover { border: 1.5px solid #007aff; }").arg(swatch.name()));
         } else if (hint.contains(QLatin1String("Foreground color"), Qt::CaseInsensitive)) {
             button->setFixedSize(24, 24);
             button->setCursor(Qt::PointingHandCursor);
             button->setText(QString());
-            button->setStyleSheet("QPushButton { background-color: #000000; border: 1.5px solid #ffffff; border-radius: 6px; } "
-                                  "QPushButton:hover { border: 1.5px solid #007aff; }");
+            const QColor swatch = labelFill.isEmpty() ? QColor(Qt::black) : parseColorToken(labelFill);
+            button->setStyleSheet(QString("QPushButton { background-color: %1; border: 1.5px solid #ffffff; border-radius: 6px; } "
+                                          "QPushButton:hover { border: 1.5px solid #007aff; }").arg(swatch.name()));
+        } else if (isToolButton && !systemIcon.isEmpty() && labelFrame.isValid() && labelFrame.width() < 30 && labelFrame.height() < 30) {
+            // A small icon button sized by its label (the palette's swap/reset arrows): exactly that size, plain.
+            const int iconSize = qMax(8, qMin(labelFrame.width(), labelFrame.height()));
+            button->setIcon(renderToolVectorIcon(systemIcon, iconSize, QColor(0x8e, 0x8e, 0x93)));   // .secondary
+            button->setIconSize(QSize(iconSize, iconSize));
+            button->setText(QString());
+            button->setCursor(Qt::PointingHandCursor);
+            button->setFixedSize(labelFrame);
+            button->setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; margin: 0px; } "
+                                  "QPushButton:hover { background-color: rgba(255, 255, 255, 0.10); border-radius: 3px; }");
         } else if (isToolButton && !systemIcon.isEmpty()) {
             const bool isToolRail = (panel == QLatin1String("ToolRail"));
             const int iconSize = isToolRail ? 20 : 16;

@@ -86,7 +86,15 @@ private struct State: Encodable {
     let selectionMode: String
     let lassoKind: String
     let marqueeKind: String
+    /// The palette swatches as shown (a mask selection shows black/white), sRGB 0...1.
+    let foregroundColor: [Double]
+    let backgroundColor: [Double]
+    /// The upstream color picker the UI asked for (`EditorSession.colorPicker`), for the shell to present.
+    let colorPickerTitle: String?
+    let colorPickerColor: [Double]?
 }
+
+private func rgb(_ color: PaletteColor) -> [Double] { [Double(color.red), Double(color.green), Double(color.blue)] }
 
 /// Result codes shared with the C ABI: 0 ok, -1 invalid argument, -2 no document, -3 busy, -4 unsupported version,
 /// -5 operation failed, -6 unknown handle, -7 command not supported by this bridge yet.
@@ -116,6 +124,8 @@ final class UpstreamEditor {
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
+        "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
+        "closeColorPicker",
     ]
 
     /// The adjustment as it was when editing began, for cancel.
@@ -234,6 +244,21 @@ final class UpstreamEditor {
                 s.selectionModeChoice = mode
             }
         case "contractSelection": s.contractSelection(by: Int(command.parameters?["amount"] ?? 1))
+        // The palette is the session's (upstream's ColorPalette.swift): swatches, swap/reset and the picker all go
+        // through it, so the SwiftUI tool rail, the options bar and the next brush stroke agree on one color.
+        case "swapPaletteColors": s.swapPaletteColors()
+        case "resetPaletteColors": s.resetPaletteColors()
+        case "setPaletteColor", "openColorPicker", "setColorPickerColor":
+            let p = command.parameters ?? [:]
+            let color = PaletteColor(red: p["red"] ?? 0, green: p["green"] ?? 0, blue: p["blue"] ?? 0)
+            switch command.action {
+            case "setPaletteColor": s.setPaletteColor(color, background: command.kind == "background")
+            case "openColorPicker": s.openColorPicker(background: command.kind == "background")
+            default:
+                guard let picker = s.colorPicker else { return fail(-5, "no color picker open") }
+                picker.hsb = PickerHSB(color)
+            }
+        case "closeColorPicker": s.closeColorPicker(commit: command.enabled ?? false)
         case "fillForeground", "fillBackground":
             let background = command.action == "fillBackground"
             let p = command.parameters ?? [:]
@@ -550,7 +575,11 @@ final class UpstreamEditor {
             tool: s.tool.rawValue,
             selectionMode: s.displayedSelectionMode.rawValue,
             lassoKind: s.lassoKind.rawValue,
-            marqueeKind: s.marqueeKind.rawValue)
+            marqueeKind: s.marqueeKind.rawValue,
+            foregroundColor: rgb(s.paletteColor(background: false)),
+            backgroundColor: rgb(s.paletteColor(background: true)),
+            colorPickerTitle: s.colorPicker?.target.title,
+            colorPickerColor: s.colorPicker.map { rgb($0.color) })
         return try JSONEncoder().encode(state)
     }
 

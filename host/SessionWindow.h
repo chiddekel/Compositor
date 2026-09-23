@@ -217,6 +217,13 @@ private:
     void resetPaletteColors();
     void setBackgroundColor(const QColor &color);
     void pickBackgroundColor();
+    // The palette is the session's (upstream ColorPalette.swift): these read it back into the Qt views, push a color
+    // into it, and present the color picker upstream's UI asked for (EditorSession.colorPicker).
+    void syncPaletteFromSession();
+    void sendPaletteColor(const QColor &color, bool background);
+    void presentSessionColorPicker();
+    bool m_presentingColorPicker = false;
+    bool m_railFitChecked = false;   // the opening-size fit to the tool rail runs once
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
     void showAdjustDialog(const QString &kind);
@@ -311,6 +318,7 @@ private:
     QColor m_brushColor = ParityPalette::defaultForeground();
     QColor m_backgroundColor = ParityPalette::defaultBackground();
     QPushButton *m_bgColorButton = nullptr;
+    QPushButton *m_fgPaletteButton = nullptr;   // the Qt fallback rail's foreground swatch (m_brushColorButton is the options bar's)
     int m_brushDiameter = 16;
     int m_brushHardness = 100;
     int m_brushOpacity = 100;
