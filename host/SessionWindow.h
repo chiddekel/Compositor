@@ -191,10 +191,11 @@ protected:
     void keyReleaseEvent(QKeyEvent *event) override;
 
 public:
-    // Drags the window when the header bar's empty background is clicked-and-dragged — the native window still
-    // has no title bar (see setWindowFlag(Qt::FramelessWindowHint) in the constructor), so this is the window's
-    // only way to move. Installed on m_headerToolBar; only fires for events sent to the toolbar itself, never to
-    // its child buttons (traffic lights, New, tabs, zoom), so those keep working normally.
+    // Drags the window when the menu bar's or header bar's empty background is clicked-and-dragged — the native
+    // window has no title bar (see setWindowFlag(Qt::FramelessWindowHint) in the constructor), so this is the
+    // window's only way to move. Installed on menuBar() (empty area only — menu titles still open), on
+    // m_headerToolBar and on its "header.dragArea" spacer; child buttons (traffic lights, New, tabs, zoom) keep
+    // working normally.
     bool eventFilter(QObject *watched, QEvent *event) override;
 
     friend class SessionCanvasWidget;
@@ -220,6 +221,8 @@ private:
     void showAdjustDialog(const QString &kind);
     QPointF documentPoint(const QPointF &windowPoint) const;
     void refreshImage();
+    // Coalesces mid-stroke redraws to one render per frame; see scheduleStrokeRefresh() in SessionWindow.cpp.
+    void scheduleStrokeRefresh();
     void refreshLayers();
     void selectLayerRow(int row);
     void setOpacityFromSlider(int value);
@@ -255,6 +258,12 @@ private:
     void addDocumentTab(uint64_t handle, const QString &title, const QString &filePath = QString());
     void switchToDocumentTab(int index);
     void closeDocumentTab(int index);
+    // Upstream ProjectController.confirmReplacement: "Save changes to …?" Save / Cancel / Don't Save for the tab at
+    // index (made current first, as upstream does). True when closing may proceed.
+    bool confirmDocumentClose(int index);
+    // Saves the current tab to its known .comp path, or asks for one (always, when forceChoosePath). True on success.
+    bool saveCurrentDocument(bool forceChoosePath);
+    bool isDocumentModified(uint64_t handle) const;
 
     QWidget *m_canvasWidget = nullptr;
     QImage m_image;
@@ -307,6 +316,7 @@ private:
     QMap<Tool, QAction *> m_toolActions;
     std::unique_ptr<ITabletHandler> m_tabletHandler;
     QTimer *m_autosaveTimer = nullptr;
+    QTimer *m_strokeRefreshTimer = nullptr;
     QToolBar *m_headerToolBar = nullptr;
     QToolBar *m_optionsToolBar = nullptr;
     QToolBar *m_toolsBar = nullptr;

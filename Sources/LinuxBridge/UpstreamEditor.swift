@@ -166,6 +166,9 @@ final class UpstreamEditor {
         case "cycleBlendMode": s.cycleBlendMode(forward: command.forward ?? true)
         case "flipLayer": s.flipLayers(horizontally: command.horizontally ?? true)
         case "flipCanvas": s.flipCanvas(horizontally: command.horizontally ?? true)
+        // The Qt host writes the .comp package itself (SessionWindow::saveProject); this is ProjectController's
+        // post-save markSaved(), so isModified — and the close/quit "Save changes?" prompt — track the saved revision.
+        case "markSaved": s.history.markSaved()
         case "undo": s.undo()
         case "redo": s.redo()
         case "addRevealMask", "addHideMask":

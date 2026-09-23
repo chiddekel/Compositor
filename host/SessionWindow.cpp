@@ -118,19 +118,9 @@ static QString workspaceTabTitle(uint64_t handle) {
 }
 
 static QImage straightRGBA(const std::vector<uint8_t> &premultiplied, int width, int height) {
-    std::vector<uint8_t> straight = premultiplied;
-    for (size_t i = 0; i + 3 < straight.size(); i += 4) {
-        const uint8_t alpha = straight[i + 3];
-        if (alpha == 0) {
-            straight[i] = straight[i + 1] = straight[i + 2] = 0;
-        } else if (alpha != 255) {
-            straight[i] = static_cast<uint8_t>(std::min(255, (static_cast<int>(straight[i]) * 255 + alpha / 2) / alpha));
-            straight[i + 1] = static_cast<uint8_t>(std::min(255, (static_cast<int>(straight[i + 1]) * 255 + alpha / 2) / alpha));
-            straight[i + 2] = static_cast<uint8_t>(std::min(255, (static_cast<int>(straight[i + 2]) * 255 + alpha / 2) / alpha));
-        }
-    }
-    return QImage(reinterpret_cast<const uchar *>(straight.data()), width, height, width * 4,
-                  QImage::Format_RGBA8888).copy();
+    // Qt's (SIMD) unpremultiply; convertToFormat always returns an image that owns its pixels.
+    return QImage(reinterpret_cast<const uchar *>(premultiplied.data()), width, height, width * 4,
+                  QImage::Format_RGBA8888_Premultiplied).convertToFormat(QImage::Format_RGBA8888);
 }
 
 static QImage renderToQImage(uint64_t h, int width, int height) {
@@ -386,8 +376,64 @@ void SessionWindow::switchToDocumentTab(int index) {
     setWindowTitle(doc.title.isEmpty() ? tr("Compositor") : tr("%1 — Compositor").arg(doc.title));
 }
 
+bool SessionWindow::isDocumentModified(uint64_t handle) const {
+    if (handle == 0) return false;
+    const int64_t size = compositor_session_state(handle, nullptr, 0);
+    if (size <= 0 || size > 4 * 1024 * 1024) return false;
+    QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
+    if (compositor_session_state(handle, reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return false;
+    return QJsonDocument::fromJson(bytes).object().value("modified").toBool(false);
+}
+
+bool SessionWindow::saveCurrentDocument(bool forceChoosePath) {
+    if (m_activeDocumentIndex < 0 || m_activeDocumentIndex >= static_cast<int>(m_documents.size())) return false;
+    const QString known = m_documents[m_activeDocumentIndex].filePath;
+    const QString path = (!forceChoosePath && known.endsWith(".comp", Qt::CaseInsensitive))
+        ? known : m_platform.files->chooseProjectSavePath();
+    if (path.isEmpty()) return false;
+    if (!saveProject(path)) {
+        m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
+        return false;
+    }
+    sendCommand({{"action", "markSaved"}});
+    DocumentTab &doc = m_documents[m_activeDocumentIndex];
+    doc.filePath = path;
+    doc.title = QFileInfo(path).completeBaseName();
+    if (m_documentTabBar) m_documentTabBar->setTabText(m_activeDocumentIndex, doc.title);
+    setWindowTitle(tr("%1 — Compositor").arg(doc.title));
+    return true;
+}
+
+bool SessionWindow::confirmDocumentClose(int index) {
+    if (index < 0 || index >= static_cast<int>(m_documents.size())) return true;
+    if (!isDocumentModified(m_documents[index].handle)) return true;
+    if (index != m_activeDocumentIndex) {
+        if (m_documentTabBar) m_documentTabBar->setCurrentIndex(index); // currentChanged -> switchToDocumentTab
+        if (index != m_activeDocumentIndex) switchToDocumentTab(index);
+    }
+    const QString name = m_documents[index].filePath.isEmpty()
+        ? QStringLiteral("Untitled") : QFileInfo(m_documents[index].filePath).fileName();
+    QMessageBox box(this);
+    box.setText(tr("Save changes to %1?").arg(name));
+    box.setInformativeText(tr("Your changes will be lost if you don’t save them."));
+    QPushButton *save = box.addButton(tr("Save"), QMessageBox::AcceptRole);
+    box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+    QPushButton *discard = box.addButton(tr("Don’t Save"), QMessageBox::DestructiveRole);
+    box.setDefaultButton(save);
+    box.exec();
+    if (box.clickedButton() == save) return saveCurrentDocument(false);
+    return box.clickedButton() == discard;
+}
+
 void SessionWindow::closeDocumentTab(int index) {
     if (index < 0 || index >= static_cast<int>(m_documents.size())) return;
+    // Closing the last tab closes the window rather than letting upstream mint a blank replacement document below;
+    // closeEvent() asks about unsaved changes and handles the session teardown.
+    if (m_documents.size() == 1) {
+        close();
+        return;
+    }
+    if (!confirmDocumentClose(index)) return;
     const uint64_t closedHandle = m_documents[index].handle;
     const bool wasActive = (index == m_activeDocumentIndex);
     m_documents.erase(m_documents.begin() + index);
@@ -920,9 +966,15 @@ SessionWindow::~SessionWindow() {
 }
 
 bool SessionWindow::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == m_headerToolBar) {
+    const bool isMenuBar = watched == menuBar();
+    if (watched == m_headerToolBar || isMenuBar || watched->objectName() == QLatin1String("header.dragArea")) {
+        auto *mouseEvent = event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick
+            ? static_cast<QMouseEvent *>(event) : nullptr;
+        // On the menu bar only the empty area drags; presses on a menu title must still open it.
+        if (mouseEvent && isMenuBar && menuBar()->actionAt(mouseEvent->position().toPoint())) {
+            return QMainWindow::eventFilter(watched, event);
+        }
         if (event->type() == QEvent::MouseButtonPress) {
-            auto *mouseEvent = static_cast<QMouseEvent *>(event);
             if (mouseEvent->button() == Qt::LeftButton) {
                 if (QWindow *handle = windowHandle()) {
                     handle->startSystemMove();
@@ -930,7 +982,6 @@ bool SessionWindow::eventFilter(QObject *watched, QEvent *event) {
                 }
             }
         } else if (event->type() == QEvent::MouseButtonDblClick) {
-            auto *mouseEvent = static_cast<QMouseEvent *>(event);
             if (mouseEvent->button() == Qt::LeftButton) {
                 if (isMaximized()) showNormal(); else showMaximized();
                 return true;
@@ -1331,6 +1382,9 @@ void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
 
 void SessionWindow::createMenus() {
     menuBar()->setNativeMenuBar(false);
+    // The menu bar is the window's topmost strip, where a frameless window is naturally grabbed — its empty area
+    // (right of the last menu) moves the window too. See eventFilter().
+    menuBar()->installEventFilter(this);
     auto *appMenu = menuBar()->addMenu(QString::fromUtf8("  Compositor"));
     appMenu->addAction(tr("About Compositor…"), this, [this] {
         QMessageBox::about(this, tr("About Compositor"),
@@ -1401,19 +1455,11 @@ void SessionWindow::createMenus() {
 
     file->addSeparator();
 
-    file->addAction(tr("Save"), QKeySequence::Save, this, [this] {
-        const QString path = m_platform.files->chooseProjectSavePath();
-        if (!path.isEmpty() && !saveProject(path)) {
-            m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
-        }
-    })->setObjectName("file.save");
+    file->addAction(tr("Save"), QKeySequence::Save, this, [this] { saveCurrentDocument(false); })
+        ->setObjectName("file.save");
 
-    file->addAction(tr("Save As…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this, [this] {
-        const QString path = m_platform.files->chooseProjectSavePath();
-        if (!path.isEmpty() && !saveProject(path)) {
-            m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
-        }
-    })->setObjectName("file.saveAs");
+    file->addAction(tr("Save As…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this,
+                    [this] { saveCurrentDocument(true); })->setObjectName("file.saveAs");
 
     file->addSeparator();
 
@@ -1447,8 +1493,9 @@ void SessionWindow::createMenus() {
 
     file->addSeparator();
 
+    // Upstream: Close closes the current tab (ProjectController.close -> ProjectWorkspace.close), asking first.
     file->addAction(tr("Close Project"), QKeySequence::Close, this, [this] {
-        close();
+        closeDocumentTab(m_activeDocumentIndex);
     })->setObjectName("file.closeProject");
 
     file->addSeparator();
@@ -2205,6 +2252,7 @@ bool SessionWindow::sendCommand(const QJsonObject &command) {
 
 void SessionWindow::refreshImage() {
     if (m_sessionHandle == 0) return;
+    if (m_strokeRefreshTimer) m_strokeRefreshTimer->stop(); // this full refresh supersedes a pending stroke redraw
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
     if (width <= 0 || height <= 0 || qint64(width) * height > 100000000) return;
@@ -2219,6 +2267,27 @@ void SessionWindow::refreshImage() {
     updateStatusTelemetry();
     updateOptionsBar();
     QMetaObject::invokeMethod(this, [this] { refreshLayers(); }, Qt::QueuedConnection);
+}
+
+// Mid-stroke, every brushMove still reaches the session (so the stroke stays continuous), but the canvas is
+// redrawn at most once per frame, and only the composite: session state, options bar, telemetry and the layers
+// panel are left for the full refreshImage() the stroke's end triggers.
+void SessionWindow::scheduleStrokeRefresh() {
+    if (!m_strokeRefreshTimer) {
+        m_strokeRefreshTimer = new QTimer(this);
+        m_strokeRefreshTimer->setSingleShot(true);
+        m_strokeRefreshTimer->setInterval(16);
+        connect(m_strokeRefreshTimer, &QTimer::timeout, this, [this] {
+            if (m_sessionHandle == 0 || m_image.isNull()) { refreshImage(); return; }
+            QImage rendered = renderToQImage(m_sessionHandle, m_image.width(), m_image.height());
+            if (rendered.isNull()) { refreshImage(); return; } // size changed under us: take the full path
+            rendered.setDotsPerMeterX(m_image.dotsPerMeterX());
+            rendered.setDotsPerMeterY(m_image.dotsPerMeterY());
+            m_image = rendered;
+            if (m_canvasWidget) m_canvasWidget->update();
+        });
+    }
+    if (!m_strokeRefreshTimer->isActive()) m_strokeRefreshTimer->start();
 }
 
 void SessionWindow::selectRegion(bool rectangle) {
@@ -2806,7 +2875,7 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
             .arg(m_brushMode == "Paint" ? "brushMove" : "warpMove")
             .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
         const QByteArray bytes = json.toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) refreshImage();
+        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) scheduleStrokeRefresh();
     }
 }
 
@@ -2894,7 +2963,7 @@ void SessionWindow::tabletEvent(QTabletEvent *event) {
             break;
         case QEvent::TabletMove:
             if (m_tabletHandler && m_tabletHandler->handleTabletMove(event, m_sessionHandle, point, m_painting)) {
-                refreshImage();
+                scheduleStrokeRefresh();
                 event->accept();
                 return;
             }
@@ -3217,6 +3286,7 @@ bool SessionWindow::loadProject(const QString &path) {
     if (rendered.isNull()) { compositor_workspace_close_tab(replacement); return false; }
     // Opens as its own tab rather than replacing the current document, same as "New Canvas" / the "+" button.
     addDocumentTab(replacement, QFileInfo(path).completeBaseName(), path);
+    sendCommand({{"action", "markSaved"}}); // freshly opened == saved, so closing it right away doesn't ask
     return true;
 }
 
@@ -3298,6 +3368,21 @@ void SessionWindow::clearAutosave() {
 
 void SessionWindow::closeEvent(QCloseEvent *event) {
     fprintf(stderr, ">>> SessionWindow::closeEvent called! spontaneous=%d\n", (int)event->spontaneous());
+    // Upstream ProjectWorkspace.confirmQuit: ask about each unsaved tab, the one on screen first, then the rest left
+    // to right; Cancel on any keeps the window open.
+    std::vector<uint64_t> order;
+    if (m_activeDocumentIndex >= 0 && m_activeDocumentIndex < static_cast<int>(m_documents.size()))
+        order.push_back(m_documents[m_activeDocumentIndex].handle);
+    for (const DocumentTab &doc : m_documents)
+        if (order.empty() || doc.handle != order.front()) order.push_back(doc.handle);
+    for (uint64_t handle : order) {
+        const auto it = std::find_if(m_documents.begin(), m_documents.end(),
+            [handle](const DocumentTab &doc) { return doc.handle == handle; });
+        if (it != m_documents.end() && !confirmDocumentClose(static_cast<int>(it - m_documents.begin()))) {
+            event->ignore();
+            return;
+        }
+    }
     clearAutosave();
     QMainWindow::closeEvent(event);
 }
@@ -3885,7 +3970,10 @@ void SessionWindow::setupHeaderBar() {
     m_headerToolBar->addWidget(m_documentTabBar);
 
     auto *spacer = new QWidget(m_headerToolBar);
+    spacer->setObjectName("header.dragArea");
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // The spacer covers most of the header's empty background, so it needs the drag handler itself.
+    spacer->installEventFilter(this);
     m_headerToolBar->addWidget(spacer);
 
     // Right zoom pill buttons: [Fit] [100%] [🔍-] [🔍+]
