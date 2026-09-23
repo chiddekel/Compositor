@@ -21,12 +21,12 @@ nonisolated enum PSDReader {
         data.count >= 4 && data.prefix(4) == Data("8BPS".utf8)
     }
 
-    static func read(from url: URL, remainingPixels: Int = 100_000_000) throws -> PSDDocument {
+    static func read(from url: URL, remainingPixels: Int = DocumentLimits.documentPixelBudget) throws -> PSDDocument {
         let data = try Data(contentsOf: url, options: [.mappedIfSafe])
         return try read(data, remainingPixels: remainingPixels)
     }
 
-    static func read(_ data: Data, remainingPixels: Int = 100_000_000) throws -> PSDDocument {
+    static func read(_ data: Data, remainingPixels: Int = DocumentLimits.documentPixelBudget) throws -> PSDDocument {
         var cursor = PSDCursor(data: data)
         guard try cursor.string(4) == "8BPS" else { throw ImageImportError.unreadable }
         let version = try cursor.u16()
@@ -37,8 +37,8 @@ nonisolated enum PSDReader {
         let canvasWidth = Int(try cursor.u32())
         let depth = try cursor.u16()
         let mode = try cursor.u16()
-        guard (1...30_000).contains(canvasWidth), (1...30_000).contains(canvasHeight),
-              canvasWidth * canvasHeight <= 100_000_000 else {
+        guard (1...DocumentLimits.maxSide).contains(canvasWidth), (1...DocumentLimits.maxSide).contains(canvasHeight),
+              canvasWidth * canvasHeight <= DocumentLimits.maxSurfacePixels else {
             throw ImageImportError.tooLarge
         }
         guard depth == 8 else { throw PSDError.unsupportedDepth }
@@ -204,10 +204,10 @@ nonisolated enum PSDReader {
         let maskHeight = max(0, layer.maskBottom - layer.maskTop)
         let budget = max(0, remainingPixels)
         if width > 0, height > 0 {
-            guard width <= 30_000, height <= 30_000, width * height <= budget else { throw ImageImportError.tooLarge }
+            guard width <= DocumentLimits.maxSide, height <= DocumentLimits.maxSide, width * height <= budget else { throw ImageImportError.tooLarge }
         }
         if layer.hasMask, maskWidth > 0, maskHeight > 0 {
-            guard maskWidth <= 30_000, maskHeight <= 30_000, maskWidth * maskHeight <= budget else {
+            guard maskWidth <= DocumentLimits.maxSide, maskHeight <= DocumentLimits.maxSide, maskWidth * maskHeight <= budget else {
                 throw ImageImportError.tooLarge
             }
         }

@@ -1150,7 +1150,13 @@ void SessionWindow::presentSessionColorPicker() {
     if (title.isEmpty() || rgb.size() != 3) return;
     m_presentingColorPicker = true;
     const QColor initial = QColor::fromRgbF(rgb[0].toDouble(), rgb[1].toDouble(), rgb[2].toDouble());
-    const QColor chosen = m_platform.colors->pick(initial, title);
+    // Live: every change of the working colour goes to the session's picker, whose previews (text being edited,
+    // a layer effect, ...) show on the canvas while the dialog is open; Cancel restores through closeColorPicker.
+    const QColor chosen = m_platform.colors->pick(initial, title, [this](const QColor &working) {
+        if (sendCommand({{"action", "setColorPickerColor"},
+                         {"parameters", QJsonObject{{"red", working.redF()}, {"green", working.greenF()}, {"blue", working.blueF()}}}}))
+            refreshImage();
+    });
     if (chosen.isValid()) {
         sendCommand({{"action", "setColorPickerColor"},
                      {"parameters", QJsonObject{{"red", chosen.redF()}, {"green", chosen.greenF()}, {"blue", chosen.blueF()}}}});
@@ -2299,7 +2305,7 @@ void SessionWindow::refreshImage() {
     if (m_strokeRefreshTimer) m_strokeRefreshTimer->stop(); // this full refresh supersedes a pending stroke redraw
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
-    if (width <= 0 || height <= 0 || qint64(width) * height > 100000000) return;
+    if (width <= 0 || height <= 0 || qint64(width) * height > 200000000) return;   // upstream DocumentLimits.maxSurfacePixels
     QImage rendered = renderToQImage(m_sessionHandle, width, height);
     if (rendered.isNull()) return;
     const int dpm = qRound(state.value("resolution").toDouble(72) / 0.0254);

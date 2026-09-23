@@ -67,7 +67,7 @@ nonisolated enum ProjectError: LocalizedError {
         case .invalid: "This is not a valid Compositor project, or its metadata is damaged."
         case .version(let version): "This project uses format version \(version). This app supports versions \(ProjectManifest.supported.lowerBound)–\(ProjectManifest.supported.upperBound)."
         case .missingImage: "An image inside the project is missing or damaged. The current document has not been replaced."
-        case .tooLarge: "This project exceeds the supported canvas, layer, file-size, or 100-megapixel image limit."
+        case .tooLarge: "This project exceeds the supported canvas, layer, file-size, or \(DocumentLimits.documentBudgetMegapixels)-megapixel document limit."
         case .encode: "An image could not be saved. The previous project has not been replaced."
         }
     }
@@ -190,7 +190,7 @@ actor ProjectStore {
         if let resolution = manifest.resolution {
             guard resolution.isFinite, (1...9600).contains(resolution) else { throw ProjectError.invalid }
         }
-        guard (1...30_000).contains(manifest.width), (1...30_000).contains(manifest.height),
+        guard (1...DocumentLimits.maxSide).contains(manifest.width), (1...DocumentLimits.maxSide).contains(manifest.height),
               manifest.layers.count <= 10_000 else { throw ProjectError.tooLarge }
         for layer in manifest.layers {
             if let text = layer.text {
@@ -246,7 +246,7 @@ actor ProjectStore {
     }
 
     private func checkSize(width: Int, height: Int, used: inout Int) throws {
-        guard (1...30_000).contains(width), (1...30_000).contains(height), width * height <= 100_000_000 - used else {
+        guard (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height), width * height <= DocumentLimits.documentPixelBudget - used else {
             throw ProjectError.tooLarge
         }
         used += width * height

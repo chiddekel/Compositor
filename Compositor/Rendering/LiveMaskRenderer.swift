@@ -82,7 +82,7 @@ nonisolated final class LiveMaskRenderer {
             return
         }
         guard let children = stacks[id], bounds.width > 0, bounds.height > 0,
-              bounds.width * bounds.height <= 100_000_000,
+              bounds.width * bounds.height <= DocumentLimits.maxSurfaceExtent,
               let group = try? BrushRaster.context(width: Int(bounds.width), height: Int(bounds.height), mask: false),
               let alpha = try? BrushRaster.context(width: Int(bounds.width), height: Int(bounds.height), mask: true) else {
             if let children = stacks[id] { stacked.subtract(children) }
@@ -129,7 +129,7 @@ nonisolated final class LiveMaskRenderer {
     private func coverage(_ id: UUID) -> CGImage? {
         if let image = cache[id] { return image }
         guard !visiting.contains(id), visiting.count < 256, bounds.width > 0, bounds.height > 0,
-              bounds.width * bounds.height <= 100_000_000 else { return nil }
+              bounds.width * bounds.height <= DocumentLimits.maxSurfaceExtent else { return nil }
         visiting.insert(id); defer { visiting.remove(id) }
         let w = Int(bounds.width), h = Int(bounds.height)
         guard let pixels = try? BrushRaster.context(width: w, height: h, mask: false),

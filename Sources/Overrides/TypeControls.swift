@@ -81,6 +81,7 @@ struct TypeControls: View {
         }
         .textFieldStyle(.roundedBorder).padding(.horizontal, 18).toolHeaderBar()
         .disabled(session.document == nil || session.showsBusy)
+        .onChange(of: session.colorPicker?.color) { _, _ in session.previewTextColor() }
     }
 }
 

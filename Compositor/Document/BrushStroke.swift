@@ -112,7 +112,7 @@ final class BrushStroke {
     private let gridTip: CGImage?
     /// Past this width the tip is left to the fallback rather than held in memory.
     private static let gridTipLimit: CGFloat = 3000
-    var pixelLimit = 100_000_000
+    var pixelLimit = DocumentLimits.documentPixelBudget
     /// Limits every edit to the document selection; nil when nothing is selected.
     var selectionClip: SelectionClip?
     /// Clone Stamp: a document-size image to copy from, and the offset from each painted point to its source.
@@ -171,7 +171,7 @@ final class BrushStroke {
         expanded.origin = CGPoint(x: center.x - expanded.size.width / 2, y: center.y - expanded.size.height / 2)
         paintTransform = expanded
         guard (1...1_000_000_000).contains(width), (1...1_000_000_000).contains(height),
-              (1...30_000).contains(originalWidth), (1...30_000).contains(originalHeight),
+              (1...DocumentLimits.maxSide).contains(originalWidth), (1...DocumentLimits.maxSide).contains(originalHeight),
               settings.diameter.isFinite, (1...2000).contains(settings.diameter),
               settings.hardness.isFinite, (0...1).contains(settings.hardness),
               settings.opacity.isFinite, (0.01...1).contains(settings.opacity) else { throw ProjectError.tooLarge }
@@ -570,7 +570,7 @@ final class BrushStroke {
         let size = Self.tileSize
         let rect = CGRect(x: x * size, y: y * size, width: min(size, width - x * size), height: min(size, height - y * size))
         let nextBounds = allocatedBounds.map { $0.union(rect) } ?? (source == nil ? rect : sourceRect.union(rect))
-        guard nextBounds.width <= 30_000, nextBounds.height <= 30_000,
+        guard nextBounds.width <= DocumentLimits.maxSideExtent, nextBounds.height <= DocumentLimits.maxSideExtent,
               nextBounds.width * nextBounds.height <= CGFloat(pixelLimit) else { throw ProjectError.tooLarge }
         allocatedBounds = nextBounds
         let context = try BrushRaster.context(width: Int(rect.width), height: Int(rect.height), mask: isMask)

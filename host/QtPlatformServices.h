@@ -53,6 +53,9 @@ public:
     QColor pick(const QColor &initial, const QString &title) override {
         return ColorPickerDialog::getColor(initial, QApplication::activeWindow(), title);
     }
+    QColor pick(const QColor &initial, const QString &title, const std::function<void(const QColor &)> &preview) override {
+        return ColorPickerDialog::getColor(initial, QApplication::activeWindow(), title, preview);
+    }
 };
 
 class Notifier final : public IUserNotifier {

@@ -393,7 +393,7 @@ final class FilterEdit {
         let bounds = CGRect(x: 0, y: 0, width: original.image.width, height: original.image.height)
         let target = bounds.union(extent).integral
         guard target != bounds else { return }
-        guard target.width <= 30_000, target.height <= 30_000, target.width * target.height <= 100_000_000 else { throw ProjectError.tooLarge }
+        guard target.width <= DocumentLimits.maxSideExtent, target.height <= DocumentLimits.maxSideExtent, target.width * target.height <= DocumentLimits.maxSurfaceExtent else { throw ProjectError.tooLarge }
         let context = try BrushRaster.context(width: Int(target.width), height: Int(target.height), mask: false)
         let inside = bounds.offsetBy(dx: -target.minX, dy: -target.minY)
         if let raster = original.raster { raster.draw(in: inside, context: context) }

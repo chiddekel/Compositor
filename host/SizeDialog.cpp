@@ -45,7 +45,7 @@ struct SizeDraft {
         return std::isfinite(width) && std::isfinite(height) && std::isfinite(resolution)
             && std::round(width) >= 1 && std::round(width) <= 30000
             && std::round(height) >= 1 && std::round(height) <= 30000
-            && std::round(width) * std::round(height) <= 100000000
+            && std::round(width) * std::round(height) <= 200000000   // upstream DocumentLimits.maxSurfacePixels
             && resolution >= 1 && resolution <= 9600;
     }
 };

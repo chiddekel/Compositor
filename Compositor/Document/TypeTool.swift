@@ -24,8 +24,8 @@ nonisolated struct LayerTextStyle: Codable, Equatable, Sendable {
     var boxSize: CGSize? = nil
     var boxIsValid: Bool {
         guard let boxSize else { return true }
-        return boxSize.width.isFinite && boxSize.height.isFinite && (16...30_000).contains(boxSize.width)
-            && (16...30_000).contains(boxSize.height) && boxSize.width * boxSize.height <= 100_000_000
+        return boxSize.width.isFinite && boxSize.height.isFinite && (16...DocumentLimits.maxSideExtent).contains(boxSize.width)
+            && (16...DocumentLimits.maxSideExtent).contains(boxSize.height) && boxSize.width * boxSize.height <= DocumentLimits.maxSurfaceExtent
     }
     var isValid: Bool {
         content.utf16.count <= 100_000 && boxIsValid
@@ -157,7 +157,7 @@ extension EditorSession {
         guard canEditLayers, textDraft == nil, rect.width.isFinite, rect.height.isFinite else { return }
         var style = textDefaults
         style.boxSize = CGSize(width: max(16, rect.width.rounded()), height: max(16, rect.height.rounded()))
-        guard style.boxIsValid else { brushError = "That text box exceeds the 30,000-pixel or 100-megapixel limit."; return }
+        guard style.boxIsValid else { brushError = "That text box exceeds the \(DocumentLimits.maxSide.formatted())-pixel or \(DocumentLimits.maxSurfaceMegapixels)-megapixel limit."; return }
         beginText(at: rect.origin, newLayer: true)
         textDraft?.style.boxSize = style.boxSize
     }
@@ -237,7 +237,7 @@ extension EditorSession {
         let size = textBoxSize(style)
         let width = ceil(size.width), height = ceil(size.height)
         guard width.isFinite, height.isFinite, width >= 1, height >= 1,
-              width <= 30_000, height <= 30_000, width * height <= 100_000_000 else { throw ProjectError.tooLarge }
+              width <= DocumentLimits.maxSideExtent, height <= DocumentLimits.maxSideExtent, width * height <= DocumentLimits.maxSurfaceExtent else { throw ProjectError.tooLarge }
         let context = try BrushRaster.context(width: Int(width), height: Int(height), mask: false)
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }

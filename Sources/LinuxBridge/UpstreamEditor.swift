@@ -257,6 +257,10 @@ final class UpstreamEditor {
             default:
                 guard let picker = s.colorPicker else { return fail(-5, "no color picker open") }
                 picker.hsb = PickerHSB(color)
+                // Upstream's views observe the picker's working color (`.onChange(of: session.colorPicker?.color)`)
+                // and preview it live — text being edited, a layer effect, a gradient map end, the vignette. The Qt
+                // shell has no such observers, so the bridge runs the same previews (each checks its own target).
+                s.previewTextColor(); s.previewEffectColor(); s.previewGradientMapColor(); s.previewVignetteColor()
             }
         case "closeColorPicker": s.closeColorPicker(commit: command.enabled ?? false)
         case "fillForeground", "fillBackground":
@@ -487,8 +491,8 @@ final class UpstreamEditor {
 
     /// Installs the project's structure; layer images and masks then arrive through `installLayerAsset`.
     func importManifest(_ data: Data) -> Int32 {
-        guard let manifest = try? JSONDecoder().decode(ProjectManifest.self, from: data), (1...30_000).contains(manifest.width), (1...30_000).contains(manifest.height),
-              manifest.width * manifest.height <= 100_000_000, manifest.layers.count <= 10_000,
+        guard let manifest = try? JSONDecoder().decode(ProjectManifest.self, from: data), (1...DocumentLimits.maxSide).contains(manifest.width), (1...DocumentLimits.maxSide).contains(manifest.height),
+              manifest.width * manifest.height <= DocumentLimits.maxSurfacePixels, manifest.layers.count <= 10_000,
               (try? LiveMaskGraph.validate(manifest.layers)) != nil else { return fail(-1, "invalid project manifest") }
         session.installProject(ProjectSnapshot(manifest: manifest, images: [:]), from: URL(fileURLWithPath: "/dev/null"))
         session.projectURL = nil
@@ -585,7 +589,7 @@ final class UpstreamEditor {
 
     /// Adds premultiplied RGBA8 pixels as a layer (`replacing`: as a new one-layer document of that size, history cleared).
     func importRGBA(_ pixels: [UInt8], width: Int, height: Int, name: String, replacing: Bool) -> Int32 {
-        guard (1...30_000).contains(width), (1...30_000).contains(height), width * height <= 100_000_000,
+        guard (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height), width * height <= DocumentLimits.maxSurfacePixels,
               pixels.count == width * height * 4, !name.isEmpty else { return fail(-1, "invalid image") }
         // Validate the canonical contract before any C pixel kernel can see it.
         for i in stride(from: 0, to: pixels.count, by: 4) where pixels[i] > pixels[i + 3] || pixels[i + 1] > pixels[i + 3] || pixels[i + 2] > pixels[i + 3] {

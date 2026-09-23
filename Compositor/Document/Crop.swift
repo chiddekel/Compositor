@@ -9,7 +9,7 @@ nonisolated enum CropGeometry {
     }
     static func valid(_ rect: CGRect) -> Bool {
         [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite)
-            && (1...30_000).contains(rect.width) && (1...30_000).contains(rect.height)
+            && (1...DocumentLimits.maxSideExtent).contains(rect.width) && (1...DocumentLimits.maxSideExtent).contains(rect.height)
             && abs(rect.minX) <= 1_000_000 && abs(rect.minY) <= 1_000_000
     }
     /// A frame dragged from `start` to `end` — or, `symmetric` (Option), grown out from `start` as its center.

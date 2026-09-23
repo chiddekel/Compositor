@@ -17,11 +17,11 @@ extension EditorSession {
             let image = isMaskSelected ? layer.mask?.asset.image : layer.asset?.image
             return total + (image.map { $0.width * $0.height } ?? 0)
         }
-        stroke.pixelLimit = 100_000_000 - used
+        stroke.pixelLimit = DocumentLimits.documentPixelBudget - used
         stroke.selectionClip = try selection?.clip(canvas: document.size)
         if !isMaskSelected, layer.mask != nil {
             let maskPixels = document.layers.filter { $0.id != layer.id }.reduce(0) { $0 + ($1.mask.map { $0.asset.image.width * $0.asset.image.height } ?? 0) }
-            stroke.pixelLimit = min(stroke.pixelLimit, 100_000_000 - maskPixels)
+            stroke.pixelLimit = min(stroke.pixelLimit, DocumentLimits.documentPixelBudget - maskPixels)
         }
         return stroke
     }

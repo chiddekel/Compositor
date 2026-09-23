@@ -29,8 +29,11 @@ struct ProjectTabStrip: View {
     @State private var slotWidth: CGFloat = 0
     @State private var dragChangeCount = NSPasteboard(name: .drag).changeCount
     private let dragTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+    /// Each project's window content builds its own strip, so a new tab starts one that hasn't measured yet. Until
+    /// it has, the fade stays on: over full tabs it is where it was, and over a short strip, still as wide as its
+    /// slot, it sits on empty title bar. Turning it off for that moment made it flicker on every new tab.
     private var clipped: Bool {
-        guard let contentWidth, slotWidth > 1 else { return false }
+        guard let contentWidth, slotWidth > 1 else { return true }
         return contentWidth > slotWidth + 1
     }
     var body: some View {
@@ -64,7 +67,6 @@ struct ProjectTabStrip: View {
                     .frame(width: clipped ? 28 : 0)
             }
             .animation(.easeOut(duration: 0.15), value: scrolledFromStart)
-            .animation(.easeOut(duration: 0.15), value: clipped)
         }
         .accessibilityLabel("Project tabs")
         .onReceive(dragTimer) { _ in

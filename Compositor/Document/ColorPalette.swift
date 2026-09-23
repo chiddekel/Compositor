@@ -59,7 +59,13 @@ extension EditorSession {
 
     func openColorPicker(background: Bool) {
         guard canEditPalette, !isMaskSelected else { return }
-        colorPicker = ColorPickerState(background: background, original: paletteColor(background: background))
+        let picker = ColorPickerState(background: background, original: paletteColor(background: background))
+        // Text being edited follows the foreground color, so it previews the picker's working color as the Type
+        // bar's own swatch does, and goes back to its own color on Cancel.
+        if !background, tool == .type, let draft = textDraft {
+            picker.editedText = (draft.id, PaletteColor(red: draft.style.red, green: draft.style.green, blue: draft.style.blue))
+        }
+        colorPicker = picker
     }
     /// What the Type bar's swatch shows and edits: the text being edited, otherwise the foreground color the next
     /// text will use. A text layer that is only selected is not touched.
@@ -81,16 +87,22 @@ extension EditorSession {
             switch colorPicker.target {
             case .palette(let background):
                 if commit, !isMaskSelected { setPaletteColor(colorPicker.color, background: background) }
+                else if !commit, let edited = colorPicker.editedText, tool == .type, textDraft?.id == edited.draftID {
+                    let color = edited.color
+                    changeTextStyle { $0.red = color.red; $0.green = color.green; $0.blue = color.blue }
+                    refreshCanvasPreview?()
+                }
             case .text(let draftID):
-                if commit, tool == .type, textDraft?.id == draftID {
-                    let color = colorPicker.color
+                if tool == .type, textDraft?.id == draftID {
+                    let color = commit ? colorPicker.color : colorPicker.original
                     if draftID != nil {
                         changeTextStyle { $0.red = color.red; $0.green = color.green; $0.blue = color.blue }
-                    } else {
+                        refreshCanvasPreview?()
+                    } else if commit {
                         textDefaults.red = color.red; textDefaults.green = color.green; textDefaults.blue = color.blue
                     }
                     // The text color is the foreground color: picking one in the Type bar moves the swatch too.
-                    if !isMaskSelected { foregroundColor = color }
+                    if commit, !isMaskSelected { foregroundColor = color }
                 }
             case .effect(let kind):
                 let color = commit ? colorPicker.color : colorPicker.original
@@ -121,6 +133,20 @@ extension EditorSession {
     func previewEffectColor() {
         guard let colorPicker, case .effect(let kind) = colorPicker.target else { return }
         changeEffects { $0.setColor(colorPicker.color, for: kind) }
+    }
+    /// Preview the picker's working color in the active on-canvas text draft.
+    func previewTextColor() {
+        guard let colorPicker else { return }
+        let draftID: UUID?
+        switch colorPicker.target {
+        case .text(let id): draftID = id
+        case .palette(background: false): draftID = colorPicker.editedText?.draftID
+        default: return
+        }
+        guard let draftID, tool == .type, textDraft?.id == draftID else { return }
+        let color = colorPicker.color
+        changeTextStyle { $0.red = color.red; $0.green = color.green; $0.blue = color.blue }
+        refreshCanvasPreview?()
     }
     /// While the picker is open on a Gradient Map end, the gradient (and canvas) follow its working color.
     func previewGradientMapColor() {
@@ -202,6 +228,8 @@ final class ColorPickerState {
     let target: ColorPickerTarget
     var background: Bool { target == .palette(background: true) }
     let original: PaletteColor
+    /// The foreground picker opened while text was being edited: that text and the color it had.
+    var editedText: (draftID: UUID, color: PaletteColor)?
     var hsb: PickerHSB
     var color: PaletteColor { hsb.rgb.quantized }
     init(target: ColorPickerTarget, original: PaletteColor) {

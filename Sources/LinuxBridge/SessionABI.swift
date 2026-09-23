@@ -161,7 +161,7 @@ nonisolated public func compositorSessionCommand(_ handle: UInt64, _ json: Unsaf
 nonisolated public func compositorSessionImportRGBA(_ handle: UInt64, _ pixels: UnsafePointer<UInt8>?, _ count: Int,
                                                     _ width: Int, _ height: Int, _ name: UnsafePointer<UInt8>?, _ nameCount: Int,
                                                     _ replacing: Int32) -> Int32 {
-    guard (1...30_000).contains(width), (1...30_000).contains(height), width * height <= 100_000_000,
+    guard (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height), width * height <= DocumentLimits.maxSurfacePixels,
           count == width * height * 4, let pixels, let name, (1...16_384).contains(nameCount),
           let title = String(data: Data(bytes: name, count: nameCount), encoding: .utf8) else { return -1 }
     let bytes = Array(UnsafeBufferPointer(start: pixels, count: count))
@@ -257,8 +257,8 @@ nonisolated public func compositorSessionExportLayer(_ handle: UInt64, _ layerID
 nonisolated public func compositorSessionImportLayer(_ handle: UInt64, _ layerID: UnsafePointer<UInt8>?, _ layerIDCount: Int,
                                                      _ mask: Int32, _ pixels: UnsafePointer<UInt8>?, _ count: Int,
                                                      _ width: Int, _ height: Int) -> Int32 {
-    guard let layerID, (1...128).contains(layerIDCount), let pixels, (1...30_000).contains(width), (1...30_000).contains(height),
-          width * height <= 100_000_000,
+    guard let layerID, (1...128).contains(layerIDCount), let pixels, (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height),
+          width * height <= DocumentLimits.maxSurfacePixels,
           let idString = String(data: Data(bytes: layerID, count: layerIDCount), encoding: .utf8),
           let id = UUID(uuidString: idString) else { return -1 }
     let expected = width * height * (mask == 0 ? 4 : 1)

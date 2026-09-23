@@ -53,7 +53,7 @@ extension EditorSession {
     }
 
     func createNewProject(width: Int, height: Int) {
-        guard !isProjectBusy, !isImporting, (1...30_000).contains(width), (1...30_000).contains(height) else { return }
+        guard !isProjectBusy, !isImporting, (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height) else { return }
         clearProject()
         createDocument(width: width, height: height, emptyLayer: true)
     }

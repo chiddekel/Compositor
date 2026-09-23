@@ -7,7 +7,7 @@ nonisolated enum ExportError: LocalizedError {
     case tooLarge, render, encode
     var errorDescription: String? {
         switch self {
-        case .tooLarge: "Image export supports canvases up to 100 megapixels and 30,000 pixels per side."
+        case .tooLarge: "Image export supports canvases up to \(DocumentLimits.maxSurfaceMegapixels) megapixels and \(DocumentLimits.maxSide.formatted()) pixels per side."
         case .render: "The canvas could not be rendered. Try a smaller canvas."
         case .encode: "The image could not be encoded."
         }
@@ -19,8 +19,8 @@ actor ImageExporter {
 
     func render(_ snapshot: ProjectSnapshot) throws -> ExportRaster {
         let width = snapshot.manifest.width, height = snapshot.manifest.height
-        guard (1...30_000).contains(width), (1...30_000).contains(height),
-              width * height <= 100_000_000 else { throw ExportError.tooLarge }
+        guard (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height),
+              width * height <= DocumentLimits.maxSurfacePixels else { throw ExportError.tooLarge }
         return try autoreleasepool {
             guard let space = CGColorSpace(name: CGColorSpace.sRGB),
                   let context = CGContext(data: nil, width: width, height: height,

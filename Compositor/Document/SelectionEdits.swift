@@ -127,7 +127,7 @@ extension EditorSession {
     }
 
     private static func expandedUniformMask(_ image: CGImage, width: Int, height: Int) throws -> CGImage {
-        guard width > 0, height > 0, width * height <= 100_000_000 else { throw ProjectError.tooLarge }
+        guard width > 0, height > 0, width * height <= DocumentLimits.maxSurfacePixels else { throw ProjectError.tooLarge }
         let context = try BrushRaster.context(width: width, height: height, mask: true)
         BrushRaster.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height), mask: true, context: context)
         guard let expanded = context.makeImage() else { throw ExportError.render }

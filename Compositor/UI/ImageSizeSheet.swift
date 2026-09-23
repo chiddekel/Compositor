@@ -22,8 +22,8 @@ struct ImageSizeSheet: View {
 
     private var valid: Bool {
         width.isFinite && height.isFinite && resolution.isFinite && (1...9600).contains(resolution)
-            && (1...30_000).contains(width.rounded()) && (1...30_000).contains(height.rounded())
-            && (!resample || width.rounded() * height.rounded() <= 100_000_000)
+            && (1...DocumentLimits.maxSideExtent).contains(width.rounded()) && (1...DocumentLimits.maxSideExtent).contains(height.rounded())
+            && (!resample || width.rounded() * height.rounded() <= DocumentLimits.maxSurfaceExtent)
     }
     private func display(_ pixels: Double, original: Int) -> Double {
         switch unit {
@@ -104,7 +104,7 @@ struct ImageSizeSheet: View {
                 Text("Only print dimensions and resolution change. Pixels stay unchanged.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Text(valid ? "Result: \(Int(width.rounded())) × \(Int(height.rounded())) pixels" : "Use 1–30,000 pixels per side, up to 100 megapixels, and 1–9,600 pixels/inch.")
+            Text(valid ? "Result: \(Int(width.rounded())) × \(Int(height.rounded())) pixels" : "Use 1–\(DocumentLimits.maxSide.formatted()) pixels per side, up to \(DocumentLimits.maxSurfaceMegapixels) megapixels, and 1–9,600 pixels/inch.")
                 .foregroundStyle(valid ? Color.secondary : Color.orange).font(.callout)
             HStack {
                 Button("Cancel") { finish(nil) }.configuredNativeShortcut(.escape)

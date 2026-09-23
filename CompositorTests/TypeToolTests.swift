@@ -39,6 +39,30 @@ struct TypeToolTests {
         #expect(session.activeLayer?.liveText != nil)
     }
 
+    @Test func textColorPickerPreviewsAndRestoresDraft() throws {
+        let session = makeSession()
+        session.beginText(at: CGPoint(x: 30, y: 40))
+        let original = try #require(session.textDraft?.style)
+
+        session.openTextColorPicker()
+        try #require(session.colorPicker).hsb.setRGB(PaletteColor(red: 1, green: 0, blue: 0))
+        session.previewTextColor()
+        #expect(session.textDraft?.style.red == 1)
+        #expect(session.textDraft?.style.green == 0)
+        #expect(session.foregroundColor == .black)
+
+        session.closeColorPicker(commit: false)
+        #expect(session.textDraft?.style == original)
+        #expect(session.foregroundColor == .black)
+
+        session.openTextColorPicker()
+        try #require(session.colorPicker).hsb.setRGB(PaletteColor(red: 0, green: 0, blue: 1))
+        session.previewTextColor()
+        session.closeColorPicker(commit: true)
+        #expect(session.textDraft?.style.blue == 1)
+        #expect(session.foregroundColor == PaletteColor(red: 0, green: 0, blue: 1))
+    }
+
     @Test func transformsDuplicatesAndClippingKeepTextEditable() throws {
         let session = makeSession()
         session.beginText(at: CGPoint(x: 20, y: 20))

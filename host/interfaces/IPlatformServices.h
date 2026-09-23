@@ -19,6 +19,7 @@
 #include <QColor>
 #include <QImage>
 #include <QString>
+#include <functional>
 #include <memory>
 
 class IFileDialogService {
@@ -44,6 +45,12 @@ public:
     virtual ~IColorPickerService() = default;
     /// Invalid colour when cancelled.
     virtual QColor pick(const QColor &initial, const QString &title) = 0;
+    /// Same, reporting the working colour as it changes, so the caller can preview it live (upstream previews text
+    /// and effect colours while its picker is open). Pickers without live updates fall back to `pick`.
+    virtual QColor pick(const QColor &initial, const QString &title, const std::function<void(const QColor &)> &preview) {
+        (void)preview;
+        return pick(initial, title);
+    }
 };
 
 class IUserNotifier {
