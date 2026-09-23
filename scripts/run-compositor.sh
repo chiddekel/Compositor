@@ -15,6 +15,7 @@
 #   --layers-smoke       Run Qt layers dock interactive smoke test
 #   --brush-smoke        Run Qt brush engine smoke test
 #   --offscreen          Run headless using Qt offscreen platform plugin
+#   --release            Optimized build (~5x faster painting/rendering; slower first build)
 #   -h, --help           Show this help message
 
 set -euo pipefail
@@ -124,10 +125,13 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
 fi
 
 OFFSCREEN=0
+CONFIG=debug
 PASSTHROUGH_ARGS=()
 for arg in "$@"; do
     if [[ "$arg" == "--offscreen" ]]; then
         OFFSCREEN=1
+    elif [[ "$arg" == "--release" ]]; then
+        CONFIG=release
     else
         PASSTHROUGH_ARGS+=("$arg")
     fi
@@ -145,6 +149,6 @@ flatpak run "${FLATPAK_ARGS[@]}" "$SDK_REF" -c "
     # actually invoking the final link step (confirmed — it leaves stale object files up to date and skips
     # relinking even after 'swift package clean'), silently leaving a missing or stale binary. --product always
     # builds and links the real deliverable.
-    /usr/lib/sdk/swift6/bin/swift build --product CompositorHostBootstrap
-    exec .build/x86_64-unknown-linux-gnu/debug/CompositorHostBootstrap "\$@"
+    /usr/lib/sdk/swift6/bin/swift build -c $CONFIG --product CompositorHostBootstrap
+    exec .build/x86_64-unknown-linux-gnu/$CONFIG/CompositorHostBootstrap "\$@"
 " bash "${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}"

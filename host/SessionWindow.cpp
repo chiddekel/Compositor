@@ -80,6 +80,7 @@ uint64_t compositor_session_create(void);
 void compositor_session_close(uint64_t handle);
 int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t count);
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
+int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
 int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
@@ -2197,7 +2198,14 @@ void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
     m_currentPoint = documentPoint(event->position());
     mouseMoveEvent(event);
-    if (m_canvasWidget) m_canvasWidget->update();
+    // Mid-stroke, scheduleStrokeRefresh() repaints just the changed area; a whole-canvas repaint per mouse move
+    // (the full document image rescaled) would cost more than the stroke itself.
+    if (m_canvasWidget && !isBrushStrokeActive()) m_canvasWidget->update();
+}
+
+bool SessionWindow::isBrushStrokeActive() const {
+    return m_painting && !m_spaceHandActive
+        && (m_tool == Tool::Brush || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing || m_tool == Tool::Smear);
 }
 
 void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas) {
@@ -2210,7 +2218,7 @@ void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas)
 void SessionWindow::canvasTabletEvent(QTabletEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
     tabletEvent(event);
-    if (m_canvasWidget) m_canvasWidget->update();
+    if (m_canvasWidget && !(event->type() == QEvent::TabletMove && isBrushStrokeActive())) m_canvasWidget->update();
 }
 
 void SessionWindow::canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas) {
@@ -2276,9 +2284,32 @@ void SessionWindow::scheduleStrokeRefresh() {
     if (!m_strokeRefreshTimer) {
         m_strokeRefreshTimer = new QTimer(this);
         m_strokeRefreshTimer->setSingleShot(true);
-        m_strokeRefreshTimer->setInterval(16);
         connect(m_strokeRefreshTimer, &QTimer::timeout, this, [this] {
+            m_strokeFrameClock.start();
             if (m_sessionHandle == 0 || m_image.isNull()) { refreshImage(); return; }
+            // Brush strokes: re-render and repaint only the area the stroke changed (upstream's EditorCanvas redraws
+            // just BrushStroke.dirtyDocumentRect). -3 = no region tracked (e.g. a Liquify warp): whole document below.
+            std::vector<uint8_t> &region = m_strokeRegionBuffer;
+            region.resize(static_cast<size_t>(m_image.width()) * m_image.height() * 4);
+            int32_t rect[4] = {0, 0, 0, 0};
+            const int64_t n = compositor_session_render_dirty(m_sessionHandle, rect, region.data(), region.size());
+            if (n == 0) return;
+            if (n > 0 && n == int64_t(rect[2]) * rect[3] * 4 && m_image.format() == QImage::Format_RGBA8888) {
+                const QImage patch = QImage(region.data(), rect[2], rect[3], rect[2] * 4, QImage::Format_RGBA8888_Premultiplied)
+                    .convertToFormat(QImage::Format_RGBA8888);
+                {
+                    QPainter painter(&m_image);
+                    painter.setCompositionMode(QPainter::CompositionMode_Source);
+                    painter.drawImage(rect[0], rect[1], patch);
+                }
+                if (m_canvasWidget) {
+                    const QRectF target = canvasTargetRect();
+                    const double sx = target.width() / m_image.width(), sy = target.height() / m_image.height();
+                    m_canvasWidget->update(QRectF(target.left() + rect[0] * sx, target.top() + rect[1] * sy,
+                                                  rect[2] * sx, rect[3] * sy).toAlignedRect().adjusted(-2, -2, 2, 2));
+                }
+                return;
+            }
             QImage rendered = renderToQImage(m_sessionHandle, m_image.width(), m_image.height());
             if (rendered.isNull()) { refreshImage(); return; } // size changed under us: take the full path
             rendered.setDotsPerMeterX(m_image.dotsPerMeterX());
@@ -2287,7 +2318,11 @@ void SessionWindow::scheduleStrokeRefresh() {
             if (m_canvasWidget) m_canvasWidget->update();
         });
     }
-    if (!m_strokeRefreshTimer->isActive()) m_strokeRefreshTimer->start();
+    if (m_strokeRefreshTimer->isActive()) return;
+    // Frame pacing: the next frame is due 16 ms after the previous one *started*, not 16 ms after it finished —
+    // otherwise the render time adds to the interval (a 20 ms render at a fixed 16 ms delay is ~27 fps).
+    const qint64 sinceLast = m_strokeFrameClock.isValid() ? m_strokeFrameClock.elapsed() : 16;
+    m_strokeRefreshTimer->start(static_cast<int>(std::max<qint64>(0, 16 - sinceLast)));
 }
 
 void SessionWindow::selectRegion(bool rectangle) {

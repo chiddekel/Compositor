@@ -628,10 +628,45 @@ final class UpstreamEditor {
         while waiting(), Date() < deadline { RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.005)) }
     }
 
+    /// Just `region` (document pixels, clamped to the canvas) of what `renderRGBA` returns, as premultiplied RGBA8 of the
+    /// clamped region's size — the Linux counterpart of `EditorCanvas` redrawing only `BrushStroke.dirtyDocumentRect` on
+    /// macOS. Upstream's exporter renders a whole manifest, so the region is expressed as a manifest: a canvas the
+    /// region's size with every document-space placement (layer transforms, detached mask placements) shifted by
+    /// the region's origin. Everything else — effects, masks, adjustments, blend modes — is the exporter's own code.
+    func renderRegionRGBA(_ region: CGRect) throws -> (bytes: [UInt8], rect: CGRect) {
+        settle()
+        guard let snapshot = displayedSnapshot() else { throw ExportError.render }
+        let canvas = CGRect(x: 0, y: 0, width: snapshot.manifest.width, height: snapshot.manifest.height)
+        let rect = region.integral.intersection(canvas)
+        guard !rect.isNull, rect.width >= 1, rect.height >= 1 else { throw ExportError.render }
+        func shifted(_ t: LayerTransform) -> LayerTransform {
+            var moved = t
+            moved.origin = CGPoint(x: t.origin.x - rect.minX, y: t.origin.y - rect.minY)
+            return moved
+        }
+        let m = snapshot.manifest
+        let layers = m.layers.map { r in
+            ProjectLayerRecord(id: r.id, name: r.name, isVisible: r.isVisible, transform: shifted(r.transform),
+                imageFile: r.imageFile, parentID: r.parentID, isGroup: r.isGroup, opacity: r.opacity,
+                blendMode: r.blendMode, maskFile: r.maskFile, maskEnabled: r.maskEnabled, maskSourceID: r.maskSourceID,
+                adjustment: r.adjustment, maskPlacement: r.maskPlacement.map(shifted), maskLinked: r.maskLinked,
+                shape: r.shape, effects: r.effects, text: r.text)
+        }
+        let manifest = ProjectManifest(format: m.format, version: m.version, colorSpace: m.colorSpace, resolution: m.resolution,
+            documentID: m.documentID, width: Int(rect.width), height: Int(rect.height), activeLayerID: m.activeLayerID,
+            layers: layers, guides: m.guides)
+        let raster = try exportRGBA(ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks))
+        return (raster.bytes, rect)
+    }
+
     /// The composite as premultiplied RGBA8 (document size), from upstream's own exporter.
     func renderRGBA() throws -> (bytes: [UInt8], width: Int, height: Int) {
         settle()
         guard let snapshot = displayedSnapshot() else { throw ExportError.render }
+        return try exportRGBA(snapshot)
+    }
+
+    private func exportRGBA(_ snapshot: ProjectSnapshot) throws -> (bytes: [UInt8], width: Int, height: Int) {
         // The exporter is an actor that never needs the main thread, so this blocks the caller on a plain semaphore:
         // safe from a Qt callback and from a main-actor test alike (pumping the main run loop would deadlock in the latter).
         nonisolated(unsafe) var outcome: Result<ExportRaster, Error>?

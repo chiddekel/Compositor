@@ -23,6 +23,7 @@
 #include <QStringList>
 #include <QPointF>
 #include <QJsonObject>
+#include <QElapsedTimer>
 #include "interfaces/IPlatformServices.h"
 #include "ParityMetrics.h"
 #include "ParityPalette.h"
@@ -223,6 +224,7 @@ private:
     void refreshImage();
     // Coalesces mid-stroke redraws to one render per frame; see scheduleStrokeRefresh() in SessionWindow.cpp.
     void scheduleStrokeRefresh();
+    bool isBrushStrokeActive() const;
     void refreshLayers();
     void selectLayerRow(int row);
     void setOpacityFromSlider(int value);
@@ -317,6 +319,8 @@ private:
     std::unique_ptr<ITabletHandler> m_tabletHandler;
     QTimer *m_autosaveTimer = nullptr;
     QTimer *m_strokeRefreshTimer = nullptr;
+    QElapsedTimer m_strokeFrameClock;            // when the last stroke frame started (frame pacing)
+    std::vector<uint8_t> m_strokeRegionBuffer;   // reused between stroke frames: no per-frame allocation
     QToolBar *m_headerToolBar = nullptr;
     QToolBar *m_optionsToolBar = nullptr;
     QToolBar *m_toolsBar = nullptr;

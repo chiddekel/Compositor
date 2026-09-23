@@ -13,6 +13,8 @@ import CoreGraphics
 final class Entry {
     let editor: UpstreamEditor
     var rendered: (bytes: [UInt8], width: Int, height: Int)?
+    /// Document area the brush stroke in progress changed since the last `compositor_session_render_dirty`.
+    var strokeDirty: CGRect?
     /// The last resolved SwiftUI tree's action handlers, per panel: panel name -> node id -> handler key -> closure.
     /// Populated by `SwiftUIBridge.swift`'s `resolvePanel`, read by `compositor_session_dispatch_swiftui_action`.
     var actionHandlers: [String: [String: [String: (Any) -> Void]]] = [:]
@@ -145,6 +147,12 @@ nonisolated public func compositorSessionCommand(_ handle: UInt64, _ json: Unsaf
     return Int32(withEntry(handle) { entry in
         let code = entry.editor.command(data)
         if code == 0 { entry.rendered = nil }
+        // BrushStroke.dirtyDocumentRect covers only its latest publish; several moves can land between two frames.
+        if let stroke = entry.editor.session.brushStroke {
+            if let dirty = stroke.dirtyDocumentRect { entry.strokeDirty = entry.strokeDirty.map { $0.union(dirty) } ?? dirty }
+        } else {
+            entry.strokeDirty = nil
+        }
         return Int64(code)
     })
 }
@@ -187,6 +195,23 @@ nonisolated public func compositorSessionRender(_ handle: UInt64, _ output: Unsa
         }
         if let output, capacity >= image.bytes.count { image.bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: $0.count) } }
         return Int64(image.bytes.count)
+    }
+}
+
+@_cdecl("compositor_session_render_dirty")
+nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: UnsafeMutablePointer<Int32>?,
+                                                     _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard let rect, let output, capacity >= 0 else { return -1 }
+    return withEntry(handle) { entry in
+        guard entry.editor.session.brushStroke != nil else { return -3 }
+        guard let dirty = entry.strokeDirty else { return 0 }
+        guard let made = try? entry.editor.renderRegionRGBA(dirty) else { return -5 }
+        guard capacity >= made.bytes.count else { return -1 }
+        made.bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: $0.count) }
+        rect[0] = Int32(made.rect.minX); rect[1] = Int32(made.rect.minY)
+        rect[2] = Int32(made.rect.width); rect[3] = Int32(made.rect.height)
+        entry.strokeDirty = nil
+        return Int64(made.bytes.count)
     }
 }
 
