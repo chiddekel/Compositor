@@ -139,6 +139,20 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
             }
             for (size_t i = 0; i < count; ++i) outer[i] = clamp01(outer[i] * (1.0f - first[i]));
         }
+        Plane innerGlow;
+        if (p->has_inner_glow) {
+            // The shape softened, kept to the shape's own interior: upstream's inner glow (blur, then the inside pass).
+            innerGlow.resize(count);
+            if (p->inner_glow_sigma > 0.01f) {
+                Plane scratch(count);
+                const int radius = std::max(1, static_cast<int>(std::lround(p->inner_glow_sigma * 3.0f)));
+                blur(first, scratch, w, h, p->inner_glow_sigma, radius, true);
+                blur(scratch, innerGlow, w, h, p->inner_glow_sigma, radius, false);
+            } else {
+                innerGlow = first;
+            }
+            for (size_t i = 0; i < count; ++i) innerGlow[i] = clamp01(first[i] * (1.0f - innerGlow[i]));
+        }
         Plane inner;
         if (p->has_inner) {
             Plane moved(count), softened(count);
@@ -151,8 +165,8 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
             inner.resize(count);
             for (size_t i = 0; i < count; ++i) inner[i] = clamp01(first[i] * (1.0f - moved[i]));
         }
-        // Shadow behind, outside stroke over it, the layer's pixels over that, then a colour overlay, an inner shadow
-        // and an inside stroke on top.
+        // Shadow behind, outer glow and outside stroke over it, the layer's pixels over that, then a colour overlay,
+        // an inner glow, an inner shadow and an inside stroke on top (upstream's effects_compose order).
         parallelRows(h, [&](uint32_t y0, uint32_t y1) {
             for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
                 float cr = 0, cg = 0, cb = 0, alpha = 0;
@@ -175,6 +189,7 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
                 cr = sr + cr * (1.0f - sa); cg = sg + cg * (1.0f - sa); cb = sb + cb * (1.0f - sa);
                 alpha = sa + alpha * (1.0f - sa);
                 if (p->has_overlay) over(p->overlay, clamp01(first[i] * p->overlay.opacity));
+                if (p->has_inner_glow) over(p->inner_glow, clamp01(innerGlow[i] * p->inner_glow.opacity));
                 if (p->has_inner) over(p->inner, clamp01(inner[i] * p->inner.opacity));
                 if (p->has_stroke && p->stroke_inside) over(p->stroke, strokeCoverage);
                 out[i * 4] = byteOf(cr); out[i * 4 + 1] = byteOf(cg); out[i * 4 + 2] = byteOf(cb); out[i * 4 + 3] = byteOf(alpha);

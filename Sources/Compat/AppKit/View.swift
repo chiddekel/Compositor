@@ -312,6 +312,10 @@ public enum NSAccessibility {
     open var mouseLocationOutsideOfEventStream: CGPoint { convertPoint(fromScreen: NSEvent.mouseLocation) }
     open func close() { isVisible = false }
     open func orderOut(_ sender: Any?) { isVisible = false }
+    /// A title-bar drag (upstream's `TitleBarDragView.mouseDown`). The Qt shell's frameless window moves itself —
+    /// `SessionWindow::eventFilter` starts `QWindow::startSystemMove()` from the header's empty space — so there is no
+    /// window server to hand the event to here; subclasses (tests) can still observe it.
+    open func performDrag(with event: NSEvent) {}
     open func disableCursorRects() {}
     open func enableCursorRects() {}
     open func invalidateCursorRects(for view: NSView) {}

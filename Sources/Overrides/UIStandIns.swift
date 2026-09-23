@@ -33,8 +33,8 @@ struct BlendModePicker: View {
 
 /// STAND-IN for the `NSTableView` subclass in UI/NativeLayerList.swift, whose key handling (tool keys, nudges while the
 /// layer list has focus) lives in the macOS layers panel. `CompositorTests/TransformTests.swift` (upstream's own,
-/// unmodified) constructs this directly, so it stays even though `NativeLayerListOverride.swift`'s `List`-based
-/// replacement no longer hosts it via `HostedNativeContent`.
+/// unmodified) constructs this directly, and `NativeLayerListOverride.swift` hosts it (via `HostedNativeContent`) as
+/// the AppKit subview of an `NSHostingView` of `LayersPanel`; the Qt renderer draws that override's `List` instead.
 @MainActor final class LayerTableView: NSTableView {
     weak var session: EditorSession?
     override func keyDown(with event: NSEvent) {

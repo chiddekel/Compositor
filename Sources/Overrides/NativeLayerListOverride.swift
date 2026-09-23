@@ -131,3 +131,15 @@ struct NativeLayerList: View {
         }
     }
 }
+
+/// The AppKit side of the layers list, as `NSHostingView(rootView: LayersPanel(...))` holds it on macOS: upstream's
+/// `LayerTableView` (the `UIStandIns.swift` stand-in) as the hosted subview a user can focus. The Qt renderer never
+/// asks for this — it draws the `List` above — so it only matters to AppKit-level callers (upstream's own
+/// `BrushTests` focuses it to check that the brush keys still reach the brush from the layers panel).
+extension NativeLayerList: HostedNativeContent {
+    func makeNativeView() -> NSView? {
+        let table = LayerTableView(frame: .zero)
+        table.session = session
+        return table
+    }
+}

@@ -48,7 +48,7 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
         cv::Mat first;
         cv::extractChannel(rgba, first, 3);
         first.convertTo(first, CV_32F, 1.0 / 255.0);
-        cv::Mat ring, shadow, inner, outer;
+        cv::Mat ring, shadow, inner, outer, innerGlow;
         if (p->has_stroke) {
             const cv::Mat moved = spread(first, static_cast<int>(std::max(1u, p->stroke_reach)), p->stroke_inside != 0);
             cv::Mat difference = p->stroke_inside ? first - moved : moved - first;
@@ -73,8 +73,15 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
             cv::max(outer, 0.0, outer);
             cv::min(outer, 1.0, outer);
         }
+        if (p->has_inner_glow) {
+            // The shape softened, kept to the shape's own interior (upstream: blur, then the inside pass).
+            const cv::Mat softened = p->inner_glow_sigma > 0.01f ? blur(first, p->inner_glow_sigma) : first.clone();
+            innerGlow = first.mul(1.0 - softened);
+            cv::max(innerGlow, 0.0, innerGlow);
+            cv::min(innerGlow, 1.0, innerGlow);
+        }
         // Shadow behind, the glow around it, outside stroke over that, the layer's pixels over that, then a colour
-        // overlay, an inner shadow and an inside stroke on top.
+        // overlay, an inner glow, an inner shadow and an inside stroke on top.
         cv::parallel_for_(cv::Range(0, h), [&](const cv::Range &rows) {
             for (int y = rows.start; y < rows.end; ++y) {
                 const uint8_t *src = pixels + static_cast<size_t>(y) * w * 4;
@@ -100,6 +107,7 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
                     cb = src[x * 4 + 2] / 255.0f + cb * (1.0f - sa);
                     alpha = sa + alpha * (1.0f - sa);
                     if (p->has_overlay) over(p->overlay, clamp01(first.at<float>(y, x) * p->overlay.opacity));
+                    if (p->has_inner_glow) over(p->inner_glow, clamp01(innerGlow.at<float>(y, x) * p->inner_glow.opacity));
                     if (p->has_inner) over(p->inner, clamp01(inner.at<float>(y, x) * p->inner.opacity));
                     if (p->has_stroke && p->stroke_inside) over(p->stroke, strokeCoverage);
                     dst[x * 4] = byteOf(cr); dst[x * 4 + 1] = byteOf(cg); dst[x * 4 + 2] = byteOf(cb); dst[x * 4 + 3] = byteOf(alpha);

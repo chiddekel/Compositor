@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-// Layer effects (stroke, drop shadow, colour overlay, inner shadow) over one premultiplied RGBA8 image: the nine passes
+// Layer effects (stroke, drop shadow, colour overlay, inner shadow, outer and inner glow) over one premultiplied RGBA8 image: the nine passes
 // of upstream's Metal renderer (alpha, spread rows/columns, ring, shift, blur rows/columns, inside, compose), with no
 // platform types. `color` is straight rgb in 0...1 and `opacity` is the effect's own opacity.
 typedef struct { float r, g, b, opacity; } CompositorEffectColor;
@@ -27,6 +27,10 @@ typedef struct CompositorEffectsParams {
     int32_t has_outer;
     float outer_sigma;                          // outer glow's blur; upstream: OuterGlowEffect.size / 2
     CompositorEffectColor outer;
+    // Appended last so the prebuilt Skia tier, which reads the fields above, keeps working (it ignores inner glow).
+    int32_t has_inner_glow;
+    float inner_glow_sigma;                     // upstream: InnerGlowEffect.size / 2
+    CompositorEffectColor inner_glow;
 } CompositorEffectsParams;
 
 // The OpenCV tier: the heavy passes as OpenCV operators on float planes. -2 when the build has no OpenCV.

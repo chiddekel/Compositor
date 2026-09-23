@@ -67,10 +67,10 @@ struct Buffer {
 struct GpuParams {
     uint32_t width, height, strokeReach, flags;
     float shadowDx, shadowDy, shadowSigma, innerDx;
-    float innerDy, innerSigma, outerSigma, pad1;
-    float stroke[4], shadow[4], overlay[4], inner[4], outer[4];
+    float innerDy, innerSigma, outerSigma, innerGlowSigma;
+    float stroke[4], shadow[4], overlay[4], inner[4], outer[4], innerGlow[4];
 };
-static_assert(sizeof(GpuParams) == 128, "Params block layout mismatch");
+static_assert(sizeof(GpuParams) == 144, "Params block layout mismatch");
 
 constexpr uint32_t kBindings = 11;         // pixels, result, eight planes, params
 constexpr size_t kMaxPixels = 100000000;
@@ -175,11 +175,14 @@ struct CompositorVulkanEffects {
         GpuParams g{};
         g.width = p.width; g.height = p.height; g.strokeReach = std::max(1u, p.stroke_reach);
         g.flags = (p.has_stroke ? 1u : 0u) | (p.stroke_inside ? 2u : 0u) | (p.has_shadow ? 4u : 0u) |
-                  (p.has_overlay ? 8u : 0u) | (p.has_inner ? 16u : 0u) | (p.has_outer ? 32u : 0u);
+                  (p.has_overlay ? 8u : 0u) | (p.has_inner ? 16u : 0u) | (p.has_outer ? 32u : 0u) |
+                  (p.has_inner_glow ? 64u : 0u);
         g.shadowDx = p.shadow_dx; g.shadowDy = p.shadow_dy; g.shadowSigma = p.shadow_sigma;
         g.innerDx = p.inner_dx; g.innerDy = p.inner_dy; g.innerSigma = p.inner_sigma; g.outerSigma = p.outer_sigma;
+        g.innerGlowSigma = p.inner_glow_sigma;
         auto put = [](float (&to)[4], const CompositorEffectColor &c) { to[0] = c.r; to[1] = c.g; to[2] = c.b; to[3] = c.opacity; };
         put(g.stroke, p.stroke); put(g.shadow, p.shadow); put(g.overlay, p.overlay); put(g.inner, p.inner); put(g.outer, p.outer);
+        put(g.innerGlow, p.inner_glow);
         return g;
     }
 
@@ -204,7 +207,7 @@ struct CompositorVulkanEffects {
         buffers[0]->flush(); buffers[10]->flush();
 
         // The same sequence as the C++ tier: alpha; stroke reach + ring; shadow move + blur; inner move + blur + inside;
-        // outer glow blur + exclude interior; compose.
+        // outer glow blur + exclude interior; inner glow blur + keep inside; compose.
         std::vector<uint32_t> passes{0};
         if (p.has_stroke) passes.insert(passes.end(), {1, 2, 3});
         if (p.has_shadow) { passes.push_back(4); if (p.shadow_sigma > 0.01f) passes.insert(passes.end(), {5, 6}); }
@@ -213,6 +216,11 @@ struct CompositorVulkanEffects {
             if (p.outer_sigma > 0.01f) passes.insert(passes.end(), {11, 12});
             else { passes.push_back(14); }   // pass 14: p7 = p0 (copy, no blur) before the exclude step
             passes.push_back(13);
+        }
+        if (p.has_inner_glow) {
+            if (p.inner_glow_sigma > 0.01f) passes.insert(passes.end(), {15, 16});
+            else passes.push_back(18);   // p3 = p0 (copy, no blur) before the keep-inside step
+            passes.push_back(17);
         }
         passes.push_back(99);   // compose (any value the switch doesn't name explicitly)
 

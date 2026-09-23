@@ -120,6 +120,8 @@ let package = Package(
         .target(name: "_Testing_AppKit", path: "Sources/Compat/TestingOverlays/_Testing_AppKit"),
         .target(name: "_Testing_CoreGraphics", path: "Sources/Compat/TestingOverlays/_Testing_CoreGraphics"),
         .target(name: "_Testing_CoreImage", path: "Sources/Compat/TestingOverlays/_Testing_CoreImage"),
+        // Test-process environment Xcode's runner provides (XCTestConfigurationFilePath); see its .c file.
+        .target(name: "_Testing_XCTestEnvironment", path: "Sources/Compat/TestingOverlays/_Testing_XCTestEnvironment"),
         // The unmodified macOS editor core (Compositor/{Document,IO,Rendering}) as the module `Compositor`, so upstream's
         // own tests (`@testable import Compositor`) run against it. Files are reached through symlinks in
         // Sources/UpstreamCore; nothing under Compositor/ is edited. Excluded: view/app code the Qt shell replaces
@@ -165,14 +167,15 @@ let package = Package(
         // Upstream's own test suite, unmodified (Swift Testing), run against the module above.
         .testTarget(
             name: "CompositorUpstreamTests",
-            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"],
+            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"],
             path: "CompositorTests",
             // Tests of macOS-only UI code (ObjC-runtime NSSlider swizzling, floating panels, SwiftUI thumbnails):
             // listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
             exclude: ["SliderSnapTests.swift", "FloatingPanelTests.swift", "CanvasThumbnailTests.swift",
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
-                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift"],
+                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift",
+                      "TitleBarDragTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),

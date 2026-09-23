@@ -22,8 +22,9 @@
     public init(rootView: Root) {
         self.rootView = rootView
         super.init(frame: .zero)
-        // A root view that stands in for native content (a list, a table) puts that view in the hosted tree.
-        if let content = (rootView as? any HostedNativeContent)?.makeNativeView() { addSubview(content) }
+        // A view that stands in for native content (a list, a table) — the root or anywhere below it — puts that view
+        // in the hosted tree, as real SwiftUI does for an `NSViewRepresentable` inside the hosted hierarchy.
+        if let content = ViewResolver.firstNativeView(in: rootView) { addSubview(content) }
     }
     public required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     /// The size the hosted view would take up. No real layout engine runs the resolved tree yet, so this is a

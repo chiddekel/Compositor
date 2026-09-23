@@ -160,10 +160,8 @@ same public API either way.
   no-ops when no Skia bridge resolves — see `docs/upstream-test-baseline.md`), which was previously misdiagnosed
   here as a native pixel-kernel/Accelerate-vImage portability bug. It isn't — it's a missing test prerequisite.
   Run tests the way `docs/upstream-test-baseline.md` documents and this doesn't happen (260+/260+ passing).
-- InnerGlow (added in the v1.2.4–1.2.6 upstream catch-up) doesn't render yet — 3 tests fail even with the
-  bridge correctly loaded. Needs its own layer-effects pass, most likely in
-  `Sources/Overrides/MetalLayerEffects.swift`'s Vulkan/CPU chain (same shape as the other GPU-effect passes
-  there). Not yet fixed.
+- InnerGlow renders on every effects tier (Vulkan, OpenCV, C++), matching upstream's Metal passes; the prebuilt
+  opt-in Skia tier (`COMPOSITOR_EFFECTS=skia`) does not draw it.
 
 ## Releasing
 

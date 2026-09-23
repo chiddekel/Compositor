@@ -38,6 +38,7 @@ struct LayerEffectsBackendTests {
         ("colour overlay", LayerEffects(colorOverlay: ColorOverlayEffect(red: 0, green: 0, blue: 1, opacity: 0.4))),
         ("inner shadow", LayerEffects(innerShadow: InnerShadowEffect(angle: 120, distance: 4, blur: 6, opacity: 0.7))),
         ("outer glow", LayerEffects(outerGlow: OuterGlowEffect(size: 10, red: 1, green: 0.8, blue: 0.2, opacity: 0.8))),
+        ("inner glow", LayerEffects(innerGlow: InnerGlowEffect(size: 8, red: 1, green: 0.9, blue: 0.4, opacity: 0.8))),
         ("everything", LayerEffects(stroke: StrokeEffect(size: 2, opacity: 1), shadow: ShadowEffect(angle: 60, distance: 5, blur: 6),
                                     colorOverlay: ColorOverlayEffect(red: 1, green: 0, blue: 0, opacity: 0.3),
                                     innerShadow: InnerShadowEffect(angle: 90, distance: 3, blur: 4))),
@@ -90,6 +91,7 @@ struct VulkanEffectsTests {
             LayerEffects(colorOverlay: ColorOverlayEffect(red: 0, green: 0, blue: 1, opacity: 0.4)),
             LayerEffects(innerShadow: InnerShadowEffect(angle: 120, distance: 4, blur: 6, opacity: 0.7)),
             LayerEffects(outerGlow: OuterGlowEffect(size: 10, red: 1, green: 0.8, blue: 0.2, opacity: 0.8)),
+            LayerEffects(innerGlow: InnerGlowEffect(size: 8, red: 1, green: 0.9, blue: 0.4, opacity: 0.8)),
             LayerEffects(stroke: StrokeEffect(size: 2, opacity: 1), shadow: ShadowEffect(angle: 60, distance: 5, blur: 6),
                          colorOverlay: ColorOverlayEffect(red: 1, green: 0, blue: 0, opacity: 0.3), innerShadow: InnerShadowEffect(angle: 90, distance: 3, blur: 4)),
         ]
@@ -125,6 +127,7 @@ struct SkiaEffectsTests {
             ("colour overlay", LayerEffects(colorOverlay: ColorOverlayEffect(red: 0, green: 0, blue: 1, opacity: 0.4))),
             ("inner shadow", LayerEffects(innerShadow: InnerShadowEffect(angle: 120, distance: 4, blur: 6, opacity: 0.7))),
         ("outer glow", LayerEffects(outerGlow: OuterGlowEffect(size: 10, red: 1, green: 0.8, blue: 0.2, opacity: 0.8))),
+        // No inner glow: the prebuilt Skia tier predates it (reads the params struct only up to outer glow).
             ("everything", LayerEffects(stroke: StrokeEffect(size: 2, opacity: 1), shadow: ShadowEffect(angle: 60, distance: 5, blur: 6),
                                         colorOverlay: ColorOverlayEffect(red: 1, green: 0, blue: 0, opacity: 0.3), innerShadow: InnerShadowEffect(angle: 90, distance: 3, blur: 4))),
         ]
@@ -159,6 +162,7 @@ struct OpenCVEffectsTests {
             ("colour overlay", LayerEffects(colorOverlay: ColorOverlayEffect(red: 0, green: 0, blue: 1, opacity: 0.4))),
             ("inner shadow", LayerEffects(innerShadow: InnerShadowEffect(angle: 120, distance: 4, blur: 6, opacity: 0.7))),
         ("outer glow", LayerEffects(outerGlow: OuterGlowEffect(size: 10, red: 1, green: 0.8, blue: 0.2, opacity: 0.8))),
+        ("inner glow", LayerEffects(innerGlow: InnerGlowEffect(size: 8, red: 1, green: 0.9, blue: 0.4, opacity: 0.8))),
             ("everything", LayerEffects(stroke: StrokeEffect(size: 2, opacity: 1), shadow: ShadowEffect(angle: 60, distance: 5, blur: 6),
                                         colorOverlay: ColorOverlayEffect(red: 1, green: 0, blue: 0, opacity: 0.3), innerShadow: InnerShadowEffect(angle: 90, distance: 3, blur: 4))),
         ]

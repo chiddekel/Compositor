@@ -122,6 +122,22 @@ public enum ViewResolver {
         resolveList(view).first ?? RenderNode(kind: "_Empty")
     }
 
+    /// The native view (`HostedNativeContent`) standing in for the first such view anywhere in `view`'s tree — what
+    /// an `NSHostingView` of it would hold as a real AppKit subview (a layers table, a window bridge). Walks exactly
+    /// the way `resolveList` does, stopping at the first match.
+    @MainActor public static func firstNativeView(in view: any View) -> NSView? {
+        if let native = view as? any HostedNativeContent { return native.makeNativeView() }
+        if let list = view as? any _ViewListProviding {
+            for child in list._viewList { if let found = firstNativeView(in: child) { return found } }
+            return nil
+        }
+        if let primitive = view as? any PrimitiveView {
+            for child in primitive._childViews { if let found = firstNativeView(in: child) { return found } }
+            return nil
+        }
+        return firstNativeView(in: view.body)
+    }
+
     static func resolveList(_ view: any View) -> [RenderNode] {
         if let list = view as? any _ViewListProviding {
             return list._viewList.flatMap(resolveList)

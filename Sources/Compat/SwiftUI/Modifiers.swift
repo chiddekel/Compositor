@@ -199,6 +199,8 @@ extension View {
     public func contextMenu<M: View>(@ViewBuilder menuItems: () -> M) -> some View { self }
     public func simultaneousGesture<G>(_ gesture: G) -> some View { self }
     public func clipped() -> some View { self }
+    /// Share of an `HStack`/`VStack`'s leftover space; the Qt renderer sizes stacks itself, so this is layout-inert.
+    public func layoutPriority(_ value: Double) -> some View { self }
     public func scrollBounceBehavior(_ behavior: ScrollBounceBehavior, axes: Axis.Set = [.vertical]) -> some View { self }
     public func allowsHitTesting(_ enabled: Bool) -> some View { self }
     public func preferredColorScheme(_ colorScheme: ColorScheme?) -> some View { self }
