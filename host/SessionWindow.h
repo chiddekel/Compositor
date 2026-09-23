@@ -173,6 +173,11 @@ public:
     // Space-hand controls
     bool isSpaceHandActive() const { return m_spaceHandActive; }
 
+    bool sendCommand(const QJsonObject &command);
+    void updateOptionsBar();
+    void updateToolRail();
+    void updateLayersPanel();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -206,7 +211,6 @@ private:
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
     void showAdjustDialog(const QString &kind);
-    bool sendCommand(const QJsonObject &command);
     QPointF documentPoint(const QPointF &windowPoint) const;
     void refreshImage();
     void refreshLayers();
@@ -224,9 +228,8 @@ private:
     void applyDarkTheme();
     void setupHeaderBar();
     void setupOptionsBar();
-    void updateOptionsBar();
-    void updateToolRail();
     void syncToolFromSession();
+    void syncOptionsFromSession();
     void updateStatusTelemetry();
     void fitCanvas();
     void actualPixels();
@@ -284,13 +287,20 @@ private:
     QToolBar *m_headerToolBar = nullptr;
     QToolBar *m_optionsToolBar = nullptr;
     QToolBar *m_toolsBar = nullptr;
+    QAction *m_paletteAction = nullptr;
     QDockWidget *m_layersDock = nullptr;
     QDockWidget *m_adjustmentsDock = nullptr;
     QStackedWidget *m_optionsStack = nullptr;
+    QAction *m_optionsStackAction = nullptr;
+    QAction *m_swiftUIOptionsAction = nullptr;
     QWidget *m_swiftUIOptionsContainer = nullptr;
     QWidget *m_swiftUICurrentToolHeader = nullptr;
     QWidget *m_swiftUIToolRailContainer = nullptr;
     QWidget *m_swiftUICurrentToolRail = nullptr;
+    QWidget *m_legacyLayersPanel = nullptr;
+    QStackedWidget *m_layersStack = nullptr;
+    QWidget *m_swiftUILayersContainer = nullptr;
+    QWidget *m_swiftUICurrentLayersPanel = nullptr;
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
     QTabBar *m_documentTabBar = nullptr;

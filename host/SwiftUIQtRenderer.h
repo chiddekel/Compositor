@@ -5,9 +5,17 @@
 
 #include <QString>
 #include <QWidget>
+#include <QIcon>
+#include <QColor>
 #include <cstdint>
 
 #include <functional>
+
+/// Parses a color token string (e.g. "accentColor", "rgb:r,g,b,a", hex, etc.)
+QColor parseColorToken(const QString &name);
+
+/// Renders SF Symbol vector icons into a QIcon.
+QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &color = QColor(0xf5, 0xf5, 0xf7));
 
 /// Renders `panel` (a name `Sources/LinuxBridge/SwiftUIBridge.swift` recognises, e.g. "NavigationToolHeader")
 /// against the session `sessionHandle` already identifies, as a standalone (unparented) `QWidget` tree. Returns

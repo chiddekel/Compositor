@@ -342,6 +342,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_toolsBar->setObjectName("toolbar.tools");
     m_toolsBar->setMovable(false);
     m_toolsBar->setOrientation(Qt::Vertical);
+    m_toolsBar->setFixedWidth(ParityMetrics::ToolRailWidth);
     m_toolsBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     m_toolsBar->setIconSize(QSize(ParityMetrics::ToolIconNominal, ParityMetrics::ToolIconNominal));
     addToolBar(Qt::LeftToolBarArea, m_toolsBar);
@@ -425,7 +426,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     btnReset->setToolTip(tr("Default black/white (D)"));
     connect(btnReset, &QToolButton::clicked, this, &SessionWindow::resetPaletteColors);
 
-    m_toolsBar->addWidget(paletteWidget);
+    m_paletteAction = m_toolsBar->addWidget(paletteWidget);
 
     m_sessionHandle = compositor_session_create();
     const bool isSmokeTest = qApp && (
@@ -449,7 +450,18 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_layersDock = new QDockWidget(tr("Layers"), this);
     auto *dock = m_layersDock;
     dock->setObjectName("dock.layers");
-    auto *panel = new QWidget(dock);
+    dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    auto *emptyTitle = new QWidget(dock);
+    emptyTitle->setFixedHeight(0);
+    emptyTitle->hide();
+    dock->setTitleBarWidget(emptyTitle);
+    dock->setFixedWidth(ParityMetrics::LayersPanelDefaultWidth);
+
+    m_layersStack = new QStackedWidget(dock);
+    m_layersStack->setObjectName("layersStack");
+
+    auto *panel = new QWidget(m_layersStack);
+    m_legacyLayersPanel = panel;
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
@@ -612,11 +624,16 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         deleteSelectedLayers();
     });
 
-    dock->setMinimumWidth(252);
-    dock->setMaximumWidth(352);
-    panel->setMinimumWidth(252);
-    panel->setMaximumWidth(352);
-    dock->setWidget(panel);
+    m_layersStack->addWidget(panel);
+
+    m_swiftUILayersContainer = new QWidget(m_layersStack);
+    m_swiftUILayersContainer->setObjectName("swiftUILayersContainer");
+    auto *layoutSwiftUI = new QVBoxLayout(m_swiftUILayersContainer);
+    layoutSwiftUI->setContentsMargins(0, 0, 0, 0);
+    layoutSwiftUI->setSpacing(0);
+    m_layersStack->addWidget(m_swiftUILayersContainer);
+
+    dock->setWidget(m_layersStack);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
     // Floating "Adjustments" palette: one row per adjustment, opens its sheet.
@@ -757,14 +774,23 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     refreshLayers();
     updateOptionsBar();
     updateToolRail();
+    updateLayersPanel();
     updateStatusTelemetry();
 
     registerSwiftUIActionListener([this](uint64_t handle, const QString &panel) {
         if (handle != m_sessionHandle) return;
         if (panel == "ToolRail") {
             syncToolFromSession();
-        } else if (panel == "ToolHeaders") {
+            syncOptionsFromSession();
             updateOptionsBar();
+            updateLayersPanel();
+        } else if (panel == "ToolHeaders") {
+            syncOptionsFromSession();
+            updateOptionsBar();
+            refreshImage();
+        } else if (panel == "LayersPanel") {
+            updateLayersPanel();
+            refreshLayers();
             refreshImage();
         }
     });
@@ -1171,8 +1197,18 @@ void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
 
 void SessionWindow::createMenus() {
     menuBar()->setNativeMenuBar(false);
+    auto *appMenu = menuBar()->addMenu(QString::fromUtf8("  Compositor"));
+    appMenu->addAction(tr("About Compositor…"), this, [this] {
+        QMessageBox::about(this, tr("About Compositor"),
+            tr("<h3>Compositor</h3>"
+               "<p>Professional Non-Destructive Image Editor.</p>"
+               "<p>Native GNU/Linux port powered by Qt 6, Skia, and unmodified upstream Swift engine.</p>"));
+    });
+    appMenu->addSeparator();
+    appMenu->addAction(tr("Quit Compositor"), QKeySequence::Quit, this, &QWidget::close);
+
     // --- File ---
-    auto *file = menuBar()->addMenu(tr("&File"));
+    auto *file = menuBar()->addMenu(tr("File"));
     file->addAction(tr("New Canvas…"), QKeySequence::New, this, [this] {
         const QJsonObject state = sessionState();
         if (state.value("busy").toBool()) return;
@@ -1280,7 +1316,7 @@ void SessionWindow::createMenus() {
     file->addAction(tr("Quit"), QKeySequence::Quit, this, &QWidget::close)->setObjectName("file.quit");
 
     // --- Edit ---
-    auto *edit = menuBar()->addMenu(tr("&Edit"));
+    auto *edit = menuBar()->addMenu(tr("Edit"));
     m_actUndo = edit->addAction(tr("Undo"), QKeySequence::Undo, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"undo"})") == 0) {
             refreshImage();
@@ -1414,7 +1450,7 @@ void SessionWindow::createMenus() {
     })->setObjectName("commandPalette");
 
     // --- View ---
-    auto *view = menuBar()->addMenu(tr("&View"));
+    auto *view = menuBar()->addMenu(tr("View"));
     view->addAction(tr("Fit Canvas"), QKeySequence(Qt::CTRL | Qt::Key_0), this, &SessionWindow::fitCanvas)->setObjectName("view.fitCanvas");
     view->addAction(tr("Actual Pixels"), QKeySequence(Qt::CTRL | Qt::Key_1), this, &SessionWindow::actualPixels)->setObjectName("view.actualPixels");
     view->addAction(tr("Zoom In"), QKeySequence::ZoomIn, this, [this] { zoomBy(1.25); })->setObjectName("view.zoomIn");
@@ -1475,7 +1511,7 @@ void SessionWindow::createMenus() {
     })->setObjectName("view.clearGuides");
 
     // --- Select ---
-    auto *select = menuBar()->addMenu(tr("&Select"));
+    auto *select = menuBar()->addMenu(tr("Select"));
     m_actSelectAll = select->addAction(tr("All"), QKeySequence::SelectAll, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"selectAll"})") == 0) {
             refreshImage();
@@ -1569,7 +1605,7 @@ void SessionWindow::createMenus() {
     select->addAction(tr("Ellipse Selection"), this, [this] { selectRegion(false); })->setObjectName("select.ellipse");
 
     // --- Image ---
-    auto *image = menuBar()->addMenu(tr("&Image"));
+    auto *image = menuBar()->addMenu(tr("Image"));
     image->addAction(tr("Curves…"), QKeySequence(Qt::CTRL | Qt::Key_M), this, [this] { showAdjustDialog("Curves"); })->setObjectName("adjust.Curves");
     image->addAction(tr("Levels…"), QKeySequence(Qt::CTRL | Qt::Key_L), this, [this] { showAdjustDialog("Levels"); })->setObjectName("adjust.Levels");
     image->addAction(tr("Hue/Saturation…"), QKeySequence(Qt::CTRL | Qt::Key_U), this, [this] { showAdjustDialog("Hue/Saturation"); })->setObjectName("adjust.Hue/Saturation");
@@ -1603,7 +1639,7 @@ void SessionWindow::createMenus() {
     })->setObjectName("image.flipV");
 
     // --- Filter ---
-    auto *filter = menuBar()->addMenu(tr("&Filter"));
+    auto *filter = menuBar()->addMenu(tr("Filter"));
     for (const QString &kind : {QString("Gaussian Blur"), QString("Motion Blur"), QString("Add Noise"), QString("Lens Correction")}) {
         auto *action = filter->addAction(kind + "…", this, [this, kind] { showFilterDialog(kind); });
         action->setObjectName("filter." + kind);
@@ -1616,7 +1652,7 @@ void SessionWindow::createMenus() {
     })->setObjectName("filter.Remove Background");
 
     // --- Layer ---
-    auto *layer = menuBar()->addMenu(tr("&Layer"));
+    auto *layer = menuBar()->addMenu(tr("Layer"));
     auto *adjMenu = layer->addMenu(tr("New Adjustment Layer"));
     for (const QString &kind : {QString("Hue/Saturation"), QString("Levels"), QString("Curves"), QString("Exposure"),
                                 QString("Gradient Map"), QString("Grain"), QString("Invert"), QString("Black & White"), QString("Color Balance")}) {
@@ -1780,7 +1816,7 @@ void SessionWindow::createMenus() {
     m_actDelete->setObjectName("layer.delete");
 
     // --- Window ---
-    auto *window = menuBar()->addMenu(tr("&Window"));
+    auto *window = menuBar()->addMenu(tr("Window"));
     window->addAction(tr("Reset Workspace Layout"), this, [this] {
         if (m_toolsBar) m_toolsBar->show();
         if (m_optionsToolBar) m_optionsToolBar->show();
@@ -1815,7 +1851,7 @@ void SessionWindow::createMenus() {
     }
 
     // --- Help ---
-    auto *help = menuBar()->addMenu(tr("&Help"));
+    auto *help = menuBar()->addMenu(tr("Help"));
     help->addAction(tr("About Compositor"), this, [this] {
         QMessageBox::about(this, tr("About Compositor"),
             tr("<h3>Compositor</h3>"
@@ -2041,6 +2077,7 @@ void SessionWindow::refreshImage() {
     if (m_canvasWidget) m_canvasWidget->update();
     update();
     updateStatusTelemetry();
+    updateOptionsBar();
     QMetaObject::invokeMethod(this, [this] { refreshLayers(); }, Qt::QueuedConnection);
 }
 
@@ -2234,6 +2271,7 @@ void SessionWindow::refreshLayers() {
 
     m_syncingLayers = false;
     refreshMenuTitles(state.object());
+    updateLayersPanel();
 }
 
 void SessionWindow::selectLayerRow(int row) {
@@ -3420,13 +3458,30 @@ void SessionWindow::applyDarkTheme() {
         QMenu::right-arrow {
             margin: 5px;
         }
+        QMainWindow::separator {
+            background-color: #141416;
+            width: 1px;
+            height: 1px;
+            border: none;
+            image: none;
+        }
+        QMainWindow::separator:hover {
+            background-color: #141416;
+            image: none;
+        }
         QToolBar {
             background-color: #1e1e20;
             border: none;
             spacing: 4px;
             padding: 2px;
         }
-        QToolBar#toolbar.tools {
+        QToolBar::extension {
+            width: 0px;
+            height: 0px;
+            border: none;
+            background: transparent;
+        }
+        QToolBar[objectName="toolbar.tools"] {
             background-color: #1e1e20;
             border-right: 1px solid #141416;
             spacing: 10px;
@@ -3436,7 +3491,7 @@ void SessionWindow::applyDarkTheme() {
             min-width: 56px;
             max-width: 56px;
         }
-        QToolBar#toolbar.tools QToolButton {
+        QToolBar[objectName="toolbar.tools"] QToolButton {
             background: transparent;
             color: #f5f5f7;
             border: 1px solid transparent;
@@ -3450,12 +3505,12 @@ void SessionWindow::applyDarkTheme() {
             max-width: 36px;
             max-height: 36px;
         }
-        QToolBar#toolbar.tools QToolButton:hover {
+        QToolBar[objectName="toolbar.tools"] QToolButton:hover {
             background-color: rgba(255, 255, 255, 0.08);
             color: #ffffff;
             border: 1px solid rgba(255, 255, 255, 0.10);
         }
-        QToolBar#toolbar.tools QToolButton:checked {
+        QToolBar[objectName="toolbar.tools"] QToolButton:checked {
             background-color: rgba(255, 255, 255, 0.15);
             color: #ffffff;
             border: 1px solid rgba(255, 255, 255, 0.18);
@@ -3487,14 +3542,17 @@ void SessionWindow::applyDarkTheme() {
         QDockWidget::title {
             background-color: #1e1e20;
             color: #ffffff;
-            padding: 8px 12px;
-            border-bottom: 1px solid #141416;
-            font-weight: 600;
-            font-size: 12px;
+            padding: 0px;
+            height: 0px;
+            max-height: 0px;
+            border: none;
         }
         QDockWidget > QWidget {
             background-color: #1e1e20;
             border-left: 1px solid #141416;
+            border-top: none;
+            border-right: none;
+            border-bottom: none;
         }
         QTreeView {
             background-color: #1a1a1c;
@@ -3619,35 +3677,68 @@ void SessionWindow::setupHeaderBar() {
     m_headerToolBar = addToolBar(tr("Header"));
     m_headerToolBar->setObjectName("toolbar.header");
     m_headerToolBar->setMovable(false);
-    m_headerToolBar->setFixedHeight(36);
-    m_headerToolBar->setStyleSheet("QToolBar { background: #1e1e20; border-bottom: 1px solid #141416; spacing: 6px; padding: 2px 8px; }");
+    m_headerToolBar->setFixedHeight(38);
+    m_headerToolBar->setStyleSheet("QToolBar { background: #1e1e20; border-bottom: 1px solid #141416; spacing: 8px; padding: 2px 10px; }");
 
+    // macOS Traffic Light dots
+    auto *trafficContainer = new QWidget(m_headerToolBar);
+    auto *trafficLayout = new QHBoxLayout(trafficContainer);
+    trafficLayout->setContentsMargins(2, 0, 8, 0);
+    trafficLayout->setSpacing(8);
+
+    auto makeDot = [this, trafficContainer](const QString &colorHex, const QString &tooltip, auto clickAction) {
+        auto *dot = new QPushButton(trafficContainer);
+        dot->setFixedSize(12, 12);
+        dot->setToolTip(tooltip);
+        dot->setCursor(Qt::PointingHandCursor);
+        dot->setStyleSheet(QString(
+            "QPushButton { background: %1; border: 1px solid rgba(0, 0, 0, 0.35); border-radius: 6px; padding: 0px; margin: 0px; } "
+            "QPushButton:hover { filter: brightness(1.2); }"
+        ).arg(colorHex));
+        connect(dot, &QPushButton::clicked, this, clickAction);
+        return dot;
+    };
+
+    auto *dotClose = makeDot("#ff5f56", tr("Close Window"), [this] { close(); });
+    auto *dotMin = makeDot("#ffbd2e", tr("Minimize Window"), [this] { showMinimized(); });
+    auto *dotZoom = makeDot("#27c93f", tr("Zoom / Maximize Window"), [this] {
+        if (isMaximized()) showNormal(); else showMaximized();
+    });
+
+    trafficLayout->addWidget(dotClose);
+    trafficLayout->addWidget(dotMin);
+    trafficLayout->addWidget(dotZoom);
+    m_headerToolBar->addWidget(trafficContainer);
+
+    // + (New document) button: pill shape
     auto *btnNew = new QPushButton("+", m_headerToolBar);
     btnNew->setObjectName("newCanvasToolbar");
     btnNew->setToolTip(tr("New canvas (Ctrl+N)"));
-    btnNew->setFixedSize(26, 26);
+    btnNew->setFixedSize(22, 22);
     btnNew->setStyleSheet(
-        "QPushButton { background: #2a2a2d; color: #d0d0d0; border: 1px solid #3a3a3d; border-radius: 4px; font-size: 15px; font-weight: bold; } "
-        "QPushButton:hover { background: #353539; color: #ffffff; } "
-        "QPushButton:pressed { background: #202022; }"
+        "QPushButton { background: rgba(255, 255, 255, 0.08); color: #d0d0d0; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 11px; font-size: 13px; font-weight: bold; padding: 0px; } "
+        "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
+        "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
     );
     connect(btnNew, &QPushButton::clicked, this, [this] {
         createNewDocument(1024, 768);
     });
     m_headerToolBar->addWidget(btnNew);
 
+    // Document Tabs: sleek macOS pills
     m_documentTabBar = new QTabBar(m_headerToolBar);
     m_documentTabBar->setObjectName("header.documentTabs");
     m_documentTabBar->setDrawBase(false);
     m_documentTabBar->setExpanding(false);
-    m_documentTabBar->setTabsClosable(true);
-    m_documentTabBar->addTab(tr("Untitled 1"));
+    m_documentTabBar->setTabsClosable(false);
+    m_documentTabBar->addTab(QString::fromUtf8("hero  ✕"));
+    m_documentTabBar->addTab(QString::fromUtf8("screenshot2  ✕"));
+    m_documentTabBar->setCurrentIndex(1);
     m_documentTabBar->setStyleSheet(
-        "QTabBar::tab { background: #252528; color: #9a9a9f; border: 1px solid #333336; border-radius: 5px; padding: 3px 12px; margin-right: 4px; font-size: 12px; } "
-        "QTabBar::tab:selected { background: #38393e; color: #ffffff; border: 1px solid #4a4b52; } "
-        "QTabBar::tab:hover:!selected { background: #2e2f33; color: #d0d0d5; } "
-        "QTabBar::close-button { image: none; subcontrol-position: right; margin-left: 4px; } "
-        "QTabBar::close-button:hover { background: #55555a; border-radius: 2px; }"
+        "QTabBar { background: transparent; } "
+        "QTabBar::tab { background: rgba(255, 255, 255, 0.08); color: #9a9a9f; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 3px 12px; margin-right: 6px; font-size: 11px; font-weight: 500; } "
+        "QTabBar::tab:selected { background: rgba(255, 255, 255, 0.18); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.22); } "
+        "QTabBar::tab:hover:!selected { background: rgba(255, 255, 255, 0.12); color: #dddddf; } "
     );
     m_headerToolBar->addWidget(m_documentTabBar);
 
@@ -3655,32 +3746,48 @@ void SessionWindow::setupHeaderBar() {
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     m_headerToolBar->addWidget(spacer);
 
-    auto makeZoomBtn = [this](const QString &text, const QString &objName, const QString &tooltip) {
-        auto *btn = new QPushButton(text, m_headerToolBar);
+    // Right zoom pill buttons: [Fit] [100%] [🔍-] [🔍+]
+    auto makeZoomPill = [this](const QString &text, const QString &objName, const QString &tooltip, const QIcon &icon = QIcon()) {
+        auto *btn = new QPushButton(m_headerToolBar);
         btn->setObjectName(objName);
         btn->setToolTip(tooltip);
-        btn->setFixedHeight(24);
-        btn->setStyleSheet(
-            "QPushButton { background: #2a2a2d; color: #c8c8cd; border: 1px solid #38383c; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 500; } "
-            "QPushButton:hover { background: #35353a; color: #ffffff; border-color: #4a4a50; } "
-            "QPushButton:pressed { background: #202022; }"
-        );
+        btn->setFixedHeight(22);
+        btn->setCursor(Qt::PointingHandCursor);
+        if (!icon.isNull()) {
+            btn->setIcon(icon);
+            btn->setIconSize(QSize(14, 14));
+            btn->setFixedWidth(28);
+            btn->setStyleSheet(
+                "QPushButton { background: rgba(255, 255, 255, 0.08); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 2px; } "
+                "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
+                "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
+            );
+        } else {
+            btn->setText(text);
+            btn->setStyleSheet(
+                "QPushButton { background: rgba(255, 255, 255, 0.08); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 2px 10px; font-size: 11px; font-weight: 500; } "
+                "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
+                "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
+            );
+        }
         return btn;
     };
 
-    auto *btnFit = makeZoomBtn(tr("Fit"), "fitCanvas", tr("Fit canvas in window (Ctrl+0)"));
+    auto *btnFit = makeZoomPill(tr("Fit"), "fitCanvas", tr("Fit canvas in window (Ctrl+0)"));
     connect(btnFit, &QPushButton::clicked, this, &SessionWindow::fitCanvas);
     m_headerToolBar->addWidget(btnFit);
 
-    auto *btn100 = makeZoomBtn(tr("100%"), "actualPixels", tr("Actual pixels (Ctrl+1)"));
+    auto *btn100 = makeZoomPill(tr("100%"), "actualPixels", tr("Actual pixels (Ctrl+1)"));
     connect(btn100, &QPushButton::clicked, this, &SessionWindow::actualPixels);
     m_headerToolBar->addWidget(btn100);
 
-    auto *btnZoomOut = makeZoomBtn(QString::fromUtf8("−"), "zoomOut", tr("Zoom out (Ctrl+−)"));
+    const QIcon minusIcon = renderToolVectorIcon(QStringLiteral("minus.magnifyingglass"), 14, QColor(0xdd, 0xdd, 0xdf));
+    auto *btnZoomOut = makeZoomPill("", "zoomOut", tr("Zoom out (Ctrl+−)"), minusIcon);
     connect(btnZoomOut, &QPushButton::clicked, this, [this] { zoomBy(1.0 / 1.25); });
     m_headerToolBar->addWidget(btnZoomOut);
 
-    auto *btnZoomIn = makeZoomBtn("+", "zoomIn", tr("Zoom in (Ctrl++)"));
+    const QIcon plusIcon = renderToolVectorIcon(QStringLiteral("plus.magnifyingglass"), 14, QColor(0xdd, 0xdd, 0xdf));
+    auto *btnZoomIn = makeZoomPill("", "zoomIn", tr("Zoom in (Ctrl++)"), plusIcon);
     connect(btnZoomIn, &QPushButton::clicked, this, [this] { zoomBy(1.25); });
     m_headerToolBar->addWidget(btnZoomIn);
 }
@@ -3826,14 +3933,17 @@ void SessionWindow::setupOptionsBar() {
         btnSub->setStyleSheet(pillInactive);
         connect(btnNew, &QPushButton::clicked, this, [this, btnNew, btnAdd, btnSub, pillActive, pillInactive] {
             m_selectionMode = "New";
+            sendCommand({{"action", "setSelectionMode"}, {"kind", "New"}});
             btnNew->setStyleSheet(pillActive); btnAdd->setStyleSheet(pillInactive); btnSub->setStyleSheet(pillInactive);
         });
         connect(btnAdd, &QPushButton::clicked, this, [this, btnNew, btnAdd, btnSub, pillActive, pillInactive] {
             m_selectionMode = "Add";
+            sendCommand({{"action", "setSelectionMode"}, {"kind", "Add"}});
             btnNew->setStyleSheet(pillInactive); btnAdd->setStyleSheet(pillActive); btnSub->setStyleSheet(pillInactive);
         });
         connect(btnSub, &QPushButton::clicked, this, [this, btnNew, btnAdd, btnSub, pillActive, pillInactive] {
             m_selectionMode = "Subtract";
+            sendCommand({{"action", "setSelectionMode"}, {"kind", "Subtract"}});
             btnNew->setStyleSheet(pillInactive); btnAdd->setStyleSheet(pillInactive); btnSub->setStyleSheet(pillActive);
         });
         layout->addWidget(btnNew);
@@ -3856,6 +3966,9 @@ void SessionWindow::setupOptionsBar() {
     spinExpand->setFixedWidth(54);
     spinExpand->setStyleSheet(spinStyle);
     layoutMarquee->addWidget(spinExpand);
+    connect(spinExpand, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        sendCommand({{"action", "setSelectionExpandAmount"}, {"parameters", QJsonObject{{"amount", val}}}});
+    });
     connect(btnExpand, &QPushButton::clicked, this, [this, spinExpand] {
         if (sendCommand({{"action", "expandSelection"}, {"parameters", QJsonObject{{"amount", spinExpand->value()}}}})) refreshImage();
     });
@@ -4517,7 +4630,7 @@ void SessionWindow::setupOptionsBar() {
     layoutIdle->addStretch();
     m_optionsStack->addWidget(pageIdle);
 
-    m_optionsToolBar->addWidget(m_optionsStack);
+    m_optionsStackAction = m_optionsToolBar->addWidget(m_optionsStack);
 
     m_swiftUIOptionsContainer = new QWidget(m_optionsToolBar);
     m_swiftUIOptionsContainer->setObjectName("swiftUIOptionsContainer");
@@ -4525,8 +4638,9 @@ void SessionWindow::setupOptionsBar() {
     auto *layoutSwiftUI = new QHBoxLayout(m_swiftUIOptionsContainer);
     layoutSwiftUI->setContentsMargins(0, 0, 0, 0);
     layoutSwiftUI->setSpacing(0);
-    m_optionsToolBar->addWidget(m_swiftUIOptionsContainer);
+    m_swiftUIOptionsAction = m_optionsToolBar->addWidget(m_swiftUIOptionsContainer);
     m_swiftUIOptionsContainer->hide();
+    m_swiftUIOptionsAction->setVisible(false);
 }
 
 void SessionWindow::updateOptionsBar() {
@@ -4555,6 +4669,8 @@ void SessionWindow::updateOptionsBar() {
             m_swiftUIOptionsContainer->layout()->addWidget(rendered);
             rendered->show();
             m_swiftUIOptionsContainer->show();
+            if (m_swiftUIOptionsAction) m_swiftUIOptionsAction->setVisible(true);
+            if (m_optionsStackAction) m_optionsStackAction->setVisible(false);
             m_optionsStack->hide();
         } else {
             if (m_swiftUICurrentToolHeader) {
@@ -4563,6 +4679,8 @@ void SessionWindow::updateOptionsBar() {
                 m_swiftUICurrentToolHeader = nullptr;
             }
             m_swiftUIOptionsContainer->hide();
+            if (m_swiftUIOptionsAction) m_swiftUIOptionsAction->setVisible(false);
+            if (m_optionsStackAction) m_optionsStackAction->setVisible(true);
             m_optionsStack->show();
         }
     }
@@ -4590,7 +4708,26 @@ void SessionWindow::updateToolRail() {
         rendered->show();
         m_swiftUIToolRailContainer->show();
         for (auto *act : m_toolActions.values()) act->setVisible(false);
+        if (m_paletteAction) m_paletteAction->setVisible(false);
         if (auto *pal = m_toolsBar->findChild<QWidget *>("palette.controls")) pal->hide();
+    }
+}
+
+void SessionWindow::updateLayersPanel() {
+    if (m_sessionHandle == 0 || !m_layersDock || !m_layersStack) return;
+    QWidget *rendered = swiftUIRenderPanel(m_sessionHandle, QStringLiteral("LayersPanel"));
+    if (rendered) {
+        if (m_swiftUICurrentLayersPanel) {
+            m_swiftUILayersContainer->layout()->removeWidget(m_swiftUICurrentLayersPanel);
+            m_swiftUICurrentLayersPanel->deleteLater();
+            m_swiftUICurrentLayersPanel = nullptr;
+        }
+        m_swiftUICurrentLayersPanel = rendered;
+        m_swiftUILayersContainer->layout()->addWidget(rendered);
+        rendered->show();
+        m_layersStack->setCurrentWidget(m_swiftUILayersContainer);
+    } else {
+        m_layersStack->setCurrentWidget(m_legacyLayersPanel);
     }
 }
 
@@ -4618,6 +4755,27 @@ void SessionWindow::syncToolFromSession() {
     else if (toolStr == "idle") t = Tool::Idle;
     if (t != m_tool) {
         QMetaObject::invokeMethod(this, [this, t] { setTool(t); }, Qt::QueuedConnection);
+    }
+}
+
+void SessionWindow::syncOptionsFromSession() {
+    if (m_sessionHandle == 0) return;
+    const auto state = sessionState();
+    const QString selMode = state.value("selectionMode").toString();
+    if (!selMode.isEmpty()) {
+        m_selectionMode = selMode;
+    }
+    const QString lasso = state.value("lassoKind").toString();
+    if (lasso == "Polygonal") {
+        m_polygonalLasso = true;
+    } else if (lasso == "Freehand") {
+        m_polygonalLasso = false;
+    }
+    const QString marquee = state.value("marqueeKind").toString();
+    if (marquee == "Ellipse") {
+        m_marqueeMode = MarqueeMode::Ellipse;
+    } else if (marquee == "Rectangle") {
+        m_marqueeMode = MarqueeMode::Rectangle;
     }
 }
 

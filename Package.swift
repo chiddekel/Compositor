@@ -172,7 +172,7 @@ let package = Package(
             exclude: ["SliderSnapTests.swift", "FloatingPanelTests.swift", "CanvasThumbnailTests.swift",
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
-                      "BlendShortcutTests.swift", "TransformPressTests.swift"],
+                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),

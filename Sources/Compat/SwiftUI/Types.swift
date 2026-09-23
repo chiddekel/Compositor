@@ -84,7 +84,9 @@ public struct StyleToken: Sendable, Equatable, ExpressibleByStringLiteral, Primi
     public init(_ name: String) { self.name = name }
     public init(stringLiteral value: String) { name = value }
     public init(cgColor: CGColor) { name = "cgColor:\(cgColor.red),\(cgColor.green),\(cgColor.blue),\(cgColor.alpha)" }
-    public init(nsColor: NSColor) { name = "nsColor" }
+    public init(nsColor: NSColor) {
+        name = "rgb:\(nsColor.redComponent),\(nsColor.greenComponent),\(nsColor.blueComponent),\(nsColor.alphaComponent)"
+    }
     /// `Color(.sRGB, red:green:blue:opacity:)` — the colorspace argument is unused (Skia paints sRGB throughout).
     public init(_ colorSpace: ColorRenderingSpace = .sRGB, red: Double, green: Double, blue: Double, opacity: Double = 1) {
         name = "rgb:\(red),\(green),\(blue),\(opacity)"
@@ -185,14 +187,31 @@ public struct KeyEquivalent: Sendable, Equatable, ExpressibleByExtendedGraphemeC
 /// a `View` (drawing happens through `Canvas`/`GraphicsContext`, already bridged via Compat/CoreGraphics).
 public protocol Shape: PrimitiveView {
     func path(in rect: CGRect) -> Path
+    var shapeKind: String { get }
+    var cornerRadiusValue: Double { get }
 }
 extension Shape {
+    public var shapeKind: String { "rectangle" }
+    public var cornerRadiusValue: Double { 0 }
     /// A bare shape drawn on its own (outside a `Canvas`) fills its path at whatever size the Qt renderer gives it.
-    public func _makeNode(children: [RenderNode]) -> RenderNode { RenderNode(kind: "Shape") }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "Shape")
+        node.stringParams["shapeKind"] = shapeKind
+        if cornerRadiusValue > 0 { node.doubleParams["cornerRadius"] = cornerRadiusValue }
+        return node
+    }
 }
 
-public struct Rectangle: Shape { public init() {}; public func path(in rect: CGRect) -> Path { Path(rect) } }
-public struct Circle: Shape { public init() {}; public func path(in rect: CGRect) -> Path { Path(ellipseIn: rect) } }
+public struct Rectangle: Shape {
+    public init() {}
+    public var shapeKind: String { "rectangle" }
+    public func path(in rect: CGRect) -> Path { Path(rect) }
+}
+public struct Circle: Shape {
+    public init() {}
+    public var shapeKind: String { "circle" }
+    public func path(in rect: CGRect) -> Path { Path(ellipseIn: rect) }
+}
 public struct Angle: Sendable, Equatable {
     public var radians: Double
     public var degrees: Double { get { radians * 180 / .pi } set { radians = newValue * .pi / 180 } }
@@ -208,27 +227,43 @@ public enum ColorRenderingSpace: Sendable { case sRGB, sRGBLinear, displayP3 }
 public struct RoundedRectangle: Shape {
     public let cornerRadius: Double
     public let style: RoundedCornerStyle
+    public var shapeKind: String { "roundedRectangle" }
+    public var cornerRadiusValue: Double { cornerRadius }
     public init(cornerRadius: Double, style: RoundedCornerStyle = .circular) { self.cornerRadius = cornerRadius; self.style = style }
     public init(cornerSize: CGSize, style: RoundedCornerStyle = .circular) { cornerRadius = cornerSize.width; self.style = style }
     public func path(in rect: CGRect) -> Path { Path(roundedRect: rect, cornerRadius: cornerRadius, style: style) }
 }
-public struct Capsule: Shape { public init() {}; public func path(in rect: CGRect) -> Path { Path(rect) } }
-
+public struct Capsule: Shape {
+    public init() {}
+    public var shapeKind: String { "capsule" }
+    public func path(in rect: CGRect) -> Path { Path(rect) }
+}
 
 extension Shape {
-    /// Not yet stroke-only in the Qt renderer (it draws every `Shape` node filled) — compiles and shows the shape,
-    /// just not as an outline yet.
-    public func strokeBorder(_ style: ShapeStyle, lineWidth: Double = 1) -> some View { self }
-    public func strokeBorder(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View { self }
-    /// A filled shape tagged with its color; the Qt renderer reads `.foregroundStyle` off the node like any other.
-    public func fill(_ style: ShapeStyle) -> some View { foregroundStyle(style) }
-    /// `AngularGradient`/`LinearGradient` aren't `ShapeStyle` (a concrete token here, not a protocol); tag with
-    /// the gradient's first color as a stand-in — the Qt renderer doesn't paint real gradients from this path yet.
-    public func fill(_ gradient: AngularGradient) -> some View { foregroundStyle(gradient.gradient.colors.first ?? .clear) }
-    /// Not yet drawn stroke-only (see `strokeBorder` above) — compiles and shows the shape filled.
-    public func stroke(_ style: ShapeStyle, lineWidth: Double = 1) -> some View { foregroundStyle(style) }
-    public func stroke(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View { foregroundStyle(style) }
-    /// Not yet modeled geometrically — the Qt renderer draws every `Shape` node at its container's full size.
+    public func strokeBorder(_ style: ShapeStyle, lineWidth: Double = 1) -> some View {
+        modified {
+            $0.stringParams["strokeColor"] = style.name
+            $0.doubleParams["strokeWidth"] = lineWidth
+        }
+    }
+    public func strokeBorder(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View {
+        strokeBorder(style, lineWidth: strokeStyle.lineWidth)
+    }
+    public func fill(_ style: ShapeStyle) -> some View {
+        modified {
+            $0.stringParams["fillColor"] = style.name
+            $0.modifiers.append(.foregroundStyle(style.name))
+        }
+    }
+    public func fill(_ gradient: AngularGradient) -> some View {
+        fill(gradient.gradient.colors.first ?? .clear)
+    }
+    public func stroke(_ style: ShapeStyle, lineWidth: Double = 1) -> some View {
+        strokeBorder(style, lineWidth: lineWidth)
+    }
+    public func stroke(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View {
+        strokeBorder(style, lineWidth: strokeStyle.lineWidth)
+    }
     public func inset(by amount: Double) -> Self { self }
 }
 

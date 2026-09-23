@@ -34,7 +34,13 @@ extension RenderNode {
     /// as long as the `RenderNode` value itself; the Qt bridge keeps this registry around instead so a later
     /// button tap / slider drag can still reach the right one by id (see `Sources/LinuxBridge/SwiftUIBridge.swift`).
     public func collectHandlers(into registry: inout [String: [String: (Any) -> Void]]) {
-        if !handlers.isEmpty { registry[id] = handlers }
+        var h = handlers
+        for m in modifiers {
+            if case .sink(let key, let closure) = m {
+                h[key] = closure
+            }
+        }
+        if !h.isEmpty { registry[id] = h }
         for child in children { child.collectHandlers(into: &registry) }
     }
 }
@@ -53,6 +59,8 @@ public enum RenderModifier {
     case fixedSize(horizontal: Bool, vertical: Bool)
     case buttonStyle(String)
     case toggleStyle(String)
+    case pickerStyle(String)
+    case menuStyle(String)
     case controlSize(String)
     case textFieldStyle(String)
     case multilineTextAlignment(String)

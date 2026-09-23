@@ -81,6 +81,9 @@ private struct State: Encodable {
     let canMoveActiveLayerUp: Bool
     let canMoveActiveLayerDown: Bool
     let tool: String
+    let selectionMode: String
+    let lassoKind: String
+    let marqueeKind: String
 }
 
 /// Result codes shared with the C ABI: 0 ok, -1 invalid argument, -2 no document, -3 busy, -4 unsupported version,
@@ -177,8 +180,11 @@ final class UpstreamEditor {
                   [x, y].allSatisfy({ $0.isFinite && abs($0) <= 1_000_000 }), (0...30_000).contains(width), (0...30_000).contains(height)
             else { return fail(-1, "invalid rectangle") }
             let rect = CGRect(x: x, y: y, width: CGFloat(width), height: CGFloat(height))
+            let resolvedMode = (command.kind.flatMap { k in
+                SelectionMode(rawValue: k) ?? SelectionMode.allCases.first(where: { "\($0)".caseInsensitiveCompare(k) == .orderedSame })
+            }) ?? s.displayedSelectionMode
             select(command.action == "selectEllipse" ? CGPath(ellipseIn: rect, transform: nil) : CGPath(rect: rect, transform: nil),
-                   mode: SelectionMode(rawValue: command.kind ?? "New") ?? .replace)
+                   mode: resolvedMode)
         case "selectLasso":
             guard s.document != nil else { return fail(-2, "no document") }
             guard let list = command.points, list.count >= 3 else { return fail(-1, "lasso needs 3+ points") }
@@ -186,7 +192,10 @@ final class UpstreamEditor {
             guard points.count == list.count else { return fail(-1, "invalid point") }
             let path = CGMutablePath()
             path.addLines(between: points); path.closeSubpath()
-            select(path, mode: SelectionMode(rawValue: command.kind ?? "New") ?? .replace)
+            let resolvedMode = (command.kind.flatMap { k in
+                SelectionMode(rawValue: k) ?? SelectionMode.allCases.first(where: { "\($0)".caseInsensitiveCompare(k) == .orderedSame })
+            }) ?? s.displayedSelectionMode
+            select(path, mode: resolvedMode)
         case "selectAll": s.selectAll()
         case "deselect": s.deselect()
         case "invertSelection": s.invertSelection()
@@ -200,7 +209,18 @@ final class UpstreamEditor {
             await s.selectSubject()
         case "featherSelection":
             s.featherSelection(by: Int(command.parameters?["amount"] ?? 1))
-        case "expandSelection": s.expandSelection(by: Int(command.parameters?["amount"] ?? 1))
+        case "expandSelection":
+            let amt = Int(command.parameters?["amount"] ?? 1)
+            s.selectionExpandAmount = amt
+            s.expandSelection(by: amt)
+        case "setSelectionExpandAmount":
+            if let amt = command.parameters?["amount"] {
+                s.selectionExpandAmount = Int(amt)
+            }
+        case "setSelectionMode":
+            if let k = command.kind, let mode = SelectionMode(rawValue: k) ?? SelectionMode.allCases.first(where: { "\($0)".caseInsensitiveCompare(k) == .orderedSame }) {
+                s.selectionModeChoice = mode
+            }
         case "contractSelection": s.contractSelection(by: Int(command.parameters?["amount"] ?? 1))
         case "fillForeground", "fillBackground":
             let background = command.action == "fillBackground"
@@ -515,7 +535,10 @@ final class UpstreamEditor {
             mergeTitle: s.mergeTitle,
             canMoveActiveLayerUp: s.canMoveActiveLayer(by: 1),
             canMoveActiveLayerDown: s.canMoveActiveLayer(by: -1),
-            tool: s.tool.rawValue)
+            tool: s.tool.rawValue,
+            selectionMode: s.displayedSelectionMode.rawValue,
+            lassoKind: s.lassoKind.rawValue,
+            marqueeKind: s.marqueeKind.rawValue)
         return try JSONEncoder().encode(state)
     }
 

@@ -6,6 +6,7 @@
 
 #include "SwiftUIQtRenderer.h"
 
+#include <QAction>
 #include <QBoxLayout>
 #include <QCheckBox>
 #include <QFont>
@@ -14,6 +15,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMenu>
 #include <QLabel>
 #include <QComboBox>
 #include <QLineEdit>
@@ -25,6 +27,7 @@
 #include <QPainterPath>
 #include <QProgressBar>
 #include <QSlider>
+#include <QStackedLayout>
 #include <QVariant>
 
 extern "C" {
@@ -67,7 +70,92 @@ private:
 
 } // namespace
 
+QColor parseColorToken(const QString &name) {
+    if (name.isEmpty() || name == "clear") return Qt::transparent;
+    if (name == "black") return QColor(0, 0, 0);
+    if (name == "white") return QColor(255, 255, 255);
+    if (name == "primary") return QColor(245, 245, 247);
+    if (name == "secondary") return QColor(142, 142, 147);
+    if (name == "tertiary") return QColor(90, 90, 96);
+    if (name == "accentColor" || name == "accent" || name == "blue") return QColor(0, 122, 255);
+    if (name == "red") return QColor(255, 59, 48);
+    if (name == "green") return QColor(52, 199, 89);
+    if (name == "yellow") return QColor(255, 204, 0);
+    if (name.startsWith("rgb:") || name.startsWith("cgColor:")) {
+        const QString sub = name.section(':', 1);
+        const QStringList parts = sub.split(',');
+        if (parts.size() >= 3) {
+            const double r = parts[0].toDouble();
+            const double g = parts[1].toDouble();
+            const double b = parts[2].toDouble();
+            const double a = (parts.size() >= 4) ? parts[3].toDouble() : 1.0;
+            return QColor::fromRgbF(qBound(0.0, r, 1.0),
+                                    qBound(0.0, g, 1.0),
+                                    qBound(0.0, b, 1.0),
+                                    qBound(0.0, a, 1.0));
+        }
+    }
+    if (name.startsWith('#')) {
+        return QColor(name);
+    }
+    return QColor(name);
+}
+
 namespace {
+
+class SwiftUIShapeWidget : public QWidget {
+public:
+    SwiftUIShapeWidget(const QString &shapeKind, double cornerRadius,
+                       const QColor &fillColor, const QColor &strokeColor, double strokeWidth,
+                       QWidget *parent = nullptr)
+        : QWidget(parent), m_shapeKind(shapeKind), m_cornerRadius(cornerRadius),
+          m_fillColor(fillColor), m_strokeColor(strokeColor), m_strokeWidth(strokeWidth) {
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+
+    QSize sizeHint() const override {
+        return QSize(width() > 0 ? width() : 32, height() > 0 ? height() : 32);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        QRectF rect(0, 0, width(), height());
+        if (m_strokeWidth > 0 && m_strokeColor.isValid() && m_strokeColor.alpha() > 0) {
+            const qreal half = m_strokeWidth / 2.0;
+            rect.adjust(half, half, -half, -half);
+        }
+
+        QBrush brush(m_fillColor.isValid() ? m_fillColor : Qt::transparent);
+        QPen pen(Qt::NoPen);
+        if (m_strokeWidth > 0 && m_strokeColor.isValid() && m_strokeColor.alpha() > 0) {
+            pen = QPen(m_strokeColor, m_strokeWidth);
+        }
+
+        p.setBrush(brush);
+        p.setPen(pen);
+
+        if (m_shapeKind == "circle") {
+            p.drawEllipse(rect);
+        } else if (m_shapeKind == "roundedRectangle") {
+            p.drawRoundedRect(rect, m_cornerRadius, m_cornerRadius);
+        } else if (m_shapeKind == "capsule") {
+            const qreal r = qMin(rect.width(), rect.height()) / 2.0;
+            p.drawRoundedRect(rect, r, r);
+        } else {
+            p.drawRect(rect);
+        }
+    }
+
+private:
+    QString m_shapeKind;
+    double m_cornerRadius;
+    QColor m_fillColor;
+    QColor m_strokeColor;
+    double m_strokeWidth;
+};
 
 QJsonObject fetchTree(uint64_t handle, const QString &panel) {
     const QByteArray panelUtf8 = panel.toUtf8();
@@ -81,9 +169,6 @@ QJsonObject fetchTree(uint64_t handle, const QString &panel) {
 
 std::vector<std::function<void(uint64_t, const QString &)>> g_actionListeners;
 
-/// Sends `payload` (a JSON fragment: `true`/`false`, empty for a no-argument action) to the handler `handlerKey`
-/// recorded for `nodeID` in the tree `panel` last resolved — the exact mechanism
-/// `Sources/LinuxBridge/SwiftUIBridge.swift`'s `compositor_session_dispatch_swiftui_action` implements.
 void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, const QString &handlerKey, const QByteArray &payload = {}) {
     const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8(), keyUtf8 = handlerKey.toUtf8();
     compositor_session_dispatch_swiftui_action(handle, panelUtf8.constData(), nodeUtf8.constData(), keyUtf8.constData(),
@@ -94,14 +179,33 @@ void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, cons
     }
 }
 
-/// A JSON fragment for a number/string payload — `QJsonDocument` only emits whole documents, so a single `QJsonValue`
-/// is wrapped in a throwaway array and unwrapped textually; simpler than hand-escaping strings.
 QByteArray jsonFragment(const QJsonValue &value) {
     QByteArray array = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
     return array.mid(1, array.size() - 2); // strip the wrapping '[' ']'
 }
 
-QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &color = QColor(0xf5, 0xf5, 0xf7)) {
+class TapGestureFilter : public QObject {
+public:
+    TapGestureFilter(QObject *parent, std::function<void()> onTap)
+        : QObject(parent), m_onTap(std::move(onTap)) {}
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override {
+        if (event->type() == QEvent::MouseButtonRelease) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                if (m_onTap) m_onTap();
+                return true;
+            }
+        }
+        return QObject::eventFilter(obj, event);
+    }
+private:
+    std::function<void()> m_onTap;
+};
+
+} // namespace
+
+QIcon renderToolVectorIcon(const QString &symbol, int size, const QColor &color) {
     QPixmap pix(size, size);
     pix.fill(Qt::transparent);
     QPainter p(&pix);
@@ -112,12 +216,11 @@ QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &c
 
     if (symbol == "arrow.up.left.and.arrow.down.right" || symbol == "move") {
         p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.drawLine(10, 3, 10, 17);
-        p.drawLine(3, 10, 17, 10);
-        p.drawLine(7, 6, 10, 3); p.drawLine(13, 6, 10, 3);
-        p.drawLine(7, 14, 10, 17); p.drawLine(13, 14, 10, 17);
-        p.drawLine(6, 7, 3, 10); p.drawLine(6, 13, 3, 10);
-        p.drawLine(14, 7, 17, 10); p.drawLine(14, 13, 17, 10);
+        p.drawLine(5, 5, 15, 15);
+        p.drawLine(5, 5, 10, 5);
+        p.drawLine(5, 5, 5, 10);
+        p.drawLine(15, 15, 10, 15);
+        p.drawLine(15, 15, 15, 10);
     } else if (symbol.contains("circle.dashed")) {
         QPen dashPen(color, 1.5, Qt::CustomDashLine, Qt::SquareCap);
         dashPen.setDashPattern({2, 2});
@@ -188,7 +291,7 @@ QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &c
         p.drawLine(10, 6, 10, 11);
         p.drawRoundedRect(QRectF(4, 11, 12, 4), 1.5, 1.5);
         p.fillRect(QRectF(3, 15, 14, 2), color);
-    } else if (symbol.contains("drop") || symbol == "smear" || symbol == "blur") {
+    } else if (symbol == "drop" || symbol == "smear" || symbol == "blur") {
         p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         QPainterPath drop;
         drop.moveTo(10, 3);
@@ -226,6 +329,17 @@ QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &c
         p.drawLine(11, 4, 11, 8);
         p.drawLine(13, 6, 13, 8);
         p.drawLine(4, 10, 4, 13);
+    } else if (symbol.contains("plus.magnifyingglass")) {
+        p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawEllipse(QRectF(3.5, 3.5, 9.5, 9.5));
+        p.drawLine(QPointF(10.5, 10.5), QPointF(16, 16));
+        p.drawLine(QPointF(8.25, 5.5), QPointF(8.25, 11));
+        p.drawLine(QPointF(5.5, 8.25), QPointF(11, 8.25));
+    } else if (symbol.contains("minus.magnifyingglass")) {
+        p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawEllipse(QRectF(3.5, 3.5, 9.5, 9.5));
+        p.drawLine(QPointF(10.5, 10.5), QPointF(16, 16));
+        p.drawLine(QPointF(5.5, 8.25), QPointF(11, 8.25));
     } else if (symbol.contains("magnifyingglass") || symbol == "zoom") {
         p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.drawEllipse(QRectF(4, 4, 9, 9));
@@ -240,6 +354,112 @@ QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &c
         p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.drawArc(QRectF(3, 3, 10, 10), 45 * 16, 270 * 16);
         p.drawLine(10, 2, 10, 5); p.drawLine(10, 2, 13, 2);
+    } else if (symbol.contains("plus.square")) {
+        p.setPen(QPen(color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawRoundedRect(QRectF(3.5, 3.5, 13, 13), 2, 2);
+        p.drawLine(QPointF(10, 6.5), QPointF(10, 13.5));
+        p.drawLine(QPointF(6.5, 10), QPointF(13.5, 10));
+    } else if (symbol.contains("folder.badge.plus")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPainterPath f;
+        f.moveTo(3, 6); f.lineTo(7, 6); f.lineTo(8.5, 7.5); f.lineTo(17, 7.5); f.lineTo(17, 14); f.lineTo(3, 14); f.closeSubpath();
+        p.drawPath(f);
+        p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(14, 11, 14, 17);
+        p.drawLine(11, 14, 17, 14);
+    } else if (symbol == "folder" || symbol.contains("folder")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPainterPath f;
+        f.moveTo(3, 6); f.lineTo(7, 6); f.lineTo(8.5, 7.5); f.lineTo(17, 7.5); f.lineTo(17, 14.5); f.lineTo(3, 14.5); f.closeSubpath();
+        p.drawPath(f);
+    } else if (symbol.contains("circle.lefthalf.filled")) {
+        p.setPen(QPen(color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawEllipse(QRectF(3.5, 3.5, 13, 13));
+        QPainterPath half;
+        half.moveTo(10, 3.5);
+        half.arcTo(QRectF(3.5, 3.5, 13, 13), 90, 180);
+        half.closeSubpath();
+        p.fillPath(half, color);
+    } else if (symbol.contains("trash")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(QPointF(4, 5.5), QPointF(16, 5.5));
+        p.drawLine(QPointF(8, 3.5), QPointF(12, 3.5));
+        p.drawRoundedRect(QRectF(5.5, 6, 9, 10.5), 1, 1);
+        p.drawLine(QPointF(8.5, 8), QPointF(8.5, 14));
+        p.drawLine(QPointF(11.5, 8), QPointF(11.5, 14));
+    } else if (symbol.contains("sparkles")) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        QPainterPath sp;
+        sp.moveTo(10, 2);
+        sp.quadTo(10, 9, 17, 9);
+        sp.quadTo(10, 9, 10, 16);
+        sp.quadTo(10, 9, 3, 9);
+        sp.quadTo(10, 9, 10, 2);
+        p.drawPath(sp);
+        QPainterPath s2;
+        s2.moveTo(15, 12);
+        s2.quadTo(15, 15, 18, 15);
+        s2.quadTo(15, 15, 15, 18);
+        s2.quadTo(15, 15, 12, 15);
+        s2.quadTo(15, 15, 15, 12);
+        p.drawPath(s2);
+    } else if (symbol.contains("link")) {
+        p.setPen(QPen(color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawRoundedRect(QRectF(4, 7, 7, 6), 3, 3);
+        p.drawRoundedRect(QRectF(9, 7, 7, 6), 3, 3);
+    } else if (symbol == "eye") {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPainterPath e;
+        e.moveTo(3, 10);
+        e.quadTo(10, 4.5, 17, 10);
+        e.quadTo(10, 15.5, 3, 10);
+        p.drawPath(e);
+        p.setBrush(color);
+        p.drawEllipse(QRectF(8.5, 8.5, 3, 3));
+    } else if (symbol.contains("eye.slash")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPainterPath e;
+        e.moveTo(3, 10);
+        e.quadTo(10, 4.5, 17, 10);
+        e.quadTo(10, 15.5, 3, 10);
+        p.drawPath(e);
+        p.drawLine(4, 16, 16, 4);
+    } else if (symbol.contains("slider.horizontal.3")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(3, 6, 17, 6);
+        p.drawLine(3, 10, 17, 10);
+        p.drawLine(3, 14, 17, 14);
+        p.setBrush(color);
+        p.drawEllipse(QRectF(6, 4.5, 3, 3));
+        p.drawEllipse(QRectF(11, 8.5, 3, 3));
+        p.drawEllipse(QRectF(7, 12.5, 3, 3));
+    } else if (symbol.contains("slider.horizontal.2.square")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawRoundedRect(QRectF(3, 3, 14, 14), 2, 2);
+        p.drawLine(5, 7, 15, 7);
+        p.drawLine(5, 13, 15, 13);
+        p.setBrush(color);
+        p.drawEllipse(QRectF(7, 5.5, 3, 3));
+        p.drawEllipse(QRectF(11, 11.5, 3, 3));
+    } else if (symbol.contains("rectangle.inset.filled")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawRoundedRect(QRectF(3, 3, 14, 14), 2, 2);
+        p.fillRect(QRectF(6, 6, 8, 8), color);
+    } else if (symbol.contains("square.3.layers.3d")) {
+        p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        auto drawDiamond = [&](qreal y) {
+            QPainterPath d;
+            d.moveTo(10, y); d.lineTo(17, y + 3.5); d.lineTo(10, y + 7); d.lineTo(3, y + 3.5); d.closeSubpath();
+            p.drawPath(d);
+        };
+        drawDiamond(3);
+        drawDiamond(7);
+        drawDiamond(11);
+    } else if (symbol == "xmark" || symbol == "multiply") {
+        p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(5, 5, 15, 15);
+        p.drawLine(15, 5, 5, 15);
     } else {
         p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.drawRect(4, 4, 12, 12);
@@ -247,6 +467,8 @@ QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &c
     p.end();
     return QIcon(pix);
 }
+
+namespace {
 
 /// Applies the modifiers this first pass understands (the highest-frequency ones, per the plan); an unrecognised
 /// modifier kind is silently skipped rather than failing the whole render — additive coverage, not all-or-nothing.
@@ -288,6 +510,26 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
         } else if (kind == "accessibilityIdentifier") {
             const QString id = strings.value("text").toString();
             if (!id.isEmpty()) widget->setObjectName(id);
+        } else if (kind == "background") {
+            const QString colorName = strings.value("name").toString();
+            const QColor color = parseColorToken(colorName);
+            if (color.isValid() && color.alpha() > 0) {
+                widget->setAttribute(Qt::WA_StyledBackground, true);
+                const int r = widget->property("cornerRadius").toInt();
+                QString bg = QString("background-color: %1;").arg(color.name(QColor::HexArgb));
+                if (r > 0) bg += QString(" border-radius: %1px;").arg(r);
+                widget->setStyleSheet(widget->styleSheet() + " " + bg);
+            }
+        } else if (kind == "cornerRadius") {
+            const int r = static_cast<int>(doubles.value("radius").toDouble());
+            widget->setProperty("cornerRadius", r);
+            widget->setStyleSheet(widget->styleSheet() + QString(" border-radius: %1px;").arg(r));
+        } else if (kind == "foregroundStyle") {
+            const QString colorName = strings.value("name").toString();
+            const QColor color = parseColorToken(colorName);
+            if (color.isValid()) {
+                widget->setStyleSheet(widget->styleSheet() + QString(" color: %1;").arg(color.name(QColor::HexArgb)));
+            }
         }
     }
 }
@@ -298,8 +540,23 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &node, QBoxLayout::Direction direction) {
     auto *container = new QWidget;
     auto *layout = new QBoxLayout(direction, container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    const QJsonObject doubles = node.value("doubleParams").toObject();
+    if (doubles.contains("spacing")) {
+        layout->setSpacing(static_cast<int>(doubles.value("spacing").toDouble()));
+    } else {
+        layout->setSpacing(0);
+    }
     for (const auto &childValue : node.value("children").toArray()) {
-        if (QWidget *child = buildNode(handle, panel, childValue.toObject())) layout->addWidget(child);
+        const QJsonObject childObj = childValue.toObject();
+        if (QWidget *child = buildNode(handle, panel, childObj)) {
+            const QString childKind = childObj.value("kind").toString();
+            int stretch = 0;
+            if (childKind == "ScrollView" || childKind == "Spacer" || childKind == "Canvas") {
+                stretch = 1;
+            }
+            layout->addWidget(child, stretch);
+        }
     }
     return container;
 }
@@ -318,8 +575,37 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = buildStack(handle, panel, node, QBoxLayout::LeftToRight);
     } else if (kind == "ZStack") {
         auto *container = new QWidget;
+        bool hasOffset = false;
+        QList<QWidget *> builtChildren;
         for (const auto &childValue : children) {
-            if (QWidget *child = buildNode(handle, panel, childValue.toObject())) { child->setParent(container); child->show(); }
+            if (QWidget *child = buildNode(handle, panel, childValue.toObject())) {
+                builtChildren.append(child);
+                if (child->property("offsetX").toInt() != 0 || child->property("offsetY").toInt() != 0) {
+                    hasOffset = true;
+                }
+            }
+        }
+        if (hasOffset) {
+            int maxW = 36, maxH = 36;
+            for (auto *child : builtChildren) {
+                child->setParent(container);
+                const int ox = child->property("offsetX").toInt();
+                const int oy = child->property("offsetY").toInt();
+                const int cw = child->width() > 0 ? child->width() : child->sizeHint().width();
+                const int ch = child->height() > 0 ? child->height() : child->sizeHint().height();
+                child->setGeometry(ox, oy, cw, ch);
+                maxW = qMax(maxW, ox + cw);
+                maxH = qMax(maxH, oy + ch);
+                child->show();
+            }
+            container->setFixedSize(maxW, maxH);
+        } else {
+            auto *layout = new QStackedLayout(container);
+            layout->setStackingMode(QStackedLayout::StackAll);
+            layout->setContentsMargins(0, 0, 0, 0);
+            for (auto *child : builtChildren) {
+                layout->addWidget(child);
+            }
         }
         widget = container;
     } else if (kind == "Text") {
@@ -351,17 +637,18 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         };
         for (const auto &child : children) extractLabel(child.toObject());
 
+        QString hint;
+        for (const auto &m : node.value("modifiers").toArray()) {
+            const QJsonObject mo = m.toObject();
+            const QString mkind = mo.value("kind").toString();
+            if (mkind == "help" || mkind == "accessibilityLabel") {
+                hint = mo.value("stringParams").toObject().value("text").toString();
+                if (!hint.isEmpty()) break;
+            }
+        }
+
         // Infer icon for Canvas tool buttons or named tools:
         if (systemIcon.isEmpty()) {
-            QString hint;
-            for (const auto &m : node.value("modifiers").toArray()) {
-                const QJsonObject mo = m.toObject();
-                const QString mkind = mo.value("kind").toString();
-                if (mkind == "help" || mkind == "accessibilityLabel") {
-                    hint = mo.value("stringParams").toObject().value("text").toString();
-                    if (!hint.isEmpty()) break;
-                }
-            }
             if (hint.contains(QLatin1String("Gradient"), Qt::CaseInsensitive)) systemIcon = QStringLiteral("square.bottomhalf.filled");
             else if (hint.contains(QLatin1String("Clone"), Qt::CaseInsensitive)) systemIcon = QStringLiteral("seal");
             else if (hint.contains(QLatin1String("Lasso"), Qt::CaseInsensitive)) systemIcon = QStringLiteral("lasso");
@@ -385,22 +672,43 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 
         const bool isSelected = bools.value("isSelected").toBool();
 
-        if (isToolButton && !systemIcon.isEmpty()) {
-            QIcon icon = renderToolVectorIcon(systemIcon, 20, QColor(0xf5, 0xf5, 0xf7));
-            button->setIcon(icon);
-            button->setIconSize(QSize(20, 20));
-            button->setText(QString());
-            button->setFixedSize(36, 36);
+        if (hint.contains(QLatin1String("Background color"), Qt::CaseInsensitive)) {
+            button->setFixedSize(24, 24);
             button->setCursor(Qt::PointingHandCursor);
-            if (isSelected) {
-                button->setStyleSheet(
-                    "QPushButton { background-color: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 7px; padding: 0px; margin: 0px; } "
-                    "QPushButton:hover { background-color: rgba(255, 255, 255, 0.22); }"
-                );
+            button->setText(QString());
+            button->setStyleSheet("QPushButton { background-color: #ffffff; border: 1px solid #000000; border-radius: 6px; } "
+                                  "QPushButton:hover { border: 1.5px solid #007aff; }");
+        } else if (hint.contains(QLatin1String("Foreground color"), Qt::CaseInsensitive)) {
+            button->setFixedSize(24, 24);
+            button->setCursor(Qt::PointingHandCursor);
+            button->setText(QString());
+            button->setStyleSheet("QPushButton { background-color: #000000; border: 1.5px solid #ffffff; border-radius: 6px; } "
+                                  "QPushButton:hover { border: 1.5px solid #007aff; }");
+        } else if (isToolButton && !systemIcon.isEmpty()) {
+            const bool isToolRail = (panel == QLatin1String("ToolRail"));
+            const int iconSize = isToolRail ? 20 : 16;
+            QIcon icon = renderToolVectorIcon(systemIcon, iconSize, QColor(0xf5, 0xf5, 0xf7));
+            button->setIcon(icon);
+            button->setIconSize(QSize(iconSize, iconSize));
+            button->setText(QString());
+            button->setCursor(Qt::PointingHandCursor);
+            if (isToolRail) {
+                button->setFixedSize(36, 36);
+                if (isSelected) {
+                    button->setStyleSheet(
+                        "QPushButton { background-color: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 7px; padding: 0px; margin: 0px; } "
+                        "QPushButton:hover { background-color: rgba(255, 255, 255, 0.22); }"
+                    );
+                } else {
+                    button->setStyleSheet(
+                        "QPushButton { background-color: transparent; border: 1px solid transparent; border-radius: 7px; padding: 0px; margin: 0px; } "
+                        "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.10); }"
+                    );
+                }
             } else {
                 button->setStyleSheet(
-                    "QPushButton { background-color: transparent; border: 1px solid transparent; border-radius: 7px; padding: 0px; margin: 0px; } "
-                    "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.10); }"
+                    "QPushButton { background-color: transparent; border: none; border-radius: 4px; padding: 2px 4px; margin: 0px; } "
+                    "QPushButton:hover { background-color: rgba(255, 255, 255, 0.10); }"
                 );
             }
         } else {
@@ -423,7 +731,11 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             if (label.value("kind").toString() == "Text") checkBox->setText(label.value("stringParams").toObject().value("text").toString());
         }
         checkBox->setChecked(bools.value("isOn").toBool());
-        checkBox->setStyleSheet("QCheckBox { color: #f5f5f7; font-size: 11px; spacing: 6px; } QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #4a4a50; border-radius: 3px; background-color: #28282b; } QCheckBox::indicator:checked { background-color: #007aff; border-color: #007aff; }");
+        checkBox->setStyleSheet(
+            "QCheckBox { color: #f5f5f7; font-size: 11px; spacing: 6px; } "
+            "QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #4a4a50; border-radius: 3px; background-color: #28282b; } "
+            "QCheckBox::indicator:checked { background-color: #007aff; border-color: #007aff; image: url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'><path fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M3.2 7.2 L5.6 9.8 L10.8 4.2'/></svg>\"); }"
+        );
         QObject::connect(checkBox, &QCheckBox::toggled, checkBox, [handle, panel, id](bool checked) {
             dispatch(handle, panel, id, QStringLiteral("isOn"), checked ? "true" : "false");
         });
@@ -458,7 +770,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         const double lower = doubles.value("lowerBound").toDouble(), upper = doubles.value("upperBound").toDouble(1);
         constexpr int steps = 1000;
         auto *slider = new QSlider(Qt::Horizontal);
-        slider->setStyleSheet("QSlider::groove:horizontal { height: 4px; background: #333336; border-radius: 2px; } QSlider::sub-page:horizontal { background: #007aff; border-radius: 2px; } QSlider::handle:horizontal { background: #ffffff; border: 1px solid #b0b0b5; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }");
+        slider->setStyleSheet("QSlider::groove:horizontal { height: 4px; background: #38383c; border-radius: 2px; } QSlider::handle:horizontal { background: #ffffff; border: 1px solid #b0b0b5; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }");
         slider->setRange(0, steps);
         const double span = (upper > lower) ? (upper - lower) : 1;
         slider->setValue(static_cast<int>((doubles.value("value").toDouble() - lower) / span * steps));
@@ -467,30 +779,216 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         });
         widget = slider;
     } else if (kind == "Picker") {
-        auto *combo = new QComboBox;
-        combo->setStyleSheet("QComboBox { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 3px 8px; min-height: 18px; font-size: 11px; } QComboBox QAbstractItemView { background-color: #242427; color: #ffffff; selection-background-color: #007aff; }");
+        bool isSegmented = false;
+        for (const auto &m : node.value("modifiers").toArray()) {
+            const QJsonObject mo = m.toObject();
+            if (mo.value("kind").toString() == "pickerStyle" &&
+                mo.value("stringParams").toObject().value("name").toString() == "segmented") {
+                isSegmented = true;
+                break;
+            }
+        }
         const QString selection = strings.value("selection").toString();
+
+        struct ItemData {
+            QString text;
+            QString tag;
+        };
+        QVector<ItemData> items;
         for (int i = 1; i < children.size(); ++i) {
             const QJsonObject item = children[i].toObject();
-            combo->addItem(item.value("stringParams").toObject().value("text").toString());
-            for (const auto &modifierValue : item.value("modifiers").toArray()) {
-                const QJsonObject modifier = modifierValue.toObject();
-                if (modifier.value("kind").toString() == "tag" &&
-                    modifier.value("stringParams").toObject().value("text").toString() == selection) {
-                    combo->setCurrentIndex(combo->count() - 1);
+            QString itemText = item.value("stringParams").toObject().value("text").toString();
+            QString itemTag = itemText;
+            for (const auto &mv : item.value("modifiers").toArray()) {
+                const QJsonObject mo = mv.toObject();
+                if (mo.value("kind").toString() == "tag") {
+                    itemTag = mo.value("stringParams").toObject().value("text").toString();
+                }
+            }
+            items.push_back({itemText, itemTag});
+        }
+
+        if (isSegmented) {
+            auto *segContainer = new QWidget;
+            segContainer->setObjectName("segmentedPicker");
+            segContainer->setAttribute(Qt::WA_StyledBackground, true);
+            segContainer->setStyleSheet("QWidget#segmentedPicker { background-color: rgba(255, 255, 255, 0.08); border-radius: 6px; }");
+            auto *layout = new QHBoxLayout(segContainer);
+            layout->setContentsMargins(2, 2, 2, 2);
+            layout->setSpacing(0);
+
+            for (int i = 0; i < items.size(); ++i) {
+                const auto &it = items[i];
+                auto *btn = new QPushButton(it.text, segContainer);
+                btn->setFixedHeight(20);
+                btn->setCursor(Qt::PointingHandCursor);
+                const bool isSel = (it.tag.compare(selection, Qt::CaseInsensitive) == 0 ||
+                                    it.text.compare(selection, Qt::CaseInsensitive) == 0);
+
+                if (isSel) {
+                    btn->setStyleSheet(
+                        "QPushButton { background-color: #007aff; color: #ffffff; font-size: 11px; font-weight: 600; border: none; padding: 2px 10px; border-radius: 5px; } "
+                        "QPushButton:hover { background-color: #1a87ff; }"
+                    );
+                } else {
+                    btn->setStyleSheet(
+                        "QPushButton { background-color: transparent; color: #d0d0d5; font-size: 11px; font-weight: 500; border: none; padding: 2px 10px; border-radius: 5px; } "
+                        "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); color: #ffffff; } "
+                        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.16); }"
+                    );
+                }
+
+                const QString tagToSend = it.tag;
+                QObject::connect(btn, &QPushButton::clicked, btn, [handle, panel, id, tagToSend] {
+                    dispatch(handle, panel, id, QStringLiteral("selection"), jsonFragment(tagToSend));
+                });
+                layout->addWidget(btn);
+            }
+            widget = segContainer;
+        } else {
+            auto *combo = new QComboBox;
+            combo->setStyleSheet("QComboBox { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 3px 8px; min-height: 18px; font-size: 11px; } QComboBox QAbstractItemView { background-color: #242427; color: #ffffff; selection-background-color: #007aff; }");
+            QStringList tags;
+            int selIdx = -1;
+            for (int i = 0; i < items.size(); ++i) {
+                combo->addItem(items[i].text);
+                tags << items[i].tag;
+                if (items[i].tag.compare(selection, Qt::CaseInsensitive) == 0 ||
+                    items[i].text.compare(selection, Qt::CaseInsensitive) == 0) {
+                    selIdx = i;
+                }
+            }
+            if (selIdx >= 0) combo->setCurrentIndex(selIdx);
+            QObject::connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), combo, [handle, panel, id, tags](int idx) {
+                if (idx >= 0 && idx < tags.size()) {
+                    dispatch(handle, panel, id, QStringLiteral("selection"), jsonFragment(tags[idx]));
+                }
+            });
+            widget = combo;
+        }
+    } else if (kind == "Menu") {
+        auto *btn = new QPushButton;
+        QString textLabel;
+        QString systemIcon;
+        if (!children.isEmpty()) {
+            const QJsonObject labelObj = children.first().toObject();
+            const QString lkind = labelObj.value("kind").toString();
+            if (lkind == "Text") {
+                textLabel = labelObj.value("stringParams").toObject().value("text").toString();
+            } else if (lkind == "Image") {
+                const QString source = labelObj.value("stringParams").toObject().value("source").toString();
+                if (source.startsWith(QLatin1String("system:"))) {
+                    systemIcon = source.mid(7);
                 }
             }
         }
-        widget = combo;
+        if (!systemIcon.isEmpty()) {
+            QIcon icon = renderToolVectorIcon(systemIcon, 16, QColor(0x8e, 0x8e, 0x93));
+            btn->setIcon(icon);
+            btn->setIconSize(QSize(16, 16));
+        } else {
+            btn->setText(textLabel);
+        }
+
+        auto *menu = new QMenu(btn);
+        menu->setStyleSheet("QMenu { background-color: #242427; color: #ffffff; border: 1px solid #38383c; border-radius: 6px; padding: 4px; } "
+                            "QMenu::item { padding: 4px 20px 4px 10px; border-radius: 4px; } "
+                            "QMenu::item:selected { background-color: #007aff; }");
+
+        std::function<void(const QJsonArray &)> populateActions = [&](const QJsonArray &items) {
+            for (const auto &itemVal : items) {
+                const QJsonObject item = itemVal.toObject();
+                const QString ikind = item.value("kind").toString();
+                if (ikind == "Button") {
+                    QString itemText = item.value("stringParams").toObject().value("text").toString();
+                    if (itemText.isEmpty()) {
+                        for (const auto &c : item.value("children").toArray()) {
+                            if (c.toObject().value("kind").toString() == "Text") {
+                                itemText = c.toObject().value("stringParams").toObject().value("text").toString();
+                                break;
+                            }
+                        }
+                    }
+                    const QString itemId = item.value("id").toString();
+                    auto *act = menu->addAction(itemText);
+                    QObject::connect(act, &QAction::triggered, btn, [handle, panel, itemId] {
+                        dispatch(handle, panel, itemId, QStringLiteral("action"));
+                    });
+                } else {
+                    populateActions(item.value("children").toArray());
+                }
+            }
+        };
+        if (children.size() > 1) {
+            QJsonArray rest;
+            for (int i = 1; i < children.size(); ++i) rest.append(children[i]);
+            populateActions(rest);
+        }
+        btn->setMenu(menu);
+        btn->setStyleSheet("QPushButton { background-color: transparent; border: none; border-radius: 4px; padding: 2px 4px; } "
+                           "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); } "
+                           "QPushButton::menu-indicator { image: none; width: 0px; }");
+        widget = btn;
+    } else if (kind == "Shape") {
+        const QString shapeKind = strings.value("shapeKind").toString("rectangle");
+        const double cornerRadius = node.value("doubleParams").toObject().value("cornerRadius").toDouble(0);
+        QColor fillColor;
+        QColor strokeColor;
+        const double strokeWidth = node.value("doubleParams").toObject().value("strokeWidth").toDouble(0);
+
+        if (strings.contains("fillColor")) {
+            fillColor = parseColorToken(strings.value("fillColor").toString());
+        }
+        if (strings.contains("strokeColor")) {
+            strokeColor = parseColorToken(strings.value("strokeColor").toString());
+        }
+        for (const auto &m : node.value("modifiers").toArray()) {
+            const QJsonObject mo = m.toObject();
+            const QString mkind = mo.value("kind").toString();
+            if (mkind == "foregroundStyle" && !fillColor.isValid()) {
+                fillColor = parseColorToken(mo.value("stringParams").toObject().value("name").toString());
+            }
+        }
+        widget = new SwiftUIShapeWidget(shapeKind, cornerRadius, fillColor, strokeColor, strokeWidth);
+    } else if (kind == "Image") {
+        const QString source = strings.value("source").toString();
+        QString systemIcon;
+        if (source.startsWith(QLatin1String("system:"))) {
+            systemIcon = source.mid(7);
+        }
+        auto *label = new QLabel;
+        label->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        if (!systemIcon.isEmpty()) {
+            QColor iconColor(0x8e, 0x8e, 0x93);
+            int iconSize = 16;
+            for (const auto &m : node.value("modifiers").toArray()) {
+                const QJsonObject mo = m.toObject();
+                const QString mkind = mo.value("kind").toString();
+                if (mkind == "foregroundStyle") {
+                    iconColor = parseColorToken(mo.value("stringParams").toObject().value("name").toString());
+                } else if (mkind == "frame") {
+                    const QJsonObject doubles = mo.value("doubleParams").toObject();
+                    if (doubles.contains("width")) iconSize = static_cast<int>(doubles.value("width").toDouble());
+                    else if (doubles.contains("height")) iconSize = static_cast<int>(doubles.value("height").toDouble());
+                }
+            }
+            label->setPixmap(renderToolVectorIcon(systemIcon, iconSize, iconColor).pixmap(iconSize, iconSize));
+            label->setFixedSize(iconSize, iconSize);
+        }
+        widget = label;
     } else if (kind == "ScrollView") {
         auto *scrollArea = new QScrollArea;
         scrollArea->setWidgetResizable(true);
         scrollArea->setFrameShape(QFrame::NoFrame);
+        scrollArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         scrollArea->setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }");
         scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         if (!children.isEmpty()) {
-            if (QWidget *content = buildNode(handle, panel, children.first().toObject())) scrollArea->setWidget(content);
+            if (QWidget *content = buildNode(handle, panel, children.first().toObject())) {
+                content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+                scrollArea->setWidget(content);
+            }
         }
         widget = scrollArea;
     } else if (kind == "Spacer") {
@@ -500,6 +998,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
     } else if (kind == "Divider") {
         auto *line = new QFrame;
         line->setFrameShape(QFrame::HLine);
+        line->setFrameShadow(QFrame::Plain);
+        line->setStyleSheet("background-color: #141416; max-height: 1px; border: none;");
         widget = line;
     } else if (kind == "Canvas") {
         widget = new SwiftUICanvasWidget(handle, panel, id);
@@ -510,12 +1010,43 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         progress->setFixedHeight(14);
         progress->setFixedWidth(14);
         widget = progress;
+    } else if (kind == "_ViewList") {
+        if (children.isEmpty()) return nullptr;
+        if (children.size() == 1) {
+            widget = buildNode(handle, panel, children.first().toObject());
+        } else {
+            auto *container = new QWidget;
+            auto *layout = new QVBoxLayout(container);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(0);
+            for (const auto &childValue : children) {
+                if (QWidget *child = buildNode(handle, panel, childValue.toObject())) {
+                    layout->addWidget(child);
+                }
+            }
+            widget = container;
+        }
     } else {
         // Not yet mapped (e.g. _Native/LinearGradient land in later phases) — skip, don't crash.
         return nullptr;
     }
 
     applyModifiers(widget, node.value("modifiers").toArray());
+
+    if (widget) {
+        const QStringList hKeys = [&] {
+            QStringList keys;
+            for (const auto &k : node.value("handlerKeys").toArray()) keys << k.toString();
+            return keys;
+        }();
+        if (hKeys.contains(QStringLiteral("onTapGesture"))) {
+            widget->setCursor(Qt::PointingHandCursor);
+            widget->installEventFilter(new TapGestureFilter(widget, [handle, panel, id] {
+                dispatch(handle, panel, id, QStringLiteral("onTapGesture"));
+            }));
+        }
+    }
+
     return widget;
 }
 

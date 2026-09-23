@@ -28,8 +28,11 @@
 #include "SwiftUIQtRenderer.h"
 #include <cmath>
 #include <QDockWidget>
+#include <QMenuBar>
+#include <QMenu>
 #include <vector>
 #include <QIcon>
+#include <QStyleFactory>
 #include "SessionWindow.h"
 
 #if defined(COMPOSITOR_SKIA_BRIDGE)
@@ -40,6 +43,7 @@ extern "C" int compositor_qt_imageio_install(void);
 
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
+    app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     // Qt image plugins become the ImageIO compat backend (JPEG/TIFF/WebP/... beyond the portable PNG codec).
     compositor_qt_imageio_install();
     app.setApplicationName("Compositor");
@@ -103,9 +107,36 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         else if (toolArg == "type") window.setTool(SessionWindow::Tool::Type);
         else if (toolArg == "spotHealing") window.setTool(SessionWindow::Tool::SpotHealing);
         else if (toolArg == "cloneStamp") window.setTool(SessionWindow::Tool::CloneStamp);
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_SELECTION_MODE").isEmpty()) {
+            const QString mode = qEnvironmentVariable("COMPOSITOR_GRAB_SELECTION_MODE");
+            QJsonObject cmd;
+            cmd["version"] = 1;
+            cmd["action"] = "setSelectionMode";
+            cmd["kind"] = mode;
+            window.sendCommand(cmd);
+            window.updateOptionsBar();
+        }
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_STROKE").isEmpty()) {
             window.setTool(SessionWindow::Tool::Brush);
             window.paintStroke(200, 200, 600, 450);
+        }
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_MOUSE_STROKE").isEmpty()) {
+            // Simulates mouse events for stroke testing - sets Brush and paints
+            window.setTool(SessionWindow::Tool::Brush);
+            window.paintStroke(100, 100, 500, 400);
+        }
+        if (!qEnvironmentVariable("COMPOSITOR_TEST_TOOL_RAIL_CLICK").isEmpty()) {
+            auto buttons = window.findChildren<QPushButton *>();
+            qDebug() << "Total buttons in window:" << buttons.size();
+            for (auto *b : buttons) {
+                if (b->accessibleName().contains("Brush") || b->toolTip().contains("Brush")) {
+                    qDebug() << "FOUND BRUSH BUTTON:" << b << "calling click()";
+                    b->click();
+                }
+            }
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            qDebug() << "After click, window.currentTool() =" << static_cast<int>(window.currentTool());
+            qDebug() << "After click, sessionState tool =" << window.sessionState().value("tool").toString();
         }
         for (int i = 0; i < 10; ++i) {
             QCoreApplication::processEvents();
@@ -153,6 +184,28 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             dialog->show();
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
             dialog->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".dialog.png");
+        }
+        const QString menuName = qEnvironmentVariable("COMPOSITOR_GRAB_MENU");
+        if (!menuName.isEmpty() && window.menuBar()) {
+            for (auto *act : window.menuBar()->actions()) {
+                if (act->text().contains(menuName, Qt::CaseInsensitive) && act->menu()) {
+                    auto *menu = act->menu();
+                    menu->show();
+                    for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                    menu->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".menu.png");
+                    for (auto *subAct : menu->actions()) {
+                        if (subAct->menu()) {
+                            auto *subMenu = subAct->menu();
+                            subMenu->show();
+                            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                            subMenu->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".submenu.png");
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+            return 0;
         }
         return 0;
     }

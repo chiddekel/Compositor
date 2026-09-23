@@ -17,6 +17,7 @@ excluded here, with a reason; individual tests are never edited.
 | `SelectionTests.swift` | Upstream bug: references `NavigationTool.objectSelection`, which upstream's own `EditorSession` no longer has (removed when Object mode merged into the Magic tool, 376e02a), so the file does not compile even on macOS at this commit |
 | `BlendShortcutTests.swift` | Upstream regression: asserts wrapping backward from Normal lands on `.colorBurn` (the historical end of `LayerBlendMode` in v1.0.4), but upstream expanded `LayerBlendMode` with `.hue`, `.saturation`, `.color`, `.luminosity` without updating this test |
 | `TransformPressTests.swift` | Upstream test oversight: moving by (20, 10) in a 400x300 canvas shifts layer center to (220, 160); with canvas snapping tolerance `10 / pointsPerPixel = 14.7`, `abs(160 - 150) <= 14.7` snaps midY back to canvas center (150), moving `origin.y` from 110 back to 100. |
+| `CameraRawSliderTests.swift` | Tests `UI/CameraRawSlider.swift`'s real `CameraRawSliderView`/`GradientSliderCell`/`NSSliderCell`-based implementation (`#selector`/`@objc` target-action, custom `NSSliderCell` subclass) — same category as `SliderSnapTests.swift`. `Sources/Overrides/CameraRawSlider.swift` replaces it with a plain SwiftUI `Slider`; functional coverage lives in the compat layer, not this file. |
 
 ## Per-test skips (files stay compiled; pass these to `swift test --skip`)
 

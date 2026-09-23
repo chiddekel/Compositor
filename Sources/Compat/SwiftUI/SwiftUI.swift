@@ -50,6 +50,9 @@ public struct AnyView: View, PrimitiveView {
     public init(_ view: some View) { base = view }
     public var _childViews: [any View] { [base] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
+        if children.count == 1 {
+            return children[0]
+        }
         var node = RenderNode(kind: "_ViewList")
         node.children = children
         return node

@@ -24,7 +24,7 @@ public struct ModifiedContent: View, PrimitiveView {
 }
 
 extension View {
-    private func modified(_ apply: @escaping (inout RenderNode) -> Void) -> ModifiedContent {
+    func modified(_ apply: @escaping (inout RenderNode) -> Void) -> ModifiedContent {
         ModifiedContent(content: self, apply: apply)
     }
 
@@ -120,13 +120,20 @@ extension View {
         }
     }
     public func buttonBorderShape(_ shape: StyleToken) -> some View { self }
-    public func pickerStyle(_ style: StyleToken) -> some View { self }
-    public func menuStyle(_ style: StyleToken) -> some View { self }
+    public func pickerStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.pickerStyle(style.name)) } }
+    public func menuStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.menuStyle(style.name)) } }
     public func onDisappear(perform action: @escaping () -> Void = {}) -> some View { self }
     public func task(id: some Equatable, priority: TaskPriority = .userInitiated, _ action: @escaping () async -> Void) -> some View { self }
-    public func task(priority: TaskPriority = .userInitiated, _ action: @escaping () async -> Void) -> some View { self }
     public func id<ID: Hashable>(_ id: ID) -> some View { modified { $0.modifiers.append(.identifier("\(id)")) } }
-    public func tag<V: Hashable>(_ tag: V) -> some View { modified { $0.modifiers.append(.tag("\(tag)")) } }
+    public func tag<V: Hashable>(_ tag: V) -> some View {
+        let str: String
+        if let raw = (tag as? any RawRepresentable)?.rawValue {
+            str = "\(raw)"
+        } else {
+            str = "\(tag)"
+        }
+        return modified { $0.modifiers.append(.tag(str)) }
+    }
     public func scrollIndicators(_ visibility: StyleToken, axes: Axis.Set = [.horizontal, .vertical]) -> some View {
         modified { $0.modifiers.append(.scrollIndicators(visibility.name)) }
     }

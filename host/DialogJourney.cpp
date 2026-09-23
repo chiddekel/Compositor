@@ -6,6 +6,7 @@
 #include "interfaces/IPlatformServices.h"
 #include <QAction>
 #include <QApplication>
+#include <QStyleFactory>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -102,6 +103,7 @@ struct FakeStorage final : IStorageLocator {
 
 extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     try {
         QTemporaryDir temporary;
         require(temporary.isValid(), "temporary directory failed");
@@ -298,6 +300,7 @@ static int countPainted(const QImage &image) {
 // and the painted stroke renders with the chosen color/size.
 extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     try {
         QTemporaryDir temporary;
         require(temporary.isValid(), "temporary directory failed");
@@ -362,6 +365,7 @@ extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
 // setOpacity/addGroup/masks through the C ABI.
 extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     try {
         QTemporaryDir temporary;
         require(temporary.isValid(), "temporary directory failed");
@@ -534,7 +538,12 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
                 QApplication::processEvents();
             };
             auto button = [&](const QString &text) -> QPushButton * {
-                for (auto *b : w3.findChildren<QPushButton *>()) if (b->text() == text) return b;
+                for (auto *b : w3.findChildren<QPushButton *>()) {
+                    if (b->text() == text && b->isVisible()) return b;
+                }
+                for (auto *b : w3.findChildren<QPushButton *>()) {
+                    if (b->text() == text) return b;
+                }
                 require(false, "options button missing"); return nullptr;
             };
             QImage baseline = exported(w3, temporary.filePath("baseline.png"));
@@ -559,9 +568,18 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
             // Expand: a fresh 8px square grows by 6px on each side.
             w3.setTool(SessionWindow::Tool::RectSelect); QApplication::processEvents();
             drag(at(50, 4), at(58, 12));   // 8x8 at (50,4)
-            for (auto *spin : w3.findChildren<QSpinBox *>()) if (spin->suffix() == " px" && spin->value() == 1 && spin->width() <= 60 && spin->isEnabledTo(spin->window())) { spin->setValue(6); break; }
-
-
+            for (auto *spin : w3.findChildren<QSpinBox *>()) {
+                if (spin->suffix() == " px" && spin->value() == 1 && spin->width() <= 60) {
+                    spin->setValue(6);
+                    break;
+                }
+            }
+            for (auto *field : w3.findChildren<QLineEdit *>()) {
+                if (field->text() == "1" && field->isVisible()) {
+                    field->setText("6");
+                    break;
+                }
+            }
 
             button("Expand")->click(); QApplication::processEvents();
             const QImage grown = fillAndExport("grown.png");

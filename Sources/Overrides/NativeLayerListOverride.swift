@@ -35,6 +35,7 @@ struct NativeLayerList: View {
     private func row(for id: UUID) -> some View {
         let byID = Dictionary(uniqueKeysWithValues: (session.document?.layers ?? []).map { ($0.id, $0) })
         guard let layer = byID[id] else { return AnyView(EmptyView()) }
+        let isSelected = session.selectedLayerIDs.contains(layer.id)
         return AnyView(
             HStack(spacing: 8) {
                 Spacer().frame(width: Double(depths[id] ?? 0) * 14)
@@ -45,12 +46,24 @@ struct NativeLayerList: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(layer.isVisible ? "Hide layer" : "Show layer")
-                Text(layer.name)
+                
+                thumbnailView(for: layer)
+                    .fixedSize()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(layer.name)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(layer.isVisible ? .primary : .secondary)
+                    subtitleView(for: layer)
+                }
                 Spacer()
             }
-            .padding(.vertical, 4)
+            .frame(height: 40)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
             .contentShape(Rectangle())
-            .background(session.selectedLayerIDs.contains(layer.id) ? Color.accentColor.opacity(0.25) : Color.clear)
+            .background(isSelected ? Color.accentColor.opacity(0.35) : Color.clear)
+            .cornerRadius(4)
             .onTapGesture {
                 if session.selectedLayerIDs.contains(layer.id), session.selectedLayerIDs.count > 1 {
                     session.selectLayers(session.selectedLayerIDs, primary: layer.id)
@@ -59,5 +72,62 @@ struct NativeLayerList: View {
                 }
             }
         )
+    }
+
+    @ViewBuilder
+    private func thumbnailView(for layer: ImageLayer) -> some View {
+        if layer.isGroup {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color(white: 0.18))
+                Image(systemName: "folder")
+            }
+            .frame(width: 32, height: 32)
+            .fixedSize()
+        } else if let adj = layer.adjustment {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color(white: 0.18))
+                Image(systemName: adj.kind.symbol)
+            }
+            .frame(width: 32, height: 32)
+            .fixedSize()
+        } else {
+            HStack(spacing: 4) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color(white: 0.22))
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                    Image(systemName: "rectangle.inset.filled")
+                }
+                .frame(width: 32, height: 32)
+                if layer.mask != nil {
+                    Image(systemName: "link")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color(white: 0.22))
+                        RoundedRectangle(cornerRadius: 4)
+                            .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                    }
+                    .frame(width: 32, height: 32)
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func subtitleView(for layer: ImageLayer) -> some View {
+        if layer.isGroup {
+            Text("Folder").font(.system(size: 10)).foregroundStyle(.secondary)
+        } else if layer.adjustment != nil {
+            Text("Adjustment · Double-click to edit").font(.system(size: 10)).foregroundStyle(.secondary)
+        } else {
+            Text("\(Int(layer.size.width)) × \(Int(layer.size.height)) px")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
     }
 }

@@ -4,6 +4,17 @@
 // same upstream file) references ContentView/CompositorApplicationDelegate, the app shell, not yet wired in. Nothing
 // here is simplified or reimplemented — same category as the verbatim majority of Sources/Overrides/KeyboardShortcuts.swift.
 // Remove this file and symlink Compositor/UI/ProjectTabs.swift directly once ContentView.swift joins the build.
+//
+// Re-checked 2026-09-23 against upstream 75c4219 ("Keep tool rail and project tabs stable while scrolling"):
+// upstream replaced ProjectTabStrip's SwiftUI ScrollView with a hand-rolled NSScrollView (NSViewRepresentable,
+// `ProjectTabScroller`) that lays out each tab's NSHostingView by absolute frame and tracks scroll position via
+// NotificationCenter — real AppKit scroller compat this layer doesn't have (no #selector/@objc, so not the ObjC
+// wall other overrides in this file hit — just missing NSScrollView surface, not worth building for one cosmetic
+// "tabs jitter less while scrolling" polish fix). This override keeps the SwiftUI ScrollView/ScrollViewReader
+// version instead — same functional behavior (scroll, fade edges, drag-to-reveal, drop targets), and Qt does its
+// own real text-measurement anyway, so `ProjectTabButton`'s bounded `.frame(minWidth:maxWidth:)` sizing (rather
+// than upstream's new NSFont-measured exact pill width) stays too. If NSScrollView compat gets built for real,
+// re-diff this file and switch to the native scroller.
 
 import SwiftUI
 import UniformTypeIdentifiers

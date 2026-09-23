@@ -31,9 +31,15 @@ extension RenderNode {
     /// carry a closure (`.onAppear`, `.onSubmit`, `.onExitCommand`, `.sink`) or a nested node (`.overlay`, not yet
     /// needed by any wired-in panel) are dropped — see the plan's note on this phase's scope.
     public func wire() -> RenderNodeWire {
-        RenderNodeWire(id: id, kind: kind, stringParams: stringParams, doubleParams: doubleParams, boolParams: boolParams,
-                        handlerKeys: Array(handlers.keys), modifiers: modifiers.compactMap { $0.wire() },
-                        children: children.map { $0.wire() })
+        var keys = Set(handlers.keys)
+        for m in modifiers {
+            if case .sink(let key, _) = m {
+                keys.insert(key)
+            }
+        }
+        return RenderNodeWire(id: id, kind: kind, stringParams: stringParams, doubleParams: doubleParams, boolParams: boolParams,
+                              handlerKeys: Array(keys), modifiers: modifiers.compactMap { $0.wire() },
+                              children: children.map { $0.wire() })
     }
 }
 
@@ -59,6 +65,8 @@ extension RenderModifier {
         case let .fixedSize(h, v): return RenderModifierWire(kind: "fixedSize", boolParams: ["horizontal": h, "vertical": v])
         case let .buttonStyle(name): return RenderModifierWire(kind: "buttonStyle", stringParams: ["name": name])
         case let .toggleStyle(name): return RenderModifierWire(kind: "toggleStyle", stringParams: ["name": name])
+        case let .pickerStyle(name): return RenderModifierWire(kind: "pickerStyle", stringParams: ["name": name])
+        case let .menuStyle(name): return RenderModifierWire(kind: "menuStyle", stringParams: ["name": name])
         case let .controlSize(name): return RenderModifierWire(kind: "controlSize", stringParams: ["name": name])
         case let .textFieldStyle(name): return RenderModifierWire(kind: "textFieldStyle", stringParams: ["name": name])
         case let .multilineTextAlignment(name): return RenderModifierWire(kind: "multilineTextAlignment", stringParams: ["name": name])

@@ -179,7 +179,42 @@ public struct Picker<Label: View, SelectionValue: Hashable, Content: View>: View
     public var _childViews: [any View] { [label, content] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "Picker")
-        node.stringParams["selection"] = "\(selection.wrappedValue)"
+        if let raw = (selection.wrappedValue as? any RawRepresentable)?.rawValue {
+            node.stringParams["selection"] = "\(raw)"
+        } else {
+            node.stringParams["selection"] = "\(selection.wrappedValue)"
+        }
+        let sel = selection
+        node.handlers["selection"] = { payload in
+            let str: String
+            if let s = payload as? String {
+                str = s
+            } else {
+                str = "\(payload)"
+            }
+            if let all = (SelectionValue.self as? any CaseIterable.Type)?.allCases {
+                for c in all {
+                    if let v = c as? SelectionValue {
+                        if "\(v)".compare(str, options: .caseInsensitive) == .orderedSame {
+                            sel.wrappedValue = v
+                            return
+                        }
+                        if let raw = (v as? any RawRepresentable)?.rawValue, "\(raw)".compare(str, options: .caseInsensitive) == .orderedSame {
+                            sel.wrappedValue = v
+                            return
+                        }
+                    }
+                }
+            }
+            if let stringVal = str as? SelectionValue {
+                sel.wrappedValue = stringVal
+                return
+            }
+            if let intVal = Int(str), let iv = intVal as? SelectionValue {
+                sel.wrappedValue = iv
+                return
+            }
+        }
         node.children = children
         return node
     }
