@@ -771,6 +771,15 @@ final class EditorSession {
                     let imported: PSDImport
                     do {
                         let parsed = try await ImageImporter.shared.loadPhotoshop(url, remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
+                        // Only a background: Photoshop writes no layer records, just the merged image, so that is
+                        // what comes in, as one layer.
+                        if parsed.layers.isEmpty {
+                            endPSDReading()
+                            let asset = try await ImageImporter.shared.decode(url, remainingPixels: DocumentLimits.documentPixelBudget - usedPixels,
+                                                                              flattenedPhotoshop: true)
+                            insert(asset, centeredAt: point)
+                            continue
+                        }
                         let assets = try await ImageImporter.shared.photoshopAssets(parsed)
                         imported = try PSDDocumentBuilder.makeImport(parsed, assets: assets)
                     } catch {

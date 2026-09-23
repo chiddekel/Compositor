@@ -18,6 +18,7 @@
 				<string>public.heic</string>
 				<string>public.tiff</string>
 				<string>com.adobe.photoshop-image</string>
+				<string>com.adobe.photoshop-large-image</string>
 				<string>public.camera-raw-image</string>
 			</array>
 		</dict>
@@ -34,6 +35,23 @@
 			</array>
 			<key>LSTypeIsPackage</key>
 			<true/>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.image</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Adobe Photoshop Large Document</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.adobe.photoshop-large-image</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>psb</string>
+				</array>
+			</dict>
 		</dict>
 	</array>
 	<key>SUEnableInstallerLauncherService</key>

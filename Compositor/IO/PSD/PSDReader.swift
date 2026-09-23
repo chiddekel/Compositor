@@ -30,7 +30,8 @@ nonisolated enum PSDReader {
         var cursor = PSDCursor(data: data)
         guard try cursor.string(4) == "8BPS" else { throw ImageImportError.unreadable }
         let version = try cursor.u16()
-        guard version == 1 else { throw PSDError.unsupportedVersion }
+        guard version == 1 || version == 2 else { throw PSDError.unsupportedVersion }
+        let isPSB = version == 2
         try cursor.skip(6)
         _ = try cursor.u16()
         let canvasHeight = Int(try cursor.u32())
@@ -65,22 +66,22 @@ nonisolated enum PSDReader {
             if length % 2 == 1 { try cursor.skip(1) }
         }
         cursor.offset = resourcesEnd
-        let layerSection = Int(try cursor.u32())
+        let layerSection = try checkedLength(isPSB ? cursor.u64() : UInt64(cursor.u32()))
         let layerSectionEnd = cursor.offset + layerSection
         guard layerSection >= 4 else {
             return PSDDocument(width: canvasWidth, height: canvasHeight, resolution: resolution, layers: [])
         }
-        let layerInfoLength = Int(try cursor.u32())
+        let layerInfoLength = try checkedLength(isPSB ? cursor.u64() : UInt64(cursor.u32()))
         _ = layerInfoLength
         let rawCount = try cursor.i16()
         let count = abs(Int(rawCount))
         guard count <= 10_000 else { throw ImageImportError.tooLarge }
         var raw = [RawLayer]()
         raw.reserveCapacity(count)
-        for _ in 0..<count { raw.append(try readRecord(&cursor)) }
+        for _ in 0..<count { raw.append(try readRecord(&cursor, isPSB: isPSB)) }
         var usedPixels = 0
         for index in raw.indices {
-            try decodeChannels(&cursor, layer: &raw[index], remainingPixels: remainingPixels - usedPixels)
+            try decodeChannels(&cursor, layer: &raw[index], remainingPixels: remainingPixels - usedPixels, isPSB: isPSB)
             if let image = raw[index].image { usedPixels += image.width * image.height }
         }
         cursor.offset = layerSectionEnd
@@ -110,7 +111,16 @@ nonisolated enum PSDReader {
         var maskImage: CGImage?
     }
 
-    private static func readRecord(_ cursor: inout PSDCursor) throws -> RawLayer {
+    private static let psbLargeAdditionalInfoKeys: Set<String> = [
+        "LMsk", "Lr16", "Lr32", "Layr", "Mt16", "Mt32", "Mtrn", "Alph", "FMsk", "lnk2", "FEid", "FXid", "PxSD"
+    ]
+
+    private static func checkedLength(_ value: UInt64) throws -> Int {
+        guard value <= UInt64(Int.max) else { throw ImageImportError.tooLarge }
+        return Int(value)
+    }
+
+    private static func readRecord(_ cursor: inout PSDCursor, isPSB: Bool) throws -> RawLayer {
         var layer = RawLayer()
         layer.top = Int(try cursor.i32())
         layer.left = Int(try cursor.i32())
@@ -120,7 +130,7 @@ nonisolated enum PSDReader {
         guard channelCount <= 56 else { throw ImageImportError.tooLarge }
         for _ in 0..<channelCount {
             let id = Int(try cursor.i16())
-            let length = Int(try cursor.u32())
+            let length = try checkedLength(isPSB ? cursor.u64() : UInt64(cursor.u32()))
             layer.channels.append((id, length))
         }
         guard try cursor.string(4) == "8BIM" else { throw PSDError.truncated }
@@ -159,11 +169,9 @@ nonisolated enum PSDReader {
             guard signature == "8BIM" || signature == "8B64" else { break }
             let key = try cursor.string(4)
             let length: Int
-            if signature == "8B64" {
+            if signature == "8B64" || (isPSB && psbLargeAdditionalInfoKeys.contains(key)) {
                 guard cursor.offset + 8 <= extraEnd else { break }
-                let raw = UInt64(try cursor.u32()) << 32 | UInt64(try cursor.u32())
-                guard raw <= UInt64(Int.max) else { throw ImageImportError.tooLarge }
-                length = Int(raw)
+                length = try checkedLength(cursor.u64())
             } else {
                 length = Int(try cursor.u32())
             }
@@ -196,7 +204,7 @@ nonisolated enum PSDReader {
     /// Transparency, R, G, B, and the user mask. Spot and other extra IDs are skipped before decode.
     private static let unpackedChannelIDs: Set<Int> = [-1, 0, 1, 2, -2]
 
-    private static func decodeChannels(_ cursor: inout PSDCursor, layer: inout RawLayer, remainingPixels: Int) throws {
+    private static func decodeChannels(_ cursor: inout PSDCursor, layer: inout RawLayer, remainingPixels: Int, isPSB: Bool) throws {
         var planes: [Int: [UInt8]] = [:]
         let width = max(0, layer.right - layer.left)
         let height = max(0, layer.bottom - layer.top)
@@ -221,7 +229,7 @@ nonisolated enum PSDReader {
             let w = isMask ? maskWidth : width
             let h = isMask ? maskHeight : height
             if w > 0, h > 0 {
-                planes[channel.id] = try PSDChannelCoder.decode(compression: compression, width: w, height: h, data: payload)
+                planes[channel.id] = try PSDChannelCoder.decode(compression: compression, width: w, height: h, data: payload, largeDocument: isPSB)
             }
         }
         if layer.hasMask, maskWidth > 0, maskHeight > 0, let gray = planes[-2], gray.count >= maskWidth * maskHeight {
@@ -270,7 +278,9 @@ nonisolated enum PSDReader {
                 : CGRect(x: layer.left, y: layer.top,
                          width: max(0, layer.right - layer.left), height: max(0, layer.bottom - layer.top))
             record.image = isGroup ? nil : layer.image
-            if !isGroup, let live = try PSDVector.live(extra: layer.extra, canvas: canvas, remainingPixels: remaining) {
+            if record.kind == .text, let text = PSDText.parse(extra: layer.extra) {
+                record.text = text
+            } else if !isGroup, let live = try PSDVector.live(extra: layer.extra, canvas: canvas, remainingPixels: remaining) {
                 record.image = live.image
                 record.bounds = live.bounds
                 record.shape = live.style
@@ -346,6 +356,13 @@ nonisolated private struct PSDCursor: Sendable {
         try need(4)
         defer { offset += 4 }
         return UInt32(data[offset]) << 24 | UInt32(data[offset + 1]) << 16 | UInt32(data[offset + 2]) << 8 | UInt32(data[offset + 3])
+    }
+
+    mutating func u64() throws -> UInt64 {
+        try need(8)
+        defer { offset += 8 }
+        return UInt64(data[offset]) << 56 | UInt64(data[offset + 1]) << 48 | UInt64(data[offset + 2]) << 40 | UInt64(data[offset + 3]) << 32 |
+            UInt64(data[offset + 4]) << 24 | UInt64(data[offset + 5]) << 16 | UInt64(data[offset + 6]) << 8 | UInt64(data[offset + 7])
     }
 
     mutating func i32() throws -> Int32 { Int32(bitPattern: try u32()) }

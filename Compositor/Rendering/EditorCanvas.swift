@@ -1469,6 +1469,8 @@ final class CanvasView: NSView {
         } else if session.tool == .crop {
             beginCropDrag(at: point)
         } else if session.tool == .move {
+            // Double-click live text to edit it, without switching to the Type tool first.
+            if event.clickCount >= 2, beginLiveTextEdit(at: point) { return }
             if beginGuideDrag(at: point) { return }
             beginTransformDrag(at: point, modifiers: event.modifierFlags)
         } else if session.tool == .zoom {
@@ -2096,6 +2098,21 @@ final class CanvasView: NSView {
         cursorLockWindow = window
         cursorLockWindow?.disableCursorRects()
         dragCursor?.set()
+        return true
+    }
+
+    /// Double-click with the Move tool: open the Type editor on the topmost live text under the pointer.
+    private func beginLiveTextEdit(at point: CGPoint) -> Bool {
+        guard let document = session.document, session.canEditLayers else { return false }
+        let pixel = session.viewport.documentPoint(from: point, documentSize: document.size)
+        let visible = document.effectiveVisibleIDs
+        guard let layer = document.layers.reversed().first(where: {
+            visible.contains($0.id) && $0.liveText != nil && $0.transform.contains(pixel)
+        }) else { return false }
+        session.commitTransform()
+        session.selectLayer(layer.id)
+        session.editActiveText()
+        synchronizeInlineText()
         return true
     }
 

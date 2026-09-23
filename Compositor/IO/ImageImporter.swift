@@ -29,12 +29,14 @@ actor ImageImporter {
     private lazy var context = CIContext(options: [.cacheIntermediates: false])
     private let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
 
-    func decode(_ url: URL, remainingPixels: Int = DocumentLimits.documentPixelBudget) throws -> ImportedImage {
+    /// `flattenedPhotoshop`: a PSD or PSB with no layer records (only a background), read as its merged image.
+    func decode(_ url: URL, remainingPixels: Int = DocumentLimits.documentPixelBudget, flattenedPhotoshop: Bool = false) throws -> ImportedImage {
         try autoreleasepool {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
                   let identifier = CGImageSourceGetType(source) as String?,
                   let type = UTType(identifier) else { throw ImageImportError.unreadable }
-            guard [UTType.jpeg, .png, .heic, .tiff].contains(where: { type.conforms(to: $0) }) else {
+            let photoshop = flattenedPhotoshop ? [UTType.photoshopImage, .photoshopLargeImage] : []
+            guard ([UTType.jpeg, .png, .heic, .tiff] + photoshop).contains(where: { type.conforms(to: $0) }) else {
                 throw ImageImportError.unsupported
             }
             guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],

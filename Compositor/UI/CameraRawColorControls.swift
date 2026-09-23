@@ -464,7 +464,11 @@ private struct GradeWheel: View {
             let angle = hue * Double.pi / 180
             let distance = CGFloat(saturation / 100) * radius
             ZStack {
-                Circle().fill(AngularGradient(gradient: Gradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red]), center: .center))
+                // Hue runs counterclockwise from red at the right, as the drag and the dot measure it. SwiftUI's
+                // angular gradient runs clockwise, so its stops go through the hues backwards.
+                Circle().fill(AngularGradient(gradient: Gradient(colors: stride(from: 360.0, through: 0, by: -30).map {
+                    Color(hue: $0.truncatingRemainder(dividingBy: 360) / 360, saturation: 1, brightness: 1)
+                }), center: .center))
                     .opacity(0.85)
                 Circle().stroke(.white.opacity(0.8), lineWidth: 1)
                 Circle().fill(.white).frame(width: 10, height: 10)

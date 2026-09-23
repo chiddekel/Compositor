@@ -4,7 +4,7 @@ import Foundation
 /// Unpacks Photoshop layer channels from Adobe’s 2019 Photoshop File Formats
 /// Specification (Image Data, compression 0 raw and 1 PackBits).
 nonisolated enum PSDChannelCoder {
-    static func decode(compression: Int, width: Int, height: Int, data: Data) throws -> [UInt8] {
+    static func decode(compression: Int, width: Int, height: Int, data: Data, largeDocument: Bool = false) throws -> [UInt8] {
         guard width > 0, height > 0 else { return [] }
         let expected = width * height
         switch compression {
@@ -12,7 +12,7 @@ nonisolated enum PSDChannelCoder {
             guard data.count >= expected else { throw PSDError.truncated }
             return Array(data.prefix(expected))
         case 1:
-            return try unpackRLE(width: width, height: height, data: data)
+            return try unpackRLE(width: width, height: height, data: data, largeDocument: largeDocument)
         default:
             throw PSDError.unsupportedCompression
         }
@@ -56,7 +56,7 @@ nonisolated enum PSDChannelCoder {
         return image
     }
 
-    private static func unpackRLE(width: Int, height: Int, data: Data) throws -> [UInt8] {
+    private static func unpackRLE(width: Int, height: Int, data: Data, largeDocument: Bool) throws -> [UInt8] {
         var offset = 0
         func next() throws -> UInt8 {
             guard offset < data.count else { throw PSDError.truncated }
@@ -65,8 +65,13 @@ nonisolated enum PSDChannelCoder {
         }
         var counts = [Int](repeating: 0, count: height)
         for row in 0..<height {
-            let hi = try next(), lo = try next()
-            counts[row] = Int(hi) << 8 | Int(lo)
+            if largeDocument {
+                let a = try next(), b = try next(), c = try next(), d = try next()
+                counts[row] = Int(UInt32(a) << 24 | UInt32(b) << 16 | UInt32(c) << 8 | UInt32(d))
+            } else {
+                let hi = try next(), lo = try next()
+                counts[row] = Int(hi) << 8 | Int(lo)
+            }
         }
         var plane = [UInt8](repeating: 0, count: width * height)
         for row in 0..<height {
