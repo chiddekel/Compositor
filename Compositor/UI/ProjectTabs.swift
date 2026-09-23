@@ -23,23 +23,48 @@ struct ProjectTabStrip: View {
     @State private var dragging = false
     /// Scrolled away from the first tab, so the left edge fades too.
     @State private var scrolledFromStart = false
+    /// The tabs' own width, so the strip claims only the room it draws into.
+    @State private var contentWidth: CGFloat?
+    /// Width offered to the whole strip, including the empty title bar beside the tabs.
+    @State private var slotWidth: CGFloat = 0
     @State private var dragChangeCount = NSPasteboard(name: .drag).changeCount
     private let dragTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+    private var clipped: Bool {
+        guard let contentWidth, slotWidth > 1 else { return false }
+        return contentWidth > slotWidth + 1
+    }
     var body: some View {
+        HStack(spacing: 0) {
+            // Only as wide as the tabs. A scroll view hit-tests its whole frame however little it holds, and on
+            // macOS 26 that click does not pass through to the title bar (macOS 27 often does). The remainder
+            // is an explicit window drag, so the middle of the title bar moves the window on both.
+            tabs
+                .frame(maxWidth: contentWidth ?? .infinity, alignment: .leading)
+                .layoutPriority(1)
+            TitleBarDragArea()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(height: 34, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { slotWidth = $0 }
+    }
+    private var tabs: some View {
         ProjectTabScroller(workspace: workspace, dragging: dragging,
-                           onScrollFromStart: { scrolledFromStart = $0 })
+                           onScrollFromStart: { scrolledFromStart = $0 },
+                           onContentWidth: { contentWidth = $0 })
         .frame(height: 34, alignment: .center)
-        // Tabs fade out where they scroll under an edge instead of being cut off — the right edge always, the left
-        // once scrolled away from the first tab. A mask rather than a painted gradient, so whatever the toolbar shows
-        // behind them shows through.
+        // Tabs fade out where they scroll under an edge instead of being cut off — the right edge when they
+        // overflow the space they were given, the left once scrolled away from the first tab. A mask rather than
+        // a painted gradient, so whatever the toolbar shows behind them shows through.
         .mask {
             HStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
                     .frame(width: scrolledFromStart ? 28 : 0)
                 Rectangle()
-                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 28)
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: clipped ? 28 : 0)
             }
             .animation(.easeOut(duration: 0.15), value: scrolledFromStart)
+            .animation(.easeOut(duration: 0.15), value: clipped)
         }
         .accessibilityLabel("Project tabs")
         .onReceive(dragTimer) { _ in
@@ -68,12 +93,28 @@ private func projectTabPillWidth(_ tab: ProjectTab, active: Bool) -> CGFloat {
     projectTabLabelWidth(tab, active: active) + 40
 }
 
+/// The title-bar gap beside the tabs. A click here would otherwise land on the tab scroller,
+/// and on macOS 26 that mouse-down does not pass through to the window.
+final class TitleBarDragView: NSView {
+    override var isOpaque: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+}
+
+private struct TitleBarDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> TitleBarDragView { TitleBarDragView(frame: .zero) }
+    func updateNSView(_ view: TitleBarDragView, context: Context) {}
+}
+
 /// Lay out tabs from x = 0 so a title or unsaved dot only moves tabs after it.
 /// The document view has no scroller, so its viewport never gains a scrollbar inset.
 private struct ProjectTabScroller: NSViewRepresentable {
     let workspace: ProjectWorkspace
     let dragging: Bool
     let onScrollFromStart: (Bool) -> Void
+    let onContentWidth: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -135,7 +176,13 @@ private struct ProjectTabScroller: NSViewRepresentable {
             coordinator.dropHost = nil
         }
 
-        view.tabsDocument.setFrameSize(NSSize(width: max(0, x - 6), height: 34))
+        let contentWidth = max(0, x - 6)
+        view.tabsDocument.setFrameSize(NSSize(width: contentWidth, height: 34))
+        if abs(contentWidth - coordinator.reportedWidth) > 0.5 {
+            coordinator.reportedWidth = contentWidth
+            let onContentWidth = onContentWidth
+            DispatchQueue.main.async { onContentWidth(contentWidth) }
+        }
         let maxOffset = max(0, view.tabsDocument.frame.width - view.contentView.bounds.width)
         view.horizontalScrollElasticity = maxOffset > 1 ? .allowed : .none
         view.contentView.scroll(to: NSPoint(x: min(oldOffset, maxOffset), y: 0))
@@ -160,6 +207,7 @@ private struct ProjectTabScroller: NSViewRepresentable {
         var dropHost: NSHostingView<NewTabDropSlot>?
         var lastSelectedID: UUID?
         var wasDragging = false
+        var reportedWidth: CGFloat = -1
         var onScrollFromStart: ((Bool) -> Void)?
         var observer: NSObjectProtocol?
         deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
