@@ -31,20 +31,31 @@ jobs:
           git -c user.email=ci@localhost -c user.name=ci merge --no-edit upstream/main
           bash scripts/check-upstream-clean.sh
 
+      # Read after the merge, not hardcoded: the SDK major/minor must match whatever the manifest declares (the
+      # binary links against that SDK's Qt), and pinning a version here instead of the manifest's own value is
+      # exactly the bug that broke scripts/run-compositor.sh the same way (Qt_6.11 not found against an
+      # installed-but-wrong 6.10 SDK) — don't reintroduce it here.
+      - name: Read required KDE SDK version from the manifest
+        id: sdk
+        run: |
+          version=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.wonderassembly.Compositor.minimal.yaml | head -n1)
+          if [ -z "$version" ]; then echo "::error::couldn't read runtime-version from the manifest"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Install Flatpak + KDE SDK
         run: |
           sudo apt-get update && sudo apt-get install -y flatpak
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y --noninteractive flathub org.kde.Sdk//6.10
+          sudo flatpak install -y --noninteractive flathub org.kde.Sdk//${{ steps.sdk.outputs.version }}
           sudo flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.swift6//25.08 || \
           sudo flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.swift6
 
       - name: swift build --build-tests (upstream Document/IO/Rendering unmodified)
         run: |
-          flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//6.10 -c \
+          flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//${{ steps.sdk.outputs.version }} -c \
             'cd "$1" && PATH=/usr/lib/sdk/swift6/bin:$PATH swift build --build-tests' sh "$PWD"
 
       - name: swift test (non-Skia suites — no COMPOSITOR_SKIA_BRIDGE in CI)
         run: |
-          flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//6.10 -c \
+          flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//${{ steps.sdk.outputs.version }} -c \
             'cd "$1" && PATH=/usr/lib/sdk/swift6/bin:$PATH swift test' sh "$PWD"
