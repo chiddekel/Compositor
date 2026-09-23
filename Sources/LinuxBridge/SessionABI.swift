@@ -11,16 +11,96 @@ import CoreGraphics
 // Not `private`: SwiftUIBridge.swift's `compositor_session_render_tree` reuses this same handle/session registry
 // (a Qt-visible tree of the same session's panels, not a separate one) rather than duplicating it.
 final class Entry {
-    let editor = UpstreamEditor()
+    let editor: UpstreamEditor
     var rendered: (bytes: [UInt8], width: Int, height: Int)?
     /// The last resolved SwiftUI tree's action handlers, per panel: panel name -> node id -> handler key -> closure.
     /// Populated by `SwiftUIBridge.swift`'s `resolvePanel`, read by `compositor_session_dispatch_swiftui_action`.
     var actionHandlers: [String: [String: [String: (Any) -> Void]]] = [:]
+    /// Set only for a handle registered through `compositor_workspace_*`: the `ProjectTab.id` (in `Workspace.shared`)
+    /// whose `EditorSession` this entry's editor wraps. A plain `compositor_session_create` handle leaves this nil —
+    /// it isn't a document tab, just a bare session (e.g. the SwiftUI render-tree debug path).
+    var workspaceTabID: UUID?
+
+    init(editor: UpstreamEditor = UpstreamEditor()) {
+        self.editor = editor
+    }
 }
 
 enum Sessions {
     nonisolated(unsafe) static var next: UInt64 = 1
     nonisolated(unsafe) static var entries: [UInt64: Entry] = [:]
+}
+
+/// The single upstream `ProjectWorkspace` (the same open-documents/tabs model the macOS app manages) backing the
+/// Qt shell's document tab bar. One workspace per process, same as one `NSDocumentController` per app on macOS.
+enum Workspace {
+    @MainActor static let shared = ProjectWorkspace()
+}
+
+@MainActor private func registerWorkspaceTab(_ tab: ProjectTab) -> UInt64 {
+    guard Sessions.next < UInt64.max else { return 0 }
+    let handle = Sessions.next
+    Sessions.next += 1
+    let entry = Entry(editor: UpstreamEditor(session: tab.session))
+    entry.workspaceTabID = tab.id
+    Sessions.entries[handle] = entry
+    return handle
+}
+
+@MainActor private func handleForWorkspaceTab(_ id: UUID) -> UInt64? {
+    Sessions.entries.first { $0.value.workspaceTabID == id }?.key
+}
+
+/// Registers the workspace's already-existing first tab (created by `ProjectWorkspace.init()`) as a handle. Called
+/// once at startup instead of `compositor_session_create`, so document #1 is a real workspace tab from the start.
+@_cdecl("compositor_workspace_bootstrap")
+nonisolated public func compositorWorkspaceBootstrap() -> UInt64 {
+    onMain { registerWorkspaceTab(Workspace.shared.current) }
+}
+
+/// Opens a brand-new document tab (never reusing an empty one — matches upstream's `newCanvas()`) and returns its handle.
+@_cdecl("compositor_workspace_add_tab")
+nonisolated public func compositorWorkspaceAddTab() -> UInt64 {
+    onMain { registerWorkspaceTab(Workspace.shared.addTab(reuseEmpty: false)) }
+}
+
+/// Makes `handle`'s tab the workspace's current one. No-op (but not an error) if it already is, or if upstream
+/// refuses the switch (`canSwitch`, e.g. mid-transform) — the shell keeps showing whatever is actually selected.
+@_cdecl("compositor_workspace_select_tab")
+nonisolated public func compositorWorkspaceSelectTab(_ handle: UInt64) -> Int32 {
+    onMain {
+        guard let id = Sessions.entries[handle]?.workspaceTabID else { return -6 }
+        Workspace.shared.select(id)
+        return 0
+    }
+}
+
+/// Closes `handle`'s tab (`ProjectWorkspace.removeTab`, which always leaves at least one tab open) and returns a
+/// handle for whatever tab is current afterward — an existing handle if that tab already had one, otherwise a
+/// freshly registered one for the replacement tab upstream created. 0 means `handle` wasn't a workspace tab.
+@_cdecl("compositor_workspace_close_tab")
+nonisolated public func compositorWorkspaceCloseTab(_ handle: UInt64) -> UInt64 {
+    onMain {
+        guard let id = Sessions.entries[handle]?.workspaceTabID else { return 0 }
+        Sessions.entries.removeValue(forKey: handle)
+        Workspace.shared.removeTab(id)
+        let current = Workspace.shared.current
+        return handleForWorkspaceTab(current.id) ?? registerWorkspaceTab(current)
+    }
+}
+
+/// UTF-8 title for `handle`'s tab (upstream's `ProjectTab.title`: the project filename, or "Untitled"/"Untitled N"),
+/// same output-buffer convention as `compositor_session_state`: call with `capacity` 0 first to size the buffer.
+@_cdecl("compositor_workspace_tab_title")
+nonisolated public func compositorWorkspaceTabTitle(_ handle: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard capacity >= 0 else { return -1 }
+    return onMain {
+        guard let id = Sessions.entries[handle]?.workspaceTabID,
+              let tab = Workspace.shared.tabs.first(where: { $0.id == id }) else { return -6 }
+        guard let data = tab.title.data(using: .utf8) else { return -1 }
+        if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
+        return Int64(data.count)
+    }
 }
 
 /// Runs `body` on the main actor from a C entry point (which the shell calls on the main thread).

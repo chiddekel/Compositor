@@ -54,6 +54,7 @@
 #include <QCloseEvent>
 #include <QStackedWidget>
 #include <QTabBar>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QLineEdit>
@@ -91,11 +92,29 @@ int32_t compositor_session_import_layer(uint64_t handle, const uint8_t *layer_id
 int32_t compositor_session_import_rgba(uint64_t handle, const uint8_t *pixels, size_t count,
                                        size_t width, size_t height, const uint8_t *name, size_t name_count,
                                        int32_t replacing);
+// Document tabs are backed by upstream's own ProjectWorkspace (the same open-documents model the macOS app uses),
+// not a Linux-only list — see Sources/LinuxBridge/SessionABI.swift's compositor_workspace_* functions.
+uint64_t compositor_workspace_bootstrap(void);
+uint64_t compositor_workspace_add_tab(void);
+int32_t compositor_workspace_select_tab(uint64_t handle);
+uint64_t compositor_workspace_close_tab(uint64_t handle);
+int64_t compositor_workspace_tab_title(uint64_t handle, uint8_t *output, size_t capacity);
 }
 
 static int32_t cmd(uint64_t h, const char *json) {
     return compositor_session_command(h, reinterpret_cast<const uint8_t *>(json),
                                       std::strlen(json));
+}
+
+// Fetches a document tab's title from upstream's own ProjectWorkspace (see compositor_workspace_tab_title):
+// "Untitled"/"Untitled N" until a project has a path, then the project's filename. Empty if handle isn't a
+// workspace tab (compositor_session_create handles never are).
+static QString workspaceTabTitle(uint64_t handle) {
+    const int64_t size = compositor_workspace_tab_title(handle, nullptr, 0);
+    if (size <= 0) return {};
+    QByteArray bytes(static_cast<int>(size), Qt::Uninitialized);
+    if (compositor_workspace_tab_title(handle, reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return {};
+    return QString::fromUtf8(bytes);
 }
 
 static QImage straightRGBA(const std::vector<uint8_t> &premultiplied, int width, int height) {
@@ -310,9 +329,20 @@ void SessionWindow::initDemoDocument() {
 }
 
 void SessionWindow::createNewDocument(int width, int height) {
-    if (m_sessionHandle == 0) m_sessionHandle = compositor_session_create();
     const QString json = QString(R"({"version":1,"action":"new","width":%1,"height":%2})").arg(width).arg(height);
     const QByteArray bytes = json.toUtf8();
+
+    if (m_documentTabBar) {
+        // Post-construction: every "New" opens its own document tab (a real ProjectWorkspace tab, not just a bare
+        // session handle) rather than overwriting the current one.
+        const uint64_t handle = compositor_workspace_add_tab();
+        compositor_session_command(handle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
+        addDocumentTab(handle, workspaceTabTitle(handle));
+        return;
+    }
+
+    // Initial construction: the very first document, created before any tab exists.
+    if (m_sessionHandle == 0) m_sessionHandle = compositor_session_create();
     compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
     // "new" already creates a blank "Layer 1" (emptyLayer: true) — no explicit addLayer needed here.
     m_image = renderToQImage(m_sessionHandle, width, height);
@@ -321,8 +351,79 @@ void SessionWindow::createNewDocument(int width, int height) {
     m_panOffset = QPointF(0, 0);
     refreshImage();
     refreshLayers();
-    if (m_documentTabBar && m_documentTabBar->count() > 0) {
-        m_documentTabBar->setTabText(0, tr("Untitled 1"));
+}
+
+void SessionWindow::addDocumentTab(uint64_t handle, const QString &title, const QString &filePath) {
+    m_documents.push_back({handle, title, filePath, 0.0, QPointF(0, 0)});
+    const int index = static_cast<int>(m_documents.size()) - 1;
+    if (m_documentTabBar) {
+        m_documentTabBar->addTab(title);
+        // Emits currentChanged(index) -> switchToDocumentTab(index), which does the actual UI refresh.
+        m_documentTabBar->setCurrentIndex(index);
+    } else {
+        // Constructor path: the header bar (and thus the tab bar) doesn't exist yet.
+        switchToDocumentTab(index);
+    }
+}
+
+void SessionWindow::switchToDocumentTab(int index) {
+    if (index < 0 || index >= static_cast<int>(m_documents.size())) return;
+    if (m_activeDocumentIndex >= 0 && m_activeDocumentIndex < static_cast<int>(m_documents.size())) {
+        m_documents[m_activeDocumentIndex].zoomLevel = m_zoomLevel;
+        m_documents[m_activeDocumentIndex].panOffset = m_panOffset;
+    }
+    m_activeDocumentIndex = index;
+    const DocumentTab &doc = m_documents[index];
+    m_sessionHandle = doc.handle;
+    m_zoomLevel = doc.zoomLevel;
+    m_panOffset = doc.panOffset;
+    m_hasDocument = true;
+    refreshImage();
+    refreshLayers();
+    updateOptionsBar();
+    updateToolRail();
+    updateStatusTelemetry();
+    setWindowTitle(doc.title.isEmpty() ? tr("Compositor") : tr("%1 — Compositor").arg(doc.title));
+}
+
+void SessionWindow::closeDocumentTab(int index) {
+    if (index < 0 || index >= static_cast<int>(m_documents.size())) return;
+    const uint64_t closedHandle = m_documents[index].handle;
+    const bool wasActive = (index == m_activeDocumentIndex);
+    m_documents.erase(m_documents.begin() + index);
+    if (m_activeDocumentIndex > index) --m_activeDocumentIndex;
+
+    // ProjectWorkspace (upstream's own open-documents model) does the actual close and guarantees at least one
+    // tab remains open, minting a fresh one if that was the last; it hands back whichever tab is current after.
+    const uint64_t currentHandle = compositor_workspace_close_tab(closedHandle);
+
+    auto existing = std::find_if(m_documents.begin(), m_documents.end(),
+        [currentHandle](const DocumentTab &doc) { return doc.handle == currentHandle; });
+
+    int target;
+    if (existing != m_documents.end()) {
+        target = static_cast<int>(existing - m_documents.begin());
+        if (m_documentTabBar) {
+            const QSignalBlocker blocker(m_documentTabBar);
+            m_documentTabBar->removeTab(index);
+        }
+    } else {
+        // Upstream minted a brand-new replacement tab (the closed one was the last document open).
+        m_documents.push_back({currentHandle, workspaceTabTitle(currentHandle), QString(), 0.0, QPointF(0, 0)});
+        target = static_cast<int>(m_documents.size()) - 1;
+        if (m_documentTabBar) {
+            const QSignalBlocker blocker(m_documentTabBar);
+            m_documentTabBar->removeTab(index);
+            m_documentTabBar->addTab(m_documents[target].title);
+        }
+    }
+
+    if (m_documentTabBar) m_documentTabBar->setCurrentIndex(target);
+    if (wasActive || existing == m_documents.end()) {
+        m_activeDocumentIndex = -1; // the active document actually changed: force a real refresh
+        switchToDocumentTab(target);
+    } else {
+        m_activeDocumentIndex = target; // a background tab closed; just re-sync the index, keep the active view
     }
 }
 
@@ -433,7 +534,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     m_paletteAction = m_toolsBar->addWidget(paletteWidget);
 
-    m_sessionHandle = compositor_session_create();
+    // Document #1 is upstream's own ProjectWorkspace's initial tab, not a bare session — see addDocumentTab() below.
+    m_sessionHandle = compositor_workspace_bootstrap();
     const bool isSmokeTest = qApp && (
         qApp->arguments().contains("--dialog-smoke") ||
         qApp->arguments().contains("--brush-smoke") ||
@@ -782,6 +884,10 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     updateLayersPanel();
     updateStatusTelemetry();
 
+    // Register the document created above (before the tab bar existed) as its own tab now that the whole
+    // window is built; every later document goes through addDocumentTab/createNewDocument/loadProject instead.
+    addDocumentTab(m_sessionHandle, workspaceTabTitle(m_sessionHandle));
+
     registerSwiftUIActionListener([this](uint64_t handle, const QString &panel) {
         if (handle != m_sessionHandle) return;
         if (panel == "ToolRail") {
@@ -808,7 +914,9 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 }
 
 SessionWindow::~SessionWindow() {
-    if (m_sessionHandle != 0) compositor_session_close(m_sessionHandle);
+    for (const DocumentTab &doc : m_documents) {
+        if (doc.handle != 0) compositor_session_close(doc.handle);
+    }
 }
 
 bool SessionWindow::eventFilter(QObject *watched, QEvent *event) {
@@ -1240,9 +1348,15 @@ void SessionWindow::createMenus() {
         if (state.value("busy").toBool()) return;
         SizeDialog dialog(state, false, this, m_platform.colors);
         if (dialog.exec() == QDialog::Accepted) {
-            if (sendCommand(dialog.command())) {
-                refreshImage();
-                refreshLayers();
+            // Opens as its own workspace tab rather than replacing the current document (see addDocumentTab).
+            const uint64_t handle = compositor_workspace_add_tab();
+            QJsonObject payload = dialog.command();
+            payload.insert("version", 1);
+            const QByteArray bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+            if (compositor_session_command(handle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
+                addDocumentTab(handle, workspaceTabTitle(handle));
+            } else {
+                compositor_workspace_close_tab(handle);
             }
         }
     })->setObjectName("file.new");
@@ -3013,18 +3127,18 @@ bool SessionWindow::loadProject(const QString &path) {
     if (manifestDoc.isNull() || !manifestDoc.isObject()) return false;
 
     const QJsonObject manifest = manifestDoc.object();
-    const uint64_t replacement = compositor_session_create();
+    const uint64_t replacement = compositor_workspace_add_tab();
     if (replacement == 0) return false;
     int32_t rc = compositor_session_import_manifest(replacement,
                                                     reinterpret_cast<const uint8_t *>(manifestData.constData()),
                                                     manifestData.size());
     if (rc != 0) {
-        compositor_session_close(replacement);
+        compositor_workspace_close_tab(replacement);
         return false;
     }
     const QFileInfo imagesInfo(dir.filePath("images"));
     if (!imagesInfo.isDir() || imagesInfo.isSymLink()) {
-        compositor_session_close(replacement);
+        compositor_workspace_close_tab(replacement);
         return false;
     }
     uint64_t imagePixels = 0, maskPixels = 0;
@@ -3033,23 +3147,23 @@ bool SessionWindow::loadProject(const QString &path) {
         const QJsonObject layer = value.toObject();
         const QString idString = layer.value("id").toString();
         const QByteArray id = idString.toUtf8();
-        if (id.isEmpty()) { compositor_session_close(replacement); return false; }
+        if (id.isEmpty()) { compositor_workspace_close_tab(replacement); return false; }
         for (const bool isMask : {false, true}) {
             const QString filename = layer.value(isMask ? "maskFile" : "imageFile").toString();
             if (filename.isEmpty()) continue;
             const QString expected = idString + (isMask ? ".mask.png" : ".png");
             if (filename != expected || QFileInfo(filename).fileName() != filename) {
-                compositor_session_close(replacement);
+                compositor_workspace_close_tab(replacement);
                 return false;
             }
             const QFileInfo assetInfo(QDir(imagesInfo.filePath()).filePath(filename));
             if (!assetInfo.isFile() || assetInfo.isSymLink() || assetInfo.size() > 512LL * 1024 * 1024) {
-                compositor_session_close(replacement);
+                compositor_workspace_close_tab(replacement);
                 return false;
             }
             QImageReader reader(assetInfo.filePath());
             if (reader.format().toLower() != QByteArray("png")) {
-                compositor_session_close(replacement);
+                compositor_workspace_close_tab(replacement);
                 return false;
             }
             const QSize decodedSize = reader.size();
@@ -3059,12 +3173,12 @@ bool SessionWindow::loadProject(const QString &path) {
             if (!decodedSize.isValid() || decodedSize.width() <= 0 || decodedSize.height() <= 0 ||
                 decodedSize.width() > 30'000 || decodedSize.height() > 30'000 ||
                 pixels > 100'000'000 || usedPixels > 100'000'000 - pixels) {
-                compositor_session_close(replacement);
+                compositor_workspace_close_tab(replacement);
                 return false;
             }
             usedPixels += pixels;
             const QImage decoded = reader.read();
-            if (decoded.isNull()) { compositor_session_close(replacement); return false; }
+            if (decoded.isNull()) { compositor_workspace_close_tab(replacement); return false; }
             if (isMask) {
                 const QImage gray = decoded.convertToFormat(QImage::Format_Grayscale8);
                 std::vector<uint8_t> pixels(static_cast<size_t>(gray.width()) * gray.height());
@@ -3091,20 +3205,18 @@ bool SessionWindow::loadProject(const QString &path) {
                     reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()), 0,
                     pixels.data(), pixels.size(), rgba.width(), rgba.height());
             }
-            if (rc != 0) { compositor_session_close(replacement); return false; }
+            if (rc != 0) { compositor_workspace_close_tab(replacement); return false; }
         }
     }
 
     // Render the loaded document
     int width = manifest["width"].toInt();
     int height = manifest["height"].toInt();
-    if (width <= 0 || height <= 0) { compositor_session_close(replacement); return false; }
+    if (width <= 0 || height <= 0) { compositor_workspace_close_tab(replacement); return false; }
     QImage rendered = renderToQImage(replacement, width, height);
-    if (rendered.isNull()) { compositor_session_close(replacement); return false; }
-    compositor_session_close(m_sessionHandle);
-    m_sessionHandle = replacement;
-    m_image = rendered;
-    refreshImage();
+    if (rendered.isNull()) { compositor_workspace_close_tab(replacement); return false; }
+    // Opens as its own tab rather than replacing the current document, same as "New Canvas" / the "+" button.
+    addDocumentTab(replacement, QFileInfo(path).completeBaseName(), path);
     return true;
 }
 
@@ -3759,10 +3871,11 @@ void SessionWindow::setupHeaderBar() {
     m_documentTabBar->setObjectName("header.documentTabs");
     m_documentTabBar->setDrawBase(false);
     m_documentTabBar->setExpanding(false);
-    m_documentTabBar->setTabsClosable(false);
-    m_documentTabBar->addTab(QString::fromUtf8("hero  ✕"));
-    m_documentTabBar->addTab(QString::fromUtf8("screenshot2  ✕"));
-    m_documentTabBar->setCurrentIndex(1);
+    m_documentTabBar->setTabsClosable(true);
+    // No tabs yet: the document created before this window's UI existed is registered as tab 0 once the whole
+    // constructor finishes (see the addDocumentTab call after updateStatusTelemetry()).
+    connect(m_documentTabBar, &QTabBar::currentChanged, this, &SessionWindow::switchToDocumentTab);
+    connect(m_documentTabBar, &QTabBar::tabCloseRequested, this, &SessionWindow::closeDocumentTab);
     m_documentTabBar->setStyleSheet(
         "QTabBar { background: transparent; } "
         "QTabBar::tab { background: rgba(255, 255, 255, 0.08); color: #9a9a9f; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 3px 12px; margin-right: 6px; font-size: 11px; font-weight: 500; } "

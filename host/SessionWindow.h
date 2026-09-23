@@ -242,9 +242,25 @@ private:
     void actualPixels();
     void zoomBy(double factor);
 
+    // Document tabs: each open document owns its own Swift session handle. m_sessionHandle always mirrors
+    // m_documents[m_activeDocumentIndex].handle — the rest of this class keeps addressing m_sessionHandle
+    // unchanged, and tab switching just repoints it and refreshes the UI from the newly active document.
+    struct DocumentTab {
+        uint64_t handle = 0;
+        QString title;
+        QString filePath;
+        double zoomLevel = 0.0;
+        QPointF panOffset{0, 0};
+    };
+    void addDocumentTab(uint64_t handle, const QString &title, const QString &filePath = QString());
+    void switchToDocumentTab(int index);
+    void closeDocumentTab(int index);
+
     QWidget *m_canvasWidget = nullptr;
     QImage m_image;
     uint64_t m_sessionHandle = 0;
+    std::vector<DocumentTab> m_documents;
+    int m_activeDocumentIndex = -1;
     bool m_painting = false;
     Tool m_tool = Tool::Move;
     MarqueeMode m_marqueeMode = MarqueeMode::Rectangle;

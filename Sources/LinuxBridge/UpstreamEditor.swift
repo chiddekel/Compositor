@@ -89,8 +89,15 @@ private struct State: Encodable {
 /// Result codes shared with the C ABI: 0 ok, -1 invalid argument, -2 no document, -3 busy, -4 unsupported version,
 /// -5 operation failed, -6 unknown handle, -7 command not supported by this bridge yet.
 final class UpstreamEditor {
-    let session = EditorSession()
+    let session: EditorSession
     private(set) var error: String?
+
+    /// `session` defaults to a fresh one; SessionABI's workspace-backed handles inject the `EditorSession` that
+    /// belongs to a `ProjectTab`, so a Linux document tab and an upstream `ProjectWorkspace` tab share one session
+    /// instead of the C ABI keeping a second, independent copy of "which documents are open".
+    init(session: EditorSession = EditorSession()) {
+        self.session = session
+    }
 
     /// Commands this adapter can run today; the rest report -7 so callers (and the parity tests) see the gap explicitly.
     static let supportedActions: Set<String> = [
