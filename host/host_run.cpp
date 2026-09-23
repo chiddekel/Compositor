@@ -1,3 +1,6 @@
+#include <QJsonArray>
+#include <QKeyEvent>
+#include <QMouseEvent>
 // host_run.cpp — the Qt host entry called by the Swift composition root.
 //
 // The Linux port's composition root is inverted: a Swift `@main`
@@ -123,6 +126,40 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             // Simulates mouse events for stroke testing - sets Brush and paints
             window.setTool(SessionWindow::Tool::Brush);
             window.paintStroke(100, 100, 500, 400);
+        }
+        // COMPOSITOR_GRAB_DRAG="x0,y0,x1,y1" (document pixels): a real press / moves / release on the canvas widget with
+        // the current tool; COMPOSITOR_GRAB_KEY=return|escape then presses that key (e.g. to apply a gradient).
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_DRAG").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_DRAG").split(',');
+            QWidget *canvas = window.centralWidget();
+            if (v.size() == 4 && canvas) {
+                window.show();
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                const QPointF from = window.documentToCanvasPoint(QPointF(v[0].toDouble(), v[1].toDouble()));
+                const QPointF to = window.documentToCanvasPoint(QPointF(v[2].toDouble(), v[3].toDouble()));
+                auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButtons buttons) {
+                    QMouseEvent e(type, at, canvas->mapToGlobal(at), Qt::LeftButton, buttons, Qt::NoModifier);
+                    QCoreApplication::sendEvent(canvas, &e);
+                };
+                send(QEvent::MouseButtonPress, from, Qt::LeftButton);
+                for (int step = 1; step <= 8; ++step) {
+                    send(QEvent::MouseMove, from + (to - from) * (step / 8.0), Qt::LeftButton);
+                    for (int i = 0; i < 3; ++i) QCoreApplication::processEvents();
+                }
+                send(QEvent::MouseButtonRelease, to, Qt::NoButton);
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                const QString key = qEnvironmentVariable("COMPOSITOR_GRAB_KEY");
+                if (!key.isEmpty()) {
+                    QKeyEvent press(QEvent::KeyPress, key == "escape" ? Qt::Key_Escape : Qt::Key_Return, Qt::NoModifier);
+                    QCoreApplication::sendEvent(&window, &press);
+                    for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                }
+                const QJsonObject st = window.sessionState();
+                QStringList names;
+                for (const auto &l : st.value("layers").toArray()) names << l.toObject().value("name").toString();
+                fprintf(stderr, "Drag result: layers=[%s] undo=%s gradientPending=%d\n", qPrintable(names.join(",")),
+                        qPrintable(st.value("undoName").toString()), st.value("gradientLine").isArray() ? 1 : 0);
+            }
         }
         if (!qEnvironmentVariable("COMPOSITOR_TEST_TOOL_RAIL_CLICK").isEmpty()) {
             auto buttons = window.findChildren<QPushButton *>();

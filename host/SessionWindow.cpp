@@ -14,6 +14,8 @@ static bool needsUpstreamImporter(const QString &path);
 #include "SwiftUIQtRenderer.h"
 
 #include <QPainter>
+#include <QLineF>
+#include <cmath>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QScreen>
@@ -1191,6 +1193,24 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         return;
     }
 
+    // A pending gradient: Enter applies it, Esc drops it (upstream EditorCanvas keyDown). Esc also drops a shape drag.
+    if (m_gradientLine.size() == 4 && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Escape)) {
+        sendCommand({{"action", event->key() == Qt::Key_Escape ? "gradientCancel" : "gradientCommit"}});
+        m_gradientHandle = 0;
+        syncCanvasDrafts();
+        refreshImage();
+        event->accept();
+        return;
+    }
+    if (!m_shapeRect.isNull() && event->key() == Qt::Key_Escape) {
+        sendCommand({{"action", "shapeCancel"}});
+        m_painting = false;
+        syncCanvasDrafts();
+        if (m_canvasWidget) m_canvasWidget->update();
+        event->accept();
+        return;
+    }
+
     if (event->modifiers() == Qt::NoModifier) {
         switch (event->key()) {
         case Qt::Key_V:
@@ -2228,6 +2248,38 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         p.restore();
     }
 
+    // Pending gradient: its line with a handle at each end (upstream TransformOverlay.drawGradientLine).
+    if (m_gradientLine.size() == 4) {
+        const QPointF a = documentToCanvasPoint(QPointF(m_gradientLine[0], m_gradientLine[1]));
+        const QPointF b = documentToCanvasPoint(QPointF(m_gradientLine[2], m_gradientLine[3]));
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(0, 0, 0, 140), 3));
+        p.drawLine(a, b);
+        p.setPen(QPen(Qt::white, 1.5));
+        p.drawLine(a, b);
+        p.setBrush(Qt::white);
+        p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
+        p.drawEllipse(a, 5, 5);
+        p.drawEllipse(b, 5, 5);
+        p.restore();
+    }
+    // The shape being dragged, outlined until release fills it on a new layer.
+    if (!m_shapeRect.isNull()) {
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        if (m_shapeKind == QLatin1String("Line") && m_shapeLine.size() == 4) {
+            p.drawLine(documentToCanvasPoint(QPointF(m_shapeLine[0], m_shapeLine[1])),
+                       documentToCanvasPoint(QPointF(m_shapeLine[2], m_shapeLine[3])));
+        } else {
+            const QRectF box(documentToCanvasPoint(m_shapeRect.topLeft()), documentToCanvasPoint(m_shapeRect.bottomRight()));
+            if (m_shapeKind == QLatin1String("Ellipse")) p.drawEllipse(box); else p.drawRect(box);
+        }
+        p.restore();
+    }
+
     // Interactive drag feedback (selection marquee)
     if (m_painting && m_tool == Tool::Marquee) {
         const QPointF startCanvas = documentToCanvasPoint(m_dragStart);
@@ -2934,13 +2986,52 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         m_panStart = event->position();
         break;
     }
-    case Tool::Gradient:
-    case Tool::Shape:
+    case Tool::Gradient: {
+        // Grab an endpoint of the pending line (10 px on screen), or start a new line here (upstream beginGradientDrag).
+        m_gradientHandle = 0;
+        if (m_gradientLine.size() == 4) {
+            const QPointF start = documentToCanvasPoint(QPointF(m_gradientLine[0], m_gradientLine[1]));
+            const QPointF end = documentToCanvasPoint(QPointF(m_gradientLine[2], m_gradientLine[3]));
+            const QPointF at = event->position();
+            if (QLineF(at, end).length() <= 10) m_gradientHandle = 2;
+            else if (QLineF(at, start).length() <= 10) m_gradientHandle = 1;
+        }
+        if (m_gradientHandle == 0) {
+            if (!sendCommand({{"action", "gradientBegin"}, {"x", point.x()}, {"y", point.y()}})) break;
+            m_gradientHandle = 2;
+        }
+        m_painting = true;
+        syncCanvasDrafts();
+        refreshImage();
+        break;
+    }
+    case Tool::Shape: {
+        if (!sendCommand({{"action", "shapeBegin"}, {"x", point.x()}, {"y", point.y()}})) break;
+        m_painting = true;
+        syncCanvasDrafts();
+        break;
+    }
     case Tool::Type:
     case Tool::Idle:
     default:
         break;
     }
+}
+
+/// The gradient line and shape draft the canvas overlays, read back from the session after each change.
+void SessionWindow::syncCanvasDrafts() {
+    const QJsonObject state = sessionState();
+    auto numbers = [](const QJsonValue &v) {
+        QVector<double> out;
+        for (const QJsonValue &n : v.toArray()) out << n.toDouble();
+        return out;
+    };
+    m_gradientLine = numbers(state.value("gradientLine"));
+    const QVector<double> rect = numbers(state.value("shapeRect"));
+    m_shapeRect = rect.size() == 4 ? QRectF(rect[0], rect[1], rect[2], rect[3]) : QRectF();
+    m_shapeKind = state.value("shapeKind").toString();
+    m_shapeLine = numbers(state.value("shapeLine"));
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
@@ -2976,6 +3067,32 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
         if (m_canvasWidget) m_canvasWidget->update();
         return;
     }
+    if (m_tool == Tool::Gradient && m_gradientHandle != 0) {
+        QPointF target = point;
+        // Shift: 45° steps around the other end (upstream CanvasView.snapped).
+        if ((event->modifiers() & Qt::ShiftModifier) && m_gradientLine.size() == 4) {
+            const QPointF anchor = m_gradientHandle == 1 ? QPointF(m_gradientLine[2], m_gradientLine[3])
+                                                         : QPointF(m_gradientLine[0], m_gradientLine[1]);
+            const double dx = target.x() - anchor.x(), dy = target.y() - anchor.y();
+            const double length = std::hypot(dx, dy), angle = std::round(std::atan2(dy, dx) / (M_PI / 4)) * (M_PI / 4);
+            target = anchor + QPointF(std::cos(angle) * length, std::sin(angle) * length);
+        }
+        sendCommand({{"action", "gradientMove"}, {"kind", m_gradientHandle == 1 ? "start" : "end"}, {"x", target.x()}, {"y", target.y()}});
+        if (m_gradientLine.size() == 4) {   // the overlay follows the pointer without waiting for a state read
+            m_gradientLine[m_gradientHandle == 1 ? 0 : 2] = target.x();
+            m_gradientLine[m_gradientHandle == 1 ? 1 : 3] = target.y();
+        }
+        scheduleStrokeRefresh();
+        return;
+    }
+    if (m_tool == Tool::Shape) {
+        // Shift: square / circle / 45° line; Alt: from the center (Option in upstream).
+        sendCommand({{"action", "shapeDrag"}, {"x", point.x()}, {"y", point.y()},
+                     {"parameters", QJsonObject{{"square", (event->modifiers() & Qt::ShiftModifier) ? 1 : 0},
+                                                {"fromCenter", (event->modifiers() & Qt::AltModifier) ? 1 : 0}}}});
+        syncCanvasDrafts();
+        return;
+    }
     if (m_tool == Tool::Move) {
         if (m_transformHandle >= 0) {
             m_transformDraft = draggedGeometry(point, event->modifiers());
@@ -3007,6 +3124,20 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     m_painting = false;
     const QPointF point = documentPoint(event->position());
 
+    if (m_tool == Tool::Gradient && m_gradientHandle != 0) {
+        m_gradientHandle = 0;
+        sendCommand({{"action", "gradientEndDrag"}});   // a click without a line leaves nothing pending
+        syncCanvasDrafts();
+        refreshImage();
+        return;
+    }
+    if (m_tool == Tool::Shape) {
+        sendCommand({{"action", "shapeFinish"}});
+        syncCanvasDrafts();
+        refreshImage();
+        refreshLayers();
+        return;
+    }
     switch (m_tool) {
     case Tool::Move: {
         if (m_transformHandle >= 0) {

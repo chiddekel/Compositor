@@ -1154,7 +1154,9 @@ void compositor_canvas_draw_linear_gradient(CompCanvas *canvas, float x0, float 
     SkPoint pts[2] = {SkPoint::Make(x0, y0), SkPoint::Make(x1, y1)};
     SkGradient grad(SkGradient::Colors(cs, SkSpan<const float>(locations, count), SkTileMode::kClamp), SkGradient::Interpolation());
     sk_sp<SkShader> shader = SkShaders::LinearGradient(pts, grad);
-    SkRect bounds = SkRect::Make(canvas->canvas->getDeviceClipBounds());
+    // Local (user-space) bounds: the shader rect is drawn through the current matrix. Device bounds were only right
+    // with an identity matrix, so a gradient drawn into a translated context (every tile but the first) missed it.
+    SkRect bounds = canvas->canvas->getLocalClipBounds();
     canvas->canvas->save();
     if (!before || !after) {
         // Limit to the half-planes the options allow (perpendicular to the gradient axis).
@@ -1189,7 +1191,9 @@ void compositor_canvas_draw_radial_gradient(CompCanvas *canvas, float x0, float 
     const bool before = options & 1, after = options & 2;
     SkGradient grad(SkGradient::Colors(cs, SkSpan<const float>(locations, count), SkTileMode::kClamp), SkGradient::Interpolation());
     sk_sp<SkShader> shader = SkShaders::TwoPointConicalGradient(SkPoint::Make(x0, y0), r0, SkPoint::Make(x1, y1), r1, grad);
-    SkRect bounds = SkRect::Make(canvas->canvas->getDeviceClipBounds());
+    // Local (user-space) bounds: the shader rect is drawn through the current matrix. Device bounds were only right
+    // with an identity matrix, so a gradient drawn into a translated context (every tile but the first) missed it.
+    SkRect bounds = canvas->canvas->getLocalClipBounds();
     canvas->canvas->save();
     if (!after) {
         SkPathBuilder pb;

@@ -94,6 +94,12 @@ private struct State: Encodable {
     /// The upstream color picker the UI asked for (`EditorSession.colorPicker`), for the shell to present.
     let colorPickerTitle: String?
     let colorPickerColor: [Double]?
+    /// A pending gradient's line (start x, y, end x, y) in document pixels, adjustable until Enter/Esc.
+    let gradientLine: [Double]?
+    /// The shape being dragged: its kind, box (x, y, width, height) and, for a line, its two ends.
+    let shapeKind: String?
+    let shapeRect: [Double]?
+    let shapeLine: [Double]?
 }
 
 private func rgb(_ color: PaletteColor) -> [Double] { [Double(color.red), Double(color.green), Double(color.blue)] }
@@ -128,6 +134,8 @@ final class UpstreamEditor {
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
         "closeColorPicker", "importFiles",
+        "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
+        "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
     ]
 
     /// The adjustment as it was when editing began, for cancel.
@@ -278,6 +286,29 @@ final class UpstreamEditor {
                 return fail(-5, message)
             }
             guard s.document != nil else { return fail(-5, "nothing could be imported") }
+        // The Gradient and Shape tools, as upstream's EditorCanvas drives them with the mouse.
+        case "gradientBegin":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            if s.tool != .gradient { s.selectTool(.gradient) }
+            s.beginGradient(at: point)
+            guard s.gradientEdit != nil else { return fail(-5, s.brushError ?? "gradient could not start") }
+        case "gradientMove":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            s.moveGradient(start: command.kind == "start" ? point : nil, end: command.kind == "start" ? nil : point)
+        case "gradientEndDrag": s.endGradientDrag()
+        case "gradientCommit": await s.commitGradient()
+        case "gradientCancel": s.cancelGradient()
+        case "shapeBegin":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            if s.tool != .shape { s.selectTool(.shape) }
+            s.beginShape(at: point)
+            guard s.shapeDraft != nil else { return fail(-5, "shape could not start") }
+        case "shapeDrag":
+            guard let point = point(command) else { return fail(-1, "invalid point") }
+            let p = command.parameters ?? [:]
+            s.dragShape(to: point, square: (p["square"] ?? 0) != 0, fromCenter: (p["fromCenter"] ?? 0) != 0)
+        case "shapeFinish": s.finishShape()
+        case "shapeCancel": s.cancelShape()
         case "fillForeground", "fillBackground":
             let background = command.action == "fillBackground"
             let p = command.parameters ?? [:]
@@ -598,7 +629,11 @@ final class UpstreamEditor {
             foregroundColor: rgb(s.paletteColor(background: false)),
             backgroundColor: rgb(s.paletteColor(background: true)),
             colorPickerTitle: s.colorPicker?.target.title,
-            colorPickerColor: s.colorPicker.map { rgb($0.color) })
+            colorPickerColor: s.colorPicker.map { rgb($0.color) },
+            gradientLine: s.gradientEdit.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] },
+            shapeKind: s.shapeDraft.map { $0.kind.rawValue },
+            shapeRect: s.shapeDraft.map { [Double($0.rect.minX), Double($0.rect.minY), Double($0.rect.width), Double($0.rect.height)] },
+            shapeLine: s.shapeLineEnds.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] })
         return try JSONEncoder().encode(state)
     }
 
@@ -636,7 +671,9 @@ final class UpstreamEditor {
         var images = snapshot.images
         var masks = snapshot.masks
         var manifest = snapshot.manifest
-        let stroke = s.brushStroke
+        // A pending gradient previews through its own raster edit, drawn in place of the layer as a stroke is
+        // (EditorCanvas draws `gradientEdit?.raster` the same way).
+        let stroke = s.brushStroke ?? s.gradientEdit?.raster
         for (index, layer) in document.layers.enumerated() {
             var shown = s.displayedTransform(for: layer)
             let preview = s.filterEdit?.previewImage(for: layer.id) ?? s.levels?.previewImage(for: layer.id)

@@ -48,6 +48,8 @@ class QKeyEvent;
 #include <vector>
 #include <memory>
 #include <QMap>
+#include <QVector>
+#include <QRectF>
 
 class ITabletHandler;
 class SessionCanvasWidget;
@@ -227,6 +229,13 @@ private:
     bool m_presentingColorPicker = false;
     bool m_railFitChecked = false;
     bool m_layersRefreshQueued = false;
+    // Gradient / Shape tools: the pending gradient line (x0,y0,x1,y1), which end is being dragged (1 start, 2 end),
+    // and the shape draft being dragged (kind, box, line ends) — all in document pixels, read back from the session.
+    QVector<double> m_gradientLine;
+    int m_gradientHandle = 0;
+    QRectF m_shapeRect;
+    QString m_shapeKind;
+    QVector<double> m_shapeLine;
     int64_t m_shownRenderRevision = -1;   // compositor_session_render_revision of m_image
     uint64_t m_shownRenderHandle = 0;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
     void showSizeDialog(bool imageSize);
@@ -238,6 +247,7 @@ private:
     void scheduleStrokeRefresh();
     bool isBrushStrokeActive() const;
     void retireRenderedPanel(QWidget *panel);
+    void syncCanvasDrafts();
     void refreshLayers();
     void selectLayerRow(int row);
     void setOpacityFromSlider(int value);
