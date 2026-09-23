@@ -38,7 +38,7 @@ jobs:
       - name: Read required KDE SDK version from the manifest
         id: sdk
         run: |
-          version=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.wonderassembly.Compositor.minimal.yaml | head -n1)
+          version=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.wonderassembly.Compositor.yaml | head -n1)
           if [ -z "$version" ]; then echo "::error::couldn't read runtime-version from the manifest"; exit 1; fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

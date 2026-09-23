@@ -28,7 +28,7 @@ IMAGEIO_BACKEND="${COMPOSITOR_IMAGEIO_BACKEND:-"$ROOT/build/lib/libCompositorQtI
 # SDK ships, and a mismatched host SDK (e.g. a different major/minor Qt) fails at dynamic-link time with a missing
 # symbol-version error. Read it from the manifest instead of hardcoding a version: we don't control which Flatpak
 # runtimes are installed on a given machine, only which one the manifest declares this app is built against.
-MANIFEST="$ROOT/com.wonderassembly.Compositor.minimal.yaml"
+MANIFEST="$ROOT/com.wonderassembly.Compositor.yaml"
 SDK_VERSION="$(sed -n "s/^runtime-version: *['\"]\\?\\([0-9.]*\\)['\"]\\?.*/\\1/p" "$MANIFEST" | head -n1)"
 if [[ -z "$SDK_VERSION" ]]; then
     echo "error: couldn't read runtime-version from $MANIFEST" >&2
