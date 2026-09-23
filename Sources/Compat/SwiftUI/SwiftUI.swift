@@ -18,13 +18,56 @@
 
 /// Hosts a view tree as an NSView (the Qt shell renders the real UI).
 @MainActor public final class NSHostingView<Root: View>: NSView {
-    public var rootView: Root
+    public var rootView: Root { didSet { layoutHostedViews() } }
     public init(rootView: Root) {
         self.rootView = rootView
         super.init(frame: .zero)
         // A view that stands in for native content (a list, a table) — the root or anywhere below it — puts that view
         // in the hosted tree, as real SwiftUI does for an `NSViewRepresentable` inside the hosted hierarchy.
         if let content = ViewResolver.firstNativeView(in: rootView) { addSubview(content) }
+        layoutHostedViews()
+    }
+    public override var frame: CGRect { didSet { if frame.size != oldValue.size { layoutHostedViews() } } }
+    /// Real SwiftUI re-lays out whenever state changes; compat `@State` doesn't notify, so an explicit layout request
+    /// always re-resolves (cheap for the small trees that host native views).
+    public override func layoutSubtreeIfNeeded() {
+        layoutHostedViews()
+        super.layoutSubtreeIfNeeded()
+    }
+    public override func layout() { layoutHostedViews() }
+
+    /// The `NSViewRepresentable`s in the tree, by tree position: made once, then re-framed and updated every layout.
+    private var hosted: [String: (type: ObjectIdentifier, view: NSView, state: AnyObject)] = [:]
+
+    private func layoutHostedViews() {
+        var root = ViewResolver.resolve(rootView)
+        guard Self.containsNative(root) || !hosted.isEmpty else { return }
+        root.assignIDs()
+        let placements = HostedLayout.place(root, in: CGRect(origin: .zero, size: bounds.size))
+        var live = Set<String>()
+        for placement in placements {
+            live.insert(placement.path)
+            var entry = hosted[placement.path]
+            if entry?.type != placement.source._nativeTypeID {
+                entry?.view.removeFromSuperview()
+                let made = placement.source._makeNativeView()
+                entry = (placement.source._nativeTypeID, made.view, made.state)
+                addSubview(made.view)
+                hosted[placement.path] = entry
+            }
+            guard let entry else { continue }
+            // Layout is top-left based; this view is not flipped, so y counts up from the bottom edge.
+            let rect = placement.frame
+            entry.view.frame = CGRect(x: rect.minX, y: bounds.height - rect.maxY, width: rect.width, height: rect.height)
+            placement.source._updateNativeView(entry.view, state: entry.state)
+        }
+        for (path, entry) in hosted where !live.contains(path) {
+            entry.view.removeFromSuperview()
+            hosted.removeValue(forKey: path)
+        }
+    }
+    private static func containsNative(_ node: RenderNode) -> Bool {
+        node.nativeSource != nil || node.children.contains(where: containsNative)
     }
     public required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     /// The size the hosted view would take up. No real layout engine runs the resolved tree yet, so this is a
@@ -98,7 +141,7 @@ public struct EventModifiers: OptionSet, Sendable {
 /// the "generic compat" approach explicitly doesn't try to reinterpret — the Qt renderer sees a `"_Native"` node
 /// and slots in `makeNSView`'s real widget directly. Refines `PrimitiveView` so it plugs into the render tree like
 /// every other view, but its content is opaque to the resolver.
-@MainActor public protocol NSViewRepresentable: PrimitiveView {
+@MainActor public protocol NSViewRepresentable: PrimitiveView, _NativeViewSource {
     associatedtype NSViewType: NSView
     associatedtype Coordinator = Void
     typealias Context = NSViewRepresentableContext<Self>
@@ -110,7 +153,32 @@ public struct EventModifiers: OptionSet, Sendable {
 extension NSViewRepresentable {
     /// The Qt bridge (a later phase) recognises `"_Native"` and calls `makeNSView`/`updateNSView` itself, rather
     /// than interpreting this node generically.
-    public func _makeNode(children: [RenderNode]) -> RenderNode { RenderNode(kind: "_Native") }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "_Native")
+        node.nativeSource = self
+        return node
+    }
+}
+
+/// Type-erased make/update for an `NSViewRepresentable`, so `HostedLayout` can drive any representable's lifecycle
+/// (coordinator once, `makeNSView` once, `updateNSView` on every layout) without knowing its concrete type.
+@MainActor public protocol _NativeViewSource {
+    /// Stable per representable type: a hosted view is reused only for the same type at the same tree position.
+    var _nativeTypeID: ObjectIdentifier { get }
+    func _makeNativeView() -> (view: NSView, state: AnyObject)
+    func _updateNativeView(_ view: NSView, state: AnyObject)
+}
+final class _CoordinatorBox<Value> { let value: Value; init(_ value: Value) { self.value = value } }
+extension NSViewRepresentable {
+    public var _nativeTypeID: ObjectIdentifier { ObjectIdentifier(Self.self) }
+    public func _makeNativeView() -> (view: NSView, state: AnyObject) {
+        let coordinator = makeCoordinator()
+        return (makeNSView(context: Context(coordinator: coordinator)), _CoordinatorBox(coordinator))
+    }
+    public func _updateNativeView(_ view: NSView, state: AnyObject) {
+        guard let view = view as? NSViewType, let box = state as? _CoordinatorBox<Coordinator> else { return }
+        updateNSView(view, context: Context(coordinator: box.value))
+    }
 }
 public struct NSViewRepresentableContext<Representable: NSViewRepresentable> {
     public var coordinator: Representable.Coordinator

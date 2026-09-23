@@ -60,7 +60,7 @@ public final class NSTrackingArea {
 }
 
 @MainActor open class NSView: NSResponder, @unchecked Sendable {
-    public var frame: CGRect { didSet { if frame.size != oldValue.size { needsLayout = true } } }
+    open var frame: CGRect { didSet { if frame.size != oldValue.size { needsLayout = true } } }
     private var boundsOverride: CGRect?
     public var bounds: CGRect {
         get { boundsOverride ?? CGRect(origin: .zero, size: frame.size) }
@@ -156,6 +156,8 @@ public final class NSTrackingArea {
     open func displayIfNeeded() { if needsDisplay { viewWillDraw(); needsDisplay = false } }
     open func layoutSubtreeIfNeeded() { if needsLayout { layout(); needsLayout = false } }
     open func layout() {}
+    /// No cached intrinsic size is kept (layout asks `fittingSize` directly), so there is nothing to discard.
+    open func invalidateIntrinsicContentSize() {}
     open func viewWillDraw() {}
     open func viewDidMoveToWindow() {}
     open func viewDidChangeBackingProperties() {}
@@ -167,7 +169,8 @@ public final class NSTrackingArea {
     open func discardCursorRects() {}
     open func hitTest(_ point: CGPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }
-        let local = CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)
+        // Into this view's own coordinates: its frame origin, then its bounds origin (a scrolled clip view's).
+        let local = CGPoint(x: point.x - frame.minX + bounds.minX, y: point.y - frame.minY + bounds.minY)
         for child in subviews.reversed() { if let hit = child.hitTest(local) { return hit } }
         return self
     }
@@ -182,7 +185,10 @@ public final class NSTrackingArea {
     /// Origin of this view in window coordinates.
     private var originInWindow: CGPoint {
         var p = frame.origin, v = superview
-        while let s = v { p.x += s.frame.origin.x; p.y += s.frame.origin.y; v = s.superview }
+        while let s = v {
+            p.x += s.frame.origin.x - s.bounds.origin.x; p.y += s.frame.origin.y - s.bounds.origin.y
+            v = s.superview
+        }
         return p
     }
     open func convert(_ point: CGPoint, from view: NSView?) -> CGPoint {

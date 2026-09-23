@@ -80,8 +80,10 @@ own Swift changes (CIBloom, NSPasteboard.setString):
 - `TransformTests.autoSelect…` (order-dependent): `ToolDefaults` skips UserDefaults only when
   `XCTestConfigurationFilePath` is set, as Xcode's runner does; `_Testing_XCTestEnvironment` sets it for the
   upstream test process, so a test's toggle no longer leaks into later tests.
-- `UpstreamEditorTests` (Linux-owned): expectations updated — `new` starts with "Layer 1", as upstream's New Canvas.
-- `TitleBarDragTests.swift`: excluded (see `linux/UPSTREAM_TEST_EXCLUSIONS.md`).
+- `UpstreamEditorTests` (Linux-owned, unmodified): the bridge's `new` adds "Layer 1" only when asked (`emptyLayer`).
+- `TitleBarDragTests.swift`: runs and passes. `Compositor/UI/ProjectTabs.swift` is compiled unmodified (symlink;
+  the Linux copy is gone) on compat `NSScrollView`/`NSClipView` and an `NSHostingView` that lays out and hosts its
+  `NSViewRepresentable`s (`HostedLayout`). Full suite: 342 Swift Testing + 96 XCTest, 0 failures.
 
 Also confirmed (see README's Known Issues correction): `AdjustmentLayerTests`/`ProjectTests` blank-render/heap-
 corruption reports from earlier this session were a missing-`COMPOSITOR_SKIA_BRIDGE` invocation mistake, not a

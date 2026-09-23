@@ -18,6 +18,9 @@ public struct RenderNode {
     public var handlers: [String: (Any) -> Void] = [:]
     public var modifiers: [RenderModifier] = []
     public var children: [RenderNode] = []
+    /// For a `"_Native"` node (an `NSViewRepresentable`): the representable itself, so an `NSHostingView` can make,
+    /// update and place its real `NSView` (see `HostedLayout`).
+    public var nativeSource: (any _NativeViewSource)?
 
     public init(kind: String) { self.kind = kind }
 }
@@ -85,6 +88,8 @@ public enum RenderModifier {
     /// `.onChange`/`.focused` etc. read/write through a boxed value the Qt side polls or pushes into; keyed by an
     /// opaque tag so a node can carry more than one.
     case sink(String, (Any) -> Void)
+    /// Share of a stack's space: higher priorities are sized first (`.layoutPriority`).
+    case layoutPriority(Double)
 }
 
 /// A view whose node in the render tree is produced directly (no `body` to recurse into) — SwiftUI's real
