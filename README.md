@@ -147,6 +147,7 @@ the manifest). See [`third_party/skia.pinned`](third_party/skia.pinned) / [`thir
 | [`docs/project-format.md`](docs/project-format.md) | the `.comp` file format |
 | [`linux/upstream-parity.json`](linux/upstream-parity.json) | every UI override, and why |
 | [`linux/UPSTREAM_TEST_EXCLUSIONS.md`](linux/UPSTREAM_TEST_EXCLUSIONS.md) | skipped upstream tests, and why |
+| [`docs/upstream-test-baseline.md`](docs/upstream-test-baseline.md) | the correct `swift test` invocation (env vars, flags) and current pass count |
 
 **Contributing:** extend `Sources/Compat/` before adding to `Sources/Overrides/`. Overrides are
 a last resort for the handful of cases that need the Objective-C runtime or missing AppKit —
@@ -154,13 +155,15 @@ same public API either way.
 
 ### Known issues
 
-- Adjustment-layer rendering (Curves, Levels, Hue/Saturation, Camera Raw, Image Trim, ...) can
-  return blank pixels or corrupt the heap when exercised directly through `ImageExporter`/
-  `PixelAdjust.render`, as `swift test`'s `AdjustmentLayerTests`/`ProjectTests` do — a native
-  pixel-kernel/Accelerate-vImage portability bug, not a wiring issue. None of the app-level
-  smoke tests (`run-compositor.sh --*-smoke`, all 5 passing) currently apply an adjustment
-  layer, so whether this also affects normal app use is unconfirmed either way. Tracked, not
-  yet fixed.
+- **Correction to an earlier version of this note**: running `AdjustmentLayerTests`/`ProjectTests` without
+  `COMPOSITOR_SKIA_BRIDGE`/`COMPOSITOR_IMAGEIO_BACKEND` set produces blank pixels (every `CGContext` silently
+  no-ops when no Skia bridge resolves — see `docs/upstream-test-baseline.md`), which was previously misdiagnosed
+  here as a native pixel-kernel/Accelerate-vImage portability bug. It isn't — it's a missing test prerequisite.
+  Run tests the way `docs/upstream-test-baseline.md` documents and this doesn't happen (260+/260+ passing).
+- InnerGlow (added in the v1.2.4–1.2.6 upstream catch-up) doesn't render yet — 3 tests fail even with the
+  bridge correctly loaded. Needs its own layer-effects pass, most likely in
+  `Sources/Overrides/MetalLayerEffects.swift`'s Vulkan/CPU chain (same shape as the other GPU-effect passes
+  there). Not yet fixed.
 
 ## Releasing
 

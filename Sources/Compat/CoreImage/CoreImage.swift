@@ -299,7 +299,7 @@ public final class CIImage: @unchecked Sendable {
 public class CIFilter {
     public let name: String
     private var inputs: [String: Any] = [:]
-    public static let supportedNames: Set<String> = ["CIGaussianBlur", "CIMotionBlur", "CIColorMatrix", "CIColorClamp", "CIColorCube",
+    public static let supportedNames: Set<String> = ["CIGaussianBlur", "CIBloom", "CIMotionBlur", "CIColorMatrix", "CIColorClamp", "CIColorCube",
         "CIBlendWithMask", "CIColorBurnBlendMode", "CIColorDodgeBlendMode", "CIPerspectiveTransform", "CIEdgePreserveUpsampleFilter"]
 
     public init?(name: String) {

@@ -59,3 +59,21 @@ own re-check above:
 `translucentStrokesDrawLikeOneImage` and `maskStrokesDrawLikeOneMask` are NOT in this list — they were fixed by the
 hard-clip region change and pass (confirmed by running `TiledLayerTests` alone, 6/6, ~8 min). A stale `--skip` for both
 had crept back into ad hoc test invocations after that fix; this entry is the correction.
+
+## 2026-09-23 re-check, after the upstream v1.2.4-1.2.6 merge
+
+Same invocation as above. **302 of 306 run tests pass.** 4 new failures, both real, neither related to the merge's
+own Swift changes (CIBloom, NSPasteboard.setString):
+- `InnerGlowTests`'s 3 rendering tests — InnerGlow (an upstream v1.2.x layer effect) has no Linux rendering pass
+  yet. Needs its own `Sources/Overrides/MetalLayerEffects.swift` addition. Open.
+- `BrushTests.bracketKeysReachTheBrushWhereverFocusIsExceptTextFields` — drives `NSHostingView<LayersPanel>`'s
+  table lookup, the same `NSTableView`/Objective-C-runtime pattern already excluded for `LayerTests.swift` in
+  `linux/UPSTREAM_TEST_EXCLUSIONS.md`, just surfacing in a different, not-yet-excluded file. Needs triage:
+  either exclude this one test the same way, or confirm it's newly reachable and genuinely fixable.
+
+Also confirmed (see README's Known Issues correction): `AdjustmentLayerTests`/`ProjectTests` blank-render/heap-
+corruption reports from earlier this session were a missing-`COMPOSITOR_SKIA_BRIDGE` invocation mistake, not a
+real bug — they pass clean (19/19, no crash) under this doc's documented invocation, with or without
+`--no-parallel`. `CIFilter`'s `supportedNames` allowlist was also missing `"CIBloom"` (silently fell back to the
+unmodified source image instead of failing loudly), and the compat `CIBloom` implementation didn't spread alpha
+past the source's opaque region the way real `CIBloom`'s glow does — both fixed, `FinishingFilterTests` now 5/5.

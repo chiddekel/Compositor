@@ -175,8 +175,9 @@ enum RasterFilters {
         return out
     }
 
-    /// CIBloom: `source + blurred * intensity`, premultiplied components clamped to 1. Alpha is the source's own —
-    /// bloom brightens, it doesn't add coverage.
+    /// CIBloom: `source + blurred * intensity` on all four premultiplied channels, clamped to 1 — including alpha,
+    /// so the glow's halo stays visible past the source's own opaque region (a blurred+intensity-scaled copy of a
+    /// small opaque square has nonzero alpha well outside the square; real CIBloom's glow does too).
     static func bloom(_ source: Raster, blurred: Raster, intensity: Float) -> Raster {
         var out = source
         var i = 0
@@ -184,6 +185,7 @@ enum RasterFilters {
             out.data[i] = min(1, source.data[i] + blurred.data[i] * intensity)
             out.data[i + 1] = min(1, source.data[i + 1] + blurred.data[i + 1] * intensity)
             out.data[i + 2] = min(1, source.data[i + 2] + blurred.data[i + 2] * intensity)
+            out.data[i + 3] = min(1, source.data[i + 3] + blurred.data[i + 3] * intensity)
             i += 4
         }
         return out
