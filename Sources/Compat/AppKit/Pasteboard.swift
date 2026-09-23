@@ -72,6 +72,9 @@ public final class NSPasteboard: @unchecked Sendable {
         guard let d = data(forType: type) else { return nil }
         return String(data: d, encoding: .utf8)
     }
+    @discardableResult public func setString(_ string: String, forType type: PasteboardType) -> Bool {
+        setData(string.data(using: .utf8), forType: type)
+    }
     public func availableType(from types: [PasteboardType]) -> PasteboardType? {
         for t in types {
             if data(forType: t) != nil { return t }

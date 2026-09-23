@@ -154,7 +154,13 @@ same public API either way.
 
 ### Known issues
 
-- Camera Raw / Image Trim render blank on Linux — pixel-kernel portability gap, not wiring.
+- Adjustment-layer rendering (Curves, Levels, Hue/Saturation, Camera Raw, Image Trim, ...) can
+  return blank pixels or corrupt the heap when exercised directly through `ImageExporter`/
+  `PixelAdjust.render`, as `swift test`'s `AdjustmentLayerTests`/`ProjectTests` do — a native
+  pixel-kernel/Accelerate-vImage portability bug, not a wiring issue. None of the app-level
+  smoke tests (`run-compositor.sh --*-smoke`, all 5 passing) currently apply an adjustment
+  layer, so whether this also affects normal app use is unconfirmed either way. Tracked, not
+  yet fixed.
 
 ## Releasing
 

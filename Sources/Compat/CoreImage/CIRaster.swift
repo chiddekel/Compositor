@@ -175,6 +175,20 @@ enum RasterFilters {
         return out
     }
 
+    /// CIBloom: `source + blurred * intensity`, premultiplied components clamped to 1. Alpha is the source's own —
+    /// bloom brightens, it doesn't add coverage.
+    static func bloom(_ source: Raster, blurred: Raster, intensity: Float) -> Raster {
+        var out = source
+        var i = 0
+        while i < out.data.count {
+            out.data[i] = min(1, source.data[i] + blurred.data[i] * intensity)
+            out.data[i + 1] = min(1, source.data[i + 1] + blurred.data[i + 1] * intensity)
+            out.data[i + 2] = min(1, source.data[i + 2] + blurred.data[i + 2] * intensity)
+            i += 4
+        }
+        return out
+    }
+
     /// CIColorClamp: clamps each unpremultiplied component into [min, max].
     static func colorClamp(_ input: Raster, minimum: [Float], maximum: [Float]) -> Raster {
         var out = input

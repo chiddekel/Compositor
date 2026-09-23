@@ -52,6 +52,7 @@ public let kCIInputBackgroundImageKey = "inputBackgroundImage"
 public let kCIInputMaskImageKey = "inputMaskImage"
 public let kCIInputRadiusKey = "inputRadius"
 public let kCIInputAngleKey = "inputAngle"
+public let kCIInputIntensityKey = "inputIntensity"
 
 // MARK: - Graph
 
@@ -65,6 +66,7 @@ private indirect enum Node {
     case crop(Node, CGRect)
     case clamp(Node)
     case gaussian(Node, Double)
+    case bloom(Node, Double, Double)          // radius, intensity
     case motion(Node, Double, Double)
     case matrix(Node, [[Float]], [Float])
     case colorClamp(Node, [Float], [Float])
@@ -81,6 +83,7 @@ private indirect enum Node {
         case .color, .clamp: return infiniteExtent
         case .crop(let n, let r): return n.extent.intersection(r)
         case .gaussian(let n, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
+        case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
         case .blendMask(let n, _, _): return n.extent
@@ -133,6 +136,13 @@ private indirect enum Node {
         case .gaussian(let n, let sigma):
             let pad = ceil(sigma * 3)
             return RasterFilters.gaussian(n.eval(region.insetBy(dx: -pad, dy: -pad), env), sigma: sigma, output: region)
+        case .bloom(let n, let radius, let intensity):
+            // CIBloom: adds a blurred, intensity-scaled copy of the image back onto itself — a screen-like glow
+            // that brightens highlights without touching midtones/shadows much (their blurred neighborhood is dark).
+            let pad = ceil(radius * 3)
+            let source = n.eval(region, env)
+            let blurred = RasterFilters.gaussian(n.eval(region.insetBy(dx: -pad, dy: -pad), env), sigma: radius, output: region)
+            return RasterFilters.bloom(source, blurred: blurred, intensity: Float(intensity))
         case .motion(let n, let radius, let angle):
             let pad = ceil(radius) + 1
             return RasterFilters.motionBlur(n.eval(region.insetBy(dx: -pad, dy: -pad), env), radius: radius, angle: angle, output: region)
@@ -319,6 +329,7 @@ public class CIFilter {
         guard let input = image(kCIInputImageKey) else { return nil }
         switch name {
         case "CIGaussianBlur": return input.applyingGaussianBlur(sigma: number(kCIInputRadiusKey, 10))
+        case "CIBloom": return CIImage(node: .bloom(input.node, number(kCIInputRadiusKey, 10), number(kCIInputIntensityKey, 0.5)))
         case "CIMotionBlur":
             return CIImage(node: .motion(input.node, number(kCIInputRadiusKey, 20), number(kCIInputAngleKey, 0)))
         case "CIColorMatrix":
