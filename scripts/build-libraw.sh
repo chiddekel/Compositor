@@ -17,8 +17,17 @@ echo "$SHA256  LibRaw-$VERSION.tar.gz" | sha256sum -c -
 rm -rf "LibRaw-$VERSION"
 tar -xzf "LibRaw-$VERSION.tar.gz"
 cd "LibRaw-$VERSION"
-CFLAGS="-O3 -fPIC" CXXFLAGS="-O3 -fPIC" ./configure --prefix="$WORK/install" --enable-static --disable-shared \
+# With RawSpeed built (scripts/build-rawspeed.sh), LibRaw uses it for the formats it supports (USE_RAWSPEED3).
+RAWSPEED="$ROOT/build/rawspeed/install"
+RAWSPEED_FLAGS=""
+if [ -f "$RAWSPEED/lib/librawspeed3_capi.a" ]; then
+    RAWSPEED_FLAGS="-DUSE_RAWSPEED3 -DUSE_RAWSPEED_BITS -I$RAWSPEED/include"
+    echo "LibRaw: with RawSpeed-v3"
+fi
+CPPFLAGS="$RAWSPEED_FLAGS" CFLAGS="-O3 -fPIC" CXXFLAGS="-O3 -fPIC" ./configure --prefix="$WORK/install" --enable-static --disable-shared \
     --enable-openmp --disable-examples --disable-jasper --disable-lcms --enable-zlib
 make -j"$(nproc)"
 make install
+# Marks the build for Package.swift (link RawSpeed too) and host/RawDecoder.cpp (turn it on).
+if [ -n "$RAWSPEED_FLAGS" ]; then touch "$WORK/install/include/libraw/rawspeed3-enabled"; else rm -f "$WORK/install/include/libraw/rawspeed3-enabled"; fi
 ls -la "$WORK/install/lib/libraw_r.a"

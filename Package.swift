@@ -30,6 +30,17 @@ let librawPrefix: String? = ["\(packageRoot)/build/libraw/install", "/app"].firs
 }
 import Foundation
 
+// LibRaw built with RawSpeed (scripts/build-rawspeed.sh, then scripts/build-libraw.sh): RawSpeed's static libraries
+// link after LibRaw's, and RawDecoder.cpp turns it on (LIBRAW_WITH_RAWSPEED3).
+let rawspeedLibraries: [String] = librawPrefix.flatMap { prefix -> [String]? in
+    guard FileManager.default.fileExists(atPath: "\(prefix)/include/libraw/rawspeed3-enabled"),
+          let directory = ["\(packageRoot)/build/rawspeed/install/lib", "\(prefix)/lib"].first(where: {
+              FileManager.default.fileExists(atPath: "\($0)/librawspeed3_capi.a")
+          }) else { return nil }
+    return ["librawspeed3_capi.a", "librawspeed.a", "libpugixml.a"].map { "\(directory)/\($0)" }
+        .filter { FileManager.default.fileExists(atPath: $0) }
+} ?? []
+
 let package = Package(
     name: "Compositor",
     platforms: [
@@ -229,12 +240,12 @@ let package = Package(
                     "-I/usr/include/QtGui",
                     "-I/usr/include/QtDBus",
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB", "-DQT_DBUS_LIB",
-                ] + (librawPrefix.map { ["-I\($0)/include"] } ?? [])),
+                ] + (librawPrefix.map { ["-I\($0)/include"] } ?? []) + (rawspeedLibraries.isEmpty ? [] : ["-DLIBRAW_WITH_RAWSPEED3"])),
             ],
             // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
             // the link follows the same condition; RawDecoder.cpp likewise with LibRaw (static, plus OpenMP's runtime).
             linkerSettings: (FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : [])
-                + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"]), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
+                + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"] + rawspeedLibraries), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",

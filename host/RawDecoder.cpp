@@ -72,6 +72,11 @@ constexpr float kDaylight = 5000.0f;   // CIRAWFilter's neutral default
 
 extern "C" {
 
+#ifdef LIBRAW_WITH_RAWSPEED3
+// RawSpeed asks its host how many threads it may use (darktable provides this; so do we).
+int rawspeed_get_number_of_processor_cores() { return std::max(1, int(std::thread::hardware_concurrency())); }
+#endif
+
 typedef struct CompositorRaw CompositorRaw;
 
 // Opens and unpacks `path`. Reports the developed (oriented) pixel size and the as-shot temperature / tint.
@@ -81,7 +86,17 @@ CompositorRaw *compositor_raw_open(const char *path, int32_t *width, int32_t *he
     auto handle = std::make_unique<RawHandle>();
     // LibRaw picks its I/O by size: large files are streamed through its buffered big-file reader, not read whole.
     if (handle->raw.open_file(path) != LIBRAW_SUCCESS) return nullptr;
-    if (handle->raw.unpack() != LIBRAW_SUCCESS) return nullptr;
+#ifdef LIBRAW_WITH_RAWSPEED3
+    // Built with RawSpeed (scripts/build-rawspeed.sh): LibRaw hands the formats RawSpeed decodes faster to it, and
+    // falls back to its own decoder for anything else. COMPOSITOR_RAWSPEED=0 keeps LibRaw's decoders only.
+    // RawSpeed decodes from memory, so LibRaw reads the whole file first (and skips it for files over 2 GB).
+    handle->raw.imgdata.rawparams.use_rawspeed = qEnvironmentVariable("COMPOSITOR_RAWSPEED") == QLatin1String("0")
+        ? 0 : LIBRAW_RAWSPEEDV3_USE;
+#endif
+    {
+        PERF_SCOPE("raw.unpack");
+        if (handle->raw.unpack() != LIBRAW_SUCCESS) return nullptr;
+    }
     const libraw_data_t &d = handle->raw.imgdata;
     int w = d.sizes.width, h = d.sizes.height;
     if (d.sizes.flip & 4) std::swap(w, h);   // 90° rotations swap the developed size
@@ -145,7 +160,10 @@ static bool buildPreviewFromMosaic(RawHandle *handle, int targetW, int targetH) 
     // Phase One compressed (IIQ): the black level is the file's base less per-column and per-row calibration, as
     // LibRaw's phase_one_subtract_black applies it before developing (raw coordinates, split at split_col/row).
     const auto &p1 = d.color.phase_one_data;
-    const bool phaseOne = handle->raw.phaseOneCompressed() && d.rawdata.raw_alloc;
+    // (Unpacked by RawSpeed, the data sits in raw_image until LibRaw's first develop moves it to raw_alloc.)
+    const bool phaseOne = handle->raw.phaseOneCompressed()
+        && (d.rawdata.raw_alloc || (d.process_warnings & LIBRAW_WARN_RAWSPEED3_PROCESSED));
+    const uint16_t *phaseOneData = static_cast<const uint16_t *>(d.rawdata.raw_alloc ? d.rawdata.raw_alloc : d.rawdata.raw_image);
     const short (*p1Column)[2] = phaseOne ? d.rawdata.ph1_cblack : nullptr;
     const short (*p1Row)[2] = phaseOne ? d.rawdata.ph1_rblack : nullptr;
     const int patternH = int(cb[4]), patternW = int(cb[5]);
@@ -164,7 +182,7 @@ static bool buildPreviewFromMosaic(RawHandle *handle, int targetW, int targetH) 
             const int y0 = int((int64_t(g0) * height + gridH - 1) / gridH), y1 = int((int64_t(g1) * height + gridH - 1) / gridH);
             for (int y = y0; y < y1; ++y) {
                 const int gy = std::min(gridH - 1, int(int64_t(y) * gridH / height));
-                const uint16_t *row = (phaseOne ? static_cast<const uint16_t *>(d.rawdata.raw_alloc) : d.rawdata.raw_image)
+                const uint16_t *row = (phaseOne ? phaseOneData : d.rawdata.raw_image)
                                       + size_t(y + top) * pitch + left;
                 const int rawRow = y + top;
                 float *sumRow = &sums[size_t(gy) * gridW * 3], *countRow = &counts[size_t(gy) * gridW * 3];

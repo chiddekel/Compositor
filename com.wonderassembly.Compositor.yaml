@@ -100,11 +100,60 @@ modules:
          sha256: 3b574f9b0315d00b54c611ff6d827c29a1b65121ceed7278b451c20f0f8516a1
 
   # ───────────────────────── Module 2: OpenCV (vendored, static, minimal) ─
+  # pugixml: RawSpeed reads its camera list with it. Static, PIC.
+  - name: pugixml
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DCMAKE_INSTALL_LIBDIR=lib
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/zeux/pugixml/releases/download/v1.14/pugixml-1.14.tar.gz
+        sha256: 2f10e276870c64b1db6809050a75e11a897a8d7456c4be5c6b2e35a11168a015
+
+  # RawSpeed (darktable's RAW decoder) for LibRaw's RawSpeed-v3 path: 2-2.5x faster unpacking of compressed CR2/NEF
+  # and the other formats it lists. LibRaw supports exactly this commit, with the patches and C wrapper it ships in
+  # RawSpeed3/ (01 is stored reversed). Same steps as scripts/build-rawspeed.sh.
+  - name: rawspeed
+    buildsystem: simple
+    build-commands:
+      - patch -p1 -R < libraw-src/RawSpeed3/patches/01.CameraMeta-extensibility.patch
+      - for p in libraw-src/RawSpeed3/patches/0[2-5]*.patch; do patch -p1 --forward < "$p"; done
+      - cmake -S . -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_PREFIX_PATH=/app -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+        -DBUILD_BENCHMARKING=OFF -DBUILD_FUZZERS=OFF -DBUILD_DOCS=OFF -DWITH_OPENMP=OFF -DRAWSPEED_ENABLE_WERROR=OFF
+        -DRAWSPEED_ENABLE_DEBUG_INFO=OFF -DUSE_XMLLINT=OFF -DBINARY_PACKAGE_BUILD=ON -DWITH_PUGIXML=ON -DWITH_JPEG=ON
+        -DWITH_ZLIB=ON
+      - cmake --build _build --target rawspeed
+      - mkdir -p _capi /app/pugixml && cp /app/include/pugi*.hpp /app/pugixml/
+      - sh libraw-src/RawSpeed3/rawspeed3_c_api/rsxml2c.sh < data/cameras.xml > _capi/cameras.cpp
+      - for src in libraw-src/RawSpeed3/rawspeed3_c_api/rawspeed3_capi.cpp _capi/cameras.cpp; do g++ -std=c++17 -O3 -fPIC
+        -DNDEBUG -I src/librawspeed -I src/external -I _build/src -I _build -I /app/include -c "$src"
+        -o "_capi/$(basename "$src" .cpp).o"; done
+      - ar rcs /app/lib/librawspeed3_capi.a _capi/rawspeed3_capi.o _capi/cameras.o
+      - install -m644 _build/librawspeed.a /app/lib/
+      - install -m644 libraw-src/RawSpeed3/rawspeed3_c_api/rawspeed3_capi.h /app/include/
+      - rm -rf /app/pugixml
+    sources:
+      - type: archive
+        url: https://github.com/darktable-org/rawspeed/archive/de70ef5fbc62cde91009c8cff7a206272abe631e.tar.gz
+        sha256: 993d5e6498d838c10d49aafa193a8ec46307be2b7554a81d31cfc21f3c2726e8
+      - type: archive
+        url: https://www.libraw.org/data/LibRaw-0.22.2.tar.gz
+        sha256: de86b035655accff8d4010f1a221fdf50d353cb7b1422ba26f14a0db92612cfa
+        dest: libraw-src
+
   # LibRaw: camera RAW decoding (host/RawDecoder.cpp). Static and PIC, linked into the app; OpenMP for the
-  # multithreaded demosaic of very large files; JasPer and LCMS off (not needed). Same options as
-  # scripts/build-libraw.sh uses for the dev loop.
+  # multithreaded demosaic of very large files; JasPer and LCMS off (not needed); RawSpeed-v3 for faster unpacking
+  # (COMPOSITOR_RAWSPEED=0 turns it off at run time). Same options as scripts/build-libraw.sh uses for the dev loop.
   - name: libraw
     buildsystem: autotools
+    post-install:
+      - touch /app/include/libraw/rawspeed3-enabled
     config-opts:
       - --enable-static
       - --disable-shared
@@ -116,6 +165,7 @@ modules:
     build-options:
       cflags: -O3 -fPIC
       cxxflags: -O3 -fPIC
+      cppflags: -DUSE_RAWSPEED3 -DUSE_RAWSPEED_BITS -I/app/include
     sources:
       - type: archive
         url: https://www.libraw.org/data/LibRaw-0.22.2.tar.gz
