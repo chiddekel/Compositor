@@ -63,7 +63,8 @@ modules:
       build-args:
         - --share=network
     build-commands:
-      - python3 tools/git-sync-deps
+      # googlesource rate-limits bursts of clones (HTTP 429): retry with a pause rather than fail the whole build.
+      - for attempt in 1 2 3 4 5; do python3 tools/git-sync-deps && break; [ $attempt = 5 ] && exit 1; sleep 90; done
       - |
         bin/gn gen out/Static --args='
             is_official_build=true
@@ -78,7 +79,6 @@ modules:
             skia_use_system_libwebp=false
             skia_use_system_harfbuzz=false
             skia_use_system_freetype2=false
-            skia_use_system_fontconfig=false
             skia_enable_skshaper=true
         '
       - ninja -C out/Static
@@ -87,13 +87,12 @@ modules:
       - ar rcs out/Static/libskia_pathops.a out/Static/obj/src/pathops/*.o
       - mkdir -p /app/lib /app/include/skia
       - cp out/Static/libskia.a out/Static/libskia_pathops.a /app/lib/
-      - cp -r include/*.h /app/include/skia/
-      - cp -r include/core/*.h /app/include/skia/
-      - cp -r include/config/*.h /app/include/skia/ 2>/dev/null || true
-      - cp -r include/gpu/*.h /app/include/skia/gpu/ 2>/dev/null || true
-      - mkdir -p /app/include/skia/gpu/ganesh /app/include/skia/gpu/vk
-      - cp -r include/gpu/ganesh/*.h /app/include/skia/gpu/ganesh/ 2>/dev/null || true
-      - cp -r include/gpu/vk/*.h /app/include/skia/gpu/vk/ 2>/dev/null || true
+      # Skia's headers include each other as "include/core/...": install the tree as is, so -I/app/include/skia
+      # resolves them (a flattened copy leaves SkiaBridge.cpp without Skia, drawing nothing).
+      - cp -r include /app/include/skia/
+      # ... and the headers outside include/ they need: skcms (SkColorSpace.h -> modules/skcms/skcms.h -> src/*.h).
+      - mkdir -p /app/include/skia/modules && cp -r modules/skcms /app/include/skia/modules/
+        && find /app/include/skia/modules/skcms -type f ! -name '*.h' -delete
     sources:
        - type: archive
          url: https://github.com/google/skia/archive/refs/tags/canvaskit%2F0.42.0.tar.gz
@@ -173,6 +172,7 @@ modules:
 
   - name: opencv
     buildsystem: cmake-ninja
+    builddir: true   # OpenCV refuses in-source builds
     config-opts:
       - -DBUILD_LIST=core,imgproc
       - -DBUILD_SHARED_LIBS=OFF
@@ -183,7 +183,8 @@ modules:
       - -DBUILD_opencv_python2=OFF
       - -DBUILD_opencv_python3=OFF
       - -DBUILD_ZLIB=ON
-      - -DBUILD_PNG=ON
+      - -DBUILD_PNG=OFF   # PNG/JPEG 2000 are imgcodecs-only (not built); left on, OpenCVModules.cmake names missing libs
+      - -DWITH_PNG=OFF
       - -DBUILD_JPEG=ON
       - -DBUILD_TIFF=OFF
       - -DBUILD_WEBP=OFF
@@ -192,6 +193,8 @@ modules:
       - -DWITH_TIFF=OFF
       - -DWITH_WEBP=OFF
       - -DWITH_OPENJPEG=OFF
+      - -DWITH_JASPER=OFF   # else exported to OpenCVModules.cmake without being built (no imgcodecs)
+      - -DBUILD_JASPER=OFF
       - -DWITH_OPENEXR=OFF
       - -DWITH_V4L=OFF
       - -DWITH_GTK=OFF
@@ -199,6 +202,7 @@ modules:
       - -DWITH_FFMPEG=OFF
       - -DWITH_LAPACK=OFF
       - -DWITH_IPP=OFF
+      - -DWITH_ITT=OFF   # Intel tracing: its static lib is not linked into the app
       - -DWITH_EIGEN=OFF
       - -DWITH_OPENCL=OFF
       - -DWITH_PROTOBUF=OFF
@@ -238,6 +242,10 @@ modules:
       # (e) Install Swift composition root. A C++ main cannot bootstrap the
       # Swift runtime + Foundation on the Freedesktop Swift SDK.
       - install -Dm755 .build/release/CompositorHostBootstrap /app/bin/compositor
+      # The compat layer dlopens these at run time from /app/lib: the Skia render device (every CGContext draws
+      # through it) and Qt's image codecs + text engine. Without them the canvas stays empty.
+      - install -Dm755 build/libCompositorSkiaBridge.so /app/lib/libCompositorSkiaBridge.so
+      - install -Dm755 build/libCompositorQtImageIO.so /app/lib/libCompositorQtImageIO.so
       # (f) Install hicolor icons (sourced from the macOS AppIcon set).
       - |
         for s in 16 32 64 128 256 512; do

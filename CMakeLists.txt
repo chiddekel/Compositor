@@ -71,7 +71,8 @@ if(EXISTS "${COMPOSITOR_SKIA_ROOT}/include/core/SkCanvas.h" AND EXISTS "${COMPOS
     set(Skia_INCLUDE_DIR "${COMPOSITOR_SKIA_ROOT}")
     set(Skia_STATIC_LIB "${COMPOSITOR_SKIA_LIB}")
 elseif(DEFINED ENV{FLATPAK_ID} AND COMPOSITOR_REQUIRE_VENDORED_DEPS)
-    find_path(Skia_INCLUDE_DIR NAMES SkCanvas.h PATHS /app/include/skia REQUIRED)
+    # The Skia module installs its include/ tree under /app/include/skia (headers include "include/core/...").
+    find_path(Skia_INCLUDE_DIR NAMES include/core/SkCanvas.h PATHS /app/include/skia NO_DEFAULT_PATH REQUIRED)
     find_library(Skia_STATIC_LIB NAMES skia PATHS /app/lib REQUIRED)
     # Verify Skia was built with Vulkan enabled
     if(NOT SKIA_STATIC_LIB MATCHES ".*vulkan.*")
@@ -144,15 +145,17 @@ add_library(CompositorCoreAbi INTERFACE)
 target_include_directories(CompositorCoreAbi INTERFACE ${CMAKE_SOURCE_DIR}/include)
 
 # ── Portable C pixel kernels (file-map "Keep" tier) ───────────────────
+# Upstream's kernels (Compositor/Rendering, kept unmodified), each compiled through linux/kernels/Checked*.c, which
+# puts the ENG-17 canonical-stride checks in front of the entries that take a stride (see CompositorKernelChecks.h).
 add_library(CompositorKernels STATIC
-    Compositor/Rendering/AdjustPixels.c
-    Compositor/Rendering/BrushPixels.c
-    Compositor/Rendering/ContentFill.c
-    Compositor/Rendering/HealPixels.c
-    Compositor/Rendering/LensPixels.c
+    linux/kernels/CheckedAdjustPixels.c
+    linux/kernels/CheckedBrushPixels.c
+    linux/kernels/CheckedContentFill.c
+    linux/kernels/CheckedHealPixels.c
+    linux/kernels/CheckedLensPixels.c
     Compositor/Rendering/LevelsPixels.c
-    Compositor/Rendering/NoisePixels.c
-    Compositor/Rendering/WandPixels.c)
+    linux/kernels/CheckedNoisePixels.c
+    linux/kernels/CheckedWandPixels.c)
 target_include_directories(CompositorKernels PUBLIC ${CMAKE_SOURCE_DIR}/Compositor/Rendering)
 target_compile_definitions(CompositorKernels PUBLIC COMPOSITOR_PORTABLE)
 # libm is part of glibc bundled in the Freedesktop runtime, not a separately
@@ -249,9 +252,11 @@ if(Qt6_FOUND)
 
     # SessionWindow file operations test source remains available for the Swift
     # composition root. Do not register its C++ main as CTest: Foundation-backed
-    # Swift calls require a Swift @main to bootstrap the runtime.
+    # Swift calls require a Swift @main to bootstrap the runtime. Not built by default
+    # (EXCLUDE_FROM_ALL): its source list predates the host's D-Bus, SwiftUI renderer and
+    # RAW sources, and nothing runs it; `cmake --build build --target test_session_window_io`.
     if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
-        add_executable(test_session_window_io tests/test_session_window_io.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp)
+        add_executable(test_session_window_io EXCLUDE_FROM_ALL tests/test_session_window_io.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp)
         target_include_directories(test_session_window_io PRIVATE ${CMAKE_SOURCE_DIR}/host)
         target_link_libraries(test_session_window_io PRIVATE Qt6::Widgets Qt6::Gui ${COMPOSITOR_CORE_LINK})
     endif()
@@ -262,7 +267,9 @@ endif()
 # when the prebuilt Swift static lib is provided (Flatpak build, or a host build
 # that ran `swift build --static-swift-stdlib` and passed -DCompositorCore_SWIFT_STATIC_LIB).
 if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
-    add_executable(test_session_journey tests/test_session_journey.cpp)
+    # EXCLUDE_FROM_ALL: gated out of the default build, as the runtime note above says (its whole-archive
+    # link would also need every dependency of the core, e.g. OpenCV for the effects backend).
+    add_executable(test_session_journey EXCLUDE_FROM_ALL tests/test_session_journey.cpp)
     target_link_libraries(test_session_journey PRIVATE CompositorCoreAbi ${COMPOSITOR_CORE_LINK})
     # A C++ main cannot bootstrap Foundation on the Freedesktop Swift SDK.
     # SessionJourneyTests and CompositorHostBootstrap cover this path from Swift.
