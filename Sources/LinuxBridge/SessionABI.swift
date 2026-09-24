@@ -15,6 +15,10 @@ final class Entry {
     var rendered: (bytes: [UInt8], width: Int, height: Int)?
     /// What `rendered` was made from, and a counter that moves whenever a new render differs.
     var renderedKey: UpstreamEditor.RenderKey?
+    /// Display-resolution renders (compositor_session_render_scaled): the last one and what it was made from.
+    var scaled: (key: UpstreamEditor.RenderKey, scale: Double, bytes: [UInt8], width: Int, height: Int)?
+    /// The scale stroke patches are rendered at (the shell's current display scale).
+    var strokeScale: Double = 1
     var renderRevision: Int64 = 0
     /// Document area the brush stroke in progress changed since the last `compositor_session_render_dirty`.
     var strokeDirty: CGRect?
@@ -191,6 +195,7 @@ nonisolated public func compositorSessionState(_ handle: UInt64, _ output: Unsaf
 nonisolated public func compositorSessionRender(_ handle: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     guard capacity >= 0 else { return -1 }
     return withEntry(handle) { entry in
+        entry.strokeScale = 1   // the shell shows the full composite: stroke patches at full resolution too
         let image: (bytes: [UInt8], width: Int, height: Int)
         // Commands clear `rendered`; SwiftUI panel actions don't, because most change no pixels. Either way, a render
         // is only redone when what it depends on (RenderKey) changed.
@@ -217,11 +222,12 @@ nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: U
     return withEntry(handle) { entry in
         guard entry.editor.session.brushStroke != nil else { return -3 }
         guard let dirty = entry.strokeDirty else { return 0 }
-        guard let made = try? entry.editor.renderRegionRGBA(dirty) else { return -5 }
+        guard let made = try? entry.editor.renderRegionRGBA(dirty, scale: CGFloat(entry.strokeScale)) else { return -5 }
         guard capacity >= made.bytes.count else { return -1 }
         made.bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: $0.count) }
         rect[0] = Int32(made.rect.minX); rect[1] = Int32(made.rect.minY)
         rect[2] = Int32(made.rect.width); rect[3] = Int32(made.rect.height)
+        rect[4] = Int32(made.width); rect[5] = Int32(made.height)   // the scaled pixel size of the bytes
         entry.strokeDirty = nil
         return Int64(made.bytes.count)
     }
@@ -251,6 +257,31 @@ nonisolated public func compositorSessionRawDevelopCancel(_ handle: UInt64) {
     _ = withEntry(handle) { entry in
         if entry.editor.session.showsRawDevelop { entry.editor.session.finishRawDevelop(nil) }
         return 0
+    }
+}
+
+/// The whole document composited at `scale` (0 < scale <= 1): what the canvas shows when zoomed out, at a fraction of
+/// the full composite's cost. Cached by render key and scale. Returns the byte count, sizes in `width` / `height`.
+@_cdecl("compositor_session_render_scaled")
+nonisolated public func compositorSessionRenderScaled(_ handle: UInt64, _ scale: Double, _ output: UnsafeMutablePointer<UInt8>?,
+                                                      _ capacity: Int, _ width: UnsafeMutablePointer<Int32>?,
+                                                      _ height: UnsafeMutablePointer<Int32>?) -> Int64 {
+    withEntry(handle) { entry in
+        guard let document = entry.editor.session.document else { return -2 }
+        entry.strokeScale = scale
+        entry.editor.settle()
+        let key = entry.editor.renderKey()
+        if entry.scaled == nil || entry.scaled!.key != key || entry.scaled!.scale != scale {
+            guard let made = try? entry.editor.renderRegionRGBA(CGRect(origin: .zero, size: document.size), scale: CGFloat(scale))
+            else { return -5 }
+            entry.scaled = (key, scale, made.bytes, made.width, made.height)
+        }
+        let image = entry.scaled!
+        width?.pointee = Int32(image.width); height?.pointee = Int32(image.height)
+        if let output, capacity >= image.bytes.count {
+            image.bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: $0.count) }
+        }
+        return Int64(image.bytes.count)
     }
 }
 

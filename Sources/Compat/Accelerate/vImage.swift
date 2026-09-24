@@ -72,32 +72,87 @@ public func vImageResample8(source: UnsafeRawPointer, sourceWidth: Int, sourceHe
         }
     }
 
-    let hw = weights(from: sourceWidth, to: destinationWidth)
-    let vw = weights(from: sourceHeight, to: destinationHeight)
-    // Horizontal pass into float rows (all source rows), then vertical pass.
-    var mid = [Float](repeating: 0, count: sourceHeight * destinationWidth * channels)
-    for y in 0..<sourceHeight {
-        let row = src + y * sourceRowBytes
-        for x in 0..<destinationWidth {
-            let (start, ws) = hw[x]
-            for c in 0..<channels {
-                var acc: Float = 0
-                for (k, w) in ws.enumerated() { acc += w * Float(row[(start + k) * channels + c]) }
-                mid[(y * destinationWidth + x) * channels + c] = acc
+    // Flattened tap tables: taps for destination i are weights[offsets[i]..<offsets[i+1]], starting at source starts[i].
+    func flatten(_ table: [(start: Int, w: [Float])]) -> (starts: [Int], offsets: [Int], weights: [Float]) {
+        var starts = [Int](), offsets = [0], weights = [Float]()
+        starts.reserveCapacity(table.count); offsets.reserveCapacity(table.count + 1)
+        for (start, w) in table { starts.append(start); weights.append(contentsOf: w); offsets.append(weights.count) }
+        return (starts, offsets, weights)
+    }
+    let hw = flatten(weights(from: sourceWidth, to: destinationWidth))
+    let vw = flatten(weights(from: sourceHeight, to: destinationHeight))
+
+    // Destination rows are split into bands filtered in parallel. Each band runs the horizontal pass over only the
+    // source rows its taps reach (into a band-local float buffer), then the vertical pass — so memory stays bounded
+    // for very large images and the per-sample arithmetic (and so the result) matches a single full pass.
+    let rowFloats = destinationWidth * channels
+    let bandCount = min(destinationHeight, max(1, ProcessInfo.processInfo.activeProcessorCount * 4))
+    let bandRows = (destinationHeight + bandCount - 1) / bandCount
+    hw.starts.withUnsafeBufferPointer { hStarts in hw.offsets.withUnsafeBufferPointer { hOffsets in
+    hw.weights.withUnsafeBufferPointer { hWeights in vw.starts.withUnsafeBufferPointer { vStarts in
+    vw.offsets.withUnsafeBufferPointer { vOffsets in vw.weights.withUnsafeBufferPointer { vWeights in
+        DispatchQueue.concurrentPerform(iterations: (destinationHeight + bandRows - 1) / bandRows) { band in
+            let y0 = band * bandRows, y1 = min(destinationHeight, y0 + bandRows)
+            var firstRow = Int.max, lastRow = Int.min
+            for y in y0..<y1 {
+                firstRow = min(firstRow, vStarts[y])
+                lastRow = max(lastRow, vStarts[y] + vOffsets[y + 1] - vOffsets[y] - 1)
+            }
+            let mid = UnsafeMutablePointer<Float>.allocate(capacity: (lastRow - firstRow + 1) * rowFloats)
+            defer { mid.deallocate() }
+            for sy in firstRow...lastRow {
+                let row = src + sy * sourceRowBytes
+                let out = mid + (sy - firstRow) * rowFloats
+                if channels == 4 {
+                    // RGBA: one SIMD lane per channel (same sums, same order as the scalar loop).
+                    let row4 = UnsafeRawPointer(row)
+                    let out4 = UnsafeMutableRawPointer(out)
+                    for x in 0..<destinationWidth {
+                        let base = hStarts[x] * 4
+                        let o = hOffsets[x], n = hOffsets[x + 1] - o
+                        var acc = SIMD4<Float>(repeating: 0)
+                        for k in 0..<n {
+                            let px = row4.loadUnaligned(fromByteOffset: base + k * 4, as: SIMD4<UInt8>.self)
+                            acc += hWeights[o + k] * SIMD4<Float>(px)
+                        }
+                        out4.storeBytes(of: acc, toByteOffset: x * 16, as: SIMD4<Float>.self)
+                    }
+                    continue
+                }
+                for x in 0..<destinationWidth {
+                    let base = row + hStarts[x] * channels
+                    let o = hOffsets[x], n = hOffsets[x + 1] - o
+                    for c in 0..<channels {
+                        var acc: Float = 0
+                        for k in 0..<n { acc += hWeights[o + k] * Float(base[k * channels + c]) }
+                        out[x * channels + c] = acc
+                    }
+                }
+            }
+            for y in y0..<y1 {
+                let o = vOffsets[y], n = vOffsets[y + 1] - o
+                let top = mid + (vStarts[y] - firstRow) * rowFloats
+                let out = dst + y * destinationRowBytes
+                var i = 0
+                // Eight outputs at a time; tap order per output is unchanged.
+                while i + 8 <= rowFloats {
+                    var acc = SIMD8<Float>(repeating: 0)
+                    for k in 0..<n {
+                        acc += vWeights[o + k] * UnsafeRawPointer(top + k * rowFloats + i).loadUnaligned(as: SIMD8<Float>.self)
+                    }
+                    let clamped = acc.rounded(.toNearestOrAwayFromZero).clamped(lowerBound: .zero, upperBound: SIMD8(repeating: 255))
+                    UnsafeMutableRawPointer(out + i).storeBytes(of: SIMD8<UInt8>(clamped), as: SIMD8<UInt8>.self)
+                    i += 8
+                }
+                while i < rowFloats {
+                    var acc: Float = 0
+                    for k in 0..<n { acc += vWeights[o + k] * top[k * rowFloats + i] }
+                    out[i] = UInt8(max(0, min(255, acc.rounded())))
+                    i += 1
+                }
             }
         }
-    }
-    for y in 0..<destinationHeight {
-        let (start, ws) = vw[y]
-        let out = dst + y * destinationRowBytes
-        for x in 0..<destinationWidth {
-            for c in 0..<channels {
-                var acc: Float = 0
-                for (k, w) in ws.enumerated() { acc += w * mid[((start + k) * destinationWidth + x) * channels + c] }
-                out[x * channels + c] = UInt8(max(0, min(255, acc.rounded())))
-            }
-        }
-    }
+    }}}}}}
 }
 
 private func scale(_ src: UnsafePointer<vImage_Buffer>, _ dest: UnsafePointer<vImage_Buffer>, channels: Int,

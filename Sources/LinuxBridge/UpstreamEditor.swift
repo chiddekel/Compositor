@@ -793,17 +793,23 @@ final class UpstreamEditor {
     /// macOS. Upstream's exporter renders a whole manifest, so the region is expressed as a manifest: a canvas the
     /// region's size with every document-space placement (layer transforms, detached mask placements) shifted by
     /// the region's origin. Everything else — effects, masks, adjustments, blend modes — is the exporter's own code.
-    func renderRegionRGBA(_ region: CGRect) throws -> (bytes: [UInt8], rect: CGRect) {
+    /// `region` of the document at `scale` (display resolution: a 150 MP document fitted to a window is composited at a
+    /// fraction of its pixels). Every placement is scaled with the canvas; the exporter then draws the layer images
+    /// scaled, touching only output pixels. Returns the scaled bytes and the document rect they cover.
+    func renderRegionRGBA(_ region: CGRect, scale: CGFloat = 1) throws -> (bytes: [UInt8], rect: CGRect, width: Int, height: Int) {
         settle()
         guard let snapshot = displayedSnapshot() else { throw ExportError.render }
         let canvas = CGRect(x: 0, y: 0, width: snapshot.manifest.width, height: snapshot.manifest.height)
         let rect = region.integral.intersection(canvas)
         guard !rect.isNull, rect.width >= 1, rect.height >= 1 else { throw ExportError.render }
+        let k = min(1, max(1.0 / 64, scale))
         func shifted(_ t: LayerTransform) -> LayerTransform {
             var moved = t
-            moved.origin = CGPoint(x: t.origin.x - rect.minX, y: t.origin.y - rect.minY)
+            moved.origin = CGPoint(x: (t.origin.x - rect.minX) * k, y: (t.origin.y - rect.minY) * k)
+            moved.size = CGSize(width: t.size.width * k, height: t.size.height * k)
             return moved
         }
+        let outW = max(1, Int((rect.width * k).rounded(.up))), outH = max(1, Int((rect.height * k).rounded(.up)))
         let m = snapshot.manifest
         let layers = m.layers.map { r in
             ProjectLayerRecord(id: r.id, name: r.name, isVisible: r.isVisible, transform: shifted(r.transform),
@@ -813,10 +819,10 @@ final class UpstreamEditor {
                 shape: r.shape, effects: r.effects, text: r.text)
         }
         let manifest = ProjectManifest(format: m.format, version: m.version, colorSpace: m.colorSpace, resolution: m.resolution,
-            documentID: m.documentID, width: Int(rect.width), height: Int(rect.height), activeLayerID: m.activeLayerID,
+            documentID: m.documentID, width: outW, height: outH, activeLayerID: m.activeLayerID,
             layers: layers, guides: m.guides)
         let raster = try exportRGBA(ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks))
-        return (raster.bytes, rect)
+        return (raster.bytes, rect, raster.width, raster.height)
     }
 
     /// Everything the composite depends on, compared by identity for pixels (an image replaced is a new object) — the

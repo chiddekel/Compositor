@@ -243,6 +243,10 @@ private:
     bool m_syncingText = false;
     QPointF m_textBoxAnchor;
     QRectF m_textBoxRect;
+    // The document's size, and the scale the canvas image (m_image) is composited at (see desiredDisplayScale).
+    QSize m_docSize;
+    double m_displayScale = 1.0;
+    bool m_rescalePending = false;
     int64_t m_shownRenderRevision = -1;   // compositor_session_render_revision of m_image
     uint64_t m_shownRenderHandle = 0;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
     void showSizeDialog(bool imageSize);
@@ -255,6 +259,11 @@ private:
     bool isBrushStrokeActive() const;
     void retireRenderedPanel(QWidget *panel);
     void syncCanvasDrafts();
+    int docWidth() const;
+    int docHeight() const;
+    double desiredDisplayScale() const;
+    QImage renderDisplayImage(double scale);
+    QImage fullResolutionImage();
     void presentSwiftUISheet(const QString &panel);
     bool sendCommandQuiet(const QJsonObject &command);   // no status-bar error (probing, e.g. "text here?")
     void syncTextEditor();

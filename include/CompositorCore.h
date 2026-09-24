@@ -60,7 +60,11 @@ void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 /* Mid-stroke partial render: the document area the brush changed since the last call, as premultiplied RGBA8 of
  * that area's size; rect receives x, y, width, height (document pixels). Returns the byte count (0: nothing changed)
  * or -3 when no region is tracked (not in a brush stroke) — then render the whole document instead. */
+/* rect: 6 ints — the changed document area (x, y, width, height) and the pixel size (width, height) of the bytes,
+ * which are at the current display scale (see compositor_session_render_scaled). */
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
+/* The whole document at `scale` (display resolution); the pixel size comes back in width/height. */
+int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 
 /*
  * Composite a source tile over a destination tile in place using premultiplied

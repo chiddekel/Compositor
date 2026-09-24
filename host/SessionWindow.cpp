@@ -101,6 +101,7 @@ void compositor_pump_main(void);
 void compositor_session_raw_develop_cancel(uint64_t handle);
 void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
+int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
 int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
@@ -1698,7 +1699,7 @@ void SessionWindow::createMenus() {
 
     m_actCopy = edit->addAction(tr("Copy"), QKeySequence::Copy, this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0) {
-            if (!m_image.isNull()) m_platform.clipboard->setImage(m_image);
+            if (!m_image.isNull()) m_platform.clipboard->setImage(fullResolutionImage());
             statusBar()->showMessage(tr("Copied to clipboard."), 1500);
         }
     });
@@ -1706,7 +1707,7 @@ void SessionWindow::createMenus() {
 
     m_actCopyMerged = edit->addAction(tr("Copy Merged"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C), this, [this] {
         if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0) {
-            if (!m_image.isNull()) m_platform.clipboard->setImage(m_image);
+            if (!m_image.isNull()) m_platform.clipboard->setImage(fullResolutionImage());
             statusBar()->showMessage(tr("Copied merged to clipboard."), 1500);
         }
     });
@@ -2254,15 +2255,15 @@ QRectF SessionWindow::canvasTargetRect() const {
     if (m_zoomLevel > 0.0) {
         scale = m_zoomLevel;
     } else {
-        scale = std::min(static_cast<double>(maxW) / m_image.width(),
-                         static_cast<double>(maxH) / m_image.height());
-        if (m_image.width() <= 128 && m_image.height() <= 128) {
+        scale = std::min(static_cast<double>(maxW) / docWidth(),
+                         static_cast<double>(maxH) / docHeight());
+        if (docWidth() <= 128 && docHeight() <= 128) {
             int intScale = std::max(1, static_cast<int>(scale));
             scale = intScale;
         }
     }
-    const double displayW = m_image.width() * scale;
-    const double displayH = m_image.height() * scale;
+    const double displayW = docWidth() * scale;
+    const double displayH = docHeight() * scale;
     return QRectF((canvasSize.width() - displayW) / 2.0 + m_panOffset.x(),
                   (canvasSize.height() - displayH) / 2.0 + m_panOffset.y(),
                   displayW, displayH);
@@ -2271,8 +2272,8 @@ QRectF SessionWindow::canvasTargetRect() const {
 QPointF SessionWindow::documentToCanvasPoint(const QPointF &docPoint) const {
     const QRectF target = canvasTargetRect();
     if (m_image.isNull() || target.width() <= 0 || target.height() <= 0) return docPoint;
-    return QPointF(target.left() + docPoint.x() * target.width() / m_image.width(),
-                   target.top() + docPoint.y() * target.height() / m_image.height());
+    return QPointF(target.left() + docPoint.x() * target.width() / docWidth(),
+                   target.top() + docPoint.y() * target.height() / docHeight());
 }
 
 QPointF SessionWindow::documentPoint(const QPointF &windowPoint) const {
@@ -2280,12 +2281,17 @@ QPointF SessionWindow::documentPoint(const QPointF &windowPoint) const {
     const QRectF target = canvasTargetRect();
     if (target.width() <= 0 || target.height() <= 0) return QPointF();
     const QPointF local = windowPoint - target.topLeft();
-    return QPointF(local.x() * m_image.width() / target.width(),
-                   local.y() * m_image.height() / target.height());
+    return QPointF(local.x() * docWidth() / target.width(),
+                   local.y() * docHeight() / target.height());
 }
 
 void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     PERF_SCOPE("canvasPaintEvent");
+    // Zoomed in past the detail the display image has: re-composite at the finer scale (after this paint).
+    if (!m_image.isNull() && m_displayScale < 1.0 && desiredDisplayScale() > m_displayScale && !m_rescalePending) {
+        m_rescalePending = true;
+        QTimer::singleShot(0, this, [this] { m_rescalePending = false; refreshImage(); });
+    }
     Q_UNUSED(event);
     QPainter p(canvas);
     // Dark professional neutral workspace background
@@ -2469,6 +2475,39 @@ bool SessionWindow::sendCommand(const QJsonObject &command) {
     return result == 0;
 }
 
+int SessionWindow::docWidth() const { return m_docSize.isValid() ? m_docSize.width() : m_image.width(); }
+int SessionWindow::docHeight() const { return m_docSize.isValid() ? m_docSize.height() : m_image.height(); }
+
+/// The scale the canvas image is composited at: full resolution for documents up to 4 MP, otherwise the power of two
+/// just above what the current zoom shows (so zooming doesn't re-render constantly) — what upstream's canvas gets from
+/// drawing layers through its downsample cache.
+double SessionWindow::desiredDisplayScale() const {
+    const int w = docWidth(), h = docHeight();
+    if (w <= 0 || h <= 0 || qint64(w) * h <= 4000000 || !m_canvasWidget) return 1.0;
+    const double shown = canvasTargetRect().width() * m_canvasWidget->devicePixelRatioF() / w;
+    if (shown <= 0) return 1.0;
+    return std::clamp(std::pow(2.0, std::ceil(std::log2(shown))), 1.0 / 64, 1.0);
+}
+
+/// The document composited at `scale` (1: the full composite).
+QImage SessionWindow::renderDisplayImage(double scale) {
+    if (scale >= 1.0) return renderToQImage(m_sessionHandle, docWidth(), docHeight());
+    int32_t w = 0, h = 0;
+    const int64_t size = compositor_session_render_scaled(m_sessionHandle, scale, nullptr, 0, &w, &h);
+    if (size <= 0 || w <= 0 || h <= 0) return QImage();
+    std::vector<uint8_t> rgba(static_cast<size_t>(size));
+    if (compositor_session_render_scaled(m_sessionHandle, scale, rgba.data(), rgba.size(), &w, &h) != size) return QImage();
+    return straightRGBA(rgba, w, h);
+}
+
+/// Exports and copies need every pixel, whatever the canvas shows.
+QImage SessionWindow::fullResolutionImage() {
+    if (m_displayScale >= 1.0 || m_sessionHandle == 0) return m_image;
+    QImage full = renderToQImage(m_sessionHandle, docWidth(), docHeight());
+    if (!full.isNull()) { full.setDotsPerMeterX(m_image.dotsPerMeterX()); full.setDotsPerMeterY(m_image.dotsPerMeterY()); }
+    return full.isNull() ? m_image : full;
+}
+
 void SessionWindow::refreshImage() {
     PERF_SCOPE("refreshImage");
     if (m_sessionHandle == 0) return;
@@ -2479,8 +2518,10 @@ void SessionWindow::refreshImage() {
     // Same composite as the one on screen (a brush setting, a tool, a menu changed nothing visible): no render, no
     // conversion — only the chrome below is brought up to date.
     const int64_t revision = compositor_session_render_revision(m_sessionHandle);
+    m_docSize = QSize(width, height);
+    const double scale = desiredDisplayScale();
     const bool unchanged = revision >= 0 && revision == m_shownRenderRevision && m_shownRenderHandle == m_sessionHandle
-        && m_image.width() == width && m_image.height() == height;
+        && !m_image.isNull() && m_displayScale == scale;
     if (unchanged) {
         updateStatusTelemetry();
         updateOptionsBar();
@@ -2490,8 +2531,9 @@ void SessionWindow::refreshImage() {
         }
         return;
     }
-    QImage rendered = renderToQImage(m_sessionHandle, width, height);
+    QImage rendered = renderDisplayImage(scale);
     if (rendered.isNull()) return;
+    m_displayScale = scale;
     m_shownRenderRevision = compositor_session_render_revision(m_sessionHandle);
     m_shownRenderHandle = m_sessionHandle;
     const int dpm = qRound(state.value("resolution").toDouble(72) / 0.0254);
@@ -2522,27 +2564,28 @@ void SessionWindow::scheduleStrokeRefresh() {
             // Brush strokes: re-render and repaint only the area the stroke changed (upstream's EditorCanvas redraws
             // just BrushStroke.dirtyDocumentRect). -3 = no region tracked (e.g. a Liquify warp): whole document below.
             std::vector<uint8_t> &region = m_strokeRegionBuffer;
-            region.resize(static_cast<size_t>(m_image.width()) * m_image.height() * 4);
-            int32_t rect[4] = {0, 0, 0, 0};
+            region.resize(static_cast<size_t>(m_image.width()) * m_image.height() * 4 + 16);
+            // Document rect (x, y, w, h) and the pixel size of the patch, which is at the display scale.
+            int32_t rect[6] = {0, 0, 0, 0, 0, 0};
             const int64_t n = compositor_session_render_dirty(m_sessionHandle, rect, region.data(), region.size());
             if (n == 0) return;
-            if (n > 0 && n == int64_t(rect[2]) * rect[3] * 4 && m_image.format() == QImage::Format_RGBA8888) {
-                const QImage patch = QImage(region.data(), rect[2], rect[3], rect[2] * 4, QImage::Format_RGBA8888_Premultiplied)
+            if (n > 0 && n == int64_t(rect[4]) * rect[5] * 4 && m_image.format() == QImage::Format_RGBA8888) {
+                const QImage patch = QImage(region.data(), rect[4], rect[5], rect[4] * 4, QImage::Format_RGBA8888_Premultiplied)
                     .convertToFormat(QImage::Format_RGBA8888);
                 {
                     QPainter painter(&m_image);
                     painter.setCompositionMode(QPainter::CompositionMode_Source);
-                    painter.drawImage(rect[0], rect[1], patch);
+                    painter.drawImage(QPointF(rect[0] * m_displayScale, rect[1] * m_displayScale), patch);
                 }
                 if (m_canvasWidget) {
                     const QRectF target = canvasTargetRect();
-                    const double sx = target.width() / m_image.width(), sy = target.height() / m_image.height();
+                    const double sx = target.width() / docWidth(), sy = target.height() / docHeight();
                     m_canvasWidget->update(QRectF(target.left() + rect[0] * sx, target.top() + rect[1] * sy,
                                                   rect[2] * sx, rect[3] * sy).toAlignedRect().adjusted(-2, -2, 2, 2));
                 }
                 return;
             }
-            QImage rendered = renderToQImage(m_sessionHandle, m_image.width(), m_image.height());
+            QImage rendered = renderDisplayImage(m_displayScale);
             if (rendered.isNull()) { refreshImage(); return; } // size changed under us: take the full path
             rendered.setDotsPerMeterX(m_image.dotsPerMeterX());
             rendered.setDotsPerMeterY(m_image.dotsPerMeterY());
@@ -2559,7 +2602,7 @@ void SessionWindow::scheduleStrokeRefresh() {
 
 void SessionWindow::selectRegion(bool rectangle) {
     QJsonObject command{{"action", rectangle ? "selectRectangle" : "selectEllipse"},
-                        {"x", 0}, {"y", 0}, {"width", m_image.width()}, {"height", m_image.height()}};
+                        {"x", 0}, {"y", 0}, {"width", docWidth()}, {"height", docHeight()}};
     if (sendCommand(command)) refreshImage();
 }
 
@@ -2856,7 +2899,7 @@ void SessionWindow::setTool(Tool tool) {
         m_toolActions[tool]->setChecked(true);
     }
     if (m_tool == Tool::Crop && !m_image.isNull() && !m_hasPendingCrop) {
-        m_pendingCropRect = QRectF(0, 0, m_image.width(), m_image.height());
+        m_pendingCropRect = QRectF(0, 0, docWidth(), docHeight());
         m_hasPendingCrop = true;
     }
     if (m_sessionHandle != 0) {
@@ -2940,7 +2983,7 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         m_painting = true;
         if (!m_hasPendingCrop || m_pendingCropRect.isEmpty()) {
             if (!m_image.isNull()) {
-                m_pendingCropRect = QRectF(0, 0, m_image.width(), m_image.height());
+                m_pendingCropRect = QRectF(0, 0, docWidth(), docHeight());
                 m_hasPendingCrop = true;
             }
         }
@@ -3072,7 +3115,8 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         break;
     }
     case Tool::Eyedropper: {
-        const int px = qFloor(point.x()), py = qFloor(point.y());
+        // The canvas image is at the display scale: sample where the document point lands in it.
+        const int px = qFloor(point.x() * m_displayScale), py = qFloor(point.y() * m_displayScale);
         if (!m_image.isNull() && px >= 0 && px < m_image.width() && py >= 0 && py < m_image.height()) {
             const QColor c = m_image.pixelColor(px, py);
             setBrushColor(c);
@@ -3197,7 +3241,7 @@ void SessionWindow::syncTextEditor() {
 void SessionWindow::layoutTextEditor() {
     if (!m_textEditor || m_textDraft.isEmpty() || m_image.isNull()) return;
     const QRectF target = canvasTargetRect();
-    const double scale = target.width() / m_image.width();
+    const double scale = target.width() / docWidth();
     const QJsonArray origin = m_textDraft.value("origin").toArray(), color = m_textDraft.value("color").toArray();
     const double padding = m_textDraft.value("padding").toDouble(12) * scale;
     QFont font(m_textDraft.value("fontName").toString());
@@ -3497,28 +3541,28 @@ void SessionWindow::dropEvent(QDropEvent *event) {
 bool SessionWindow::exportPNG(const QString &path) {
     if (m_sessionHandle == 0 || m_image.isNull()) return false;
     auto exporter = ImageExporterRegistry::instance().exporterForFormat("png");
-    return exporter && exporter->exportImage(m_image, path);
+    return exporter && exporter->exportImage(fullResolutionImage(), path);
 }
 
 // IO milestone: Export flattened canvas as JPEG via IImageExporter interface (SOLID)
 bool SessionWindow::exportJPEG(const QString &path, int quality) {
     if (m_sessionHandle == 0 || m_image.isNull()) return false;
     auto exporter = ImageExporterRegistry::instance().exporterForFormat("jpeg");
-    return exporter && exporter->exportImage(m_image, path, quality);
+    return exporter && exporter->exportImage(fullResolutionImage(), path, quality);
 }
 
 // Parity milestone: Export flattened canvas as TIFF via IImageExporter interface (SOLID)
 bool SessionWindow::exportTIFF(const QString &path) {
     if (m_sessionHandle == 0 || m_image.isNull()) return false;
     auto exporter = ImageExporterRegistry::instance().exporterForFormat("tiff");
-    return exporter && exporter->exportImage(m_image, path);
+    return exporter && exporter->exportImage(fullResolutionImage(), path);
 }
 
 // Parity milestone: Export flattened canvas as WebP via IImageExporter interface (SOLID)
 bool SessionWindow::exportWebP(const QString &path, int quality) {
     if (m_sessionHandle == 0 || m_image.isNull()) return false;
     auto exporter = ImageExporterRegistry::instance().exporterForFormat("webp");
-    return exporter && exporter->exportImage(m_image, path, quality);
+    return exporter && exporter->exportImage(fullResolutionImage(), path, quality);
 }
 
 // IO milestone: Import image using Qt's QImageReader
@@ -5598,14 +5642,14 @@ void SessionWindow::updateStatusTelemetry() {
     // Same rect the canvas draws into, so the readout always matches what is on screen.
     double effectiveZoom = 1.0;
     if (!m_image.isNull() && m_canvasWidget) {
-        effectiveZoom = canvasTargetRect().width() / m_image.width();
+        effectiveZoom = canvasTargetRect().width() / docWidth();
     } else if (m_zoomLevel > 0.0) {
         effectiveZoom = m_zoomLevel;
     }
     m_statusZoomLabel->setText(QString("%1%").arg(effectiveZoom * 100.0, 0, 'f', 1));
 
     if (!m_image.isNull()) {
-        m_statusDimsLabel->setText(QString("%1 × %2 px").arg(m_image.width()).arg(m_image.height()));
+        m_statusDimsLabel->setText(QString("%1 × %2 px").arg(docWidth()).arg(docHeight()));
     } else {
         m_statusDimsLabel->setText(tr("No canvas"));
     }
@@ -5728,8 +5772,8 @@ void SessionWindow::zoomBy(double factor) {
         const int pad = 24;
         const int maxW = std::max(10, canvasSize.width() - pad * 2);
         const int maxH = std::max(10, canvasSize.height() - pad * 2);
-        current = std::min(static_cast<double>(maxW) / m_image.width(),
-                           static_cast<double>(maxH) / m_image.height());
+        current = std::min(static_cast<double>(maxW) / docWidth(),
+                           static_cast<double>(maxH) / docHeight());
     }
     if (current <= 0.0) current = 1.0;
     m_zoomLevel = std::clamp(current * factor, 0.05, 32.0);
