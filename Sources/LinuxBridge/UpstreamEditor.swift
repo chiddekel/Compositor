@@ -95,6 +95,12 @@ private struct State: Encodable {
     /// The palette swatches as shown (a mask selection shows black/white), sRGB 0...1.
     let foregroundColor: [Double]
     let backgroundColor: [Double]
+    /// Upstream's brush options (the options bar edits `EditorSession.brushSettings`): diameter in pixels, hardness and
+    /// opacity 0...1, smoothing 0...100. The shell's cursor and legacy sliders follow these.
+    let brushDiameter: Double
+    let brushHardness: Double
+    let brushOpacity: Double
+    let brushSmoothing: Double
     /// The upstream color picker the UI asked for (`EditorSession.colorPicker`), for the shell to present.
     let colorPickerTitle: String?
     let colorPickerColor: [Double]?
@@ -147,7 +153,7 @@ final class UpstreamEditor {
         "selectRectangle", "selectEllipse", "selectLasso", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
         "duplicateLayer", "layerViaCopy", "toggleClippingMask", "moveActiveLayer", "moveActiveLayerOutOfGroup", "mergeLayers",
-        "brushBegin", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
+        "brushBegin", "setBrushSettings", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
         "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
         "setMaskSelected", "invertMask", "transform", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
@@ -182,6 +188,15 @@ final class UpstreamEditor {
             pumped = now
             pump(ImportPrompts.waitPumpContext)
         })
+    }
+
+    /// Brush options present in `parameters` (diameter px, hardness / opacity 0...1, smoothing 0...100), clamped to the
+    /// options bar's ranges; absent ones keep their value.
+    private static func apply(_ parameters: [String: Double], to settings: inout BrushSettings) {
+        if let d = parameters["diameter"], d.isFinite { settings.diameter = CGFloat(min(2000, max(1, d))) }
+        if let h = parameters["hardness"], h.isFinite { settings.hardness = CGFloat(min(1, max(0, h))) }
+        if let o = parameters["opacity"], o.isFinite { settings.opacity = CGFloat(min(1, max(0.01, o))) }
+        if let m = parameters["smoothing"], m.isFinite { settings.smoothing = CGFloat(min(100, max(0, m))) }
     }
 
     func commandAsync(_ json: Data) async -> Int32 {
@@ -410,9 +425,13 @@ final class UpstreamEditor {
                 s.spotHealingMode = SpotHealingMode.allCases[Int(modeIndex)]
             }
             if cloning { s.cloneSettings.aligned = (p["aligned"] ?? 1) != 0; s.cloneSettings.sampleAllLayers = (p["sampleAllLayers"] ?? 0) != 0 }
-            var settings = BrushSettings()
-            settings.diameter = p["diameter"] ?? 40; settings.hardness = p["hardness"] ?? 1; settings.opacity = p["opacity"] ?? 1
-            settings.red = p["red"] ?? 0; settings.green = p["green"] ?? 0; settings.blue = p["blue"] ?? 0
+            // The session's own settings (what upstream's options bar edits: hardness, opacity, smoothing, ...), with
+            // whatever the shell sends on top — a fresh BrushSettings() here threw the options bar's choices away.
+            var settings = s.brushSettings
+            Self.apply(p, to: &settings)
+            if let red = p["red"] { settings.red = red }
+            if let green = p["green"] { settings.green = green }
+            if let blue = p["blue"] { settings.blue = blue }
             s.brushSettings = settings
             s.brushMode = (p["erasing"] ?? 0) != 0 ? .erase : .paint
             s.isMaskSelected = (p["mask"] ?? 0) != 0
@@ -420,6 +439,11 @@ final class UpstreamEditor {
             if s.isMaskSelected { s.maskPaintWhite = (0.2126 * settings.red + 0.7152 * settings.green + 0.0722 * settings.blue) > 0.5 }
             s.beginBrush(at: point)
             guard s.brushStroke != nil else { return fail(-5, cloning ? "clone stamp could not start (out of range?)" : "brush could not start") }
+        // The shell's brush controls (legacy sliders, [ and ] keys) change the session's settings, as the options bar does.
+        case "setBrushSettings":
+            var settings = s.brushSettings
+            Self.apply(command.parameters ?? [:], to: &settings)
+            s.brushSettings = settings
         case "brushMove":
             guard let point = point(command) else { return fail(-1, "invalid point") }
             s.continueBrush(at: point)
@@ -493,8 +517,8 @@ final class UpstreamEditor {
         case "warpBegin":
             guard let name = command.kind, let mode = BlurToolMode(rawValue: name), let point = point(command) else { return fail(-1, "invalid warp") }
             let p = command.parameters ?? [:]
-            var settings = BrushSettings()
-            settings.diameter = p["diameter"] ?? 40; settings.hardness = p["hardness"] ?? 1; settings.opacity = p["opacity"] ?? 1
+            var settings = s.brushSettings
+            Self.apply(p, to: &settings)
             s.selectTool(.blur)
             s.blurMode = mode
             s.brushSettings = settings
@@ -699,6 +723,10 @@ final class UpstreamEditor {
             marqueeKind: s.marqueeKind.rawValue,
             foregroundColor: rgb(s.paletteColor(background: false)),
             backgroundColor: rgb(s.paletteColor(background: true)),
+            brushDiameter: Double(s.brushSettings.diameter),
+            brushHardness: Double(s.brushSettings.hardness),
+            brushOpacity: Double(s.brushSettings.opacity),
+            brushSmoothing: Double(s.brushSettings.smoothing),
             colorPickerTitle: s.colorPicker?.target.title,
             colorPickerColor: s.colorPicker.map { rgb($0.color) },
             gradientLine: s.gradientEdit.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] },

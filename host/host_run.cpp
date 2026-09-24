@@ -120,6 +120,16 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             window.sendCommand(cmd);
             window.updateOptionsBar();
         }
+        // COMPOSITOR_GRAB_BRUSH="hardness,opacity,smoothing" (0-1, 0-1, 0-100): set in the session as upstream's options
+        // bar does, before COMPOSITOR_GRAB_DRAG paints with them.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH").isEmpty()) {
+            const QStringList b = qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH").split(',');
+            if (b.size() == 3) {
+                window.sendCommand({{"version", 1}, {"action", "setBrushSettings"},
+                                    {"parameters", QJsonObject{{"hardness", b[0].toDouble()}, {"opacity", b[1].toDouble()},
+                                                               {"smoothing", b[2].toDouble()}}}});
+            }
+        }
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_STROKE").isEmpty()) {
             window.setTool(SessionWindow::Tool::Brush);
             window.paintStroke(200, 200, 600, 450);

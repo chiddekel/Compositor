@@ -287,6 +287,7 @@ private:
     void setupOptionsBar();
     void syncToolFromSession();
     void syncOptionsFromSession();
+    void syncBrushFromSession();
     void updateStatusTelemetry();
     void fitCanvas();
     void actualPixels();

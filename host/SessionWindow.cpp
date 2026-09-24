@@ -2854,9 +2854,41 @@ void SessionWindow::pickBrushColor() {
 
 void SessionWindow::setBrushColor(const QColor &color) { sendPaletteColor(color, false); }
 
-void SessionWindow::setBrushDiameter(int value) { m_brushDiameter = value; }
-void SessionWindow::setBrushHardness(int value) { m_brushHardness = value; }
-void SessionWindow::setBrushOpacity(int value) { m_brushOpacity = value; }
+// The brush options live in the session (upstream's options bar edits them there); the shell's controls and keys
+// change them through it too, and every stroke start reads them back (syncBrushFromSession).
+void SessionWindow::setBrushDiameter(int value) {
+    m_brushDiameter = value;
+    sendCommandQuiet({{"action", "setBrushSettings"}, {"parameters", QJsonObject{{"diameter", value}}}});
+    updateOptionsBar();
+}
+void SessionWindow::setBrushHardness(int value) {
+    m_brushHardness = value;
+    sendCommandQuiet({{"action", "setBrushSettings"}, {"parameters", QJsonObject{{"hardness", value / 100.0}}}});
+    updateOptionsBar();
+}
+void SessionWindow::setBrushOpacity(int value) {
+    m_brushOpacity = value;
+    sendCommandQuiet({{"action", "setBrushSettings"}, {"parameters", QJsonObject{{"opacity", value / 100.0}}}});
+    updateOptionsBar();
+}
+
+/// Brush diameter / hardness / opacity as the session holds them, into the shell's copies (strokes, tablet, cursor) and
+/// the legacy controls — signals blocked, so showing a value never writes it back (clamped to a slider's range).
+void SessionWindow::syncBrushFromSession() {
+    if (m_sessionHandle == 0) return;
+    const QJsonObject state = sessionState();
+    if (!state.contains("brushDiameter")) return;
+    m_brushDiameter = std::max(1, int(std::lround(state.value("brushDiameter").toDouble())));
+    m_brushHardness = int(std::lround(state.value("brushHardness").toDouble() * 100));
+    m_brushOpacity = int(std::lround(state.value("brushOpacity").toDouble() * 100));
+    auto show = [this](const char *name, int value) {
+        if (auto *slider = findChild<QSlider *>(name)) { const QSignalBlocker block(slider); slider->setValue(value); }
+        if (auto *spin = findChild<QSpinBox *>(QString(name) + "Spin")) { const QSignalBlocker block(spin); spin->setValue(value); }
+    };
+    show("brush.diameter", m_brushDiameter);
+    show("brush.hardness", m_brushHardness);
+    show("brush.opacity", m_brushOpacity);
+}
 
 void SessionWindow::setBlendModeFromCombo(int index) {
     if (m_syncingLayers || index < 0) return;
@@ -2961,6 +2993,7 @@ void SessionWindow::setTool(Tool tool) {
 
 void SessionWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || m_painting) return;
+    syncBrushFromSession();   // the options bar may have changed them since
     const QPointF point = documentPoint(event->position());
     m_dragStart = point;
     if (m_pixelSampler) {
@@ -3488,6 +3521,7 @@ void SessionWindow::tabletEvent(QTabletEvent *event) {
     if (m_tool == Tool::Brush) {
         switch (event->type()) {
         case QEvent::TabletPress:
+            syncBrushFromSession();
             if (m_tabletHandler && m_tabletHandler->handleTabletPress(event, m_sessionHandle, point, m_brushDiameter,
                                                                       m_brushHardness, m_brushOpacity, m_brushColor,
                                                                       m_brushToolMode == BrushToolMode::Erase)) {
@@ -5001,6 +5035,7 @@ void SessionWindow::setupOptionsBar() {
     layoutBrush->addWidget(m_brushDiameterSlider);
 
     auto *spinSize = new QSpinBox(pageBrush);
+    spinSize->setObjectName("brush.diameterSpin");
     spinSize->setRange(1, 2000);
     spinSize->setValue(m_brushDiameter);
     spinSize->setSuffix(tr(" px"));
@@ -5029,6 +5064,7 @@ void SessionWindow::setupOptionsBar() {
     layoutBrush->addWidget(m_brushHardnessSlider);
 
     auto *spinHard = new QSpinBox(pageBrush);
+    spinHard->setObjectName("brush.hardnessSpin");
     spinHard->setRange(0, 100);
     spinHard->setValue(m_brushHardness);
     spinHard->setSuffix(tr(" %"));
@@ -5057,6 +5093,7 @@ void SessionWindow::setupOptionsBar() {
     layoutBrush->addWidget(m_brushOpacitySlider);
 
     auto *spinOpac = new QSpinBox(pageBrush);
+    spinOpac->setObjectName("brush.opacitySpin");
     spinOpac->setRange(0, 100);
     spinOpac->setValue(m_brushOpacity);
     spinOpac->setSuffix(tr(" %"));
@@ -5617,6 +5654,7 @@ void SessionWindow::syncToolFromSession() {
 void SessionWindow::syncOptionsFromSession() {
     PERF_SCOPE("syncOptionsFromSession");
     if (m_sessionHandle == 0) return;
+    syncBrushFromSession();
     const auto state = sessionState();
     const QString selMode = state.value("selectionMode").toString();
     if (!selMode.isEmpty()) {
