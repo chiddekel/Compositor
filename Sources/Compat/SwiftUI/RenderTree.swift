@@ -90,6 +90,75 @@ public enum RenderModifier {
     case sink(String, (Any) -> Void)
     /// Share of a stack's space: higher priorities are sized first (`.layoutPriority`).
     case layoutPriority(Double)
+    /// A watched value (`.onChange(of:)`, `.task(id:)`); acted on by ChangeTracker, never sent to the shell.
+    case observe(ChangeObserver)
+}
+
+/// `.onChange(of:)` / `.task(id:)`: a watched value and what to do when it changes between renders (see ChangeTracker).
+public final class ChangeObserver {
+    let value: Any
+    /// Whether `value` equals a previously rendered one.
+    let equals: (Any) -> Bool
+    let initial: Bool
+    /// `.onChange`: called with the previous value.
+    let changed: ((Any) -> Void)?
+    /// `.task(id:)`: started on first render and restarted (the old one cancelled) when the id changes.
+    let task: (@MainActor () async -> Void)?
+    init(value: Any, equals: @escaping (Any) -> Bool, initial: Bool, changed: ((Any) -> Void)?, task: (@MainActor () async -> Void)?) {
+        self.value = value; self.equals = equals; self.initial = initial; self.changed = changed; self.task = task
+    }
+}
+
+/// SwiftUI's observer semantics for resolved trees: each resolve of a panel compares every `.onChange` / `.task(id:)`
+/// value with the one at the same place last time, fires `.onChange` actions for the ones that moved, and starts or
+/// restarts `.task`s — after the walk, so actions never run mid-resolve. Places that disappear have their tasks
+/// cancelled, as SwiftUI does when a view goes away.
+@MainActor public enum ChangeTracker {
+    private struct Entry { var value: Any; var task: Task<Void, Never>? }
+    private static var entries: [String: Entry] = [:]
+
+    public static func process(scope: String, root: RenderNode) {
+        var seen = Set<String>()
+        var actions: [() -> Void] = []
+        func visit(_ node: RenderNode) {
+            for (index, modifier) in node.modifiers.enumerated() {
+                guard case .observe(let observer) = modifier else { continue }
+                let key = "\(scope)|\(node.id)|\(index)"
+                seen.insert(key)
+                if var entry = entries[key] {
+                    guard !observer.equals(entry.value) else { continue }
+                    let old = entry.value
+                    entry.value = observer.value
+                    if let task = observer.task {
+                        entry.task?.cancel()
+                        entry.task = Task { @MainActor in await task() }
+                    }
+                    entries[key] = entry
+                    if let changed = observer.changed { actions.append { changed(old) } }
+                } else {
+                    var entry = Entry(value: observer.value, task: nil)
+                    if let task = observer.task { entry.task = Task { @MainActor in await task() } }
+                    else if observer.initial, let changed = observer.changed { actions.append { changed(observer.value) } }
+                    entries[key] = entry
+                }
+            }
+            for child in node.children { visit(child) }
+        }
+        visit(root)
+        for (key, entry) in entries where key.hasPrefix(scope + "|") && !seen.contains(key) {
+            entry.task?.cancel()
+            entries.removeValue(forKey: key)
+        }
+        for action in actions { action() }
+    }
+
+    /// Cancels and forgets everything under `scope` (a panel that is closed for good).
+    public static func discard(scope: String) {
+        for (key, entry) in entries where key.hasPrefix(scope + "|") {
+            entry.task?.cancel()
+            entries.removeValue(forKey: key)
+        }
+    }
 }
 
 /// A view whose node in the render tree is produced directly (no `body` to recurse into) — SwiftUI's real

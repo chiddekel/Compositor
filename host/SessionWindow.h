@@ -255,6 +255,7 @@ private:
     bool isBrushStrokeActive() const;
     void retireRenderedPanel(QWidget *panel);
     void syncCanvasDrafts();
+    void presentSwiftUISheet(const QString &panel);
     bool sendCommandQuiet(const QJsonObject &command);   // no status-bar error (probing, e.g. "text here?")
     void syncTextEditor();
     void layoutTextEditor();
@@ -352,6 +353,8 @@ private:
     QMap<Tool, QAction *> m_toolActions;
     std::unique_ptr<ITabletHandler> m_tabletHandler;
     QTimer *m_autosaveTimer = nullptr;
+    QTimer *m_mainPumpTimer = nullptr;   // drains Swift's main queue under Qt (see constructor)
+    QByteArray m_pumpedState;
     QTimer *m_strokeRefreshTimer = nullptr;
     QElapsedTimer m_strokeFrameClock;            // when the last stroke frame started (frame pacing)
     std::vector<uint8_t> m_strokeRegionBuffer;   // reused between stroke frames: no per-frame allocation

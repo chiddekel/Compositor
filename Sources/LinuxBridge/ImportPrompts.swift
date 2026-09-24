@@ -10,6 +10,19 @@ enum ImportPrompts {
     /// Shell callback: a JSON array of {"layer","message"} and its length; returns non-zero to go ahead.
     typealias ConversionPrompt = @convention(c) (UnsafePointer<UInt8>?, Int) -> Int32
     nonisolated(unsafe) static var conversionPrompt: ConversionPrompt?
+    /// Shell callback that presents a SwiftUI sheet panel (e.g. "RawDevelopSheet") modally until upstream closes it.
+    typealias SheetPresenter = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void
+    nonisolated(unsafe) static var sheetPresenter: SheetPresenter?
+    nonisolated(unsafe) static var sheetPresenterContext: UnsafeMutableRawPointer?
+    nonisolated(unsafe) static var presenting = false
+
+    /// Called while a command waits: puts up the sheet upstream asked for, if the shell can show it.
+    @MainActor static func presentPendingSheet(for session: EditorSession) {
+        guard !presenting, let sheetPresenter, session.showsRawDevelop else { return }
+        presenting = true
+        defer { presenting = false }
+        sheetPresenter(sheetPresenterContext, "RawDevelopSheet")
+    }
 
     @MainActor static func install(on session: EditorSession) {
         if session.confirmConversions == nil {
@@ -22,7 +35,9 @@ enum ImportPrompts {
                 }
             }
         }
-        if session.confirmRawDevelop == nil {
+        // RAW: upstream's own Develop sheet (RawDevelopSheet), which the shell presents when `showsRawDevelop` turns on
+        // while the import waits (UpstreamEditor.command). Without a presenter, develop as shot.
+        if sheetPresenter == nil, session.confirmRawDevelop == nil {
             session.confirmRawDevelop = { _, asShot in asShot }
         }
     }
@@ -31,4 +46,11 @@ enum ImportPrompts {
 @_cdecl("compositor_set_conversion_prompt")
 nonisolated public func compositorSetConversionPrompt(_ prompt: (@convention(c) (UnsafePointer<UInt8>?, Int) -> Int32)?) {
     ImportPrompts.conversionPrompt = prompt
+}
+
+@_cdecl("compositor_set_sheet_presenter")
+nonisolated public func compositorSetSheetPresenter(_ presenter: (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void)?,
+                                                    _ context: UnsafeMutableRawPointer?) {
+    ImportPrompts.sheetPresenter = presenter
+    ImportPrompts.sheetPresenterContext = context
 }

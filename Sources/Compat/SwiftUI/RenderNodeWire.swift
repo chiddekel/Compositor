@@ -87,7 +87,7 @@ extension RenderModifier {
             return RenderModifierWire(kind: "keyboardShortcut", stringParams: ["key": key], doubleParams: ["modifiers": Double(modifiers)])
         case let .tag(text): return RenderModifierWire(kind: "tag", stringParams: ["text": text])
         case let .layoutPriority(value): return RenderModifierWire(kind: "layoutPriority", doubleParams: ["value": value])
-        case .overlay, .onAppear, .onSubmit, .onExitCommand, .sink: return nil
+        case .overlay, .onAppear, .onSubmit, .onExitCommand, .sink, .observe: return nil
         }
     }
 }

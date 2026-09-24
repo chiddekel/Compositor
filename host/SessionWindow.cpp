@@ -14,6 +14,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include "SwiftUIQtRenderer.h"
 
 #include <QPainter>
+#include <QDialog>
 #include <QFontMetricsF>
 #include <QTextDocument>
 #include <QTextOption>
@@ -95,6 +96,9 @@ int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t 
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_render_revision(uint64_t handle);
 typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
+void compositor_set_sheet_presenter(void (*presenter)(void *context, const char *panel), void *context);
+void compositor_pump_main(void);
+void compositor_session_raw_develop_cancel(uint64_t handle);
 void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
@@ -981,6 +985,64 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_autosaveTimer->setInterval(60000);
     connect(m_autosaveTimer, &QTimer::timeout, this, [this] { performAutosave(); });
     m_autosaveTimer->start();
+
+    // Upstream sheets that open mid-command (RAW Develop during an import) are shown by the shell.
+    compositor_set_sheet_presenter([](void *context, const char *panel) {
+        static_cast<SessionWindow *>(context)->presentSwiftUISheet(QString::fromUtf8(panel));
+    }, this);
+
+    // Swift's main queue has no other pump under Qt's event loop: upstream async work started from a panel
+    // (previews, Task {} in button actions) runs here, and whatever it changed shows.
+    m_mainPumpTimer = new QTimer(this);
+    m_mainPumpTimer->setInterval(16);
+    connect(m_mainPumpTimer, &QTimer::timeout, this, [this] {
+        compositor_pump_main();
+        if (m_sessionHandle == 0 || m_painting) return;
+        const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
+        if (size <= 0 || size > 4 * 1024 * 1024) return;
+        QByteArray bytes(qsizetype(size), Qt::Uninitialized);
+        if (compositor_session_state(m_sessionHandle, reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return;
+        if (bytes == m_pumpedState) return;
+        const bool first = m_pumpedState.isEmpty();
+        m_pumpedState = bytes;
+        if (!first) { refreshImage(); updateToolRail(); }
+    });
+    m_mainPumpTimer->start();
+}
+
+/// Shows an upstream SwiftUI sheet panel (RAW Develop) modally, the way the macOS app shows it as a sheet: rendered
+/// and re-rendered from the session, its buttons calling upstream's own code, closed when upstream closes it.
+void SessionWindow::presentSwiftUISheet(const QString &panel) {
+    if (m_sessionHandle == 0) return;
+    const uint64_t handle = m_sessionHandle;
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Develop"));
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(0, 0, 0, 0);
+    QWidget *current = nullptr;
+    auto render = [&] {
+        QWidget *next = swiftUIRenderPanelIfChanged(handle, panel, current);
+        if (next && next != current) {
+            if (current) { layout->removeWidget(current); retireRenderedPanel(current); }
+            current = next;
+            layout->addWidget(current);
+            current->show();
+        }
+    };
+    auto isOpen = [&] { return sessionState().value("rawDevelopOpen").toBool(false); };
+    render();
+    if (!current) { compositor_session_raw_develop_cancel(handle); return; }
+    QTimer tick;
+    tick.setInterval(16);
+    QObject::connect(&tick, &QTimer::timeout, &dialog, [&] {
+        compositor_pump_main();   // the sheet's preview task runs on the main queue
+        if (!isOpen()) { dialog.accept(); return; }
+        render();
+    });
+    tick.start();
+    if (dialog.exec() != QDialog::Accepted && isOpen()) compositor_session_raw_develop_cancel(handle);
+    tick.stop();
+    if (current) retireRenderedPanel(current);
 }
 
 SessionWindow::~SessionWindow() {

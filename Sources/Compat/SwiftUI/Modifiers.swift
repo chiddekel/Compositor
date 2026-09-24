@@ -123,7 +123,11 @@ extension View {
     public func pickerStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.pickerStyle(style.name)) } }
     public func menuStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.menuStyle(style.name)) } }
     public func onDisappear(perform action: @escaping () -> Void = {}) -> some View { self }
-    public func task(id: some Equatable, priority: TaskPriority = .userInitiated, _ action: @escaping () async -> Void) -> some View { self }
+    public func task<ID: Equatable>(id: ID, priority: TaskPriority = .userInitiated, _ action: @escaping () async -> Void) -> some View {
+        nonisolated(unsafe) let work = action
+        return modified { $0.modifiers.append(.observe(ChangeObserver(value: id, equals: { ($0 as? ID) == id }, initial: true,
+                                                                     changed: nil, task: { await work() }))) }
+    }
     public func id<ID: Hashable>(_ id: ID) -> some View { modified { $0.modifiers.append(.identifier("\(id)")) } }
     public func tag<V: Hashable>(_ tag: V) -> some View {
         let str: String
@@ -159,9 +163,14 @@ extension View {
         })) }
     }
     public func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping (V, V) -> Void) -> some View {
-        modified { $0.modifiers.append(.sink("onChange", { newValue in
-            if let typed = newValue as? V { action(value, typed) }
-        })) }
+        modified {
+            $0.modifiers.append(.sink("onChange", { newValue in
+                if let typed = newValue as? V { action(value, typed) }
+            }))
+            // Also fires when the value differs from the previous render, as in SwiftUI (ChangeTracker).
+            $0.modifiers.append(.observe(ChangeObserver(value: value, equals: { ($0 as? V) == value }, initial: initial,
+                                                        changed: { old in action((old as? V) ?? value, value) }, task: nil)))
+        }
     }
     /// `@_disfavoredOverload`: real, load-bearing fix, not decoration. Having both this and the 2-arg overload
     /// above visible as equally-good candidates is what made Swift's constraint solver time out on
@@ -173,7 +182,11 @@ extension View {
     /// zero-argument calls still resolve correctly (just as the last candidate tried, not the first).
     @_disfavoredOverload
     public func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping () -> Void) -> some View {
-        modified { $0.modifiers.append(.sink("onChange", { _ in action() })) }
+        modified {
+            $0.modifiers.append(.sink("onChange", { _ in action() }))
+            $0.modifiers.append(.observe(ChangeObserver(value: value, equals: { ($0 as? V) == value }, initial: initial,
+                                                        changed: { _ in action() }, task: nil)))
+        }
     }
     public func gesture<G>(_ gesture: G) -> some View { self }
     public func onTapGesture(count: Int = 1, perform action: @escaping () -> Void) -> some View {

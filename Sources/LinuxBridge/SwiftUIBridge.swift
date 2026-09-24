@@ -149,6 +149,13 @@ struct CompositorStatusBar: View {
     case "HueSaturationSheet": resolved = ViewResolver.resolve(HueSaturationSheet(session: session))
     case "FilterSheet": resolved = ViewResolver.resolve(FilterSheet(session: session))
     case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session))
+    case "RawDevelopSheet":
+        // One sheet per develop request, kept while it is open: its sliders and preview live in its @State.
+        guard let develop = session.rawDevelop else { entry.rawDevelopSheet = nil; return nil }
+        if entry.rawDevelopSheet?.url != develop.url {
+            entry.rawDevelopSheet = (develop.url, RawDevelopSheet(session: session, url: develop.url, settings: develop.settings))
+        }
+        resolved = ViewResolver.resolve(entry.rawDevelopSheet!.view)
     case "CurvesControls":
         var settings = CurvesSettings()
         let binding = Binding<CurvesSettings>(get: { settings }, set: { settings = $0 })
@@ -157,6 +164,8 @@ struct CompositorStatusBar: View {
     }
     var node = resolved
     node.assignIDs()
+    // .onChange / .task(id:) observers, compared with this panel's previous resolve (SwiftUI semantics).
+    ChangeTracker.process(scope: "\(ObjectIdentifier(entry).hashValue)|\(panel)", root: node)
     var handlers: [String: [String: (Any) -> Void]] = [:]
     node.collectHandlers(into: &handlers)
     entry.actionHandlers[panel] = handlers

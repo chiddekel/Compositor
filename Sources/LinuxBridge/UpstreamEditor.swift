@@ -13,10 +13,14 @@ import Foundation
 import CoreGraphics
 
 /// Runs `operation` (main-actor, async) to completion from a synchronous call on the main thread.
-func awaitOnMain<Value: Sendable>(_ operation: @escaping @MainActor @Sendable () async -> Value) -> Value {
+func awaitOnMain<Value: Sendable>(_ operation: @escaping @MainActor @Sendable () async -> Value,
+                                   whileWaiting: (@MainActor () -> Void)? = nil) -> Value {
     nonisolated(unsafe) var result: Value?
     Task { @MainActor in result = await operation() }
-    while result == nil { RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.001)) }
+    while result == nil {
+        RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.001))
+        if result == nil, let whileWaiting { MainActor.assumeIsolated { whileWaiting() } }
+    }
     return result!
 }
 
@@ -102,6 +106,8 @@ private struct State: Encodable {
     let shapeLine: [Double]?
     /// The text being typed (upstream `textDraft`): where it sits and how it looks, for the shell's inline editor.
     let textDraft: TextDraftState?
+    /// Upstream's RAW Develop sheet is up (the shell's dialog closes when this turns false).
+    let rawDevelopOpen: Bool
     struct TextDraftState: Encodable {
         let origin: [Double]
         let size: [Double]?
@@ -156,13 +162,16 @@ final class UpstreamEditor {
 
     /// The adjustment as it was when editing began, for cancel.
     private var adjustmentOriginal: (id: UUID, value: LayerAdjustment)?
+    /// The adjustment layer the shell's dialog is editing.
+    private var adjustmentEditing: UUID?
     /// The manifest of a project being loaded; its layers' images and masks arrive through `installLayerAsset`.
     private var loadingManifest: ProjectManifest?
 
     /// Synchronous entry for the C ABI (called from the Qt main thread): runs `commandAsync`, pumping the run loop while
     /// upstream's async operations finish. Must not be called from inside a main-actor job (tests use `commandAsync`).
     func command(_ json: Data) -> Int32 {
-        awaitOnMain { [self] in await commandAsync(json) }
+        // While upstream waits on a sheet (RAW Develop), the shell presents it.
+        awaitOnMain({ [self] in await commandAsync(json) }, whileWaiting: { [self] in ImportPrompts.presentPendingSheet(for: session) })
     }
 
     func commandAsync(_ json: Data) async -> Int32 {
@@ -507,26 +516,34 @@ final class UpstreamEditor {
             let options = ImageSizeOptions(width: width, height: height, resolution: command.value ?? s.document?.resolution ?? 72, sampling: sampling)
             guard let resized = try? await ImageResizer.shared.resize(snapshot, to: options) else { return fail(-5, "image resize failed") }
             s.applyImageSize(resized)
+        // The shell's adjustment dialogs own the edit (adjustmentEditing below). Upstream's `adjustmentEditingID` is the
+        // macOS "open the adjustment sheet" request (LayersPanel's .task begins upstream's own editing session for
+        // it), so it is not left set here — otherwise both flows would edit the same adjustment at once.
         case "addAdjustment":
             guard let name = command.kind, let kind = AdjustmentKind(rawValue: name) else { return fail(-1, "unknown adjustment") }
             s.addAdjustment(kind)
+            if let id = s.adjustmentEditingID, let value = s.document?.layers.first(where: { $0.id == id })?.adjustment {
+                adjustmentEditing = id
+                adjustmentOriginal = (id, value)
+            }
+            s.adjustmentEditingID = nil
         case "adjustmentBegin":
             guard let id = command.layerID, let value = s.document?.layers.first(where: { $0.id == id })?.adjustment else { return fail(-1, "not an adjustment layer") }
             s.selectLayer(id)
-            s.adjustmentEditingID = id
+            adjustmentEditing = id
             adjustmentOriginal = (id, value)
         case "adjustmentPreview":
-            guard let value = command.adjustment, let id = s.adjustmentEditingID else { return fail(-1, "no adjustment being edited") }
+            guard let value = command.adjustment, let id = adjustmentEditing else { return fail(-1, "no adjustment being edited") }
             s.updateAdjustment(id, value: value)
         case "adjustmentCommit":
-            guard let value = command.adjustment, let id = s.adjustmentEditingID ?? adjustmentOriginal?.id else { return fail(-1, "no adjustment being edited") }
+            guard let value = command.adjustment, let id = adjustmentEditing ?? adjustmentOriginal?.id else { return fail(-1, "no adjustment being edited") }
             s.beginEdit("Edit \(value.kind.rawValue) Adjustment")
             s.updateAdjustment(id, value: value)
             s.endEdit()
-            s.adjustmentEditingID = nil; adjustmentOriginal = nil
+            adjustmentEditing = nil; adjustmentOriginal = nil
         case "adjustmentCancel":
             if let original = adjustmentOriginal { s.updateAdjustment(original.id, value: original.value) }
-            s.adjustmentEditingID = nil; adjustmentOriginal = nil
+            adjustmentEditing = nil; adjustmentOriginal = nil
         case "contentFill":
             s.beginFilter(.contentAwareFill)
             guard s.filterEdit != nil else { return fail(-5, "content-aware fill needs a selection") }
@@ -686,7 +703,8 @@ final class UpstreamEditor {
                     fontSize: Double(style.fontSize), color: [Double(style.red), Double(style.green), Double(style.blue)],
                     alignment: style.alignment.rawValue, boxSize: style.boxSize.map { [Double($0.width), Double($0.height)] },
                     padding: Double(LayerTextStyle.padding), editingLayer: draft.layerID != nil)
-            })
+            },
+            rawDevelopOpen: s.showsRawDevelop)
         return try JSONEncoder().encode(state)
     }
 

@@ -18,6 +18,8 @@ final class Entry {
     var renderRevision: Int64 = 0
     /// Document area the brush stroke in progress changed since the last `compositor_session_render_dirty`.
     var strokeDirty: CGRect?
+    /// The RAW Develop sheet being shown for this session (see resolvePanel "RawDevelopSheet").
+    var rawDevelopSheet: (url: URL, view: RawDevelopSheet)?
     /// The last resolved SwiftUI tree's action handlers, per panel: panel name -> node id -> handler key -> closure.
     /// Populated by `SwiftUIBridge.swift`'s `resolvePanel`, read by `compositor_session_dispatch_swiftui_action`.
     var actionHandlers: [String: [String: [String: (Any) -> Void]]] = [:]
@@ -233,6 +235,22 @@ nonisolated public func compositorSessionRenderRevision(_ handle: UInt64) -> Int
         guard entry.editor.session.document != nil else { return -2 }
         entry.editor.settle()   // same key the next render will compute (a pending preview lands first)
         return entry.renderedKey == entry.editor.renderKey() && entry.rendered != nil ? entry.renderRevision : entry.renderRevision + 1
+    }
+}
+
+/// Runs whatever is waiting on the main actor/queue (upstream async work started from a panel: previews, `Task {}` in
+/// button actions), without blocking. The shell calls it from a timer; nothing else drains that queue under Qt.
+@_cdecl("compositor_pump_main")
+nonisolated public func compositorPumpMain() {
+    RunLoop.main.run(mode: .default, before: Date())
+}
+
+/// Cancels upstream's RAW Develop sheet (the shell's dialog was closed without Import).
+@_cdecl("compositor_session_raw_develop_cancel")
+nonisolated public func compositorSessionRawDevelopCancel(_ handle: UInt64) {
+    _ = withEntry(handle) { entry in
+        if entry.editor.session.showsRawDevelop { entry.editor.session.finishRawDevelop(nil) }
+        return 0
     }
 }
 
