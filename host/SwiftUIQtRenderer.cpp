@@ -175,6 +175,8 @@ private:
     double m_strokeWidth;
 };
 
+extern "C" int64_t compositor_swiftui_image(const char *token, int32_t *width, int32_t *height, uint8_t *output, size_t capacity);
+
 /// The panel's resolved tree as the Swift side serialises it (also re-registers its action handlers there).
 QByteArray fetchTreeBytes(uint64_t handle, const QString &panel) {
     const QByteArray panelUtf8 = panel.toUtf8();
@@ -1039,7 +1041,30 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }
         auto *label = new QLabel;
         label->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-        if (!systemIcon.isEmpty()) {
+        if (source.startsWith(QLatin1String("pixels:"))) {
+            // A bitmap (a layer thumbnail, ...): its pixels by token, drawn at the node's frame size.
+            const QByteArray token = source.mid(7).toUtf8();
+            int32_t w = 0, h = 0;
+            const int64_t size = compositor_swiftui_image(token.constData(), &w, &h, nullptr, 0);
+            if (size > 0 && w > 0 && h > 0 && size == int64_t(w) * h * 4) {
+                QByteArray pixels(qsizetype(size), Qt::Uninitialized);
+                compositor_swiftui_image(token.constData(), &w, &h, reinterpret_cast<uint8_t *>(pixels.data()), size_t(size));
+                const QImage image = QImage(reinterpret_cast<const uchar *>(pixels.constData()), w, h, w * 4,
+                                            QImage::Format_RGBA8888_Premultiplied).copy();
+                QSize box(w, h);
+                for (const auto &m : node.value("modifiers").toArray()) {
+                    const QJsonObject d = m.toObject().value("doubleParams").toObject();
+                    if (m.toObject().value("kind").toString() == "frame" && d.contains("width") && d.contains("height"))
+                        box = QSize(qRound(d.value("width").toDouble()), qRound(d.value("height").toDouble()));
+                }
+                const qreal dpr = label->devicePixelRatioF();
+                QPixmap pixmap = QPixmap::fromImage(image.scaled(box * dpr, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                pixmap.setDevicePixelRatio(dpr);
+                label->setPixmap(pixmap);
+                label->setFixedSize(box);
+                label->setAlignment(Qt::AlignCenter);
+            }
+        } else if (!systemIcon.isEmpty()) {
             QColor iconColor(0x8e, 0x8e, 0x93);
             int iconSize = 16;
             for (const auto &m : node.value("modifiers").toArray()) {

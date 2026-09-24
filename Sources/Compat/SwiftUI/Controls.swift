@@ -44,11 +44,48 @@ extension Label where Title == Text, Icon == Image {
     }
 }
 
+/// Bitmaps a resolved tree shows (`Image(nsImage:)`, `Image(decorative:scale:)`), handed to the shell by token: the tree
+/// carries `pixels:<token>`, the shell fetches the pixels (`compositor_swiftui_image`). One token per image object, so
+/// a changed picture changes the tree and an unchanged one doesn't. The most recent images are kept, oldest dropped.
+public enum ImageRegistry {
+    nonisolated(unsafe) private static var tokens: [ObjectIdentifier: String] = [:]
+    nonisolated(unsafe) private static var images: [String: CGImage] = [:]
+    nonisolated(unsafe) private static var order: [String] = []
+    nonisolated(unsafe) private static var next = 1
+    private static let lock = NSLock()
+    private static let capacity = 2048
+
+    public static func token(for image: CGImage) -> String {
+        lock.lock(); defer { lock.unlock() }
+        if let token = tokens[ObjectIdentifier(image)], images[token] === image { return token }
+        let token = String(next); next += 1
+        tokens[ObjectIdentifier(image)] = token
+        images[token] = image
+        order.append(token)
+        if order.count > capacity {
+            let dropped = order.removeFirst()
+            if let image = images.removeValue(forKey: dropped) { tokens.removeValue(forKey: ObjectIdentifier(image)) }
+        }
+        return token
+    }
+    public static func image(for token: String) -> CGImage? {
+        lock.lock(); defer { lock.unlock() }
+        return images[token]
+    }
+}
+
 public struct Image: View, PrimitiveView {
     let source: String
     public init(systemName: String) { source = "system:\(systemName)" }
     public init(_ name: String) { source = "named:\(name)" }
-    public init(decorative cgImage: CGImage, scale: Double) { source = "cgImage" }
+    public init(decorative cgImage: CGImage, scale: Double) { source = "pixels:" + ImageRegistry.token(for: cgImage) }
+    public init(nsImage: NSImage) {
+        if let image = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            source = "pixels:" + ImageRegistry.token(for: image)
+        } else {
+            source = "pixels:"
+        }
+    }
     public func resizable() -> Image { self }
     public func scaledToFit() -> some View { self }
     public func scaledToFill() -> some View { self }

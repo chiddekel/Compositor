@@ -92,27 +92,30 @@ struct NativeLayerList: View {
             }
             .frame(width: 32, height: 32)
             .fixedSize()
+        } else if layer.liveText != nil {
+            // Editable text shows the text symbol, as upstream's table does.
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color(white: 0.18))
+                Image(systemName: "textformat")
+            }
+            .frame(width: 32, height: 32)
+            .fixedSize()
         } else {
+            // Upstream's own canvas-framed thumbnails (CanvasThumbnail), cached like its table's ThumbnailKey so an
+            // unchanged layer keeps the same picture — and the panel isn't rebuilt for it.
+            let canvas = session.document?.size ?? layer.size
+            let size = CanvasThumbnail.fittedSize(canvas: canvas, box: 36)
             HStack(spacing: 4) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color(white: 0.22))
-                    RoundedRectangle(cornerRadius: 4)
-                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                    Image(systemName: "rectangle.inset.filled")
-                }
-                .frame(width: 32, height: 32)
-                if layer.mask != nil {
+                Image(nsImage: LayerThumbnails.layer(layer, canvas: canvas))
+                    .frame(width: size.width, height: size.height)
+                if let mask = layer.mask {
+                    let maskSize = CanvasThumbnail.fittedSize(canvas: canvas, box: 30)
                     Image(systemName: "link")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color(white: 0.22))
-                        RoundedRectangle(cornerRadius: 4)
-                            .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                    }
-                    .frame(width: 32, height: 32)
+                    Image(nsImage: LayerThumbnails.mask(mask, transform: layer.maskTransform, layerID: layer.id, canvas: canvas))
+                        .frame(width: maskSize.width, height: maskSize.height)
                 }
             }
             .fixedSize()
@@ -141,5 +144,35 @@ extension NativeLayerList: HostedNativeContent {
         let table = LayerTableView(frame: .zero)
         table.session = session
         return table
+    }
+}
+
+/// The thumbnails the rows show, made once per (picture, placement, canvas) — the same key upstream's LayerCell keeps.
+@MainActor enum LayerThumbnails {
+    private struct Key: Equatable {
+        let image: ObjectIdentifier?
+        let transform: LayerTransform
+        let width: CGFloat, height: CGFloat
+        let mask: Bool
+    }
+    private static var cache: [UUID: (key: Key, image: NSImage)] = [:]
+    private static var maskCache: [UUID: (key: Key, image: NSImage)] = [:]
+
+    static func layer(_ layer: ImageLayer, canvas: CGSize) -> NSImage {
+        let key = Key(image: layer.asset.map { ObjectIdentifier($0.thumbnail) }, transform: layer.transform,
+                      width: canvas.width, height: canvas.height, mask: false)
+        if let cached = cache[layer.id], cached.key == key { return cached.image }
+        let image = CanvasThumbnail.layer(layer.asset?.thumbnail, transform: layer.transform, canvas: canvas, box: 36)
+        cache[layer.id] = (key, image)
+        return image
+    }
+
+    static func mask(_ mask: LayerMask, transform: LayerTransform, layerID: UUID, canvas: CGSize) -> NSImage {
+        let key = Key(image: ObjectIdentifier(mask.asset.thumbnail), transform: transform,
+                      width: canvas.width, height: canvas.height, mask: true)
+        if let cached = maskCache[layerID], cached.key == key { return cached.image }
+        let image = CanvasThumbnail.mask(mask.asset.thumbnail, transform: transform, canvas: canvas, box: 30)
+        maskCache[layerID] = (key, image)
+        return image
     }
 }

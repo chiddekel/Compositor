@@ -164,6 +164,20 @@ struct CompositorStatusBar: View {
 }
 
 
+/// The pixels behind an `Image` node's `pixels:<token>`: premultiplied RGBA8, `width` x `height`. Returns the byte count
+/// (call with a nil output to size the buffer), -1 for an unknown token.
+@_cdecl("compositor_swiftui_image")
+nonisolated public func compositorSwiftUIImage(_ token: UnsafePointer<CChar>?, _ width: UnsafeMutablePointer<Int32>?,
+                                               _ height: UnsafeMutablePointer<Int32>?, _ output: UnsafeMutablePointer<UInt8>?,
+                                               _ capacity: Int) -> Int64 {
+    guard let token, let image = ImageRegistry.image(for: String(cString: token)) else { return -1 }
+    let raster = image.portableImage
+    width?.pointee = Int32(raster.width); height?.pointee = Int32(raster.height)
+    let bytes = raster.bytes
+    if let output, capacity >= bytes.count { bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: bytes.count) } }
+    return Int64(bytes.count)
+}
+
 @_cdecl("compositor_session_render_tree")
 nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: UnsafePointer<CChar>?,
                                                      _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
