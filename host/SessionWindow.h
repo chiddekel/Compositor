@@ -265,6 +265,8 @@ private:
     QImage renderDisplayImage(double scale);
     QImage fullResolutionImage();
     void presentSwiftUISheet(const QString &panel);
+    void pumpWhileBusy();
+    void endBusy();
     bool sendCommandQuiet(const QJsonObject &command);   // no status-bar error (probing, e.g. "text here?")
     void syncTextEditor();
     void layoutTextEditor();
@@ -363,6 +365,8 @@ private:
     std::unique_ptr<ITabletHandler> m_tabletHandler;
     QTimer *m_autosaveTimer = nullptr;
     QTimer *m_mainPumpTimer = nullptr;   // drains Swift's main queue under Qt (see constructor)
+    int m_commandDepth = 0;   // compositor_session_command calls in progress (the wait pump can nest events inside one)
+    bool m_busy = false;      // busy cursor / status shown by pumpWhileBusy
     QByteArray m_pumpedState;
     QTimer *m_strokeRefreshTimer = nullptr;
     QElapsedTimer m_strokeFrameClock;            // when the last stroke frame started (frame pacing)

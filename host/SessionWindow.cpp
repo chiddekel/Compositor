@@ -100,6 +100,7 @@ void compositor_set_sheet_presenter(void (*presenter)(void *context, const char 
 void compositor_pump_main(void);
 void compositor_session_raw_develop_cancel(uint64_t handle);
 void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
+void compositor_set_wait_pump(void (*pump)(void *context), void *context);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
 int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
@@ -991,6 +992,9 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     compositor_set_sheet_presenter([](void *context, const char *panel) {
         static_cast<SessionWindow *>(context)->presentSwiftUISheet(QString::fromUtf8(panel));
     }, this);
+
+    // Long commands (RAW develop, big Photoshop files) keep the window painting, with a busy cursor and a status line.
+    compositor_set_wait_pump([](void *context) { static_cast<SessionWindow *>(context)->pumpWhileBusy(); }, this);
 
     // Swift's main queue has no other pump under Qt's event loop: upstream async work started from a panel
     // (previews, Task {} in button actions) runs here, and whatever it changed shows.
@@ -2469,10 +2473,31 @@ bool SessionWindow::sendCommand(const QJsonObject &command) {
     QJsonObject payload = command;
     payload.insert("version", 1);
     const QByteArray bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    ++m_commandDepth;
     const int result = compositor_session_command(m_sessionHandle,
         reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
+    --m_commandDepth;
+    endBusy();
     if (result != 0) statusBar()->showMessage(sessionState().value("error").toString(tr("Could not apply the operation.")), 5000);
     return result == 0;
+}
+
+/// While a command waits on background work: paint, animate the status line, take no input (a click can't start a
+/// second command inside the first).
+void SessionWindow::pumpWhileBusy() {
+    if (!m_busy) {
+        m_busy = true;
+        QApplication::setOverrideCursor(Qt::BusyCursor);
+        statusBar()->showMessage(tr("Working…"));
+    }
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void SessionWindow::endBusy() {
+    if (!m_busy || m_commandDepth > 0) return;
+    m_busy = false;
+    QApplication::restoreOverrideCursor();
+    statusBar()->clearMessage();
 }
 
 int SessionWindow::docWidth() const { return m_docSize.isValid() ? m_docSize.width() : m_image.width(); }
@@ -3883,6 +3908,7 @@ bool SessionWindow::hasAutosaveRecovery() const {
 }
 
 bool SessionWindow::performAutosave() {
+    if (m_commandDepth > 0) return false;   // mid-command (the window paints while a long one works): next time
     if (m_sessionHandle == 0) return false;
     const auto state = sessionState();
     if (!state.value("modified").toBool(false)) return false;

@@ -171,7 +171,17 @@ final class UpstreamEditor {
     /// upstream's async operations finish. Must not be called from inside a main-actor job (tests use `commandAsync`).
     func command(_ json: Data) -> Int32 {
         // While upstream waits on a sheet (RAW Develop), the shell presents it.
-        awaitOnMain({ [self] in await commandAsync(json) }, whileWaiting: { [self] in ImportPrompts.presentPendingSheet(for: session) })
+        // A command still waiting after a moment is doing real work off the main thread (a full RAW develop is seconds):
+        // the shell gets to repaint every frame meanwhile.
+        let started = Date()
+        var pumped = Date.distantPast
+        return awaitOnMain({ [self] in await commandAsync(json) }, whileWaiting: { [self] in
+            ImportPrompts.presentPendingSheet(for: session)
+            let now = Date()
+            guard let pump = ImportPrompts.waitPump, now.timeIntervalSince(started) > 0.15, now.timeIntervalSince(pumped) > 0.016 else { return }
+            pumped = now
+            pump(ImportPrompts.waitPumpContext)
+        })
     }
 
     func commandAsync(_ json: Data) async -> Int32 {

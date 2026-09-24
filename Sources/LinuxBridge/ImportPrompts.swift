@@ -15,6 +15,11 @@ enum ImportPrompts {
     nonisolated(unsafe) static var sheetPresenter: SheetPresenter?
     nonisolated(unsafe) static var sheetPresenterContext: UnsafeMutableRawPointer?
     nonisolated(unsafe) static var presenting = false
+    /// Shell callback run while a long command (a RAW develop, a big Photoshop file) works off the main thread: repaints
+    /// and shows progress, without taking input, so the window doesn't freeze.
+    typealias WaitPump = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    nonisolated(unsafe) static var waitPump: WaitPump?
+    nonisolated(unsafe) static var waitPumpContext: UnsafeMutableRawPointer?
 
     /// Called while a command waits: puts up the sheet upstream asked for, if the shell can show it.
     @MainActor static func presentPendingSheet(for session: EditorSession) {
@@ -53,4 +58,11 @@ nonisolated public func compositorSetSheetPresenter(_ presenter: (@convention(c)
                                                     _ context: UnsafeMutableRawPointer?) {
     ImportPrompts.sheetPresenter = presenter
     ImportPrompts.sheetPresenterContext = context
+}
+
+@_cdecl("compositor_set_wait_pump")
+nonisolated public func compositorSetWaitPump(_ pump: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?,
+                                              _ context: UnsafeMutableRawPointer?) {
+    ImportPrompts.waitPump = pump
+    ImportPrompts.waitPumpContext = context
 }

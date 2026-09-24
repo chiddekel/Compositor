@@ -80,8 +80,11 @@ public final class CGContext: @unchecked Sendable {
         self.isYUp = yUp
         self.bytesPerRow = width * (format == .gray ? 1 : 4)
         self.pixelCount = bytesPerRow * height
-        self.pixelData = UnsafeMutablePointer<UInt8>.allocate(capacity: pixelCount)
-        self.pixelData.initialize(repeating: 0, count: pixelCount)
+        // calloc: large blocks come straight from the kernel already zeroed, so a new context (upstream makes one per
+        // halving, render and export — hundreds of MB for big layers) costs nothing until it is drawn into. The
+        // runtime's deallocate frees malloc'd memory on Linux (swift_slowDealloc -> free for default alignment).
+        guard let zeroed = calloc(pixelCount, 1) else { fatalError("CGContext: out of memory (\(pixelCount) bytes)") }
+        self.pixelData = zeroed.assumingMemoryBound(to: UInt8.self)
         self.render = render ?? compositor_compat_current_render_fn()
         makeCanvas()
     }

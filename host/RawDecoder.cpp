@@ -19,12 +19,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <vector>
 
 namespace {
 
+// LibRaw with the protected internals the direct preview needs.
+struct Raw : LibRaw {
+    bool fujiRotated() { return libraw_internal_data.internal_output_params.fuji_width != 0; }
+    bool phaseOneCompressed() { return is_phaseone_compressed() != 0; }
+};
+
 struct RawHandle {
-    LibRaw raw;
+    Raw raw;
     float asShotMul[4] = {1, 1, 1, 1};
     float asShotTemperature = 5000;
     float asShotTint = 0;
@@ -110,9 +117,98 @@ int32_t compositor_raw_probe(const char *path, int32_t *width, int32_t *height) 
     return 0;
 }
 
+// The preview straight from the unpacked sensor data (Bayer or X-Trans): every photosite, black-subtracted and
+// normalised to the white level, box-averaged per colour into the preview grid, then oriented — what LibRaw's
+// half-size develop gives with unit white balance, without its full-frame copies. All cores, a fraction of a second
+// for 150 MP. False when the layout isn't a plain mosaic (the LibRaw path below handles those).
+static bool buildPreviewFromMosaic(RawHandle *handle, int targetW, int targetH) {
+    const libraw_data_t &d = handle->raw.imgdata;
+    const unsigned filters = d.idata.filters;
+    if (!d.rawdata.raw_image || !filters || handle->raw.fujiRotated() || d.idata.colors != 3) return false;
+    if (qEnvironmentVariable("COMPOSITOR_RAW_PREVIEW") == QLatin1String("libraw")) return false;   // A/B switch
+    PERF_SCOPE("raw.preview from mosaic");
+    const int width = d.sizes.width, height = d.sizes.height;
+    const int top = d.sizes.top_margin, left = d.sizes.left_margin;
+    const size_t pitch = d.sizes.raw_pitch / 2;
+    if (width <= 0 || height <= 0 || size_t(left + width) > pitch) return false;
+    // The CFA repeats within 48 x 48 for every layout LibRaw reports (Bayer 2x2 / 16x16 tables, X-Trans 6x6).
+    uint8_t cfa[48][48];
+    for (int r = 0; r < 48; ++r)
+        for (int c = 0; c < 48; ++c) { const int k = handle->raw.COLOR(r, c); cfa[r][c] = uint8_t(k == 3 ? 1 : k); }
+    // Black: the common level plus each colour's offset (and a repeating pattern, when the camera has one).
+    const unsigned *cb = d.color.cblack;
+    const unsigned common = std::min({cb[0], cb[1], cb[2], cb[3]});
+    const float base = float(d.color.black + common);
+    const float range = std::max(1.0f, float(d.color.maximum) - base);
+    const float channelBlack[4] = {base + float(cb[0] - common), base + float(cb[1] - common),
+                                   base + float(cb[2] - common), base + float(cb[3] - common)};
+    // Phase One compressed (IIQ): the black level is the file's base less per-column and per-row calibration, as
+    // LibRaw's phase_one_subtract_black applies it before developing (raw coordinates, split at split_col/row).
+    const auto &p1 = d.color.phase_one_data;
+    const bool phaseOne = handle->raw.phaseOneCompressed() && d.rawdata.raw_alloc;
+    const short (*p1Column)[2] = phaseOne ? d.rawdata.ph1_cblack : nullptr;
+    const short (*p1Row)[2] = phaseOne ? d.rawdata.ph1_rblack : nullptr;
+    const int patternH = int(cb[4]), patternW = int(cb[5]);
+    const bool pattern = patternH > 0 && patternW > 0 && patternH * patternW <= LIBRAW_CBLACK_SIZE - 6;
+    // Accumulate in the sensor's orientation; rows of the grid are split between threads, so no sums are shared.
+    const bool transpose = d.sizes.flip & 4;
+    const int gridW = transpose ? targetH : targetW, gridH = transpose ? targetW : targetH;
+    std::vector<float> sums(size_t(gridW) * gridH * 3, 0.0f), counts(size_t(gridW) * gridH * 3, 0.0f);
+    std::vector<int> column(width);
+    for (int x = 0; x < width; ++x) column[x] = std::min(gridW - 1, int(int64_t(x) * gridW / width));
+    const int threads = std::max(1, std::min<int>(gridH, int(std::thread::hardware_concurrency())));
+    std::vector<std::thread> workers;
+    for (int t = 0; t < threads; ++t) {
+        workers.emplace_back([&, t] {
+            const int g0 = int(int64_t(gridH) * t / threads), g1 = int(int64_t(gridH) * (t + 1) / threads);
+            const int y0 = int((int64_t(g0) * height + gridH - 1) / gridH), y1 = int((int64_t(g1) * height + gridH - 1) / gridH);
+            for (int y = y0; y < y1; ++y) {
+                const int gy = std::min(gridH - 1, int(int64_t(y) * gridH / height));
+                const uint16_t *row = (phaseOne ? static_cast<const uint16_t *>(d.rawdata.raw_alloc) : d.rawdata.raw_image)
+                                      + size_t(y + top) * pitch + left;
+                const int rawRow = y + top;
+                float *sumRow = &sums[size_t(gy) * gridW * 3], *countRow = &counts[size_t(gy) * gridW * 3];
+                const uint8_t *colours = cfa[y % 48];
+                const unsigned *patternRow = pattern ? &cb[6 + (y % patternH) * patternW] : nullptr;
+                for (int x = 0; x < width; ++x) {
+                    const int c = colours[x % 48];
+                    float v = float(row[x]) - channelBlack[c];
+                    if (patternRow) v -= float(patternRow[x % patternW]);
+                    if (phaseOne) {
+                        const int rawCol = x + left;
+                        float black = float(p1.t_black);
+                        if (p1Column && p1Row)
+                            black -= float(p1Column[rawRow][rawCol >= p1.split_col] + p1Row[rawCol][rawRow >= p1.split_row]);
+                        v = std::max(0.0f, float(row[x]) - black) - channelBlack[c];
+                    }
+                    const size_t i = size_t(column[x]) * 3 + c;
+                    sumRow[i] += std::clamp(v / range, 0.0f, 1.0f);
+                    countRow[i] += 1;
+                }
+            }
+        });
+    }
+    for (std::thread &worker : workers) worker.join();
+    // Oriented as LibRaw orients its output (flip_index): transpose, then mirror rows / columns.
+    handle->preview.assign(size_t(targetW) * targetH * 3, 0.0f);
+    for (int row = 0; row < targetH; ++row) {
+        for (int col = 0; col < targetW; ++col) {
+            int r = row, c = col;
+            if (transpose) std::swap(r, c);
+            if (d.sizes.flip & 2) r = gridH - 1 - r;
+            if (d.sizes.flip & 1) c = gridW - 1 - c;
+            const size_t from = (size_t(r) * gridW + c) * 3, to = (size_t(row) * targetW + col) * 3;
+            for (int k = 0; k < 3; ++k) handle->preview[to + k] = counts[from + k] > 0 ? sums[from + k] / counts[from + k] : 0.0f;
+        }
+    }
+    handle->previewWidth = targetW; handle->previewHeight = targetH;
+    return true;
+}
+
 // Decodes the half-size linear camera-RGB preview once, averaged down to `targetW` x `targetH`.
 static bool buildPreview(RawHandle *handle, int targetW, int targetH) {
     if (handle->previewWidth == targetW && handle->previewHeight == targetH && !handle->preview.empty()) return true;
+    if (buildPreviewFromMosaic(handle, targetW, targetH)) return true;
     PERF_SCOPE("raw.preview decode (once per file)");
     libraw_output_params_t &p = handle->raw.imgdata.params;
     p.half_size = 1; p.output_bps = 16; p.output_color = 0;   // raw camera colour, linear, no white balance
@@ -196,6 +292,19 @@ static int32_t developPreview(RawHandle *handle, float exposure, float temperatu
     return 0;
 }
 
+// The full develop's demosaic: AHD (LibRaw's best general-purpose, OpenMP) unless COMPOSITOR_RAW_DEMOSAIC picks
+// another of LibRaw's — linear, vng, ppg, ahd, dcb, dht, aahd — to trade quality for speed on very large files.
+static int fullDemosaic() {
+    static const int quality = [] {
+        const QString name = qEnvironmentVariable("COMPOSITOR_RAW_DEMOSAIC").toLower();
+        static const struct { const char *name; int quality; } table[] = {
+            {"linear", 0}, {"vng", 1}, {"ppg", 2}, {"ahd", 3}, {"dcb", 4}, {"dht", 11}, {"aahd", 12}};
+        for (const auto &entry : table) if (name == QLatin1String(entry.name)) return entry.quality;
+        return 3;
+    }();
+    return quality;
+}
+
 // Develops the opened file. `scale` (0 < scale <= 1) is the output size relative to the full size; `draft` allows the
 // fast half-size path. Returns 0 and a malloc'd premultiplied RGBA8 buffer (the caller frees it).
 int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float temperature, float tint, float boost,
@@ -216,7 +325,7 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
     p.use_camera_wb = 0;
     p.use_auto_wb = 0;
     p.half_size = (draft && scale <= 0.5f) ? 1 : 0;
-    p.user_qual = p.half_size ? 0 : 3;  // AHD for the full develop (OpenMP), bilinear is moot at half size
+    p.user_qual = p.half_size ? 0 : fullDemosaic();
     // White balance: the as-shot multipliers, moved by the temperature / tint offsets.
     const float warm = std::pow(std::max(1.0f, temperature) / handle->asShotTemperature, 0.6f);
     const float magenta = std::exp(-(tint - handle->asShotTint) / 300.0f);
@@ -235,20 +344,51 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
     p.no_auto_bright = b < 0.5f ? 1 : 0;
 
     PERF_SCOPE(p.half_size ? "raw.develop(draft, half size)" : "raw.develop(full)");
-    if (handle->raw.dcraw_process() != LIBRAW_SUCCESS) return -2;
+    {
+        PERF_SCOPE("raw.develop: dcraw_process");
+        if (handle->raw.dcraw_process() != LIBRAW_SUCCESS) return -2;
+    }
     int error = 0;
-    libraw_processed_image_t *image = handle->raw.dcraw_make_mem_image(&error);
+    libraw_processed_image_t *image = nullptr;
+    {
+        PERF_SCOPE("raw.develop: make_mem_image");
+        image = handle->raw.dcraw_make_mem_image(&error);
+    }
     if (!image || error != LIBRAW_SUCCESS || image->colors != 3 || image->bits != 8) {
         if (image) LibRaw::dcraw_clear_mem(image);
         return -2;
     }
-    QImage developed(image->data, image->width, image->height, image->width * 3, QImage::Format_RGB888);
-    // Down to the requested size (the half-size path is already most of the way there).
+    PERF_SCOPE("raw.develop: to RGBA");
     const libraw_data_t &d = handle->raw.imgdata;
     int fullW = d.sizes.width, fullH = d.sizes.height;
     if (d.sizes.flip & 4) std::swap(fullW, fullH);
     const int targetW = std::max(1, int(std::lround(fullW * std::min(1.0f, scale))));
     const int targetH = std::max(1, int(std::lround(fullH * std::min(1.0f, scale))));
+    if (image->width == targetW && image->height == targetH) {
+        // Full size (the import): RGB -> opaque RGBA straight into the caller's buffer, rows split across cores.
+        const size_t pixelsTotal = size_t(targetW) * targetH;
+        auto *out = static_cast<uint8_t *>(std::malloc(pixelsTotal * 4));
+        if (!out) { LibRaw::dcraw_clear_mem(image); return -3; }
+        const uint8_t *in = image->data;
+        const int threads = std::max(1, std::min<int>(targetH, int(std::thread::hardware_concurrency())));
+        std::vector<std::thread> workers;
+        for (int t = 0; t < threads; ++t) {
+            workers.emplace_back([=] {
+                const size_t from = pixelsTotal * t / threads, to = pixelsTotal * (t + 1) / threads;
+                for (size_t i = from; i < to; ++i) {
+                    out[i * 4] = in[i * 3]; out[i * 4 + 1] = in[i * 3 + 1]; out[i * 4 + 2] = in[i * 3 + 2]; out[i * 4 + 3] = 255;
+                }
+            });
+        }
+        for (std::thread &worker : workers) worker.join();
+        LibRaw::dcraw_clear_mem(image);
+        *pixels = out;
+        *outWidth = targetW;
+        *outHeight = targetH;
+        return 0;
+    }
+    // Down to the requested size (the half-size path is already most of the way there).
+    QImage developed(image->data, image->width, image->height, image->width * 3, QImage::Format_RGB888);
     QImage rgba = (developed.width() != targetW || developed.height() != targetH)
         ? developed.scaled(targetW, targetH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_RGBA8888)
         : developed.convertToFormat(QImage::Format_RGBA8888);

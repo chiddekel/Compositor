@@ -153,11 +153,14 @@ public struct PortableImage: Equatable {
         let ex = min(width, ix + iw), ey = min(height, iy + ih)
         let cw = ex - bx, ch = ey - by
         guard cw > 0, ch > 0 else { return nil }
-        var out = [UInt8](repeating: 0, count: cw * ch * bytesPerPixel)
-        for y in 0..<ch {
-            let srcRow = (by + y) * bytesPerRow + bx * bytesPerPixel
-            let dstRow = y * cw * bytesPerPixel
-            for b in 0..<(cw * bytesPerPixel) { out[dstRow + b] = bytes[srcRow + b] }
+        let rowLength = cw * bytesPerPixel
+        let out = [UInt8](unsafeUninitializedCapacity: rowLength * ch) { buffer, initialized in
+            bytes.withUnsafeBufferPointer { source in
+                for y in 0..<ch {
+                    memcpy(buffer.baseAddress! + y * rowLength, source.baseAddress! + (by + y) * bytesPerRow + bx * bytesPerPixel, rowLength)
+                }
+            }
+            initialized = rowLength * ch
         }
         return PortableImage(width: cw, height: ch, kind: kind,
                              bytesPerRow: cw * bytesPerPixel, bytes: out)

@@ -112,8 +112,11 @@ public func vImageResample8(source: UnsafeRawPointer, sourceWidth: Int, sourceHe
                         let o = hOffsets[x], n = hOffsets[x + 1] - o
                         var acc = SIMD4<Float>(repeating: 0)
                         for k in 0..<n {
-                            let px = row4.loadUnaligned(fromByteOffset: base + k * 4, as: SIMD4<UInt8>.self)
-                            acc += hWeights[o + k] * SIMD4<Float>(px)
+                            let px = row4.loadUnaligned(fromByteOffset: base + k * 4, as: UInt32.self)
+                            // Lane conversion spelled out: the generic SIMD init isn't specialised and costs more
+                            // than the arithmetic.
+                            acc += hWeights[o + k] * SIMD4<Float>(Float(px & 0xff), Float((px >> 8) & 0xff),
+                                                                  Float((px >> 16) & 0xff), Float(px >> 24))
                         }
                         out4.storeBytes(of: acc, toByteOffset: x * 16, as: SIMD4<Float>.self)
                     }
@@ -140,8 +143,9 @@ public func vImageResample8(source: UnsafeRawPointer, sourceWidth: Int, sourceHe
                     for k in 0..<n {
                         acc += vWeights[o + k] * UnsafeRawPointer(top + k * rowFloats + i).loadUnaligned(as: SIMD8<Float>.self)
                     }
-                    let clamped = acc.rounded(.toNearestOrAwayFromZero).clamped(lowerBound: .zero, upperBound: SIMD8(repeating: 255))
-                    UnsafeMutableRawPointer(out + i).storeBytes(of: SIMD8<UInt8>(clamped), as: SIMD8<UInt8>.self)
+                    // Clamped to 0...255 first, so +0.5 and truncation round half away from zero like `rounded()`.
+                    let clamped = acc.clamped(lowerBound: .zero, upperBound: SIMD8(repeating: 255)) + 0.5
+                    for j in 0..<8 { out[i + j] = UInt8(truncatingIfNeeded: Int32(clamped[j])) }
                     i += 8
                 }
                 while i < rowFloats {
