@@ -27,7 +27,7 @@ public struct UTType: Hashable, Sendable {
         "public.file-url": Info(ext: [], mime: nil, parents: ["public.url"]),
         "public.url": Info(ext: [], mime: nil, parents: ["public.data"]),
         "com.apple.package": Info(ext: [], mime: nil, parents: ["public.item"]),
-        "public.camera-raw-image": Info(ext: ["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "pef", "srw"],
+        "public.camera-raw-image": Info(ext: ["dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "rwl", "pef", "ptx", "srw", "x3f", "3fr", "fff", "iiq", "erf", "kdc", "dcr", "mos", "mef", "mrw", "raw", "gpr"],
                                         mime: nil, parents: ["public.image"]),
     ]
     /// Types an app declares for itself (exported/imported) are registered here.

@@ -22,7 +22,7 @@ class FileDialogs final : public IFileDialogService {
 public:
     QString chooseImageToOpen() override {
         return QFileDialog::getOpenFileName(QApplication::activeWindow(), QObject::tr("Open Image"), QString(),
-            QObject::tr("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.heic *.heif *.psd *.psb *.dng *.cr2 *.cr3 *.nef *.arw *.orf *.raf *.rw2);;Photoshop (*.psd *.psb);;All files (*)"));
+            QObject::tr("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.heic *.heif *.psd *.psb *.dng *.cr2 *.cr3 *.crw *.nef *.nrw *.arw *.orf *.raf *.rw2 *.pef *.srw *.x3f *.3fr *.iiq *.erf *.kdc *.mos *.mrw);;Photoshop (*.psd *.psb);;Camera RAW (*.dng *.cr2 *.cr3 *.crw *.nef *.nrw *.arw *.orf *.raf *.rw2 *.pef *.srw *.x3f *.3fr *.iiq *.erf *.kdc *.mos *.mrw);;All files (*)"));
     }
     QString chooseProjectToOpen() override {
         return QFileDialog::getExistingDirectory(QApplication::activeWindow(), QObject::tr("Open Project"));

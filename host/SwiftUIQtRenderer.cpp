@@ -565,6 +565,25 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
     }
 }
 
+/// A `.resizable()` bitmap: scaled to fit whatever size its layout gives it, centred, aspect kept.
+class SwiftUIFitImageWidget : public QWidget {
+public:
+    explicit SwiftUIFitImageWidget(QImage image) : m_image(std::move(image)) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+    QSize sizeHint() const override { return m_image.size().scaled(560, 560, Qt::KeepAspectRatio); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const QSize fitted = m_image.size().scaled(size(), Qt::KeepAspectRatio);
+        const QRect target(QPoint((width() - fitted.width()) / 2, (height() - fitted.height()) / 2), fitted);
+        painter.drawImage(target, m_image);
+    }
+private:
+    QImage m_image;
+};
+
 QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &node);
 
 /// `VStack`/`HStack` share everything but the layout's orientation.
@@ -1039,6 +1058,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         if (source.startsWith(QLatin1String("system:"))) {
             systemIcon = source.mid(7);
         }
+        QWidget *fitted = nullptr;
         auto *label = new QLabel;
         label->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         if (source.startsWith(QLatin1String("pixels:"))) {
@@ -1057,12 +1077,19 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                     if (m.toObject().value("kind").toString() == "frame" && d.contains("width") && d.contains("height"))
                         box = QSize(qRound(d.value("width").toDouble()), qRound(d.value("height").toDouble()));
                 }
+                if (node.value("boolParams").toObject().value("resizable").toBool()) {
+                    // .resizable(): fill the slot it's given, keeping the aspect (a preview in a fixed frame).
+                    fitted = new SwiftUIFitImageWidget(image);
+                    fitted->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+                }
                 const qreal dpr = label->devicePixelRatioF();
+                if (!fitted) {
                 QPixmap pixmap = QPixmap::fromImage(image.scaled(box * dpr, Qt::KeepAspectRatio, Qt::SmoothTransformation));
                 pixmap.setDevicePixelRatio(dpr);
                 label->setPixmap(pixmap);
                 label->setFixedSize(box);
                 label->setAlignment(Qt::AlignCenter);
+                }
             }
         } else if (!systemIcon.isEmpty()) {
             QColor iconColor(0x8e, 0x8e, 0x93);
@@ -1081,6 +1108,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             label->setPixmap(renderToolVectorIcon(systemIcon, iconSize, iconColor).pixmap(iconSize, iconSize));
             label->setFixedSize(iconSize, iconSize);
         }
+        if (fitted) { delete label; widget = fitted; } else
         widget = label;
     } else if (kind == "ScrollView") {
         auto *scrollArea = new QScrollArea;

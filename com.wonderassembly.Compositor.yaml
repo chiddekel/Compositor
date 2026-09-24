@@ -100,6 +100,27 @@ modules:
          sha256: 3b574f9b0315d00b54c611ff6d827c29a1b65121ceed7278b451c20f0f8516a1
 
   # ───────────────────────── Module 2: OpenCV (vendored, static, minimal) ─
+  # LibRaw: camera RAW decoding (host/RawDecoder.cpp). Static and PIC, linked into the app; OpenMP for the
+  # multithreaded demosaic of very large files; JasPer and LCMS off (not needed). Same options as
+  # scripts/build-libraw.sh uses for the dev loop.
+  - name: libraw
+    buildsystem: autotools
+    config-opts:
+      - --enable-static
+      - --disable-shared
+      - --enable-openmp
+      - --disable-examples
+      - --disable-jasper
+      - --disable-lcms
+      - --enable-zlib
+    build-options:
+      cflags: -O3 -fPIC
+      cxxflags: -O3 -fPIC
+    sources:
+      - type: archive
+        url: https://www.libraw.org/data/LibRaw-0.22.2.tar.gz
+        sha256: de86b035655accff8d4010f1a221fdf50d353cb7b1422ba26f14a0db92612cfa
+
   - name: opencv
     buildsystem: cmake-ninja
     config-opts:

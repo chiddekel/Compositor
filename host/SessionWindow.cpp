@@ -1040,6 +1040,16 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
         render();
     });
     tick.start();
+    // Headless runs: let the preview develop, keep a picture of the sheet, then press its own Import button.
+    if (qEnvironmentVariableIsSet("COMPOSITOR_AUTO_CONFIRM_IMPORT")) {
+        QTimer::singleShot(2500, &dialog, [&] {
+            render();
+            if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty())
+                dialog.grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".sheet.png");
+            for (QPushButton *button : dialog.findChildren<QPushButton *>())
+                if (button->text() == QLatin1String("Import")) { button->click(); break; }
+        });
+    }
     if (dialog.exec() != QDialog::Accepted && isOpen()) compositor_session_raw_develop_cancel(handle);
     tick.stop();
     if (current) retireRenderedPanel(current);
@@ -3541,8 +3551,9 @@ static int32_t confirmPhotoshopConversions(const uint8_t *json, size_t length) {
 /// Files Qt's image readers don't handle — Photoshop documents, camera RAW, HEIC — go through upstream's importer,
 /// which keeps a PSD's layers, masks and text rather than a flattened picture.
 static bool needsUpstreamImporter(const QString &path) {
-    static const QStringList upstreamOnly = {"psd", "psb", "heic", "heif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "srf",
-                                             "sr2", "orf", "raf", "rw2", "pef", "srw", "x3f", "3fr", "iiq", "erf", "kdc", "mos", "mrw"};
+    static const QStringList upstreamOnly = {"psd", "psb", "heic", "heif", "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf",
+                                             "sr2", "orf", "raf", "rw2", "rwl", "pef", "ptx", "srw", "x3f", "3fr", "fff", "iiq",
+                                             "erf", "kdc", "dcr", "mos", "mef", "mrw", "raw", "gpr"};
     return upstreamOnly.contains(QFileInfo(path).suffix().toLower());
 }
 

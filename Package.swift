@@ -23,6 +23,11 @@ let opencvPrefix: String? = ["\(packageRoot)/build/opencv/install", "/app"].firs
 let opencvLibrary: String? = opencvPrefix.flatMap { prefix in
     ["lib64", "lib"].map { "\(prefix)/\($0)" }.first { FileManager.default.fileExists(atPath: "\($0)/libopencv_core.a") }
 }
+// The pinned LibRaw (scripts/build-libraw.sh / the manifest's `libraw` module: static, OpenMP) — camera RAW decoding for
+// the host (host/RawDecoder.cpp compiles its decoder only when the header is there).
+let librawPrefix: String? = ["\(packageRoot)/build/libraw/install", "/app"].first {
+    FileManager.default.fileExists(atPath: "\($0)/include/libraw/libraw.h") && FileManager.default.fileExists(atPath: "\($0)/lib/libraw_r.a")
+}
 import Foundation
 
 let package = Package(
@@ -111,7 +116,7 @@ let package = Package(
         .target(name: "SwiftUI", dependencies: ["CoreGraphics", "AppKit", "Combine", "FoundationCompat", "CompatSupport"], path: "Sources/Compat/SwiftUI",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo"], path: "Sources/Compat/CoreImage",
+        .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -216,7 +221,7 @@ let package = Package(
             name: "HostRun",
             dependencies: [],
             path: "host",
-            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "QtImageIO.cpp", "FlatpakUpdateService.cpp", "SwiftUIQtRenderer.cpp", "moc_SessionWindow.cpp", "moc_FlatpakUpdateService.cpp"],
+            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "QtImageIO.cpp", "RawDecoder.cpp", "FlatpakUpdateService.cpp", "SwiftUIQtRenderer.cpp", "moc_SessionWindow.cpp", "moc_FlatpakUpdateService.cpp"],
             cxxSettings: [
                 .unsafeFlags([
                     "-I/usr/include/QtWidgets",
@@ -224,11 +229,12 @@ let package = Package(
                     "-I/usr/include/QtGui",
                     "-I/usr/include/QtDBus",
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB", "-DQT_DBUS_LIB",
-                ]),
+                ] + (librawPrefix.map { ["-I\($0)/include"] } ?? [])),
             ],
             // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
-            // the link follows the same condition.
-            linkerSettings: FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : []
+            // the link follows the same condition; RawDecoder.cpp likewise with LibRaw (static, plus OpenMP's runtime).
+            linkerSettings: (FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : [])
+                + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"]), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",

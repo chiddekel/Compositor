@@ -76,6 +76,9 @@ public enum ImageRegistry {
 
 public struct Image: View, PrimitiveView {
     let source: String
+    /// `.resizable()`: drawn to fill its slot (keeping its aspect with `.aspectRatio(contentMode: .fit)`, the default
+    /// here) rather than at its own size.
+    var isResizable = false
     public init(systemName: String) { source = "system:\(systemName)" }
     public init(_ name: String) { source = "named:\(name)" }
     public init(decorative cgImage: CGImage, scale: Double) { source = "pixels:" + ImageRegistry.token(for: cgImage) }
@@ -86,7 +89,7 @@ public struct Image: View, PrimitiveView {
             source = "pixels:"
         }
     }
-    public func resizable() -> Image { self }
+    public func resizable() -> Image { var copy = self; copy.isResizable = true; return copy }
     public func scaledToFit() -> some View { self }
     public func scaledToFill() -> some View { self }
     public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View { self }
@@ -94,6 +97,7 @@ public struct Image: View, PrimitiveView {
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "Image")
         node.stringParams["source"] = source
+        if isResizable { node.boolParams["resizable"] = true }
         return node
     }
 }

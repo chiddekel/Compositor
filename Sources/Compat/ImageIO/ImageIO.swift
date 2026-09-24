@@ -6,6 +6,7 @@
 import Foundation
 import Accelerate
 import UniformTypeIdentifiers
+import CompatSupport
 
 // MARK: - Keys
 
@@ -29,11 +30,27 @@ public let kCGImageDestinationLossyCompressionQuality: CFString = "kCGImageDesti
 public final class CGImageSource: @unchecked Sendable {
     let data: Data
     let info: ImageInfo
+    /// A camera RAW file, read by the RAW decoder from disk (never loaded whole: they can be hundreds of MB).
+    let rawURL: URL?
     private var cached: CGImage?
-    init(data: Data, info: ImageInfo) { self.data = data; self.info = info }
+    init(data: Data, info: ImageInfo) { self.data = data; self.info = info; rawURL = nil }
+    init(rawURL: URL, info: ImageInfo) { data = Data(); self.info = info; self.rawURL = rawURL }
 
     func image() -> CGImage? {
         if let cached { return cached }
+        if let rawURL {
+            // As shot, full size (the Develop sheet is the place for settings).
+            guard let handle = RawDecoding.open(rawURL),
+                  let developed = handle.develop(exposure: 0, temperature: handle.asShotTemperature, tint: handle.asShotTint,
+                                                 boost: 1, scale: 1, draft: false),
+                  let provider = CGDataProvider(data: Data(developed.bytes) as CFData) else { return nil }
+            RawDecoding.releaseIfConsumed(handle)
+            cached = CGImage(width: developed.width, height: developed.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                             bytesPerRow: developed.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                             provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+            return cached
+        }
         cached = ImageCodecRegistry.decode(data)
         return cached
     }
@@ -49,6 +66,11 @@ public func CGImageSourceCreateWithData(_ data: CFData, _ options: CFDictionary?
 }
 
 public func CGImageSourceCreateWithURL(_ url: CFURL, _ options: CFDictionary?) -> CGImageSource? {
+    // Camera RAW: size from the header alone; pixels only when asked for.
+    if RawDecoding.isRaw(url as URL), let size = RawDecoding.probe(url as URL) {
+        return CGImageSource(rawURL: url as URL, info: ImageInfo(typeIdentifier: "public.camera-raw-image", width: size.width,
+                                                               height: size.height, hasAlpha: false))
+    }
     guard let data = try? Data(contentsOf: url) else { return nil }
     return CGImageSourceCreateWithData(data, options)
 }

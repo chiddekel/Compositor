@@ -8,6 +8,7 @@
 
 @_exported import CoreGraphics
 import Foundation
+import CompatSupport
 import CoreVideo
 import Dispatch
 
@@ -62,6 +63,9 @@ private struct Env { var linear: Bool }
 
 private indirect enum Node {
     case source(Raster, CGRect)
+    /// A bitmap kept as it is until something reads it (RAW output): rendering it unchanged hands the bitmap back
+    /// without the float round trip, which for a very large RAW would cost more memory than the image itself.
+    case bitmap(CGImage)
     case color(CIColor)
     case crop(Node, CGRect)
     case clamp(Node)
@@ -80,6 +84,7 @@ private indirect enum Node {
     var extent: CGRect {
         switch self {
         case .source(_, let r): return r
+        case .bitmap(let image): return CGRect(x: 0, y: 0, width: image.width, height: image.height)
         case .color, .clamp: return infiniteExtent
         case .crop(let n, let r): return n.extent.intersection(r)
         case .gaussian(let n, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
@@ -99,6 +104,7 @@ private indirect enum Node {
     /// Computes `region` (integral, in CI coordinates). Outside the node's extent the result is transparent.
     func eval(_ region: CGRect, _ env: Env) -> Raster {
         switch self {
+        case .bitmap(let image): return CIImage(cgImage: image).node.eval(region, env)
         case .source(let raster, let rect):
             if raster.rect == region {
                 if env.linear {
@@ -388,6 +394,7 @@ public final class CIContext: @unchecked Sendable {
     }
 
     public func createCGImage(_ image: CIImage, from rect: CGRect, format: CIFormat = .RGBA8, colorSpace: CGColorSpace? = nil) -> CGImage? {
+        if case .bitmap(let bitmap) = image.node, format == .RGBA8, rect.integral == image.extent { return bitmap }
         guard let r = raster(image, rect) else { return nil }
         let w = r.width, h = r.height
         if format == .L8 || format == .A8 {
@@ -490,8 +497,30 @@ public final class CIRAWFilter: @unchecked Sendable {
     public var boostAmount: Float = 1
     public var scaleFactor: Float = 1
     public var isDraftModeEnabled = false
-    public var nativeSize: CGSize { .zero }
-    public var outputImage: CIImage? { nil }
+    private let raw: RawDecoding.Handle
 
-    public init?(imageURL: URL) { nil }
+    /// Opens (and unpacks, once per file) through the host's LibRaw decoder; nil without one or for an unreadable file.
+    public init?(imageURL: URL) {
+        guard let handle = RawDecoding.open(imageURL) else { return nil }
+        raw = handle
+        neutralTemperature = handle.asShotTemperature
+        neutralTint = handle.asShotTint
+    }
+
+    public var nativeSize: CGSize { CGSize(width: raw.width, height: raw.height) }
+
+    /// Developed with the current settings: draft (half-size, no demosaic) when asked and scaled to half or less.
+    public var outputImage: CIImage? {
+        let scale = min(1, max(0.01, scaleFactor))
+        guard let developed = raw.develop(exposure: exposure, temperature: neutralTemperature, tint: neutralTint,
+                                          boost: boostAmount, scale: scale, draft: isDraftModeEnabled) else { return nil }
+        RawDecoding.releaseIfConsumed(raw)
+        guard let provider = CGDataProvider(data: Data(developed.bytes) as CFData),
+              let image = CGImage(width: developed.width, height: developed.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: developed.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        else { return nil }
+        return CIImage(node: .bitmap(image))
+    }
 }
