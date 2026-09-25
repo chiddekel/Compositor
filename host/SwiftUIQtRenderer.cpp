@@ -773,7 +773,8 @@ protected:
         if (k == Qt::Key_Control || k == Qt::Key_Shift || k == Qt::Key_Alt || k == Qt::Key_Meta || k == Qt::Key_AltGr || e->isAutoRepeat()) return true;
         QString key;
         switch (k) {
-        case Qt::Key_Escape: key = QString(); break;
+        // Esc is a key like any other here, as upstream's recorder takes it (ShortcutChord: keyCode 53 -> "\u{1b}").
+        case Qt::Key_Escape: key = QStringLiteral("\x1b"); break;
         case Qt::Key_Backspace: case Qt::Key_Delete: key = QStringLiteral("\x7f"); break;
         case Qt::Key_Return: case Qt::Key_Enter: key = QStringLiteral("\r"); break;
         case Qt::Key_Tab: case Qt::Key_Backtab: key = QStringLiteral("\t"); break;

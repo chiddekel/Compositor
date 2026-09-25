@@ -75,7 +75,7 @@ Canvas Size, Image Size, Trim, Flip Canvas H/V, Crop — ✅ (CanvasSizeTests, I
 | Camera RAW develop sheet | ✅ | LibRaw |
 | Export PNG / JPEG | ✅ | ExportTests, JPEGExportTests |
 | Tabs, drag files in, drop on tab bar for a new canvas | ✅ | |
-| Recent documents (`noteNewRecentDocumentURL`) | 🟡 | recorded, but no desktop "recent files" integration |
+| Recent documents (`noteNewRecentDocumentURL`) | 🟡 | recorded in-app; the sandbox (no host filesystem) cannot write the desktop's recently-used list — files opened through the file-chooser portal are recorded by the desktop itself |
 
 ## 7. View menu and canvas
 
@@ -88,7 +88,7 @@ metrics (GuideTests excluded).
 | Element | Linux | Notes |
 |---|---|---|
 | Menus (upstream `CompositorApp.commands`) with shortcuts | ✅ | Ctrl/Alt/Shift in labels instead of ⌘⌥⇧ |
-| Keyboard Shortcuts editor | 🟡 | editing works through a key-capturing field instead of AppKit's recorder button |
+| Keyboard Shortcuts editor | ✅ | click a shortcut, press the new chord; Esc records as a key, as upstream's recorder does |
 | About, version | ✅ | |
 | Check for Updates | 🟡 | Flatpak instead of Sparkle |
 | Quit / close with unsaved changes | ✅ | alert sheet flow (TypeToolTests close/quit) |
@@ -112,7 +112,7 @@ metrics (GuideTests excluded).
 1. ~~System clipboard both ways~~ — done.
 2. ~~Trackpad pinch zoom~~ — done.
 3. ~~New canvas from clipboard size~~ — done.
-4. Keyboard Shortcuts recorder parity (click to record, Esc/Delete semantics).
-5. Recent documents to the desktop (XDG `recently-used.xbel`).
+4. ~~Keyboard Shortcuts recorder parity~~ — done.
+5. ~~Recent documents~~ — covered by the file-chooser portal (sandbox).
 6. Subject / Remove Background quality (model-backed segmentation behind the Vision API).
 7. GPU compositing through Skia-Vulkan.
