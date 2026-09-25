@@ -201,6 +201,32 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             }
             for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
         }
+        // COMPOSITOR_GRAB_EYE_SWIPE="from,to": press the eye of Layers row `from` (top first), drag to row `to`, let go.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_EYE_SWIPE").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_EYE_SWIPE").split(QLatin1Char(','));
+            QList<QWidget *> eyes;
+            for (QWidget *w : window.findChildren<QWidget *>())
+                if (w->property("swipeGroup").toString() == QLatin1String("layerEyes") && w->isVisible()) eyes << w;
+            std::sort(eyes.begin(), eyes.end(), [](QWidget *a, QWidget *b) { return a->mapToGlobal(QPoint()).y() < b->mapToGlobal(QPoint()).y(); });
+            // One per row (a rebuilt panel can leave an old copy behind for a moment).
+            eyes.erase(std::unique(eyes.begin(), eyes.end(), [](QWidget *a, QWidget *b) { return a->mapToGlobal(QPoint()).y() == b->mapToGlobal(QPoint()).y(); }), eyes.end());
+            const int from = v.value(0).toInt(), to = v.value(1).toInt();
+            if (from < eyes.size() && to < eyes.size()) {
+                QWidget *start = eyes[from];
+                const QPointF local(start->width() / 2.0, start->height() / 2.0);
+                QMouseEvent press(QEvent::MouseButtonPress, local, start->mapToGlobal(local), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(start, &press);
+                const int step = from <= to ? 1 : -1;
+                for (int i = from; i != to + step; i += step) {
+                    const QPointF global = eyes[i]->mapToGlobal(QPointF(eyes[i]->width() / 2.0, eyes[i]->height() / 2.0));
+                    QMouseEvent move(QEvent::MouseMove, start->mapFromGlobal(global), global, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(start, &move);
+                }
+                QMouseEvent release(QEvent::MouseButtonRelease, local, start->mapToGlobal(local), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(start, &release);
+                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            }
+        }
         // COMPOSITOR_GRAB_ACTION=<menu action objectName, e.g. filter.Vignette>: triggered as if chosen from the menu.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_ACTION").isEmpty()) {
             for (QAction *action : window.findChildren<QAction *>()) {

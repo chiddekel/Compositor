@@ -88,13 +88,14 @@ struct NativeLayerList: View {
         return AnyView(
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 0) {
-                    Button {
-                        session.toggleLayerVisibility(layer.id)
-                    } label: {
-                        Image(systemName: layer.isVisible ? "eye" : "eye.slash")
-                    }
-                    .buttonStyle(.plain)
+                    // EyeSwipeButton: press shows or hides this layer, dragging over other eyes gives them the same
+                    // state, one undo step for the lot.
+                    Image(systemName: layer.isVisible ? "eye" : "eye.slash")
                     .frame(width: 20, height: 51)
+                    .compatSwipe(group: "layerEyes",
+                                 began: { EyeSwipe.visible = session.beginVisibilitySwipe(layer.id) },
+                                 entered: { if let visible = EyeSwipe.visible { session.setVisibilityInSwipe(layer.id, visible: visible) } },
+                                 ended: { if EyeSwipe.visible != nil { EyeSwipe.visible = nil; session.endVisibilitySwipe() } })
                     .accessibilityLabel("\(layer.isVisible ? "Hide" : "Show") \(layer.name)")
                     .padding(.leading, 8)
                     Spacer().frame(width: indent)
@@ -256,6 +257,9 @@ extension NativeLayerList: HostedNativeContent {
         return table
     }
 }
+
+/// The state an eye swipe gives the layers it passes over (nil when no swipe is in progress).
+@MainActor enum EyeSwipe { static var visible: Bool? }
 
 /// The thumbnails the rows show, made once per (picture, placement, canvas) — the same key upstream's LayerCell keeps.
 @MainActor enum LayerThumbnails {

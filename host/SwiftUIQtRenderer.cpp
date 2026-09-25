@@ -1142,6 +1142,63 @@ private:
     QList<QWidget *> m_children;
 };
 
+/// compatSwipe: a press on one of a group's views, then a drag over the others (Photoshop's eye swipe).
+class SwipeFilter : public QObject {
+public:
+    SwipeFilter(QWidget *widget, uint64_t handle, QString panel, QString id, QString group)
+        : QObject(widget), m_widget(widget), m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)), m_group(std::move(group)) {
+        widget->setProperty("swipeGroup", m_group);
+        widget->setProperty("swipeNodeID", m_id);
+        widget->installEventFilter(this);
+        members().removeAll(nullptr);
+        members() << widget;
+    }
+    static QList<QPointer<QWidget>> &members() { static QList<QPointer<QWidget>> all; return all; }
+    bool eventFilter(QObject *, QEvent *event) override {
+        auto *me = static_cast<QMouseEvent *>(event);
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+            if (me->button() != Qt::LeftButton) return false;
+            m_last = m_id;
+            m_widget->grabMouse();
+            send(m_id, "swipeBegan");
+            return true;
+        case QEvent::MouseMove: {
+            if (m_last.isEmpty()) return false;
+            // The group's view under the pointer, by row: a swipe runs down a column, so only the height has to match.
+            const QPoint at = me->globalPosition().toPoint();
+            for (const QPointer<QWidget> &w : members()) {
+                if (!w || !w->isVisible() || w->property("swipeGroup").toString() != m_group) continue;
+                const QRect r(w->mapToGlobal(QPoint(0, 0)), w->size());
+                if (at.y() < r.top() || at.y() > r.bottom()) continue;
+                const QString id = w->property("swipeNodeID").toString();
+                if (id != m_last) { m_last = id; send(id, "swipeEntered"); }
+                break;
+            }
+            return true;
+        }
+        case QEvent::MouseButtonRelease:
+            if (m_last.isEmpty()) return false;
+            m_widget->releaseMouse();
+            m_last.clear();
+            send(m_id, "swipeEnded");
+            notifyListeners(m_handle, m_panel);
+            return true;
+        default: return false;
+        }
+    }
+private:
+    void send(const QString &id, const char *key) {
+        const QByteArray panelUtf8 = m_panel.toUtf8(), nodeUtf8 = id.toUtf8();
+        compositor_session_dispatch_swiftui_action(m_handle, panelUtf8.constData(), nodeUtf8.constData(), key, nullptr, 0);
+        // The rows repaint as they change (the panel itself rebuilds when the swipe ends).
+        for (QWidget *top : QApplication::topLevelWidgets()) top->update();
+    }
+    QWidget *m_widget;
+    uint64_t m_handle;
+    QString m_panel, m_id, m_group, m_last;
+};
+
 /// Keeps an overlay laid over its base view at the overlay's alignment (SwiftUI's `.overlay`).
 class OverlayPlacer : public QObject {
 public:
@@ -1950,6 +2007,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             for (const auto &k : node.value("handlerKeys").toArray()) keys << k.toString();
             return keys;
         }();
+        if (hKeys.contains(QStringLiteral("swipeBegan"))) new SwipeFilter(widget, handle, panel, id, strings.value("swipeGroup").toString());
         if (hKeys.contains(QStringLiteral("onTapGesture"))) {
             widget->setCursor(Qt::PointingHandCursor);
             widget->installEventFilter(new TapGestureFilter(widget, [handle, panel, id](int modifiers) {

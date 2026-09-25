@@ -171,6 +171,18 @@ extension View {
     public func onExitCommand(perform action: @escaping () -> Void) -> some View {
         modified { $0.modifiers.append(.onExitCommand(action)) }
     }
+    /// Compat-only (the Mac does this with an NSButton tracking its own drag, e.g. NativeLayerList's EyeSwipeButton):
+    /// pressing this view runs `began`; dragging over other views in the same `group` runs their `entered`; letting go
+    /// runs the pressed view's `ended`.
+    public func compatSwipe(group: String, began: @escaping () -> Void, entered: @escaping () -> Void,
+                            ended: @escaping () -> Void) -> some View {
+        modified {
+            $0.stringParams["swipeGroup"] = group
+            $0.modifiers.append(.sink("swipeBegan", { _ in began() }))
+            $0.modifiers.append(.sink("swipeEntered", { _ in entered() }))
+            $0.modifiers.append(.sink("swipeEnded", { _ in ended() }))
+        }
+    }
     /// Compat-only (no SwiftUI counterpart — AppKit's NSTableView drag-and-drop stands in for it on the Mac): lets the
     /// Qt shell drag this List's rows. `folders` marks the rows a drop can land *into*; `perform` gets the dragged row,
     /// the row under the drop, where in that row it landed (0 top ... 1 bottom) and whether Option/Alt copies.
