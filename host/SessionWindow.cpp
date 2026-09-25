@@ -5646,13 +5646,16 @@ void SessionWindow::setupHeaderBar() {
     m_headerToolBar->addWidget(trafficContainer);
 
     // + (New document) button: pill shape
-    auto *btnNew = new QPushButton("+", m_headerToolBar);
+    auto *btnNew = new QPushButton(m_headerToolBar);
     btnNew->setObjectName("newCanvasToolbar");
     btnNew->setToolTip(tr("New canvas (Ctrl+N)"));
-    btnNew->setFixedSize(22, 22);
+    btnNew->setFixedSize(28, 28);
+    btnNew->setIcon(renderToolVectorIcon(QStringLiteral("plus"), 15, QColor(0xdd, 0xdd, 0xdf)));
+    btnNew->setIconSize(QSize(15, 15));
+    btnNew->setCursor(Qt::PointingHandCursor);
     btnNew->setStyleSheet(
-        "QPushButton { background: rgba(255, 255, 255, 0.08); color: #d0d0d0; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 11px; font-size: 13px; font-weight: bold; padding: 0px; } "
-        "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
+        "QPushButton { background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; padding: 0px; } "
+        "QPushButton:hover { background: rgba(255, 255, 255, 0.16); } "
         "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
     );
     connect(btnNew, &QPushButton::clicked, this, [this] { newCanvasTab(); });
