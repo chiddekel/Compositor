@@ -42,6 +42,19 @@ import AppKit
         default: view.mouseMoved(with: event)
         }
     }
+    /// A key press for the canvas: `keyCode` a Mac virtual key code, `characters` what it types.
+    func key(keyCode: Int, characters: String, modifiers: Int, isRepeat: Bool) {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers & 1 != 0 { flags.insert(.command) }
+        if modifiers & 2 != 0 { flags.insert(.option) }
+        if modifiers & 4 != 0 { flags.insert(.control) }
+        if modifiers & 8 != 0 { flags.insert(.shift) }
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                           context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                           isARepeat: isRepeat, keyCode: UInt16(keyCode)) else { return }
+        view.keyDown(with: event)
+    }
     /// TransformOverlay's drawing at the canvas's size, premultiplied RGBA8, top row first.
     func overlay(width: Int, height: Int) -> [UInt8] {
         let context = CGContext(width: width, height: height)
@@ -78,6 +91,15 @@ nonisolated public func compositorCanvasResize(_ handle: UInt64, _ width: Double
 nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _ x: Double, _ y: Double, _ modifiers: Int32, _ clickCount: Int32) -> Int32 {
     Int32(withEntry(handle) { entry in
         UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers), clickCount: Int(clickCount))
+        return 0
+    })
+}
+
+@_cdecl("compositor_canvas_key")
+nonisolated public func compositorCanvasKey(_ handle: UInt64, _ keyCode: Int32, _ characters: UnsafePointer<CChar>?, _ modifiers: Int32, _ isRepeat: Int32) -> Int32 {
+    let typed = characters.map { String(cString: $0) } ?? ""
+    return Int32(withEntry(handle) { entry in
+        UpstreamCanvases.canvas(handle, entry).key(keyCode: Int(keyCode), characters: typed, modifiers: Int(modifiers), isRepeat: isRepeat != 0)
         return 0
     })
 }

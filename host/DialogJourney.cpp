@@ -194,7 +194,7 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             auto *sample = dialog->findChild<QPushButton *>("sample.0");
             require(sample && sample->isEnabled(), "Levels eyedropper missing or disabled");
             sample->click(); QApplication::processEvents();
-            QWidget *canvas = window.centralWidget();
+            QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"));
             const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
             const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
             const QPointF pos = origin + QPointF(28.5 * scale, 28.5 * scale);  // on the red stroke
@@ -491,7 +491,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
             require(qRound(geometry().x()) == 6, "X field did not move the layer");
             spin("transform.x")->setValue(0); QApplication::processEvents();
 
-            QWidget *canvas = w2.centralWidget();
+            QWidget *canvas = w2.findChild<QWidget *>(QStringLiteral("editorCanvas"));
             const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
             const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
             auto at = [&](double dx, double dy) { return origin + QPointF(dx * scale, dy * scale); };
@@ -517,7 +517,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         // Selection tools: New/Add combine modes, Expand, polygonal lasso.
         {
             SessionWindow w3; w3.resize(1200, 800); w3.show(); QApplication::processEvents();
-            QWidget *canvas = w3.centralWidget();
+            QWidget *canvas = w3.findChild<QWidget *>(QStringLiteral("editorCanvas"));
             const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
             const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
             auto at = [&](double dx, double dy) { return origin + QPointF(dx * scale, dy * scale); };

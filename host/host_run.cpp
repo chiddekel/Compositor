@@ -367,7 +367,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         // the current tool; COMPOSITOR_GRAB_KEY=return|escape then presses that key (e.g. to apply a gradient).
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_DRAG").isEmpty()) {
             const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_DRAG").split(',');
-            QWidget *canvas = window.centralWidget();
+            QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"));
             if (v.size() == 4 && canvas) {
                 window.show();
                 for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();

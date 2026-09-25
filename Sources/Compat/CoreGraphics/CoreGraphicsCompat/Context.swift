@@ -388,8 +388,80 @@ public final class CGContext: @unchecked Sendable {
         stroke(path)
     }
 
+    /// The "on" parts of `segments` under a dash pattern: curves flattened to lines, the pattern restarting (at `phase`)
+    /// with each subpath.
+    static func dashed(_ segments: [PathSegment], lengths: [CGFloat], phase: CGFloat) -> [PathSegment] {
+        var polylines: [[CGPoint]] = []
+        var current: [CGPoint] = []
+        var start = CGPoint.zero
+        func point(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint { CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t) }
+        for segment in segments {
+            switch segment {
+            case .move(let p):
+                if current.count > 1 { polylines.append(current) }
+                current = [p]; start = p
+            case .line(let p): current.append(p)
+            case .quad(let c, let p):
+                guard let from = current.last else { current = [p]; continue }
+                for i in 1...16 { let t = CGFloat(i) / 16; current.append(point(point(from, c, t), point(c, p, t), t)) }
+            case .cubic(let c1, let c2, let p):
+                guard let from = current.last else { current = [p]; continue }
+                for i in 1...24 {
+                    let t = CGFloat(i) / 24
+                    let a = point(from, c1, t), b = point(c1, c2, t), c = point(c2, p, t)
+                    current.append(point(point(a, b, t), point(b, c, t), t))
+                }
+            case .close:
+                if !current.isEmpty { current.append(start); polylines.append(current); current = [start] }
+            }
+        }
+        if current.count > 1 { polylines.append(current) }
+        let total = lengths.reduce(0, +)
+        var result: [PathSegment] = []
+        for line in polylines {
+            // Where in the pattern the subpath starts.
+            var offset = phase.truncatingRemainder(dividingBy: total)
+            if offset < 0 { offset += total }
+            var index = 0
+            while offset >= lengths[index] { offset -= lengths[index]; index = (index + 1) % lengths.count }
+            var remaining = lengths[index] - offset
+            var on = index % 2 == 0
+            if on { result.append(.move(line[0])) }
+            for k in 1..<line.count {
+                var a = line[k - 1]
+                let b = line[k]
+                var length = hypot(b.x - a.x, b.y - a.y)
+                while length > 0 {
+                    let step = min(remaining, length)
+                    let t = step / length
+                    let p = point(a, b, t)
+                    if on { result.append(.line(p)) }
+                    length -= step
+                    remaining -= step
+                    a = p
+                    if remaining <= 0.0001 {
+                        index = (index + 1) % lengths.count
+                        remaining = lengths[index]
+                        on = index % 2 == 0
+                        if on { result.append(.move(p)) }
+                    }
+                }
+            }
+        }
+        return result
+    }
+
     /// Strokes `path` (user space) with the current stroke colour, width, cap, join and miter limit.
     public func stroke(_ path: CGPath) {
+        // A dash pattern (setLineDash) cuts the outline into its "on" runs first, as Core Graphics does, in user space.
+        if !state.dashLengths.isEmpty, state.dashLengths.reduce(0, +) > 0 {
+            let dashed = Self.dashed(path.segments, lengths: state.dashLengths, phase: state.dashPhase)
+            let saved = state.dashLengths
+            state.dashLengths = []
+            defer { state.dashLengths = saved }
+            stroke(CGPath(segments: dashed))
+            return
+        }
         let c = state.strokeColor
         if let canvas {
             canvas.stroke(path: path.segments, width: Float(state.lineWidth), cap: state.lineCap.rawValue,

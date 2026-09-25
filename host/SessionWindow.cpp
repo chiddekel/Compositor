@@ -96,6 +96,10 @@ int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t 
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_render_revision(uint64_t handle);
 int32_t compositor_session_viewport(uint64_t handle, double *out);
+int32_t compositor_canvas_resize(uint64_t handle, double width, double height, double scale);
+int32_t compositor_canvas_key(uint64_t handle, int32_t keyCode, const char *characters, int32_t modifiers, int32_t isRepeat);
+int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double y, int32_t modifiers, int32_t clickCount);
+int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
 int64_t compositor_app_menus(uint8_t *output, size_t capacity);
 int32_t compositor_app_menu_perform(const char *path);
 int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
@@ -138,6 +142,11 @@ static int32_t cmd(uint64_t h, const char *json) {
 // Fetches a document tab's title from upstream's own ProjectWorkspace (see compositor_workspace_tab_title):
 // "Untitled"/"Untitled N" until a project has a path, then the project's filename. Empty if handle isn't a
 // workspace tab (compositor_session_create handles never are).
+/// Modifier keys as ShortcutChord bits: Ctrl 1 (⌘), Alt 2 (⌥), Meta 4 (⌃), Shift 8.
+static int chordBits(Qt::KeyboardModifiers m) {
+    return (m & Qt::ControlModifier ? 1 : 0) | (m & Qt::AltModifier ? 2 : 0) | (m & Qt::MetaModifier ? 4 : 0) | (m & Qt::ShiftModifier ? 8 : 0);
+}
+
 static QString workspaceTabTitle(uint64_t handle) {
     const int64_t size = compositor_workspace_tab_title(handle, nullptr, 0);
     if (size <= 0) return {};
@@ -544,6 +553,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     // Central canvas widget:
     m_canvasWidget = new SessionCanvasWidget(this);
+    m_canvasWidget->setObjectName("editorCanvas");
     // ContentView's canvas column: the ruler corner and the top ruler over the left ruler and the canvas (rulers only
     // while View > Show > Rulers is on and there is a document).
     {
@@ -1641,6 +1651,27 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
     if (focus && (qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus) || qobject_cast<QTextEdit *>(focus))) {
         QMainWindow::keyPressEvent(event);
         return;
+    }
+    // Canvas keys of the tools upstream's CanvasView handles (EditorCanvas.keyDown): apply / cancel, delete, nudge, Tab.
+    if (routesToUpstreamCanvas()) {
+        static const QHash<int, int> codes{{Qt::Key_Return, 36}, {Qt::Key_Enter, 76}, {Qt::Key_Escape, 53}, {Qt::Key_Backspace, 51},
+            {Qt::Key_Delete, 117}, {Qt::Key_Tab, 48}, {Qt::Key_Left, 123}, {Qt::Key_Right, 124}, {Qt::Key_Down, 125}, {Qt::Key_Up, 126}};
+        static const QHash<int, QString> typed{{Qt::Key_Return, "\r"}, {Qt::Key_Enter, "\u0003"}, {Qt::Key_Escape, "\u001b"},
+            {Qt::Key_Backspace, "\u007f"}, {Qt::Key_Delete, QString(QChar(0xf728))}, {Qt::Key_Tab, "\t"},
+            {Qt::Key_Left, QString(QChar(0xf702))}, {Qt::Key_Right, QString(QChar(0xf703))}, {Qt::Key_Down, QString(QChar(0xf701))},
+            {Qt::Key_Up, QString(QChar(0xf700))}};
+        if (codes.contains(event->key())) {
+            const QByteArray characters = typed.value(event->key()).toUtf8();
+            compositor_canvas_key(m_sessionHandle, codes.value(event->key()), characters.constData(), chordBits(event->modifiers()), event->isAutoRepeat());
+            compositor_pump_main();
+            refreshImage();
+            refreshLayers();
+            updateLayersPanel();
+            updateOptionsBar();
+            if (m_canvasWidget) m_canvasWidget->update();
+            event->accept();
+            return;
+        }
     }
     // Canvas shortcuts the Keyboard Shortcuts editor reassigned: the new chord stands in for the original (handled
     // below as before), and an original now assigned elsewhere does nothing — ShortcutSettings.canvasEvent.
@@ -2942,6 +2973,7 @@ void SessionWindow::syncViewportGeometry() {
     if (m_sessionHandle == 0 || !m_canvasWidget) return;
     compositor_session_viewport_update(m_sessionHandle, 0, m_canvasWidget->width(), m_canvasWidget->height(),
                                        m_canvasWidget->devicePixelRatioF());
+    compositor_canvas_resize(m_sessionHandle, m_canvasWidget->width(), m_canvasWidget->height(), m_canvasWidget->devicePixelRatioF());
 }
 
 double SessionWindow::viewportZoom() const {
@@ -3086,41 +3118,16 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         p.drawRect(target.adjusted(inset, inset, -inset, -inset));
     }
 
-    drawCanvasChrome(p, canvas);   // grid and guides sit under the handles
-    drawTransformControls(p);
-    drawCropOverlay(p);
-
-    if (m_tool == Tool::Lasso && !m_lassoPoints.empty()) {
-        QPolygonF outline;
-        for (const QPointF &pt : m_lassoPoints) outline << documentToCanvasPoint(pt);
-        if (m_polygonalLasso && m_polyActive) outline << documentToCanvasPoint(m_currentPoint);
-        p.save();
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
-        p.drawPolyline(outline);
-        if (m_polygonalLasso) {
-            p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1)); p.setBrush(Qt::white);
-            for (const QPointF &pt : m_lassoPoints) p.drawRect(QRectF(documentToCanvasPoint(pt) - QPointF(3, 3), QSizeF(6, 6)));
-        }
-        p.restore();
+    // Upstream's TransformOverlay, drawn by the hosted CanvasView: grid, guides, crop, gradient line, transform
+    // handles, the selection's marching ants, the lasso or marquee being drawn, snap lines.
+    {
+        const int w = canvas->width(), h = canvas->height();
+        const size_t capacity = size_t(w) * size_t(h) * 4;
+        QByteArray bytes(qsizetype(capacity), Qt::Uninitialized);
+        if (w > 0 && h > 0 && compositor_canvas_overlay(m_sessionHandle, w, h, reinterpret_cast<uint8_t *>(bytes.data()), capacity) == int64_t(capacity))
+            p.drawImage(0, 0, QImage(reinterpret_cast<const uchar *>(bytes.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied));
     }
 
-    // Pending gradient: its line with a handle at each end (upstream TransformOverlay.drawGradientLine).
-    if (m_gradientLine.size() == 4) {
-        const QPointF a = documentToCanvasPoint(QPointF(m_gradientLine[0], m_gradientLine[1]));
-        const QPointF b = documentToCanvasPoint(QPointF(m_gradientLine[2], m_gradientLine[3]));
-        p.save();
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor(0, 0, 0, 140), 3));
-        p.drawLine(a, b);
-        p.setPen(QPen(Qt::white, 1.5));
-        p.drawLine(a, b);
-        p.setBrush(Qt::white);
-        p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
-        p.drawEllipse(a, 5, 5);
-        p.drawEllipse(b, 5, 5);
-        p.restore();
-    }
     // A text box being dragged out (upstream drawTextBoxDraft).
     if (!m_textBoxRect.isNull()) {
         p.save();
@@ -3145,23 +3152,36 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         p.restore();
     }
 
-    // Interactive drag feedback (selection marquee)
-    if (m_painting && m_tool == Tool::Marquee) {
-        const QPointF startCanvas = documentToCanvasPoint(m_dragStart);
-        const QPointF currentCanvas = documentToCanvasPoint(m_currentPoint);
-        QRectF selRect(startCanvas, currentCanvas);
-        selRect = selRect.normalized();
-        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
-        if (m_marqueeMode == MarqueeMode::Ellipse) {
-            p.drawEllipse(selRect);
-        } else {
-            p.drawRect(selRect);
-        }
+}
+
+/// The tools upstream's CanvasView handles itself here (its EditorCanvas mouse code, unmodified); the rest are still
+/// the shell's. Space held pans, as the shell does it.
+bool SessionWindow::routesToUpstreamCanvas() const {
+    if (m_spaceHandActive || m_colorPickerOpen) return false;
+    switch (m_tool) {
+    case Tool::Move: case Tool::Marquee: case Tool::Lasso: case Tool::Magic: case Tool::Crop: return true;
+    default: return false;
     }
+}
+
+/// A pointer event for the hosted CanvasView, then the shell catches up with what it changed.
+void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount) {
+    syncViewportGeometry();
+    compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(), chordBits(event->modifiers()), clickCount);
+    if (kind == 3) { if (m_canvasWidget) m_canvasWidget->update(); return; }
+    compositor_pump_main();
+    refreshImage();
+    if (kind == 2 || kind == 0) { refreshLayers(); updateLayersPanel(); updateOptionsBar(); }
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (event->button() == Qt::LeftButton && routesToUpstreamCanvas()) {
+        m_upstreamCanvasDrag = true;
+        sendUpstreamCanvasMouse(0, event, 1);
+        return;
+    }
     m_currentPoint = documentPoint(event->position());
     mousePressEvent(event);
     if (m_canvasWidget) m_canvasWidget->update();
@@ -3169,6 +3189,8 @@ void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
 
 void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (m_upstreamCanvasDrag) { sendUpstreamCanvasMouse(1, event, 1); return; }
+    if (!m_painting && routesToUpstreamCanvas()) { sendUpstreamCanvasMouse(3, event, 0); return; }
     m_currentPoint = documentPoint(event->position());
     mouseMoveEvent(event);
     // Mid-stroke, scheduleStrokeRefresh() repaints just the changed area; a whole-canvas repaint per mouse move
@@ -3183,6 +3205,11 @@ bool SessionWindow::isBrushStrokeActive() const {
 
 void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (m_upstreamCanvasDrag && event->button() == Qt::LeftButton) {
+        m_upstreamCanvasDrag = false;
+        sendUpstreamCanvasMouse(2, event, 1);
+        return;
+    }
     m_currentPoint = documentPoint(event->position());
     mouseReleaseEvent(event);
     if (m_canvasWidget) m_canvasWidget->update();
@@ -4044,6 +4071,11 @@ bool SessionWindow::sendCommandQuiet(const QJsonObject &command) {
 /// Move tool: double-click live text to edit it without switching to Type first (upstream 1.2.9).
 bool SessionWindow::canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (event->button() == Qt::LeftButton && routesToUpstreamCanvas() && m_tool != Tool::Move) {
+        m_upstreamCanvasDrag = true;
+        sendUpstreamCanvasMouse(0, event, 2);   // a double press (closes a polygonal lasso)
+        return true;
+    }
     if (event->button() != Qt::LeftButton || m_tool != Tool::Move) return false;
     const QPointF point = documentPoint(event->position());
     if (!sendCommandQuiet({{"action", "textEditAt"}, {"x", point.x()}, {"y", point.y()}})) return false;

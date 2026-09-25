@@ -191,6 +191,8 @@ public:
     /// ContentView's welcome: upstream's New Canvas sheet over the canvas while the tab has no document.
     void updateWelcome();
     void installAppMenus();
+    bool routesToUpstreamCanvas() const;
+    void sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount);
     void syncAppMenus();
     void performAppMenu(const QString &path);
     void handleShellRequests();
@@ -455,6 +457,7 @@ private:
     bool m_handlingShellRequests = false;
     int m_panelPollTick = 0;
     bool m_colorPickerOpen = false, m_samplingPicker = false;
+    bool m_upstreamCanvasDrag = false;
     QStringList m_appMenuShape;
     QList<QMenu *> m_appMenus, m_legacyMenus;
     QHash<QString, QAction *> m_appMenuActions;
