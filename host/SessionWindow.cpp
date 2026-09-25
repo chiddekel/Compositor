@@ -1676,7 +1676,25 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         QMainWindow::keyPressEvent(event);
         return;
     }
-    // Canvas keys of the tools upstream's CanvasView handles (EditorCanvas.keyDown): apply / cancel, delete, nudge, Tab.
+    // The canvas's keys are upstream's (EditorCanvas.keyDown): apply / cancel, delete, nudge, Tab, and the plain keys —
+    // tool letters (M, L, W toggle their modes; B/E; Shift-U), X / D, 1–0 opacity, [ ] size. Space stays the shell's
+    // temporary hand; chords with Ctrl or Meta are menu shortcuts.
+    if (!m_spaceHandActive && event->key() != Qt::Key_Space && !(event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
+        && !event->text().isEmpty() && event->text().at(0).isPrint()) {
+        const QByteArray characters = event->text().toUtf8();
+        compositor_canvas_key(m_sessionHandle, 0xffff, characters.constData(), chordBits(event->modifiers()), event->isAutoRepeat());
+        compositor_pump_main();
+        syncToolFromSession();
+        syncPaletteFromSession();
+        syncOptionsFromSession();
+        updateOptionsBar();
+        refreshImage();
+        refreshLayers();
+        updateLayersPanel();
+        if (m_canvasWidget) m_canvasWidget->update();
+        event->accept();
+        return;
+    }
     if (routesToUpstreamCanvas()) {
         static const QHash<int, int> codes{{Qt::Key_Return, 36}, {Qt::Key_Enter, 76}, {Qt::Key_Escape, 53}, {Qt::Key_Backspace, 51},
             {Qt::Key_Delete, 117}, {Qt::Key_Tab, 48}, {Qt::Key_Left, 123}, {Qt::Key_Right, 124}, {Qt::Key_Down, 125}, {Qt::Key_Up, 126}};
@@ -2000,6 +2018,13 @@ void SessionWindow::installAppMenus() {
     for (QAction *top : menuBar()->actions()) {
         if (top->menu()) { strip(top->menu()); m_legacyMenus << top->menu(); }
         top->setVisible(false);
+    }
+    // Single keys (tool letters, X, D, digits, brackets) belong to the canvas (EditorCanvas.keyDown), not to actions.
+    for (QAction *action : findChildren<QAction *>()) {
+        const QKeySequence key = action->shortcut();
+        if (key.isEmpty()) continue;
+        const int combined = key[0].toCombined();
+        if (!(combined & (Qt::ControlModifier | Qt::MetaModifier | Qt::AltModifier))) action->setShortcuts({});
     }
     syncAppMenus();
 }

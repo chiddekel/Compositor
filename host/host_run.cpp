@@ -233,6 +233,18 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 qInfo("cursor shape %d hot %d,%d", int(cursor.shape()), cursor.hotSpot().x(), cursor.hotSpot().y());
             }
         }
+        // COMPOSITOR_GRAB_KEYS="m,m,shift+u,2": plain key presses at the canvas, as typed with it focused.
+        for (const QString &spec : qEnvironmentVariable("COMPOSITOR_GRAB_KEYS").split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"));
+            if (!canvas) break;
+            const bool shift = spec.startsWith(QLatin1String("shift+"));
+            QString text = shift ? spec.mid(6) : spec;
+            if (shift) text = text.toUpper();
+            const int key = text.isEmpty() ? 0 : text.toUpper().at(0).unicode();
+            QKeyEvent press(QEvent::KeyPress, key, shift ? Qt::ShiftModifier : Qt::NoModifier, text);
+            QCoreApplication::sendEvent(canvas, &press);
+            for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+        }
         // COMPOSITOR_GRAB_BLEND_HOVER=<mode>: open the Layers panel's blend menu and hover that mode (menu left open).
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_BLEND_HOVER").isEmpty()) {
             for (QComboBox *combo : window.findChildren<QComboBox *>()) {
