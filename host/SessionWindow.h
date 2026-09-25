@@ -194,6 +194,7 @@ public:
     void syncAppMenus();
     void performAppMenu(const QString &path);
     void handleShellRequests();
+    void exportWithUpstream(bool jpeg);
     void positionWelcome();
     /// Upstream's .fileImporter / the welcome's Open project, when the session asks for them.
     void handleSessionFileRequests();

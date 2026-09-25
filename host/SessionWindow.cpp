@@ -1349,7 +1349,8 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
     dialog.setWindowTitle(panel == QLatin1String("PSDConversionSheet") ? tr("Import Photoshop File")
                           : panel == QLatin1String("TrimSheet") ? tr("Trim")
                           : panel == QLatin1String("CanvasSizeSheet") ? tr("Canvas Size")
-                          : panel == QLatin1String("ImageSizeSheet") ? tr("Image Size") : tr("Develop"));
+                          : panel == QLatin1String("ImageSizeSheet") ? tr("Image Size")
+                          : panel == QLatin1String("JPEGExportSheet") ? tr("Export JPEG") : tr("Develop"));
     auto *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(0, 0, 0, 0);
     QWidget *current = nullptr;
@@ -2067,6 +2068,20 @@ void SessionWindow::performAppMenu(const QString &path) {
     syncAppMenus();
 }
 
+/// ProjectController.exportPNG / exportJPEG: upstream's exporter (and JPEG sheet), the save panel being the shell's,
+/// suggesting "<project or Untitled>.png|.jpg".
+void SessionWindow::exportWithUpstream(bool jpeg) {
+    if (jpeg && !sendCommand({{"action", "jpegExportSheet"}})) return;   // cancelled, or it couldn't render
+    const QString base = m_activeDocumentIndex >= 0 && m_activeDocumentIndex < int(m_documents.size())
+        ? m_documents[m_activeDocumentIndex].title : QStringLiteral("Untitled");
+    const QString path = QFileDialog::getSaveFileName(this, jpeg ? tr("Export JPEG") : tr("Export PNG"),
+        QDir::home().filePath(base + (jpeg ? QStringLiteral(".jpg") : QStringLiteral(".png"))),
+        jpeg ? tr("JPEG image (*.jpg *.jpeg)") : tr("PNG image (*.png)"));
+    if (path.isEmpty()) { if (jpeg) sendCommandQuiet({{"action", "writeJPEG"}}); return; }
+    if (!sendCommand({{"action", jpeg ? "writeJPEG" : "exportPNG"}, {"paths", QJsonArray{path}}}))
+        m_platform.notifier->warn(jpeg ? tr("Couldn’t export JPEG") : tr("Couldn’t export PNG"), sessionState().value("error").toString());
+}
+
 /// Upstream ProjectController calls and system items the menus made (ShellProjects on the Swift side).
 void SessionWindow::handleShellRequests() {
     const int64_t size = compositor_take_shell_requests(nullptr, 0);
@@ -2083,8 +2098,8 @@ void SessionWindow::handleShellRequests() {
         else if (request == QLatin1String("open")) trigger("file.openProject");
         else if (request == QLatin1String("save")) trigger("file.save");
         else if (request == QLatin1String("saveAs")) trigger("file.saveAs");
-        else if (request == QLatin1String("exportPNG")) trigger("file.exportPNG");
-        else if (request == QLatin1String("exportJPEG")) trigger("file.exportJPEG");
+        else if (request == QLatin1String("exportPNG")) exportWithUpstream(false);
+        else if (request == QLatin1String("exportJPEG")) exportWithUpstream(true);
         else if (request == QLatin1String("close")) trigger("file.closeProject");
         else if (request == QLatin1String("canvasSize") || request == QLatin1String("imageSize")) {
             // Upstream's own sheet (CanvasSizeSheet / ImageSizeSheet) and resizer.

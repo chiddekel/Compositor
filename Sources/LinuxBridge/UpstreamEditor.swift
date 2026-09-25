@@ -190,7 +190,7 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textFinish", "textCancel",
@@ -205,7 +205,10 @@ final class UpstreamEditor {
     /// Upstream's Canvas Size / Image Size sheets while Image > Canvas Size… / Image Size… waits for their answer.
     private(set) var canvasSizeSheet: CanvasSizeSheet?
     private(set) var imageSizeSheet: ImageSizeSheet?
+    /// Upstream's Export JPEG sheet while File > Export JPEG… waits for its answer.
+    private(set) var jpegExportSheet: JPEGExportSheet?
     private var sizeAnswer: ((Any?) -> Void)?
+    private var pendingJPEG: Data?
     private var trimAnswer: ((TrimOptions?) -> Void)?
     /// The filter in progress was opened the upstream way ("openFilter"), so its FilterSheet floats beside the canvas;
     /// the shell's own filter dialogs ("filterBegin") drive filterEdit without it.
@@ -224,6 +227,14 @@ final class UpstreamEditor {
         answer?(options)
     }
 
+    /// Answers the open Export JPEG sheet (nil = Cancel).
+    func finishJPEGSheet(_ data: Data?) {
+        let answer = sizeAnswer
+        sizeAnswer = nil
+        jpegExportSheet = nil
+        answer?(data)
+    }
+
     /// Answers the open Trim sheet (nil = Cancel), e.g. when the shell's dialog is closed.
     func finishTrim(_ options: TrimOptions?) {
         let answer = trimAnswer
@@ -240,6 +251,7 @@ final class UpstreamEditor {
         if trimSheet != nil { sheets.append("TrimSheet") }
         if canvasSizeSheet != nil { sheets.append("CanvasSizeSheet") }
         if imageSizeSheet != nil { sheets.append("ImageSizeSheet") }
+        if jpegExportSheet != nil { sheets.append("JPEGExportSheet") }
         return sheets
     }
     /// The manifest of a project being loaded; its layers' images and masks arrive through `installLayerAsset`.
@@ -605,6 +617,28 @@ final class UpstreamEditor {
                 let resized = try await ImageResizer.shared.resize(snapshot, to: options)
                 s.applyImageSize(resized)
             } catch { return fail(-5, "Couldn’t resize the image: \(error.localizedDescription)") }
+        // ProjectController.exportPNG() / exportJPEG(), the save panel being the shell's: `paths` = [destination]
+        // (PNG), or first the JPEG sheet ("jpegExportSheet", keeping its data) and then "writeJPEG" to `paths`.
+        case "exportPNG":
+            guard let path = command.paths?.first, let snapshot = s.projectSnapshot() else { return fail(-1, "nothing to export") }
+            do { try await ImageExporter.shared.exportPNG(snapshot, to: URL(fileURLWithPath: path)) }
+            catch { return fail(-5, "Couldn’t export PNG: \(error.localizedDescription)") }
+        case "jpegExportSheet":
+            guard let snapshot = s.projectSnapshot() else { return fail(-2, "no document") }
+            do {
+                let raster = try await ImageExporter.shared.render(snapshot)
+                let data: Data? = await withCheckedContinuation { continuation in
+                    sizeAnswer = { continuation.resume(returning: $0 as? Data) }
+                    jpegExportSheet = JPEGExportSheet(raster: raster) { [weak self] in self?.finishJPEGSheet($0) }
+                }
+                pendingJPEG = data
+                guard data != nil else { return fail(-7, "cancelled") }
+            } catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
+        case "writeJPEG":
+            guard let path = command.paths?.first, let data = pendingJPEG else { return fail(-1, "nothing to write") }
+            pendingJPEG = nil
+            do { try await ImageExporter.shared.write(data, to: URL(fileURLWithPath: path)) }
+            catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
         case "filterBegin":
             guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
             filterInShellDialog = true

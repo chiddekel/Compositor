@@ -204,6 +204,9 @@ struct CompositorStatusBar: View {
     case "ImageSizeSheet":
         guard let sheet = entry.editor.imageSizeSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)
+    case "JPEGExportSheet":
+        guard let sheet = entry.editor.jpegExportSheet else { return nil }
+        resolved = ViewResolver.resolve(sheet)
     case "TrimSheet":
         guard let sheet = entry.editor.trimSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)
