@@ -2311,6 +2311,18 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             }
         };
         for (const auto &child : children) extractLabel(child.toObject());
+        // `Label(title, systemImage:)` in a default-styled button: AppKit's bordered push button with the symbol
+        // before the title (Levels' Sample eyedroppers). Other icon + title stacks are plain headers (Camera Raw's).
+        const bool isLabel = !children.isEmpty() && children.first().toObject().value("kind").toString() == QLatin1String("Label");
+        // `.tint(...)`: the color a bordered button's title and symbol take (compat carries it as foregroundStyle).
+        QColor tint = parseColorToken(QStringLiteral("primary"));
+        for (const auto &m : node.value("modifiers").toArray()) {
+            const QJsonObject mo = m.toObject();
+            if (mo.value("kind").toString() == QLatin1String("foregroundStyle")) {
+                const QString name = mo.value("stringParams").toObject().value("name").toString();
+                tint = name == QLatin1String("accentColor") ? QColor(0x0a, 0x84, 0xff) : parseColorToken(name);
+            }
+        }
 
         QString hint;
         for (const auto &m : node.value("modifiers").toArray()) {
@@ -2397,6 +2409,14 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             button->setFixedSize(labelFrame);
             button->setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; margin: 0px; } "
                                   "QPushButton:hover { background-color: rgba(255, 255, 255, 0.10); border-radius: 3px; }");
+        } else if (isLabel && !systemIcon.isEmpty() && !textLabel.isEmpty() && panel != QLatin1String("ToolRail")) {
+            button->setIcon(renderToolVectorIcon(systemIcon, 13, tint));
+            button->setIconSize(QSize(13, 13));
+            button->setText(textLabel);
+            button->setStyleSheet(QStringLiteral(
+                "QPushButton { background-color: #2a2a2d; color: %1; border: 1px solid #38383c; border-radius: 4px; padding: 4px 10px; } "
+                "QPushButton:hover { background-color: #35353a; border-color: #55555c; } "
+                "QPushButton:pressed { background-color: #1f1f22; }").arg(tint.name(QColor::HexArgb)));
         } else if (!systemIcon.isEmpty() && !textLabel.isEmpty() && panel != QLatin1String("ToolRail")) {
             // An icon and a title in one plain button (e.g. Camera Raw's disclosure headers: chevron + section name).
             button->setIcon(renderToolVectorIcon(systemIcon, 12, QColor(0xf5, 0xf5, 0xf7)));

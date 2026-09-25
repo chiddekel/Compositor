@@ -162,7 +162,7 @@ nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: U
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(wire) else { return -5 }
         // COMPOSITOR_DUMP_TREE=<panel>: that panel's resolved tree on stderr, for renderer debugging.
-        if ProcessInfo.processInfo.environment["COMPOSITOR_DUMP_TREE"] == panelName, output != nil {
+        if ProcessInfo.processInfo.environment["COMPOSITOR_DUMP_TREE"] == panelName {
             FileHandle.standardError.write(data + Data("\n".utf8))
         }
         if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
