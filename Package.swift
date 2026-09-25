@@ -240,6 +240,7 @@ let package = Package(
                     "-I/usr/include/QtCore",
                     "-I/usr/include/QtGui",
                     "-I/usr/include/QtDBus",
+                    "-I/usr/include/QtSvg",
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB", "-DQT_DBUS_LIB",
                 ] + (librawPrefix.map { ["-I\($0)/include"] } ?? []) + (rawspeedLibraries.isEmpty ? [] : ["-DLIBRAW_WITH_RAWSPEED3"])),
             ],
@@ -258,6 +259,7 @@ let package = Package(
                 .linkedLibrary("Qt6Gui"),
                 .linkedLibrary("Qt6Core"),
                 .linkedLibrary("Qt6DBus"),
+                .linkedLibrary("Qt6Svg"),
                 .unsafeFlags(["-L/usr/lib/x86_64-linux-gnu",
                               "-Xlinker", "-rpath", "-Xlinker", "/usr/lib/x86_64-linux-gnu"]),
             ]

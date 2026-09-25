@@ -15,6 +15,8 @@
 // every panel, no per-panel Qt glue. This is intentionally the *only* place that knows the kind→widget mapping.
 
 #include "SwiftUIQtRenderer.h"
+#include "LucideIcons.h"
+#include <QSvgRenderer>
 #include "PerfTrace.h"
 #include <QTimer>
 #include <QTextEdit>
@@ -460,6 +462,21 @@ static void buildContextMenu(QMenu *menu, const QJsonArray &items, const std::fu
 } // namespace
 
 QIcon renderToolVectorIcon(const QString &symbol, int size, const QColor &color) {
+    // SF Symbols by their upstream names, drawn from Lucide (the open stand-in; host/LucideIcons.h), at the device's
+    // resolution; a 1.75-unit stroke on the 24-unit grid sits close to SF's regular weight.
+    if (const QByteArray svg = lucideIconSVG(symbol); !svg.isEmpty()) {
+        QByteArray tinted = svg;
+        tinted.replace("currentColor", color.name(QColor::HexRgb).toLatin1());
+        tinted.replace("stroke-width=\"2\"", QByteArrayLiteral("stroke-width=\"1.75\" stroke-opacity=\"") + QByteArray::number(color.alphaF()) + '"');
+        const qreal dpr = qApp ? std::max<qreal>(qApp->devicePixelRatio(), 2.0) : 2.0;
+        QPixmap pixmap(QSize(size, size) * dpr);
+        pixmap.setDevicePixelRatio(dpr);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        QSvgRenderer(tinted).render(&painter, QRectF(0, 0, size, size));
+        painter.end();
+        return QIcon(pixmap);
+    }
     QPixmap pix(size, size);
     pix.fill(Qt::transparent);
     QPainter p(&pix);
