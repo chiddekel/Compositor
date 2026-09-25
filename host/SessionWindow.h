@@ -277,6 +277,7 @@ private:
     QTimer *m_panelThrottle = nullptr;       // refreshPanels() mid-drag
     QElapsedTimer m_panelThrottleClock;
     void refreshPanels();
+    void refreshDirtyPanels();
     void queueLayersRefresh();
     // Gradient / Shape tools: the pending gradient line (x0,y0,x1,y1), which end is being dragged (1 start, 2 end),
     // and the shape draft being dragged (kind, box, line ends) — all in document pixels, read back from the session.
@@ -429,6 +430,7 @@ private:
     QHash<QString, FloatingPanelWindow> m_floatingPanels;   // panel name -> its window (updateFloatingPanels)
     bool m_updatingFloatingPanels = false, m_floatingPanelsDirty = false;
     QByteArray m_pumpedState;
+    std::array<double, 6> m_pumpedViewport{};   // what the pump last saw of the viewport
     QTimer *m_strokeRefreshTimer = nullptr;
     QElapsedTimer m_strokeFrameClock;            // when the last stroke frame started (frame pacing)
     std::vector<uint8_t> m_strokeRegionBuffer;   // reused between stroke frames: no per-frame allocation

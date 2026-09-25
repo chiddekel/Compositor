@@ -3,6 +3,7 @@
 // Same conventions as SessionABI.swift: opaque session handles, JSON-blob-with-size-query for structured data.
 
 import Foundation
+import Observation
 import SwiftUI
 
 /// Resolves the named panel against `entry`'s session into a wire-ready tree, and refreshes `entry`'s action-handler
@@ -14,7 +15,11 @@ import SwiftUI
     var wire: RenderNodeWire?
     for _ in 0..<3 {
         guard StateStore.begin(scope: scope) else { return nil }
-        let node = resolvePanelTree(panel, entry: entry)
+        // As SwiftUI does: whatever observable state the body read, a change to it invalidates the panel — the shell
+        // re-fetches just the panels that changed (compositor_session_dirty_panels) instead of polling them all.
+        DirtyPanels.clear(entry, panel)
+        let key = DirtyPanels.Key(entry: ObjectIdentifier(entry), panel: panel)
+        let node = withObservationTracking { resolvePanelTree(panel, entry: entry) } onChange: { DirtyPanels.mark(key) }
         StateStore.end()
         guard var node else {
             StateStore.discard(scope: scope)
@@ -218,4 +223,36 @@ nonisolated public func compositorSessionDispatchSwiftUIAction(_ handle: UInt64,
         // No blanket invalidation: compositor_session_render re-renders only when its RenderKey changed.
         return 0
     })
+}
+
+/// Panels whose observed state changed since they were last resolved (withObservationTracking's onChange, which may
+/// fire on any thread).
+enum DirtyPanels {
+    struct Key: Hashable, Sendable { let entry: ObjectIdentifier; let panel: String }
+    nonisolated(unsafe) private static var dirty: Set<Key> = []
+    private static let lock = NSLock()
+    static func mark(_ key: Key) { lock.lock(); dirty.insert(key); lock.unlock() }
+    static func clear(_ entry: Entry, _ panel: String) {
+        lock.lock(); dirty.remove(Key(entry: ObjectIdentifier(entry), panel: panel)); lock.unlock()
+    }
+    /// The entry's dirty panels, taken (the shell refreshes them now).
+    static func take(_ entry: Entry) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        let id = ObjectIdentifier(entry)
+        let names = dirty.filter { $0.entry == id }
+        dirty.subtract(names)
+        return names.map(\.panel).sorted()
+    }
+}
+
+/// The session's panels whose state changed since the shell last fetched them, newline-separated (size query with a
+/// nil output, as the other blobs; the fill takes them).
+@_cdecl("compositor_session_dirty_panels")
+nonisolated public func compositorSessionDirtyPanels(_ handle: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    withEntry(handle) { entry in
+        let data = Data(DirtyPanels.take(entry).joined(separator: "\n").utf8)
+        guard let output, capacity >= data.count else { return Int64(data.count) }
+        data.copyBytes(to: output, count: data.count)
+        return Int64(data.count)
+    }
 }

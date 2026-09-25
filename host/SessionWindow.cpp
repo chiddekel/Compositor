@@ -109,6 +109,7 @@ int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double 
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
 int64_t compositor_canvas_overlay_region(uint64_t handle, int32_t x, int32_t y, int32_t width, int32_t height, uint8_t *output, size_t capacity);
 int32_t compositor_canvas_overlay_invalid(uint64_t handle, double *rect);
+int64_t compositor_session_dirty_panels(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_app_menus(uint8_t *output, size_t capacity);
 int32_t compositor_app_menu_perform(const char *path);
 int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
@@ -1108,6 +1109,17 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
             m_handlingShellRequests = true;
             handleShellRequests();
             m_handlingShellRequests = false;
+        }
+        // Panels whose observed session state changed (SwiftUI's invalidation): just those re-render. Mid-drag they
+        // wait (still marked) for the throttled refresh or the release.
+        if (!m_upstreamCanvasDrag) refreshDirtyPanels();
+        // The viewport isn't in the session state: a zoom or fit from anywhere (a menu, the importer's first fit)
+        // brings the canvas, its rulers and the status bar's zoom along.
+        std::array<double, 6> viewport{};
+        compositor_session_viewport(m_sessionHandle, viewport.data());
+        if (viewport != m_pumpedViewport) {
+            m_pumpedViewport = viewport;
+            if (!m_upstreamCanvasDrag) refreshImage();
         }
         const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
         if (size <= 0 || size > 4 * 1024 * 1024) return;
@@ -3451,6 +3463,26 @@ void SessionWindow::refreshPanels() {
     updateStatusTelemetry();
     updateOptionsBar();
     queueLayersRefresh();
+}
+
+/// The panels upstream's observation marked changed since they were last fetched, re-rendered now.
+void SessionWindow::refreshDirtyPanels() {
+    char names[4096];
+    const int64_t size = compositor_session_dirty_panels(m_sessionHandle, reinterpret_cast<uint8_t *>(names), sizeof names);
+    if (size <= 0) return;
+    const QStringList dirty = size <= int64_t(sizeof names) ? QString::fromUtf8(names, int(size)).split(QLatin1Char('\n'))
+                                                           : QStringList{QStringLiteral("*")};
+    bool floating = false;
+    for (const QString &panel : dirty) {
+        if (panel == QLatin1String("StatusBar")) updateStatusTelemetry();
+        else if (panel == QLatin1String("ToolHeaders")) updateOptionsBar();
+        else if (panel == QLatin1String("ToolRail")) updateToolRail();
+        else if (panel == QLatin1String("LayersPanel")) updateLayersPanel();
+        else if (panel == QLatin1String("Welcome")) { if (m_welcomeContent || m_image.isNull()) updateWelcome(); }
+        else if (panel == QLatin1String("*")) { refreshPanels(); updateToolRail(); floating = true; }
+        else floating = true;   // a floating panel's (or a sheet's own loop refreshes it)
+    }
+    if (floating && !m_floatingPanels.isEmpty()) updateFloatingPanels();
 }
 
 /// Coalesced: many commands refresh the image, then the layers, in one turn; the layers panel rebuilds once (a direct
