@@ -1,3 +1,4 @@
+import Foundation
 // The leaf controls. Each is a thin value type carrying exactly what real SwiftUI's initializer takes; the Qt
 // renderer turns each into one widget (QLabel, QPushButton, QSlider, ...) — see the architecture plan for the
 // kind→widget mapping.
@@ -7,21 +8,26 @@ public struct Text: View, PrimitiveView, ExpressibleByStringInterpolation {
     public init(_ content: String) { self.content = content }
     public init(stringLiteral value: String) { content = value }
     public init(verbatim content: String) { self.content = content }
+    /// `.percent.precision(.fractionLength(a...b))`, formatted for the user's locale as SwiftUI does ("125,3%" in Polish,
+    /// "125.3%" in English) — not through printf, whose locale the shell keeps POSIX.
     public init<V: BinaryFloatingPoint>(_ value: V, format: FloatingPointFormatStyle<V>) {
-        let pct = Double(value) * 100.0
-        let maximumFractionLength = format.maximumFractionLength ?? 1
-        let minimumFractionLength = format.minimumFractionLength ?? 0
-        var number = String(format: "%.*f", maximumFractionLength, pct)
-        if maximumFractionLength > minimumFractionLength, let decimalIndex = number.firstIndex(of: ".") {
-            while number.distance(from: number.index(after: decimalIndex), to: number.endIndex) > minimumFractionLength,
-                  number.last == "0" {
-                number.removeLast()
-            }
-            if number.last == "." { number.removeLast() }
-        }
-        let str = number + "%"
-        self.init(str)
+        let formatter = NumberFormatter()
+        formatter.locale = Text.userLocale
+        formatter.numberStyle = .percent
+        formatter.minimumFractionDigits = format.minimumFractionLength ?? 0
+        formatter.maximumFractionDigits = format.maximumFractionLength ?? 1
+        self.init(formatter.string(from: NSNumber(value: Double(value))) ?? "\(Double(value) * 100)%")
     }
+    /// The user's locale from the environment: Linux Foundation's `Locale.current` follows the process's C locale,
+    /// which the shell keeps POSIX for printf-style formatting.
+    static let userLocale: Locale = {
+        let environment = ProcessInfo.processInfo.environment
+        for key in ["LC_ALL", "LC_NUMERIC", "LANG"] {
+            guard let value = environment[key], !value.isEmpty, value != "C", value != "POSIX" else { continue }
+            return Locale(identifier: String(value.prefix { $0 != "." && $0 != "@" }))
+        }
+        return Locale.current
+    }()
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "Text")
         node.stringParams["text"] = content

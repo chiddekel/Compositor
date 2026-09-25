@@ -195,9 +195,8 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             require(sample && sample->isEnabled(), "Levels eyedropper missing or disabled");
             sample->click(); QApplication::processEvents();
             QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"));
-            const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
-            const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
-            const QPointF pos = origin + QPointF(28.5 * scale, 28.5 * scale);  // on the red stroke
+            // The app's own viewport maps document points to the canvas (upstream CanvasViewport).
+            const QPointF pos = window.documentToCanvasPoint(QPointF(28.5, 28.5));  // on the red stroke
             QMouseEvent press(QEvent::MouseButtonPress, pos, canvas->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
             QApplication::sendEvent(canvas, &press);
             QMouseEvent release(QEvent::MouseButtonRelease, pos, canvas->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
@@ -492,9 +491,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
             spin("transform.x")->setValue(0); QApplication::processEvents();
 
             QWidget *canvas = w2.findChild<QWidget *>(QStringLiteral("editorCanvas"));
-            const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
-            const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
-            auto at = [&](double dx, double dy) { return origin + QPointF(dx * scale, dy * scale); };
+            auto at = [&](double dx, double dy) { return w2.documentToCanvasPoint(QPointF(dx, dy)); };
             auto drag = [&](QPointF from, QPointF to) {
                 auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
                     QMouseEvent ev(type, pos, canvas->mapToGlobal(pos), button, buttons, Qt::NoModifier);
@@ -506,7 +503,8 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
                 send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
                 QApplication::processEvents();
             };
-            drag(at(32, 32), at(48, 40));  // bottom-right handle, linked => uniform 1.5x
+            // Bottom-right handle along the diagonal, linked => uniform 1.5x (upstream projects the drag onto it).
+            drag(at(32, 32), at(48, 48));
             require(geometry().size() == QSizeF(48, 48), "corner handle drag did not resize uniformly");
             require(spin("transform.w")->value() == 48, "fields did not refresh after handle drag");
             drag(at(20, 20), at(24, 25));  // body drag
@@ -518,9 +516,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
         {
             SessionWindow w3; w3.resize(1200, 800); w3.show(); QApplication::processEvents();
             QWidget *canvas = w3.findChild<QWidget *>(QStringLiteral("editorCanvas"));
-            const double scale = std::max(1, int(std::min((canvas->width() - 48) / 64.0, (canvas->height() - 48) / 64.0)));
-            const QPointF origin((canvas->width() - 64 * scale) / 2.0, (canvas->height() - 64 * scale) / 2.0);
-            auto at = [&](double dx, double dy) { return origin + QPointF(dx * scale, dy * scale); };
+            auto at = [&](double dx, double dy) { return w3.documentToCanvasPoint(QPointF(dx, dy)); };
             auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
                 QMouseEvent ev(type, pos, canvas->mapToGlobal(pos), button, buttons, Qt::NoModifier);
                 QApplication::sendEvent(canvas, &ev);

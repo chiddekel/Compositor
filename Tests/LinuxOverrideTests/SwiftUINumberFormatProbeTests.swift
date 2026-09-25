@@ -15,6 +15,9 @@ struct SwiftUINumberFormatProbeTests {
         let format = FloatingPointFormatStyle<Double>.percent.precision(.fractionLength(0...1))
         let node = ViewResolver.resolve(Text(0.125, format: format))
 
-        #expect(node.stringParams["text"] == "12.5%")
+        // The user's locale decides the separator, as SwiftUI's does ("12.5%" in English, "12,5%" in Polish); the
+        // precision is what this checks: one fraction digit, no trailing zeros dropped into two.
+        let text = node.stringParams["text"] ?? ""
+        #expect(text == "12.5%" || text == "12,5%")
     }
 }
