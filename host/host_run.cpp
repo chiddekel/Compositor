@@ -29,6 +29,7 @@
 #include <QMimeData>
 #include <QAction>
 #include <QElapsedTimer>
+#include <QClipboard>
 #include <cstdio>
 #include <QCoreApplication>
 #include <QProcessEnvironment>
@@ -39,6 +40,7 @@
 #include "compositor_host_run.h"
 #include "EditorDialogs.h"
 #include "ColorPickerDialog.h"
+#include "SystemClipboard.h"
 #include "SwiftUIQtRenderer.h"
 #include <cmath>
 #include <clocale>
@@ -91,6 +93,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     // Qt image plugins become the ImageIO compat backend (JPEG/TIFF/WebP/... beyond the portable PNG codec).
     compositor_qt_imageio_install();
     compositor_raw_install();   // camera RAW via LibRaw (a no-op when built without it)
+    systemclipboard::install();   // NSPasteboard.general is the desktop clipboard, as on macOS
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
     app.setDesktopFileName("com.wonderassembly.Compositor");
@@ -185,6 +188,9 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             QElapsedTimer settle; settle.start();   // let the pump render the effect's preview
             while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         }
+        // COMPOSITOR_GRAB_CLIPBOARD_IMAGE=<file>: that picture on the desktop clipboard, as another application puts it.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_CLIPBOARD_IMAGE").isEmpty())
+            QApplication::clipboard()->setImage(QImage(qEnvironmentVariable("COMPOSITOR_GRAB_CLIPBOARD_IMAGE")));
         // COMPOSITOR_GRAB_MENU_ITEM="Menu/Item[;Menu/Item...]": the menu bar's items (upstream's menus), chosen by title.
         for (const QString &spec : qEnvironmentVariable("COMPOSITOR_GRAB_MENU_ITEM").split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
             const QStringList parts = spec.split(QLatin1Char('/'));
@@ -452,6 +458,13 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                              name, hover, press, drag, release, settle);
             }
             return 0;
+        }
+        // COMPOSITOR_GRAB_CLIPBOARD_REPORT=1: what the desktop clipboard holds now (after the menu items above).
+        if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_CLIPBOARD_REPORT")) {
+            const QMimeData *mime = QApplication::clipboard()->mimeData();
+            const QImage image = QApplication::clipboard()->image();
+            std::fprintf(stderr, "CLIPBOARD formats=%s image=%dx%d\n", mime ? qPrintable(mime->formats().join(',')) : "-",
+                         image.width(), image.height());
         }
         // COMPOSITOR_GRAB_DRAG="x0,y0,x1,y1" (document pixels): a real press / moves / release on the canvas widget with
         // the current tool; COMPOSITOR_GRAB_KEY=return|escape then presses that key (e.g. to apply a gradient).

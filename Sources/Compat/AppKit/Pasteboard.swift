@@ -29,6 +29,12 @@ public final class NSPasteboard: @unchecked Sendable {
     public protocol Backend: AnyObject {
         func write(_ items: [PasteboardType: Data])
         func read() -> [PasteboardType: Data]
+        /// One type's data (a desktop clipboard converts on demand instead of producing every type).
+        func data(forType type: PasteboardType) -> Data?
+        /// The types the clipboard holds now.
+        func availableTypes() -> [PasteboardType]
+        /// How many times something other than this app changed the clipboard (AppKit's changeCount counts those too).
+        var externalChangeCount: Int { get }
     }
 
     public static let backendSlot = ServiceSlot<Backend>()
@@ -40,32 +46,52 @@ public final class NSPasteboard: @unchecked Sendable {
     public static func withBackend<Result>(_ backend: Backend?, _ body: () throws -> Result) rethrows -> Result {
         try backendSlot.withOverride(backend, body)
     }
-    public static let general = NSPasteboard()
+    public static let general = NSPasteboard(isGeneral: true)
     public static let drag = NSPasteboard()
 
-    public init(name: Name = .general) {}
+    /// Only the general pasteboard mirrors the desktop clipboard; the drag pasteboard stays in process.
+    private let isGeneral: Bool
+    private init(isGeneral: Bool) { self.isGeneral = isGeneral }
+    public init(name: Name = .general) { isGeneral = false }
+    private var mirror: Backend? { isGeneral ? Self.backend : nil }
     public static func withName(_ name: Name) -> NSPasteboard {
         name == .drag ? drag : general
     }
 
     private var items: [PasteboardType: Data] = [:]
-    public private(set) var changeCount = 0
+    private var localChangeCount = 0
+    /// AppKit's: it moves whenever anyone — this app or another — changes the clipboard.
+    public var changeCount: Int { localChangeCount + (mirror?.externalChangeCount ?? 0) }
+    /// The external count when this app last wrote: while it holds, the clipboard is still ours.
+    private var externalAtWrite = 0
 
-    @discardableResult public func clearContents() -> Int { items = [:]; changeCount += 1; return changeCount }
+    @discardableResult public func clearContents() -> Int {
+        items = [:]
+        localChangeCount += 1
+        externalAtWrite = mirror?.externalChangeCount ?? 0
+        return changeCount
+    }
     @discardableResult public func setData(_ data: Data?, forType type: PasteboardType) -> Bool {
         guard let data else { return false }
         items[type] = data
-        Self.backend?.write(items)
+        mirror?.write(items)
+        externalAtWrite = mirror?.externalChangeCount ?? 0
         return true
     }
+    /// Another app wrote the desktop clipboard since this app last did: what it holds is theirs.
+    private var ownedByOthers: Bool { mirror.map { $0.externalChangeCount != externalAtWrite } ?? false }
     public func data(forType type: PasteboardType) -> Data? {
-        if let backend = Self.backend { let outside = backend.read(); if !outside.isEmpty { return outside[type] } }
-        return items[type]
+        guard let mirror else { return items[type] }
+        if !ownedByOthers, let own = items[type] { return own }
+        return mirror.data(forType: type)
     }
-    public var types: [PasteboardType]? { Array(items.keys) }
+    public var types: [PasteboardType]? {
+        guard let mirror, ownedByOthers else { return Array(items.keys) }
+        return mirror.availableTypes()
+    }
     public func canReadObject(forClasses classes: [AnyClass], options: [ReadingOptionKey: Any]?) -> Bool {
-        let held = Self.backend?.read() ?? items
-        if classes.contains(where: { $0 is NSImage.Type }) { return held[.png] != nil || held[.tiff] != nil }
+        let held = Set(types ?? [])
+        if classes.contains(where: { $0 is NSImage.Type }) { return held.contains(.png) || held.contains(.tiff) }
         return !held.isEmpty
     }
     public func string(forType type: PasteboardType) -> String? {
@@ -81,4 +107,10 @@ public final class NSPasteboard: @unchecked Sendable {
         }
         return nil
     }
+}
+
+extension NSPasteboard.Backend {
+    public func data(forType type: NSPasteboard.PasteboardType) -> Data? { read()[type] }
+    public func availableTypes() -> [NSPasteboard.PasteboardType] { Array(read().keys) }
+    public var externalChangeCount: Int { 0 }
 }
