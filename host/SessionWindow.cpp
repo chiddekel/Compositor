@@ -28,6 +28,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QScreen>
+#include <QSettings>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QMouseEvent>
@@ -4922,7 +4923,6 @@ void SessionWindow::clearAutosave() {
 }
 
 void SessionWindow::closeEvent(QCloseEvent *event) {
-    fprintf(stderr, ">>> SessionWindow::closeEvent called! spontaneous=%d\n", (int)event->spontaneous());
     // Upstream ProjectWorkspace.confirmQuit: ask about each unsaved tab, the one on screen first, then the rest left
     // to right; Cancel on any keeps the window open.
     std::vector<uint64_t> order;
@@ -4939,7 +4939,20 @@ void SessionWindow::closeEvent(QCloseEvent *event) {
         }
     }
     clearAutosave();
+    QSettings().setValue(QStringLiteral("window/geometry"), saveGeometry());   // reopened where it was left, as macOS does
     QMainWindow::closeEvent(event);
+}
+
+/// CompositorApp's window placement: the first launch fills the screen (without going full screen); after that the
+/// window reopens at the size and place it was left.
+void SessionWindow::restoreWindowPlacement() {
+    m_railFitChecked = true;   // the placement decides the size, not the rail
+    const QByteArray saved = QSettings().value(QStringLiteral("window/geometry")).toByteArray();
+    if (!saved.isEmpty() && restoreGeometry(saved)) return;
+    if (const QScreen *display = screen()) {
+        const QRect area = display->availableGeometry();
+        setGeometry(area);
+    }
 }
 
 // ---- Move / Transform tool ---------------------------------------------------

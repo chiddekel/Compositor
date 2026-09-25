@@ -136,6 +136,8 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             break;
         }
     }
+    if (qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty() && !QCoreApplication::arguments().filter(QStringLiteral("-smoke")).size())
+        window.restoreWindowPlacement();
     window.show();
     if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
         // COMPOSITOR_GRAB_SIZE=WxH: the window at that size first (e.g. tall enough to show the whole tool rail).
