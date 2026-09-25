@@ -132,6 +132,9 @@ struct NativeLayerList: View {
                     HStack {
                         thumbnailView(for: layer, active: session.activeLayerID == layer.id && session.selectedLayerIDs.count == 1)
                     }.frame(width: 36, height: 51)
+                    // LayerThumbnailButton: selects the layer's pixels as the target; Cmd-click (Ctrl) loads them
+                    // as a selection (Shift adds, Option subtracts).
+                    .onTapGesture { imageThumbnailTapped(layer.id, modifiers: CompatInput.clickModifiers) }
                     if let mask = layer.mask {
                         let canvas = session.document?.size ?? layer.size
                         let maskSize = CanvasThumbnail.fittedSize(canvas: canvas, box: 30)
@@ -140,6 +143,8 @@ struct NativeLayerList: View {
                                 Image(systemName: "link").font(.system(size: 10)).foregroundStyle(.secondary)
                             } else { Spacer() }
                         }.frame(width: linkable ? 13 : 5, height: 51)
+                        // The link button: layer and mask move together, or apart.
+                        .onTapGesture { if linkable { session.toggleMaskLink(layer.id) } }
                         HStack {
                             Image(nsImage: LayerThumbnails.mask(mask, transform: layer.maskTransform, layerID: layer.id, canvas: canvas))
                                 .frame(width: maskSize.width, height: maskSize.height)
@@ -150,16 +155,27 @@ struct NativeLayerList: View {
                         .onTapGesture { maskThumbnailTapped(layer.id, modifiers: CompatInput.clickModifiers) }
                     }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(name).font(.system(size: 13)).lineLimit(1)
+                        if session.renamingLayerID == layer.id {
+                            // LayerCell.beginRenaming: the name in a bezeled field; Return keeps it, Escape doesn't.
+                            LayerRenameField(session: session, layerID: layer.id, name: layer.name)
+                        } else {
+                            Text(name).font(.system(size: 13)).lineLimit(1)
+                        }
                         Text(details).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .padding(.leading, 5).padding(.top, 9).padding(.trailing, 8)
+                    // The table's doubleAction: rename the layer (edit live text, open an adjustment).
+                    .onTapGesture(count: 2) { doubleClicked(layer) }
                     Spacer()
                 }
                 .frame(height: 51)
+                // LayerEffectRow: one 24-point row per effect, stepped in with the layer.
+                ForEach(layer.effects?.kinds ?? [], id: \.self) { kind in
+                    effectRow(kind, layer: layer, indent: indent)
+                }
                 Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
             }
-            .frame(height: 52)
+            .frame(height: 52 + 24 * Double(layer.effects?.kinds.count ?? 0))
             .background(isSelected ? Color(red: 0, green: 0.345, blue: 0.816) : Color.clear)
             .opacity(entry?.visible == false ? 0.35 : 1)
             .padding(.bottom, 2)
@@ -188,6 +204,51 @@ struct NativeLayerList: View {
         } else {
             session.selectLayer(id)
         }
+    }
+
+    private func imageThumbnailTapped(_ id: UUID, modifiers: Int) {
+        if modifiers & 1 != 0 {
+            let mode: SelectionMode = modifiers & 2 != 0 ? .subtract : modifiers & 8 != 0 ? .add : .replace
+            session.loadLayerSelection(layerID: id, mode: mode)
+            return
+        }
+        session.selectLayerTarget(id, mask: false)
+    }
+
+    /// NativeLayerList's renameClickedLayer: live text opens for editing, an adjustment its editor, anything else is
+    /// renamed in place.
+    private func doubleClicked(_ layer: ImageLayer) {
+        guard session.canEditLayers else { return }
+        if layer.adjustment != nil {
+            session.selectLayer(layer.id)
+            session.adjustmentEditingID = layer.id
+        } else if layer.liveText != nil {
+            session.selectLayer(layer.id)
+            session.editActiveText()
+        } else {
+            session.selectLayer(layer.id)
+            session.renamingLayerID = layer.id
+        }
+    }
+
+    private func effectRow(_ kind: LayerEffectKind, layer: ImageLayer, indent: Double) -> some View {
+        let enabled = layer.effects?.isEnabled(kind) == true
+        let selected = session.selectedEffect == LayerEffectSelection(layerID: layer.id, kind: kind)
+        return HStack(spacing: 0) {
+            Spacer().frame(width: 38 + indent)
+            Image(systemName: enabled ? "eye" : "eye.slash").foregroundStyle(.secondary)
+                .frame(width: 20, height: 22)
+                .onTapGesture { if session.canEditLayers { session.toggleEffect(kind, on: layer.id) } }
+            Text(kind.rawValue).font(.system(size: 11)).foregroundStyle(enabled ? .primary : .secondary).lineLimit(1)
+                .padding(.leading, 8)
+            Spacer()
+        }
+        .frame(height: 24)
+        .background(selected ? Color.accentColor.opacity(0.3) : Color.clear)
+        .contentShape(Rectangle())
+        .help("Click to select; double-click to edit; Option-drag to copy " + kind.rawValue.lowercased())
+        .onTapGesture(count: 2) { session.selectEffect(kind, on: layer.id, editing: true) }
+        .onTapGesture { session.selectEffect(kind, on: layer.id, editing: false) }
     }
 
     private func maskThumbnailTapped(_ id: UUID, modifiers: Int) {
@@ -291,6 +352,30 @@ extension NativeLayerList: HostedNativeContent {
         let table = LayerTableView(frame: .zero)
         table.session = session
         return table
+    }
+}
+
+/// LayerCell's rename: the name in an editable field, Return keeps it, Escape (or losing focus) restores it.
+struct LayerRenameField: View {
+    let session: EditorSession
+    let layerID: UUID
+    @State private var text: String
+    @FocusState private var focused: Bool
+    init(session: EditorSession, layerID: UUID, name: String) {
+        self.session = session; self.layerID = layerID
+        _text = State(initialValue: name)
+    }
+    var body: some View {
+        TextField("Layer name", text: $text)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 13))
+            .focused($focused)
+            .onAppear { focused = true }
+            .onSubmit {
+                session.renameLayer(layerID, to: text)
+                if session.renamingLayerID == layerID { session.renamingLayerID = nil }
+            }
+            .onExitCommand { if session.renamingLayerID == layerID { session.renamingLayerID = nil } }
     }
 }
 
