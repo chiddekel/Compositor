@@ -29,6 +29,7 @@ struct BlendModePicker: View {
                 }
             }
         }
+        .labelsHidden()   // an NSPopUpButton on the Mac: no title beside it
         .frame(maxWidth: .infinity)
         .disabled(!session.canEditAppearance)
         .accessibilityLabel("Blend mode")

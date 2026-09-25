@@ -134,10 +134,15 @@ public struct Axis: Sendable {
 
 public struct GeometryProxy: Sendable {
     public var size: CGSize
-    public init(size: CGSize) { self.size = size }
-    /// The Qt renderer doesn't feed real per-frame layout geometry back into Swift yet (see the note below), so
-    /// this returns a zero-origin rect the size of `size` regardless of `space` — structurally real, not accurate.
-    public func frame(in space: CoordinateSpace) -> CGRect { CGRect(origin: .zero, size: size) }
+    var namedFrames: [String: CGRect]
+    public init(size: CGSize, namedFrames: [String: CGRect] = [:]) {
+        self.size = size
+        self.namedFrames = namedFrames
+    }
+    public func frame(in space: CoordinateSpace) -> CGRect {
+        guard let name = space.name else { return CGRect(origin: .zero, size: size) }
+        return namedFrames[name] ?? CGRect(origin: .zero, size: size)
+    }
 }
 
 /// `GeometryReader` cannot know the real Qt layout size at Swift-tree-build time; it resolves its content with a

@@ -14,7 +14,7 @@ public protocol CombinePublisher {
 extension Timer {
     public struct TimerPublisher: CombinePublisher {
         public typealias Output = Date
-        let interval: Double
+        public let interval: Double
         public func autoconnect() -> TimerPublisher { self }
     }
     public static func publish(every interval: Double, on runLoop: RunLoop, in mode: RunLoop.Mode) -> TimerPublisher {

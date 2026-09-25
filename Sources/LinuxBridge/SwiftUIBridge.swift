@@ -141,6 +141,7 @@ struct CompositorStatusBar: View {
         guard var node else {
             StateStore.discard(scope: scope)
             ChangeTracker.discard(scope: scope)
+            entry.resultHandlers[panel] = [:]
             return nil
         }
         node.assignIDs()
@@ -149,10 +150,27 @@ struct CompositorStatusBar: View {
         var handlers: [String: [String: (Any) -> Void]] = [:]
         node.collectHandlers(into: &handlers)
         entry.actionHandlers[panel] = handlers
+        var resultHandlers: [String: [String: (Any) -> Int32]] = [:]
+        node.collectResultHandlers(into: &resultHandlers)
+        entry.resultHandlers[panel] = resultHandlers
         wire = node.wire()
         if ChangeTracker.lastActionCount == 0 { break }
     }
     return wire
+}
+
+@_cdecl("compositor_session_dispatch_swiftui_drop_event")
+nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt64, _ panel: UnsafePointer<CChar>?,
+                                                                   _ nodeID: UnsafePointer<CChar>?, _ handlerKey: UnsafePointer<CChar>?,
+                                                                   _ payload: UnsafePointer<UInt8>?, _ payloadCount: Int) -> Int32 {
+    guard let panel, let nodeID, let handlerKey, payloadCount > 0, let payload else { return -1 }
+    let panelName = String(cString: panel), nodeIDString = String(cString: nodeID), handlerKeyString = String(cString: handlerKey)
+    let payloadData = Data(bytes: payload, count: payloadCount)
+    guard let value = try? JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed]) else { return -1 }
+    return Int32(withEntry(handle) { entry in
+        guard let action = entry.resultHandlers[panelName]?[nodeIDString]?[handlerKeyString] else { return -1 }
+        return Int64(action(value))
+    })
 }
 
 @MainActor private func resolvePanelTree(_ panel: String, entry: Entry) -> RenderNode? {

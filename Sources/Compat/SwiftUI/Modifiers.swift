@@ -6,6 +6,22 @@ import Foundation
 import Combine
 import UniformTypeIdentifiers
 
+private final class GeometryChangeTracker<Value: Equatable> {
+    private var previous: Value?
+
+    func update(_ value: Value, action: (Value) -> Void) {
+        guard previous != value else { return }
+        previous = value
+        action(value)
+    }
+}
+
+private func resolvedSheetContent<V: View>(_ content: V) -> RenderNode {
+    var node = RenderNode(kind: "VStack")
+    node.children = ViewResolver.resolveList(content, path: ViewResolver.nestedPath("sheet"))
+    return node
+}
+
 /// Deliberately NOT generic over its content (real SwiftUI's `ModifiedContent<Content, Modifier>` is, but pays for
 /// it with compiler-privileged fast paths this compat layer doesn't have). A generic `ModifiedContent<Content>`
 /// nests one new type layer per modifier in a chain — `ModifiedContent<ModifiedContent<ModifiedContent<...>>>` for
@@ -58,11 +74,47 @@ extension View {
     public func background(_ style: ShapeStyle) -> some View {
         modified { $0.modifiers.append(.background(style.name)) }
     }
-    public func background<V: View>(@ViewBuilder _ content: () -> V) -> some View { self }
-    public func background<V: View>(_ content: V, alignment: Alignment = .center) -> some View { self }
-    public func sheet<V: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: () -> V) -> some View { self }
+    public func background<V: View>(alignment: Alignment = .center, @ViewBuilder _ content: () -> V) -> some View {
+        let backgroundNode = ViewResolver.resolveList(content(), path: ViewResolver.nestedPath("background")).first ?? RenderNode(kind: "_Empty")
+        return modified { base in
+            var wrapper = RenderNode(kind: "Background")
+            wrapper.stringParams["alignment"] = alignment.name
+            wrapper.children = [base, backgroundNode]
+            base = wrapper
+        }
+    }
+    public func background<V: View>(_ content: V, alignment: Alignment = .center) -> some View {
+        background(alignment: alignment) { content }
+    }
+    public func sheet<V: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: () -> V) -> some View {
+        let presentedContent = isPresented.wrappedValue ? resolvedSheetContent(content()) : nil
+        return modified { base in
+            var sheet = RenderNode(kind: "Sheet")
+            sheet.boolParams["isPresented"] = isPresented.wrappedValue
+            sheet.children = [base]
+            if let presentedContent { sheet.children.append(presentedContent) }
+            sheet.handlers["dismiss"] = { _ in
+                isPresented.wrappedValue = false
+                onDismiss?()
+            }
+            base = sheet
+        }
+    }
     public func sheet<Item: Identifiable, V: View>(item: Binding<Item?>, onDismiss: (() -> Void)? = nil,
-                                                    @ViewBuilder content: (Item) -> V) -> some View { self }
+                                                    @ViewBuilder content: (Item) -> V) -> some View {
+        let presentedContent = item.wrappedValue.map { resolvedSheetContent(content($0)) }
+        return modified { base in
+            var sheet = RenderNode(kind: "Sheet")
+            sheet.boolParams["isPresented"] = item.wrappedValue != nil
+            sheet.children = [base]
+            if let presentedContent { sheet.children.append(presentedContent) }
+            sheet.handlers["dismiss"] = { _ in
+                item.wrappedValue = nil
+                onDismiss?()
+            }
+            base = sheet
+        }
+    }
     public func background<S: Shape>(_ style: ShapeStyle, in shape: S) -> some View {
         // The fill takes the shape's corners (a capsule or circle rounds by half its height; the renderer caps it).
         let radius = shape.shapeKind == "capsule" || shape.shapeKind == "circle" ? 1000 : shape.cornerRadiusValue
@@ -90,11 +142,13 @@ extension View {
     public func monospacedDigit() -> some View { modified { $0.modifiers.append(.font("monospacedDigit")) } }
     public func position(x: Double = 0, y: Double = 0) -> some View { modified { $0.modifiers.append(.position(x: x, y: y)) } }
     public func position(_ point: CGPoint) -> some View { position(x: point.x, y: point.y) }
-    public func coordinateSpace(name: some Hashable) -> some View { self }
+    public func coordinateSpace(name: some Hashable) -> some View {
+        modified { $0.modifiers.append(.coordinateSpace("\(name)")) }
+    }
     public func tint(_ color: Color?) -> some View { modified { $0.modifiers.append(.foregroundStyle(color?.name ?? "accentColor")) } }
     public func clipShape(_ shape: StyleToken) -> some View { modified { $0.modifiers.append(.clipShape(shape.name)) } }
     public func clipShape<S: Shape>(_ shape: S) -> some View { modified { $0.modifiers.append(.clipShape("\(S.self)")) } }
-    public func labelsHidden() -> some View { self }
+    public func labelsHidden() -> some View { modified { $0.boolParams["labelsHidden"] = true } }
     public func cornerRadius(_ radius: Double) -> some View { modified { $0.modifiers.append(.cornerRadius(radius)) } }
     public func offset(x: Double = 0, y: Double = 0) -> some View { modified { $0.modifiers.append(.offset(x: x, y: y)) } }
     public func shadow(radius: Double = 1) -> some View { modified { $0.modifiers.append(.shadow(radius: radius)) } }
@@ -130,9 +184,18 @@ extension View {
     public func accessibilityIdentifier(_ text: String) -> some View {
         modified { $0.modifiers.append(.accessibilityIdentifier(text)) }
     }
-    public func accessibilityHidden(_ hidden: Bool) -> some View { self }
-    public func lineLimit(_ number: Int?) -> some View { self }
-    public func accessibilityValue(_ value: String) -> some View { self }
+    public func accessibilityHidden(_ hidden: Bool) -> some View {
+        modified { $0.modifiers.append(.accessibilityHidden(hidden)) }
+    }
+    public func lineLimit(_ number: Int?) -> some View {
+        modified { node in
+            node.modifiers.removeAll { if case .lineLimit = $0 { return true }; return false }
+            if let number { node.modifiers.append(.lineLimit(number)) }
+        }
+    }
+    public func accessibilityValue(_ value: String) -> some View {
+        modified { $0.modifiers.append(.accessibilityValue(value)) }
+    }
     public func accessibilityAddTraits(_ traits: AccessibilityTraits) -> some View {
         modified {
             if traits.contains(.isSelected) {
@@ -140,7 +203,9 @@ extension View {
             }
         }
     }
-    public func buttonBorderShape(_ shape: StyleToken) -> some View { self }
+    public func buttonBorderShape(_ shape: StyleToken) -> some View {
+        modified { $0.modifiers.append(.buttonBorderShape(shape.name)) }
+    }
     public func pickerStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.pickerStyle(style.name)) } }
     public func menuStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.menuStyle(style.name)) } }
     public func onDisappear(perform action: @escaping () -> Void = {}) -> some View {
@@ -198,10 +263,11 @@ extension View {
     /// Compat-only (no SwiftUI counterpart — AppKit's NSTableView drag-and-drop stands in for it on the Mac): lets the
     /// Qt shell drag this List's rows. `folders` marks the rows a drop can land *into*; `perform` gets the dragged row,
     /// the row under the drop, where in that row it landed (0 top ... 1 bottom) and whether Option/Alt copies.
-    public func compatListDrop(folders: [Bool],
+    public func compatListDrop(folders: [Bool], layerIdentifiers: [String] = [],
                                perform action: @escaping (_ source: Int, _ row: Int, _ fraction: Double, _ copying: Bool) -> Void) -> some View {
         modified {
             $0.stringParams["listFolders"] = folders.map { $0 ? "1" : "0" }.joined()
+            $0.stringParams["listLayerIdentifiers"] = layerIdentifiers.joined(separator: ",")
             $0.modifiers.append(.sink("listDrop", { value in
                 // JSON numbers arrive as Int / Double / Bool on Linux (NSNumber on the Mac): read either.
                 func number(_ v: Any) -> Double? {
@@ -213,6 +279,18 @@ extension View {
                 guard let values = value as? [Any], values.count == 4, let source = number(values[0]), let row = number(values[1]),
                       let fraction = number(values[2]), let copying = number(values[3]) else { return }
                 action(Int(source), Int(row), fraction, copying != 0)
+            }))
+        }
+    }
+    public func compatListMaskDrop(dragIdentifiers: [String], dropTargetIdentifiers: [String],
+                                   perform action: @escaping (_ source: String, _ target: String) -> Void) -> some View {
+        modified {
+            $0.stringParams["listMaskDragIdentifiers"] = dragIdentifiers.joined(separator: ",")
+            $0.stringParams["listMaskDropIdentifiers"] = dropTargetIdentifiers.joined(separator: ",")
+            $0.modifiers.append(.sink("listMaskDrop", { value in
+                guard let values = value as? [Any], values.count == 2,
+                      let source = values[0] as? String, let target = values[1] as? String else { return }
+                action(source, target)
             }))
         }
     }
@@ -275,34 +353,107 @@ extension View {
             return DragGesture.Value(location: CGPoint(x: n[0], y: n[1]), translation: CGSize(width: n[2], height: n[3]))
         }
         return modified { node in
+            let space = gesture.coordinateSpace.name ?? "local"
+            node.modifiers.append(.dragGesture(minimumDistance: gesture.minimumDistance, coordinateSpace: space))
             if let changed = gesture.onChangedAction { node.modifiers.append(.sink("dragChanged", { if let v = value($0) { changed(v) } })) }
             if let ended = gesture.onEndedAction { node.modifiers.append(.sink("dragEnded", { if let v = value($0) { ended(v) } })) }
         }
     }
     public func onTapGesture(count: Int = 1, perform action: @escaping () -> Void) -> some View {
-        modified { $0.modifiers.append(.sink("onTapGesture", { value in
-            // The shell sends the click's modifier keys; they are current while the action runs (CompatInput).
-            CompatInput.clickModifiers = (value as? Int) ?? Int((value as? Double) ?? 0)
-            action()
-            CompatInput.clickModifiers = 0
-        })) }
+        modified {
+            $0.modifiers.append(.tapGesture(count: max(1, count)))
+            $0.modifiers.append(.sink("onTapGesture", { value in
+                // The shell sends the click's modifier keys; they are current while the action runs (CompatInput).
+                CompatInput.clickModifiers = (value as? Int) ?? Int((value as? Double) ?? 0)
+                action()
+                CompatInput.clickModifiers = 0
+            }))
+        }
     }
-    /// Structurally real (stores the subscription intent), but inert: firing it needs a live run loop tied to Qt's
-    /// event loop, which this compat layer doesn't wire up yet. See `Combine.swift`.
-    public func onReceive<P: CombinePublisher>(_ publisher: P, perform action: @escaping (P.Output) -> Void) -> some View { self }
-    public func mask<V: View>(alignment: Alignment = .center, @ViewBuilder _ mask: () -> V) -> some View { self }
+    public func onReceive<P: CombinePublisher>(_ publisher: P, perform action: @escaping (P.Output) -> Void) -> some View {
+        guard let timer = publisher as? Timer.TimerPublisher else { return modified { _ in } }
+        return modified {
+            $0.modifiers.append(.sink("onReceive", { _ in
+                if let output = Date() as? P.Output { action(output) }
+            }))
+            $0.modifiers.append(.timer(interval: timer.interval))
+        }
+    }
+    public func mask<V: View>(alignment: Alignment = .center, @ViewBuilder _ mask: () -> V) -> some View {
+        let maskNode = ViewResolver.resolveList(mask(), path: ViewResolver.nestedPath("mask")).first ?? RenderNode(kind: "_Empty")
+        return modified { base in
+            var wrapper = RenderNode(kind: "Mask")
+            wrapper.stringParams["alignment"] = alignment.name
+            wrapper.children = [base, maskNode]
+            base = wrapper
+        }
+    }
     public func onScrollGeometryChange<T: Equatable>(for type: T.Type, of transform: @escaping (ScrollGeometry) -> T,
                                                       action: @escaping (T, T) -> Void) -> some View { self }
-    /// Structurally real; actually recognising a drag-and-drop gesture needs a Qt-side drag backend this compat
-    /// layer doesn't have yet, so `delegate`'s callbacks never fire. Same honesty as `.onReceive` above.
-    public func onDrop(of types: [String], delegate: any DropDelegate) -> some View { self }
+    public func onDrop(of types: [String], delegate: any DropDelegate) -> some View {
+        modified {
+            $0.stringParams["dropTypes"] = types.joined(separator: ",")
+            $0.modifiers.append(.resultSink("dropEvent", { value in
+                guard let (phase, info) = compatibilityDropEvent(value) else { return 0 }
+                switch phase {
+                case "entered":
+                    guard delegate.validateDrop(info: info) else { return 0 }
+                    delegate.dropEntered(info: info)
+                    return 1
+                case "updated":
+                    if let operation = delegate.dropUpdated(info: info)?.operation {
+                        switch operation {
+                        case .cancel, .forbidden: return 0
+                        case .move, .copy: return 1
+                        }
+                    }
+                    return 1
+                case "exited":
+                    delegate.dropExited(info: info)
+                    return 1
+                case "perform": return delegate.performDrop(info: info) ? 1 : 0
+                default: return 0
+                }
+            }))
+        }
+    }
     public func onDrop(of types: [String], isTargeted: Binding<Bool>? = nil,
-                       perform action: @escaping ([NSItemProvider], CGPoint) -> Bool) -> some View { self }
+                       perform action: @escaping ([NSItemProvider], CGPoint) -> Bool) -> some View {
+        modified {
+            $0.stringParams["dropTypes"] = types.joined(separator: ",")
+            $0.modifiers.append(.resultSink("dropEvent", { value in
+                guard let (phase, info) = compatibilityDropEvent(value) else { return 0 }
+                switch phase {
+                case "entered":
+                    isTargeted?.wrappedValue = true
+                    return 1
+                case "updated": return 1
+                case "exited":
+                    isTargeted?.wrappedValue = false
+                    return 1
+                case "perform":
+                    isTargeted?.wrappedValue = false
+                    return action(info.itemProviders(for: types), info.location) ? 1 : 0
+                default: return 0
+                }
+            }))
+        }
+    }
     public func animation<V: Equatable>(_ animation: StyleToken?, value: V) -> some View { self }
     public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View { self }
     public func aspectRatio(contentMode: ContentMode) -> some View { self }
-    public func popover<V: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> V) -> some View { self }
-    /// Right/control-click menu — inert, same honesty as `.onReceive`/`.onDrop`: the Qt renderer doesn't wire up a
+    public func popover<V: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> V) -> some View {
+        let popoverNode = ViewResolver.resolveList(content(), path: ViewResolver.nestedPath("popover")).first
+            ?? RenderNode(kind: "_Empty")
+        return modified { base in
+            var wrapper = RenderNode(kind: "Popover")
+            wrapper.boolParams["isPresented"] = isPresented.wrappedValue
+            wrapper.children = [base, popoverNode]
+            wrapper.handlers["dismiss"] = { _ in isPresented.wrappedValue = false }
+            base = wrapper
+        }
+    }
+    /// Right/control-click menu — inert, same honesty as `.onReceive`: the Qt renderer doesn't wire up a
     /// context-menu gesture yet, so `content`'s actions are never reachable this way.
     /// A right-click menu, as SwiftUI shows one: the items (Buttons, Dividers, nested Menus) are resolved here into a
     /// menu description the Qt shell turns into a QMenu ("contextMenu": JSON items with titles, enabled state and
@@ -349,26 +500,102 @@ extension View {
         }
     }
     public func simultaneousGesture<G>(_ gesture: G) -> some View { self }
-    public func clipped() -> some View { self }
+    public func simultaneousGesture(_ gesture: SpatialTapGesture) -> some View {
+        modified { node in
+            node.modifiers.append(.spatialTapGesture(count: max(1, gesture.count)))
+            if let ended = gesture.onEndedAction {
+                node.modifiers.append(.sink("spatialTapGesture", { value in
+                    guard let coordinates = value as? [Any], coordinates.count == 2 else { return }
+                    let numbers = coordinates.map { ($0 as? Double) ?? ($0 as? Int).map(Double.init) ?? 0 }
+                    var tap = SpatialTapGesture.Value()
+                    tap.location = CGPoint(x: numbers[0], y: numbers[1])
+                    ended(tap)
+                }))
+            }
+        }
+    }
+    public func clipped() -> some View { modified { $0.modifiers.append(.clipped) } }
     /// Share of an `HStack`/`VStack`'s space: children with a higher priority are sized first (used by `HostedLayout`).
     public func layoutPriority(_ value: Double) -> some View { modified { $0.modifiers.append(.layoutPriority(value)) } }
     public func scrollBounceBehavior(_ behavior: ScrollBounceBehavior, axes: Axis.Set = [.vertical]) -> some View { self }
-    public func allowsHitTesting(_ enabled: Bool) -> some View { self }
+    public func allowsHitTesting(_ enabled: Bool) -> some View {
+        modified { $0.modifiers.append(.allowsHitTesting(enabled)) }
+    }
     public func preferredColorScheme(_ colorScheme: ColorScheme?) -> some View { self }
     public func navigationTitle(_ title: String) -> some View { self }
     public func sharedBackgroundVisibility(_ visibility: StyleToken) -> some View { self }
-    public func pointerStyle(_ style: PointerStyle) -> some View { self }
-    /// The general form (`GeometryProxy`), distinct from `.onScrollGeometryChange` above. The Qt renderer doesn't
-    /// feed real per-frame layout back into Swift yet, so `transform` only ever sees `GeometryProxy`'s zero-origin
-    /// placeholder rect — structurally real, not yet live, the same honesty as `.onReceive`/`.onDrop`.
+    public func pointerStyle(_ style: PointerStyle) -> some View {
+        modified { $0.modifiers.append(.pointerStyle(style.name)) }
+    }
+    /// The general form (`GeometryProxy`), distinct from `.onScrollGeometryChange` above.
     public func onGeometryChange<T: Equatable>(for type: T.Type, of transform: @escaping (GeometryProxy) -> T,
-                                                action: @escaping (T) -> Void) -> some View { self }
+                                                action: @escaping (T) -> Void) -> some View {
+        let tracker = GeometryChangeTracker<T>()
+        return modified {
+            $0.modifiers.append(.sink("geometryChange", { value in
+                guard let payload = value as? [String: Any],
+                      let size = payload["size"] as? [NSNumber], size.count == 2 else { return }
+                let frames = (payload["frames"] as? [String: [NSNumber]] ?? [:]).compactMapValues { frame -> CGRect? in
+                    guard frame.count == 4 else { return nil }
+                    return CGRect(x: frame[0].doubleValue, y: frame[1].doubleValue,
+                                  width: frame[2].doubleValue, height: frame[3].doubleValue)
+                }
+                let proxy = GeometryProxy(size: CGSize(width: size[0].doubleValue, height: size[1].doubleValue),
+                                          namedFrames: frames)
+                tracker.update(transform(proxy), action: action)
+            }))
+        }
+    }
     public func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { self }
     public func fileImporter(isPresented: Binding<Bool>, allowedContentTypes: [UTType], allowsMultipleSelection: Bool = false,
                               onCompletion: @escaping (Result<[URL], any Error>) -> Void) -> some View { self }
-    public func alert<A: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder actions: () -> A) -> some View { self }
+    public func alert<A: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder actions: () -> A) -> some View {
+        alert(title, isPresented: isPresented, actions: actions) { Text("") }
+    }
     public func alert<A: View, M: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder actions: () -> A,
-                                         @ViewBuilder message: () -> M) -> some View { self }
+                                         @ViewBuilder message: () -> M) -> some View {
+        let actionNodes = ViewResolver.resolveList(actions(), path: ViewResolver.nestedPath("alertActions"))
+        let messageNode = ViewResolver.resolveList(message(), path: ViewResolver.nestedPath("alertMessage")).first
+        func firstText(_ node: RenderNode) -> String {
+            if node.kind == "Text", let text = node.stringParams["text"] { return text }
+            for child in node.children {
+                let text = firstText(child)
+                if !text.isEmpty { return text }
+            }
+            return ""
+        }
+        var actions: [(String, String?, (Any) -> Void)] = []
+        func collectButtons(_ nodes: [RenderNode]) {
+            for node in nodes {
+                if node.kind == "Button", let action = node.handlers["action"] {
+                    actions.append((firstText(node), node.stringParams["role"], action))
+                } else {
+                    collectButtons(node.children)
+                }
+            }
+        }
+        collectButtons(actionNodes)
+        let describedActions = actions.enumerated().map { index, action -> [String: Any] in
+            var description: [String: Any] = ["index": index, "title": action.0]
+            if let role = action.1 { description["role"] = role }
+            return description
+        }
+        let actionData = (try? JSONSerialization.data(withJSONObject: describedActions, options: [.sortedKeys])) ?? Data("[]".utf8)
+        let actionJSON = String(data: actionData, encoding: .utf8) ?? "[]"
+        return modified { base in
+            var wrapper = RenderNode(kind: "Alert")
+            wrapper.stringParams["title"] = title
+            wrapper.stringParams["message"] = messageNode.map(firstText) ?? ""
+            wrapper.stringParams["actions"] = actionJSON
+            wrapper.boolParams["isPresented"] = isPresented.wrappedValue
+            wrapper.children = [base]
+            for (index, action) in actions.enumerated() {
+                wrapper.handlers["alertAction\(index)"] = { value in action.2(value) }
+            }
+            wrapper.handlers["dismiss"] = { _ in isPresented.wrappedValue = false }
+            base = wrapper
+        }
+    }
 
 
     /// Applies a custom `ViewModifier` (the mechanism `Compositor/UI`'s own modifiers — e.g. `NewProjectDropTarget`
@@ -397,7 +624,15 @@ struct _CustomModified<Content: View, M: ViewModifier>: View {
 }
 
 extension View {
-    public func accessibilityElement(children: AccessibilityChildBehavior = .ignore) -> some View { self }
+    public func accessibilityElement(children: AccessibilityChildBehavior = .ignore) -> some View {
+        let behavior: String
+        switch children {
+        case .ignore: behavior = "ignore"
+        case .contain: behavior = "contain"
+        case .combine: behavior = "combine"
+        }
+        return modified { $0.modifiers.append(.accessibilityElement(behavior)) }
+    }
 }
 
 public enum AccessibilityChildBehavior: Sendable {
@@ -436,9 +671,43 @@ public extension DropDelegate {
 
 public struct DropInfo {
     public let location: CGPoint
-    public init(location: CGPoint = .zero) { self.location = location }
-    public func hasItemsConforming(to types: [String]) -> Bool { false }
-    public func itemProviders(for types: [String]) -> [NSItemProvider] { [] }
+    private let providers: [NSItemProvider]
+    public init(location: CGPoint = .zero, itemProviders: [NSItemProvider] = []) {
+        self.location = location
+        providers = itemProviders
+    }
+    public func hasItemsConforming(to types: [String]) -> Bool {
+        providers.contains { provider in types.contains { provider.hasItemConformingToTypeIdentifier($0) } }
+    }
+    public func itemProviders(for types: [String]) -> [NSItemProvider] {
+        providers.filter { provider in types.contains { provider.hasItemConformingToTypeIdentifier($0) } }
+    }
+}
+
+private func compatibilityDropEvent(_ value: Any) -> (String, DropInfo)? {
+    guard let event = value as? [String: Any], let phase = event["phase"] as? String else { return nil }
+    let location = event["location"] as? [String: Any] ?? [:]
+    let x = (location["x"] as? NSNumber)?.doubleValue ?? 0
+    let y = (location["y"] as? NSNumber)?.doubleValue ?? 0
+    let providers = (event["items"] as? [[String: Any]] ?? []).flatMap { item -> [NSItemProvider] in
+        var representations: [String: Data] = [:]
+        for representation in item["representations"] as? [[String: String]] ?? [] {
+            guard let type = representation["type"], let encoded = representation["data"],
+                  let data = Data(base64Encoded: encoded) else { continue }
+            representations[type] = data
+        }
+        // ProjectWorkspace.layerType (upstream's layer-row drag type; the app module isn't visible from here).
+        let layerType = "com.compositor.layer-row"
+        if let data = representations[layerType],
+           let text = String(data: data, encoding: .utf8) {
+            let identifiers = text.split(whereSeparator: { $0.isNewline }).map(String.init)
+            if identifiers.count > 1, identifiers.allSatisfy({ UUID(uuidString: $0) != nil }) {
+                return identifiers.map { NSItemProvider(representations: [layerType: Data($0.utf8)]) }
+            }
+        }
+        return [NSItemProvider(representations: representations)]
+    }
+    return (phase, DropInfo(location: CGPoint(x: CGFloat(x), y: CGFloat(y)), itemProviders: providers))
 }
 
 /// `.toolbar { }`'s content: the Qt renderer doesn't host a native toolbar yet (the panels this unblocks —
@@ -473,12 +742,12 @@ public struct ToolbarSpacer: View, PrimitiveView {
 
 public enum ColorScheme: Sendable { case light, dark }
 
-/// `NSCursor`-shaped pointer hints (`.pointerStyle(.columnResize)` on a resize handle) — inert: the Qt renderer
-/// doesn't wire cursor changes to hover state yet.
 public struct PointerStyle: Sendable {
-    public static let columnResize = PointerStyle()
-    public static let horizontalResize = PointerStyle()
-    public static let verticalResize = PointerStyle()
+    fileprivate let name: String
+    private init(_ name: String) { self.name = name }
+    public static let columnResize = PointerStyle("columnResize")
+    public static let horizontalResize = PointerStyle("horizontalResize")
+    public static let verticalResize = PointerStyle("verticalResize")
 }
 
 

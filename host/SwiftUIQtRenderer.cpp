@@ -4,10 +4,15 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QMouseEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QMimeData>
 #include <QDrag>
 #include <QPixmap>
+#include <QBuffer>
+#include <QElapsedTimer>
 // SwiftUIQtRenderer — see SwiftUIQtRenderer.h. Fetches the resolved tree via compositor_session_render_tree
 // (same size-query convention as compositor_session_state, see SessionWindow::sessionState) and walks it once,
 // mapping each `RenderNode` kind to the matching Qt widget. Interactive widgets (Button, Toggle) wire their Qt
@@ -25,6 +30,8 @@
 #include <QTextEdit>
 #include <QAbstractSpinBox>
 #include <QApplication>
+#include <QAccessible>
+#include <QAccessibleWidget>
 
 #include <QAction>
 #include <QBoxLayout>
@@ -36,11 +43,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMenu>
+#include <QMessageBox>
 #include <QLabel>
 #include <QComboBox>
 #include <QLineEdit>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QGraphicsEffect>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QIcon>
@@ -49,16 +58,67 @@
 #include <QSlider>
 #include <QStackedLayout>
 #include <QVariant>
+#include <QRegion>
 
 extern "C" {
 int64_t compositor_session_render_tree(uint64_t handle, const char *panel, uint8_t *output, size_t capacity);
 int32_t compositor_session_dispatch_swiftui_action(uint64_t handle, const char *panel, const char *node_id, const char *handler_key,
                                                    const uint8_t *payload, size_t payload_count);
+int32_t compositor_session_dispatch_swiftui_drop_event(uint64_t handle, const char *panel, const char *node_id, const char *handler_key,
+                                                        const uint8_t *payload, size_t payload_count);
 int64_t compositor_session_render_swiftui_canvas(uint64_t handle, const char *panel, const char *node_id, size_t width, size_t height,
                                                  uint8_t *output, size_t capacity);
 }
 
 namespace {
+
+class SwiftUIAccessibleWidget : public QAccessibleWidget {
+public:
+    explicit SwiftUIAccessibleWidget(QWidget *widget)
+        : QAccessibleWidget(widget, roleFor(widget), widget->accessibleName()) {}
+
+    QAccessible::State state() const override {
+        QAccessible::State current = QAccessibleWidget::state();
+        if (widget()->property("swiftuiAccessibilityHidden").toBool()) current.invisible = true;
+        return current;
+    }
+
+    QString text(QAccessible::Text type) const override {
+        if (type == QAccessible::Value && widget()->property("swiftuiAccessibilityValue").isValid())
+            return widget()->property("swiftuiAccessibilityValue").toString();
+        return QAccessibleWidget::text(type);
+    }
+
+private:
+    static QAccessible::Role roleFor(QWidget *widget) {
+        const QString children = widget->property("swiftuiAccessibilityChildren").toString();
+        return children == QLatin1String("contain") || children == QLatin1String("combine")
+            ? QAccessible::Grouping : QAccessible::Client;
+    }
+};
+
+bool hasNativeAccessibilityInterface(QWidget *widget) {
+    return qobject_cast<QAbstractButton *>(widget) || qobject_cast<QAbstractSlider *>(widget)
+        || qobject_cast<QLineEdit *>(widget) || qobject_cast<QComboBox *>(widget) || qobject_cast<QLabel *>(widget);
+}
+
+QAccessibleInterface *swiftUIAccessibilityFactory(const QString &, QObject *object) {
+    auto *widget = qobject_cast<QWidget *>(object);
+    if (!widget || !widget->property("swiftuiAccessibilityAdapter").toBool() || hasNativeAccessibilityInterface(widget)) return nullptr;
+    const QString children = widget->property("swiftuiAccessibilityChildren").toString();
+    const bool customMetadata = widget->property("swiftuiAccessibilityValue").isValid()
+        || children == QLatin1String("contain") || children == QLatin1String("combine");
+    if (!widget->property("swiftuiAccessibilityHidden").toBool() && !customMetadata) return nullptr;
+    return new SwiftUIAccessibleWidget(widget);
+}
+
+void ensureSwiftUIAccessibilityFactory() {
+    static const bool installed = [] {
+        QAccessible::installFactory(swiftUIAccessibilityFactory);
+        return true;
+    }();
+    Q_UNUSED(installed);
+}
 
 /// A `Canvas` node's widget: its `paintEvent` asks Swift to draw into a same-sized `CGContext` (the existing
 /// Skia-backed bridge) and blits the result — upstream's `Canvas { context, size in ... }` closure runs unmodified,
@@ -174,8 +234,8 @@ class SwiftUIShapeWidget : public QWidget {
 public:
     SwiftUIShapeWidget(const QString &shapeKind, double cornerRadius,
                        const QColor &fillColor, const QColor &strokeColor, double strokeWidth,
-                       QWidget *parent = nullptr)
-        : QWidget(parent), m_shapeKind(shapeKind), m_cornerRadius(cornerRadius),
+                       double inset, QWidget *parent = nullptr)
+        : QWidget(parent), m_shapeKind(shapeKind), m_cornerRadius(cornerRadius), m_inset(inset),
           m_fillColor(fillColor), m_strokeColor(strokeColor), m_strokeWidth(strokeWidth) {
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);   // a Shape fills what it is offered
         setAttribute(Qt::WA_TransparentForMouseEvents, true);
@@ -191,6 +251,7 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         QRectF rect(0, 0, width(), height());
+        rect.adjust(m_inset, m_inset, -m_inset, -m_inset);
         if (m_strokeWidth > 0 && m_strokeColor.isValid() && m_strokeColor.alpha() > 0) {
             const qreal half = m_strokeWidth / 2.0;
             rect.adjust(half, half, -half, -half);
@@ -239,12 +300,56 @@ protected:
 public:
     QString m_path;
     bool m_pathAbsolute = false, m_mirrorX = false, m_mirrorY = false;
+    void prepareAsMask() {
+        if (!m_fillColor.isValid() && !(m_strokeWidth > 0 && m_strokeColor.isValid())) {
+            m_fillColor = Qt::black;
+            update();
+        }
+    }
 private:
     QString m_shapeKind;
-    double m_cornerRadius;
+    double m_cornerRadius, m_inset;
     QColor m_fillColor;
     QColor m_strokeColor;
     double m_strokeWidth;
+};
+
+class SwiftUIMaskEffect : public QGraphicsEffect {
+public:
+    SwiftUIMaskEffect(QWidget *source, QWidget *mask) : QGraphicsEffect(source), m_mask(mask) {
+        m_mask->setParent(source);
+        m_mask->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        m_mask->hide();
+    }
+
+protected:
+    void draw(QPainter *painter) override {
+        QPoint offset;
+        const QPixmap source = sourcePixmap(Qt::LogicalCoordinates, &offset, QGraphicsEffect::NoPad);
+        if (source.isNull() || !m_mask) {
+            drawSource(painter);
+            return;
+        }
+
+        QImage masked = source.toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QImage alpha(masked.size(), QImage::Format_ARGB32_Premultiplied);
+        alpha.fill(Qt::transparent);
+        m_mask->resize(masked.size());
+        if (QLayout *layout = m_mask->layout()) layout->activate();
+        {
+            QPainter maskPainter(&alpha);
+            m_mask->render(&maskPainter, QPoint(), QRegion(), QWidget::DrawWindowBackground | QWidget::DrawChildren);
+        }
+        {
+            QPainter sourcePainter(&masked);
+            sourcePainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            sourcePainter.drawImage(0, 0, alpha);
+        }
+        painter->drawImage(offset, masked);
+    }
+
+private:
+    QPointer<QWidget> m_mask;
 };
 
 extern "C" int64_t compositor_swiftui_image(const char *token, int32_t *width, int32_t *height, uint8_t *output, size_t capacity);
@@ -282,18 +387,198 @@ void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, cons
     }
 }
 
+int32_t dispatchDropEvent(uint64_t handle, const QString &panel, const QString &nodeID, const QByteArray &payload) {
+    const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8(), keyUtf8 = QByteArrayLiteral("dropEvent");
+    const int32_t result = compositor_session_dispatch_swiftui_drop_event(
+        handle, panelUtf8.constData(), nodeUtf8.constData(), keyUtf8.constData(),
+        reinterpret_cast<const uint8_t *>(payload.constData()), static_cast<size_t>(payload.size()));
+    if (result >= 0) QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
+    return result;
+}
+
 QByteArray jsonFragment(const QJsonValue &value) {
     QByteArray array = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
     return array.mid(1, array.size() - 2); // strip the wrapping '[' ']'
 }
+
+class DropTargetFilter : public QObject {
+public:
+    DropTargetFilter(QWidget *widget, uint64_t handle, QString panel, QString nodeID, QStringList types)
+        : QObject(widget), m_handle(handle), m_panel(std::move(panel)), m_nodeID(std::move(nodeID)), m_types(std::move(types)) {
+        widget->setAcceptDrops(true);
+        widget->installEventFilter(this);
+    }
+
+    bool eventFilter(QObject *, QEvent *event) override {
+        switch (event->type()) {
+        case QEvent::DragEnter: {
+            auto *drop = static_cast<QDragEnterEvent *>(event);
+            if (!matches(drop->mimeData())) return false;
+            m_lastAccepted = dispatchDrop(QStringLiteral("entered"), payload(drop->mimeData(), drop->position(), false));
+            if (m_lastAccepted <= 0) return false;
+            drop->setDropAction(Qt::CopyAction);
+            drop->accept();
+            return true;
+        }
+        case QEvent::DragMove: {
+            auto *drop = static_cast<QDragMoveEvent *>(event);
+            if (!matches(drop->mimeData())) return false;
+            drop->setDropAction(Qt::CopyAction);
+            if (!m_updated.isValid() || m_updated.elapsed() >= 16) {
+                m_updated.restart();
+                m_lastAccepted = dispatchDrop(QStringLiteral("updated"), payload(drop->mimeData(), drop->position(), false));
+            }
+            if (m_lastAccepted <= 0) return false;
+            drop->accept();
+            return true;
+        }
+        case QEvent::DragLeave:
+            dispatchDrop(QStringLiteral("exited"), payload(nullptr, {}, false));
+            m_lastAccepted = 0;
+            return true;
+        case QEvent::Drop: {
+            auto *drop = static_cast<QDropEvent *>(event);
+            if (!matches(drop->mimeData())) return false;
+            if (dispatchDrop(QStringLiteral("perform"), payload(drop->mimeData(), drop->position(), true)) <= 0) return false;
+            drop->setDropAction(Qt::CopyAction);
+            drop->accept();
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+private:
+    bool matches(const QMimeData *mime) const {
+        if (!mime) return false;
+        for (const QString &type : m_types) {
+            if (type == QLatin1String("public.file-url") && mime->hasUrls()) return true;
+            if (type == QLatin1String("public.image")) {
+                if (mime->hasImage()) return true;
+                for (const QString &format : mime->formats()) if (format.startsWith(QLatin1String("image/"))) return true;
+            }
+            if (mime->hasFormat(type)) return true;
+        }
+        return false;
+    }
+
+    QJsonObject payload(const QMimeData *mime, const QPointF &position, bool includeData) const {
+        QJsonArray items;
+        if (mime) {
+            if (mime->hasUrls()) {
+                for (const QUrl &url : mime->urls()) {
+                    const QByteArray encoded = includeData ? url.toString(QUrl::FullyEncoded).toUtf8().toBase64() : QByteArray();
+                    items.append(QJsonObject{{QStringLiteral("representations"), QJsonArray{
+                        QJsonObject{{QStringLiteral("type"), QStringLiteral("public.file-url")},
+                                    {QStringLiteral("data"), QString::fromLatin1(encoded)}}}}});
+                }
+            }
+            QString imageFormat;
+            if (!mime->hasImage()) {
+                for (const QString &format : mime->formats()) {
+                    if (format.startsWith(QLatin1String("image/"))) { imageFormat = format; break; }
+                }
+            }
+            if (mime->hasImage() || !imageFormat.isEmpty()) {
+                QByteArray bytes;
+                if (includeData) {
+                    if (!imageFormat.isEmpty()) {
+                        bytes = mime->data(imageFormat);
+                    } else {
+                        const QImage image = qvariant_cast<QImage>(mime->imageData());
+                        QBuffer buffer(&bytes);
+                        if (!image.isNull() && buffer.open(QIODevice::WriteOnly)) image.save(&buffer, "PNG");
+                    }
+                }
+                items.append(QJsonObject{{QStringLiteral("representations"), QJsonArray{
+                    QJsonObject{{QStringLiteral("type"), QStringLiteral("public.image")},
+                                {QStringLiteral("data"), QString::fromLatin1(bytes.toBase64())}}}}});
+            }
+            for (const QString &type : m_types) {
+                if (!mime->hasFormat(type) || type == QLatin1String("public.file-url") || type == QLatin1String("public.image")) continue;
+                items.append(QJsonObject{{QStringLiteral("representations"), QJsonArray{
+                    QJsonObject{{QStringLiteral("type"), type},
+                                {QStringLiteral("data"), QString::fromLatin1(includeData ? mime->data(type).toBase64() : QByteArray())}}}}});
+            }
+        }
+        return QJsonObject{{QStringLiteral("location"), QJsonObject{
+                    {QStringLiteral("x"), position.x()}, {QStringLiteral("y"), position.y()}}},
+                {QStringLiteral("items"), items}};
+    }
+
+    int32_t dispatchDrop(const QString &phase, QJsonObject data) const {
+        data.insert(QStringLiteral("phase"), phase);
+        const QByteArray encoded = QJsonDocument(data).toJson(QJsonDocument::Compact);
+        return dispatchDropEvent(m_handle, m_panel, m_nodeID, encoded);
+    }
+
+    uint64_t m_handle;
+    QString m_panel, m_nodeID;
+    QStringList m_types;
+    QElapsedTimer m_updated;
+    int32_t m_lastAccepted = 0;
+};
+
+class GeometryChangeFilter : public QObject {
+public:
+    GeometryChangeFilter(QWidget *widget, uint64_t handle, QString panel, QString nodeID)
+        : QObject(widget), m_widget(widget), m_handle(handle), m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) {
+        widget->installEventFilter(this);
+        QPointer<GeometryChangeFilter> self(this);
+        QTimer::singleShot(0, widget, [self] { if (self) self->report(); });
+    }
+
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Move || event->type() == QEvent::Show) {
+            QPointer<GeometryChangeFilter> self(this);
+            QTimer::singleShot(0, m_widget, [self] { if (self) self->report(); });
+        }
+        return false;
+    }
+
+private:
+    void report() {
+        if (!m_widget) return;
+        const QSize now = m_widget->size();
+        if (now.isEmpty()) return;
+        QJsonObject frames;
+        for (QWidget *ancestor = m_widget; ancestor; ancestor = ancestor->parentWidget()) {
+            const QStringList names = ancestor->property("swiftuiCoordinateSpaces").toStringList();
+            if (names.isEmpty()) continue;
+            const QPoint origin = m_widget->mapTo(ancestor, QPoint(0, 0));
+            for (const QString &name : names) {
+                frames.insert(name, QJsonArray{origin.x(), origin.y(), now.width(), now.height()});
+            }
+        }
+        const QPoint globalOrigin = m_widget->mapToGlobal(QPoint(0, 0));
+        frames.insert(QStringLiteral("global"), QJsonArray{globalOrigin.x(), globalOrigin.y(), now.width(), now.height()});
+        const QJsonObject payload{{QStringLiteral("size"), QJsonArray{now.width(), now.height()}},
+                                  {QStringLiteral("frames"), frames}};
+        const QByteArray json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+        if (json == m_lastPayload) return;
+        m_lastPayload = json;
+        dispatch(m_handle, m_panel, m_nodeID, QStringLiteral("geometryChange"), json);
+    }
+
+    QPointer<QWidget> m_widget;
+    uint64_t m_handle;
+    QString m_panel, m_nodeID;
+    QByteArray m_lastPayload;
+};
 
 /// Drag-and-drop for a List whose view asked for it (`compatListDrop`): press a row and drag to move it; the drop
 /// lands above the nearer row edge, or into a folder row's middle (highlighted), Alt copies. The List's own handler
 /// ("listDrop": [source row, row under the drop, fraction within it, copying]) decides what the drop does.
 class ListDragController : public QObject {
 public:
-    ListDragController(QWidget *content, QList<QWidget *> rows, QString folders, uint64_t handle, QString panel, QString nodeID)
-        : QObject(content), m_content(content), m_rows(std::move(rows)), m_folders(std::move(folders)), m_handle(handle),
+    ListDragController(QWidget *content, QList<QWidget *> rows, QString folders, QString layerIdentifiers,
+                       QString maskDragIdentifiers, QString maskDropIdentifiers,
+                       uint64_t handle, QString panel, QString nodeID)
+        : QObject(content), m_content(content), m_rows(std::move(rows)), m_folders(std::move(folders)),
+          m_layerIdentifiers(std::move(layerIdentifiers)), m_maskDragIdentifiers(std::move(maskDragIdentifiers)),
+          m_maskDropIdentifiers(std::move(maskDropIdentifiers)), m_handle(handle),
           m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) {
         content->setAcceptDrops(true);
         content->installEventFilter(this);
@@ -308,8 +593,13 @@ protected:
         case QEvent::MouseButtonPress: {
             auto *e = static_cast<QMouseEvent *>(event);
             if (e->button() == Qt::LeftButton && obj->property("listRow").isValid()) {
-                m_pressRow = obj->property("listRow").toInt();
-                m_pressPos = e->globalPosition().toPoint();
+                const int row = obj->property("listRow").toInt();
+                if (m_pressRow != row) {
+                    m_pressRow = row;
+                    m_pressPos = e->globalPosition().toPoint();
+                    m_pressMaskSource = e->modifiers().testFlag(Qt::AltModifier) && !e->modifiers().testFlag(Qt::ControlModifier)
+                        ? obj->property("listMaskDragSource").toString() : QString();
+                }
             }
             break;
         }
@@ -317,11 +607,26 @@ protected:
             auto *e = static_cast<QMouseEvent *>(event);
             if (m_pressRow < 0 || !(e->buttons() & Qt::LeftButton)) break;
             if ((e->globalPosition().toPoint() - m_pressPos).manhattanLength() < QApplication::startDragDistance()) break;
+            if (!m_pressMaskSource.isEmpty()) {
+                const QString source = m_pressMaskSource;
+                m_pressRow = -1;
+                m_pressMaskSource.clear();
+                auto *drag = new QDrag(m_content);
+                auto *mime = new QMimeData;
+                mime->setData("com.compositor.layer-mask", source.toUtf8());
+                drag->setMimeData(mime);
+                drag->exec(Qt::CopyAction, Qt::CopyAction);
+                m_indicator->hide();
+                return true;
+            }
             const int source = m_pressRow;
             m_pressRow = -1;
             auto *drag = new QDrag(m_content);
             auto *mime = new QMimeData;
             mime->setData("application/x-compositor-list-row", QByteArray::number(source));
+            const QStringList layerIdentifiers = m_layerIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
+            if (source < layerIdentifiers.size() && !layerIdentifiers[source].isEmpty())
+                mime->setData("com.compositor.layer-row", layerIdentifiers[source].toUtf8());
             drag->setMimeData(mime);
             if (source < m_rows.size()) {
                 const QPixmap snapshot = m_rows[source]->grab();
@@ -334,11 +639,19 @@ protected:
         }
         case QEvent::MouseButtonRelease:
             m_pressRow = -1;
+            m_pressMaskSource.clear();
             break;
         case QEvent::DragEnter:
         case QEvent::DragMove: {
             if (obj != m_content) break;
             auto *e = static_cast<QDropEvent *>(event);
+            if (e->mimeData()->hasFormat("com.compositor.layer-mask")) {
+                if (!canCopyMaskAt(e->mimeData()->data("com.compositor.layer-mask"), e->position().toPoint())) break;
+                e->setDropAction(Qt::CopyAction);
+                e->accept();
+                showMaskIndicator(e->position().toPoint());
+                return true;
+            }
             if (!e->mimeData()->hasFormat("application/x-compositor-list-row")) break;
             e->setDropAction((e->modifiers() & Qt::AltModifier) ? Qt::CopyAction : Qt::MoveAction);
             e->accept();
@@ -351,6 +664,22 @@ protected:
         case QEvent::Drop: {
             if (obj != m_content) break;
             auto *e = static_cast<QDropEvent *>(event);
+            if (e->mimeData()->hasFormat("com.compositor.layer-mask")) {
+                const QByteArray source = e->mimeData()->data("com.compositor.layer-mask");
+                const QPoint position = e->position().toPoint();
+                const int row = locate(position).first;
+                if (!canCopyMaskAt(source, position) || row >= m_rows.size()) break;
+                const QStringList targets = m_maskDropIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
+                if (row >= targets.size() || targets[row].isEmpty()) break;
+                const QJsonArray data{QString::fromUtf8(source), targets[row]};
+                const QByteArray payload = QJsonDocument(data).toJson(QJsonDocument::Compact);
+                e->setDropAction(Qt::CopyAction);
+                e->accept();
+                m_indicator->hide();
+                const uint64_t handle = m_handle; const QString panel = m_panel, node = m_nodeID;
+                QTimer::singleShot(0, [handle, panel, node, payload] { dispatch(handle, panel, node, QStringLiteral("listMaskDrop"), payload); });
+                return true;
+            }
             if (!e->mimeData()->hasFormat("application/x-compositor-list-row")) break;
             const int source = e->mimeData()->data("application/x-compositor-list-row").toInt();
             const auto [row, fraction] = locate(e->position().toPoint());
@@ -369,10 +698,21 @@ protected:
         return QObject::eventFilter(obj, event);
     }
 private:
-    void watch(QWidget *widget, int row) {
+    bool canCopyMaskAt(const QByteArray &source, const QPoint &position) const {
+        const QString sourceID = QString::fromUtf8(source);
+        const QStringList sources = m_maskDragIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
+        const QStringList targets = m_maskDropIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
+        if (!sources.contains(sourceID)) return false;
+        const int row = locate(position).first;
+        return row < m_rows.size() && row < targets.size() && !targets[row].isEmpty() && targets[row] != sourceID;
+    }
+    void watch(QWidget *widget, int row, QString maskSource = {}) {
         widget->setProperty("listRow", row);
+        if (widget->objectName().startsWith(QStringLiteral("layerMaskThumb:")))
+            maskSource = widget->objectName().mid(QStringLiteral("layerMaskThumb:").size());
+        if (!maskSource.isEmpty()) widget->setProperty("listMaskDragSource", maskSource);
         widget->installEventFilter(this);
-        for (QWidget *child : widget->findChildren<QWidget *>()) { child->setProperty("listRow", row); child->installEventFilter(this); }
+        for (QWidget *child : widget->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) watch(child, row, maskSource);
     }
     /// The row under `pos` (content coordinates) and where in it (0 top ... 1 bottom); past the last row: rows.size().
     std::pair<int, double> locate(const QPoint &pos) const {
@@ -397,9 +737,18 @@ private:
         m_indicator->raise();
         m_indicator->show();
     }
+    void showMaskIndicator(const QPoint &pos) {
+        const auto [row, fraction] = locate(pos);
+        Q_UNUSED(fraction);
+        if (row >= m_rows.size()) { m_indicator->hide(); return; }
+        m_indicator->setStyleSheet("background: rgba(0, 122, 255, 0.18); border: 2px solid #007aff; border-radius: 5px;");
+        m_indicator->setGeometry(m_rows[row]->geometry());
+        m_indicator->raise();
+        m_indicator->show();
+    }
     QWidget *m_content;
     QList<QWidget *> m_rows;
-    QString m_folders;
+    QString m_folders, m_layerIdentifiers, m_maskDragIdentifiers, m_maskDropIdentifiers, m_pressMaskSource;
     uint64_t m_handle;
     QString m_panel, m_nodeID;
     QFrame *m_indicator = nullptr;
@@ -457,24 +806,85 @@ private:
 class TapGestureFilter : public QObject {
 public:
     /// `onTap` gets the click's modifier keys as ShortcutChord bits (Ctrl 1, Alt 2, Meta 4, Shift 8).
-    TapGestureFilter(QObject *parent, std::function<void(int)> onTap)
-        : QObject(parent), m_onTap(std::move(onTap)) {}
+    TapGestureFilter(QObject *parent, int tapCount, int spatialTapCount,
+                     std::function<void(int)> onTap, std::function<void(QPointF)> onSpatialTap)
+        : QObject(parent), m_tapCount(tapCount), m_spatialTapCount(spatialTapCount),
+          m_onTap(std::move(onTap)), m_onSpatialTap(std::move(onSpatialTap)) {}
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override {
-        if (event->type() == QEvent::MouseButtonRelease) {
+        if (event->type() == QEvent::MouseButtonRelease && m_suppressRelease) {
+            m_suppressRelease = false;
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::MouseButtonDblClick) {
             auto *me = static_cast<QMouseEvent *>(event);
-            if (me->button() == Qt::LeftButton) {
+            if (me->button() != Qt::LeftButton) return QObject::eventFilter(obj, event);
+            const int tapCount = m_tapCount;
+            const int spatialTapCount = m_spatialTapCount;
+            const auto onTap = m_onTap;
+            const auto onSpatialTap = m_onSpatialTap;
+            const bool single = event->type() == QEvent::MouseButtonRelease;
+            bool handled = false;
+            if (!single && tapCount != 1 && spatialTapCount != 1
+                && ((tapCount == 2 && onTap) || (spatialTapCount == 2 && onSpatialTap))) m_suppressRelease = true;
+            if (single && tapCount == 1 && onTap) {
                 const Qt::KeyboardModifiers m = me->modifiers();
                 const int bits = (m & Qt::ControlModifier ? 1 : 0) | (m & Qt::AltModifier ? 2 : 0) | (m & Qt::MetaModifier ? 4 : 0)
                                | (m & Qt::ShiftModifier ? 8 : 0);
-                if (m_onTap) m_onTap(bits);
-                return true;
+                onTap(bits);
+                handled = true;
             }
+            if (single && spatialTapCount == 1 && onSpatialTap) {
+                onSpatialTap(me->position());
+                handled = true;
+            }
+            if (!single && tapCount == 2 && onTap) {
+                const Qt::KeyboardModifiers m = me->modifiers();
+                const int bits = (m & Qt::ControlModifier ? 1 : 0) | (m & Qt::AltModifier ? 2 : 0) | (m & Qt::MetaModifier ? 4 : 0)
+                               | (m & Qt::ShiftModifier ? 8 : 0);
+                onTap(bits);
+                handled = true;
+            }
+            if (!single && spatialTapCount == 2 && onSpatialTap) {
+                handled = true;
+            }
+            if (!single && spatialTapCount == 2 && onSpatialTap) onSpatialTap(me->position());
+            if (handled) return true;
         }
         return QObject::eventFilter(obj, event);
     }
 private:
+    int m_tapCount;
+    int m_spatialTapCount;
+    bool m_suppressRelease = false;
     std::function<void(int)> m_onTap;
+    std::function<void(QPointF)> m_onSpatialTap;
+};
+
+class PopoverDismissFilter : public QObject {
+public:
+    PopoverDismissFilter(QWidget *popover, uint64_t handle, QString panel, QString id)
+        : QObject(popover), m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)) {
+        popover->installEventFilter(this);
+    }
+
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Show) m_visible = true;
+        if (event->type() == QEvent::Hide && m_visible) {
+            m_visible = false;
+            const uint64_t handle = m_handle;
+            const QString panel = m_panel, id = m_id;
+            QTimer::singleShot(0, qApp, [handle, panel, id] {
+                dispatch(handle, panel, id, QStringLiteral("dismiss"));
+            });
+        }
+        return false;
+    }
+
+private:
+    uint64_t m_handle;
+    QString m_panel, m_id;
+    bool m_visible = false;
 };
 
 /// SwiftUI's `.contextMenu`: the view's items (compat resolves them into "contextMenu" JSON) as a QMenu on right-click;
@@ -811,16 +1221,66 @@ const QString &disabledStyleSheet() {
     return qss;
 }
 
+class SwiftUILineLimitFilter : public QObject {
+public:
+    SwiftUILineLimitFilter(QLabel *label, int lines)
+        : QObject(label), m_label(label), m_text(label->text()), m_lines(qMax(1, lines)) {
+        label->installEventFilter(this);
+        label->setWordWrap(m_lines > 1);
+        updateText();
+    }
+
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::FontChange) updateText();
+        return false;
+    }
+
+private:
+    void updateText() {
+        if (!m_label || m_label->width() <= 0) return;
+        const QMargins margins = m_label->contentsMargins();
+        const int lineHeight = m_label->fontMetrics().lineSpacing();
+        m_label->setMaximumHeight(lineHeight * m_lines + margins.top() + margins.bottom());
+        const QString shown = m_lines == 1
+            ? m_label->fontMetrics().elidedText(m_text, Qt::ElideRight,
+                qMax(0, m_label->width() - margins.left() - margins.right()))
+            : m_text;
+        if (m_label->text() != shown) m_label->setText(shown);
+    }
+
+    QPointer<QLabel> m_label;
+    QString m_text;
+    int m_lines;
+};
+
 /// Applies the modifiers this first pass understands (the highest-frequency ones, per the plan); an unrecognised
 /// modifier kind is silently skipped rather than failing the whole render — additive coverage, not all-or-nothing.
 void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
+    ensureSwiftUIAccessibilityFactory();
     for (const auto &entry : modifiers) {
         const QJsonObject modifier = entry.toObject();
         const QString kind = modifier.value("kind").toString();
         const QJsonObject doubles = modifier.value("doubleParams").toObject();
         const QJsonObject strings = modifier.value("stringParams").toObject();
         const QJsonObject bools = modifier.value("boolParams").toObject();
-        if (kind == "frame") {
+        if (kind == "coordinateSpace") {
+            QStringList names = widget->property("swiftuiCoordinateSpaces").toStringList();
+            const QString name = strings.value("name").toString();
+            if (!name.isEmpty() && !names.contains(name)) names.append(name);
+            widget->setProperty("swiftuiCoordinateSpaces", names);
+        } else if (kind == "dragGesture") {
+            widget->setProperty("swiftuiGestureCoordinateSpace", strings.value("coordinateSpace").toString());
+            widget->setProperty("swiftuiGestureMinimumDistance", doubles.value("minimumDistance").toDouble(10.0));
+        } else if (kind == "allowsHitTesting") {
+            widget->setAttribute(Qt::WA_TransparentForMouseEvents, !bools.value("enabled").toBool());
+        } else if (kind == "tapGesture") {
+            widget->setProperty("swiftuiTapGestureCount", qMax(1, qRound(doubles.value("count").toDouble(1.0))));
+        } else if (kind == "spatialTapGesture") {
+            widget->setProperty("swiftuiSpatialTapGestureCount", qMax(1, qRound(doubles.value("count").toDouble(1.0))));
+        } else if (kind == "clipped") {
+            widget->setMask(QRegion(widget->rect()));
+        } else if (kind == "frame") {
             if (doubles.contains("width")) widget->setFixedWidth(static_cast<int>(doubles.value("width").toDouble()));
             if (doubles.contains("height")) widget->setFixedHeight(static_cast<int>(doubles.value("height").toDouble()));
             // minWidth / minHeight hold as minimums; maxWidth / maxHeight .infinity (sent as flags: JSON has no
@@ -903,6 +1363,11 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                     label->setSizePolicy(QSizePolicy::Expanding, label->sizePolicy().verticalPolicy());
                 }
             }
+        } else if (kind == "lineLimit") {
+            const int lines = qMax(1, qRound(doubles.value("lines").toDouble()));
+            QList<QLabel *> labels = widget->findChildren<QLabel *>();
+            if (auto *self = qobject_cast<QLabel *>(widget)) labels.prepend(self);
+            for (QLabel *label : labels) new SwiftUILineLimitFilter(label, lines);
         } else if (kind == "textFieldStyle") {
             // .plain: the bare text, no bezel (upstream draws its own background around it); .roundedBorder: the bezel.
             if (strings.value("name").toString() == QLatin1String("plain")) {
@@ -931,11 +1396,35 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 QList<QPushButton *> buttons = widget->findChildren<QPushButton *>();
                 if (auto *self = qobject_cast<QPushButton *>(widget)) buttons.prepend(self);
                 for (QPushButton *button : buttons) {
+                    button->setProperty("buttonStyleName", name);
                     if (button->property("buttonStyled").toBool() || button->text().isEmpty() || button->isCheckable()) continue;
                     button->setProperty("buttonStyled", true);
                     button->setStyleSheet(qss);
                 }
             }
+        } else if (kind == "buttonBorderShape") {
+            const QString shape = strings.value("name").toString();
+            const QString radius = shape == QLatin1String("capsule") || shape == QLatin1String("circle")
+                ? QStringLiteral("9999px")
+                : shape == QLatin1String("roundedRectangle") ? QStringLiteral("6px") : QString();
+            if (!radius.isEmpty()) {
+                QList<QPushButton *> buttons = widget->findChildren<QPushButton *>();
+                if (auto *self = qobject_cast<QPushButton *>(widget)) buttons.prepend(self);
+                for (QPushButton *button : buttons) {
+                    const QString style = button->property("buttonStyleName").toString();
+                    if (style == QLatin1String("plain") || style == QLatin1String("borderless") ||
+                        button->styleSheet().contains(QLatin1String("background: transparent")) ||
+                        button->property("buttonBorderShape").toString() == shape) continue;
+                    button->setStyleSheet(button->styleSheet() + QStringLiteral(" QPushButton { border-radius: %1; }").arg(radius));
+                    button->setProperty("buttonBorderShape", shape);
+                }
+            }
+        } else if (kind == "pointerStyle") {
+            const QString pointerStyle = strings.value("name").toString();
+            if (pointerStyle == QLatin1String("columnResize") || pointerStyle == QLatin1String("horizontalResize"))
+                widget->setCursor(Qt::SizeHorCursor);
+            else if (pointerStyle == QLatin1String("verticalResize"))
+                widget->setCursor(Qt::SizeVerCursor);
         } else if (kind == "controlSize") {
             // AppKit control sizes carry their own text size: small 11, mini 9 (regular keeps the environment's).
             const QString size = strings.value("name").toString();
@@ -974,10 +1463,25 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
             widget->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         } else if (kind == "help" || kind == "accessibilityLabel") {
             const QString text = strings.value("text").toString();
-            if (!text.isEmpty()) widget->setToolTip(text);
+            if (!text.isEmpty()) {
+                if (kind == "help") widget->setToolTip(text);
+                else widget->setAccessibleName(text);
+            }
         } else if (kind == "accessibilityIdentifier") {
             const QString id = strings.value("text").toString();
             if (!id.isEmpty()) widget->setObjectName(id);
+        } else if (kind == "accessibilityHidden") {
+            widget->setProperty("swiftuiAccessibilityHidden", bools.value("value").toBool());
+            widget->setProperty("swiftuiAccessibilityAdapter", true);
+        } else if (kind == "accessibilityValue") {
+            const QString value = strings.value("value").toString();
+            widget->setProperty("swiftuiAccessibilityValue", value);
+            if (hasNativeAccessibilityInterface(widget)) widget->setAccessibleDescription(value);
+            else widget->setProperty("swiftuiAccessibilityAdapter", true);
+        } else if (kind == "accessibilityElement") {
+            const QString children = strings.value("children").toString();
+            widget->setProperty("swiftuiAccessibilityChildren", children);
+            if (!hasNativeAccessibilityInterface(widget)) widget->setProperty("swiftuiAccessibilityAdapter", true);
         } else if (kind == "background") {
             const QString colorName = strings.value("name").toString();
             const QColor color = parseColorToken(colorName);
@@ -1028,23 +1532,34 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
     }
 }
 
-/// A `.resizable()` bitmap: scaled to fit whatever size its layout gives it, centred, aspect kept.
+/// A `.resizable()` bitmap: scales within its layout slot using SwiftUI's aspect mode.
 class SwiftUIFitImageWidget : public QWidget {
 public:
-    explicit SwiftUIFitImageWidget(QImage image) : m_image(std::move(image)) {
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    explicit SwiftUIFitImageWidget(QImage image, QString contentMode, qreal aspectRatio)
+        : m_image(std::move(image)), m_contentMode(std::move(contentMode)), m_aspectRatio(aspectRatio) {
+        QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        policy.setHeightForWidth(m_aspectRatio > 0.0);
+        setSizePolicy(policy);
     }
     QSize sizeHint() const override { return m_image.size().scaled(560, 560, Qt::KeepAspectRatio); }
+    bool hasHeightForWidth() const override { return m_aspectRatio > 0.0; }
+    int heightForWidth(int width) const override {
+        return m_aspectRatio > 0.0 ? qRound(width / m_aspectRatio) : QWidget::heightForWidth(width);
+    }
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        const QSize fitted = m_image.size().scaled(size(), Qt::KeepAspectRatio);
-        const QRect target(QPoint((width() - fitted.width()) / 2, (height() - fitted.height()) / 2), fitted);
+        const bool fill = m_contentMode == QLatin1String("fill");
+        const QSize scaled = m_image.size().scaled(size(), fill ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio);
+        const QRect target(QPoint((width() - scaled.width()) / 2, (height() - scaled.height()) / 2), scaled);
+        painter.setClipRect(rect());
         painter.drawImage(target, m_image);
     }
 private:
     QImage m_image;
+    QString m_contentMode;
+    qreal m_aspectRatio;
 };
 
 QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &node);
@@ -1101,20 +1616,29 @@ private:
 class DragTracker : public QObject {
 public:
     static DragTracker &shared() { static DragTracker *tracker = new DragTracker; return *tracker; }
-    void start(uint64_t handle, QString panel, QString id, QPoint originGlobal, QPointF pressGlobal) {
+    void start(uint64_t handle, QString panel, QString id, QPoint originGlobal, QPointF pressGlobal, double minimumDistance) {
         m_handle = handle; m_panel = std::move(panel); m_id = std::move(id);
-        m_origin = originGlobal; m_start = pressGlobal - QPointF(originGlobal);
+        m_origin = originGlobal; m_pressGlobal = pressGlobal; m_start = pressGlobal - QPointF(originGlobal);
+        m_minimumDistance = qMax(0.0, minimumDistance);
+        m_started = m_minimumDistance == 0.0;
         qApp->installEventFilter(this);
-        send(QStringLiteral("dragChanged"), pressGlobal);
+        if (m_started) send(QStringLiteral("dragChanged"), pressGlobal);
     }
 protected:
     bool eventFilter(QObject *, QEvent *event) override {
         if (event->type() == QEvent::MouseMove) {
-            send(QStringLiteral("dragChanged"), static_cast<QMouseEvent *>(event)->globalPosition());
+            const QPointF global = static_cast<QMouseEvent *>(event)->globalPosition();
+            if (!m_started) {
+                const QPointF delta = global - m_pressGlobal;
+                if (delta.x() * delta.x() + delta.y() * delta.y() < m_minimumDistance * m_minimumDistance) return false;
+                m_started = true;
+            }
+            send(QStringLiteral("dragChanged"), global);
             return true;
         }
         if (event->type() == QEvent::MouseButtonRelease) {
             qApp->removeEventFilter(this);
+            if (!m_started) return false;
             send(QStringLiteral("dragEnded"), static_cast<QMouseEvent *>(event)->globalPosition());
             return true;
         }
@@ -1129,27 +1653,40 @@ private:
     uint64_t m_handle = 0;
     QString m_panel, m_id;
     QPoint m_origin;
-    QPointF m_start;
+    QPointF m_start, m_pressGlobal;
+    double m_minimumDistance = 10.0;
+    bool m_started = false;
 };
 
 class DragPressFilter : public QObject {
 public:
-    DragPressFilter(QWidget *widget, uint64_t handle, QString panel, QString id)
-        : QObject(widget), m_widget(widget), m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)) {
+    DragPressFilter(QWidget *widget, QWidget *gestureWidget, uint64_t handle, QString panel, QString id)
+        : QObject(widget), m_gestureWidget(gestureWidget), m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)) {
         widget->installEventFilter(this);
     }
     bool eventFilter(QObject *, QEvent *event) override {
         if (event->type() != QEvent::MouseButtonPress || static_cast<QMouseEvent *>(event)->button() != Qt::LeftButton) return false;
-        // The space: the enclosing GeometryReader's, else the view's own.
-        QWidget *space = m_widget;
-        for (QWidget *w = m_widget->parentWidget(); w; w = w->parentWidget())
-            if (w->property("geometryReader").toBool()) { space = w; break; }
+        if (!m_gestureWidget) return false;
+        const QString name = m_gestureWidget->property("swiftuiGestureCoordinateSpace").toString();
+        QWidget *space = m_gestureWidget;
+        if (name == QLatin1String("global")) {
+            DragTracker::shared().start(m_handle, m_panel, m_id, QPoint(0, 0),
+                                        static_cast<QMouseEvent *>(event)->globalPosition(),
+                                        m_gestureWidget->property("swiftuiGestureMinimumDistance").toDouble());
+            return true;
+        }
+        if (name != QLatin1String("local")) {
+            for (QWidget *w = m_gestureWidget; w; w = w->parentWidget()) {
+                if (w->property("swiftuiCoordinateSpaces").toStringList().contains(name)) { space = w; break; }
+            }
+        }
         DragTracker::shared().start(m_handle, m_panel, m_id, space->mapToGlobal(QPoint(0, 0)),
-                                    static_cast<QMouseEvent *>(event)->globalPosition());
+                                    static_cast<QMouseEvent *>(event)->globalPosition(),
+                                    m_gestureWidget->property("swiftuiGestureMinimumDistance").toDouble());
         return true;
     }
 private:
-    QWidget *m_widget;
+    QPointer<QWidget> m_gestureWidget;
     uint64_t m_handle;
     QString m_panel, m_id;
 };
@@ -1320,6 +1857,58 @@ private:
     QString m_alignment;
 };
 
+class BackgroundPlacer : public QObject {
+public:
+    BackgroundPlacer(QWidget *container, QWidget *content, QWidget *background, QString alignment)
+        : QObject(container), m_container(container), m_content(content), m_background(background), m_alignment(std::move(alignment)) {
+        container->installEventFilter(this);
+        place();
+    }
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show || event->type() == QEvent::LayoutRequest) place();
+        return false;
+    }
+    void place() {
+        m_content->setGeometry(m_container->rect());
+        const QSize fixed = m_background->minimumSize() == m_background->maximumSize() ? m_background->minimumSize() : QSize();
+        const bool fills = !fixed.isValid() && (m_background->sizePolicy().horizontalPolicy() & QSizePolicy::ExpandFlag);
+        if (fills || m_alignment == QLatin1String("center") && !fixed.isValid() && !qobject_cast<QLabel *>(m_background)) {
+            m_background->setGeometry(m_container->rect());
+        } else {
+            const QSize size = fixed.isValid() ? fixed : m_background->sizeHint().boundedTo(m_container->size());
+            int x = (m_container->width() - size.width()) / 2, y = (m_container->height() - size.height()) / 2;
+            if (m_alignment.contains(QLatin1String("eading"))) x = 0;
+            if (m_alignment.contains(QLatin1String("railing"))) x = m_container->width() - size.width();
+            if (m_alignment.startsWith(QLatin1String("top"))) y = 0;
+            if (m_alignment.startsWith(QLatin1String("bottom"))) y = m_container->height() - size.height();
+            m_background->setGeometry(x, y, size.width(), size.height());
+        }
+        m_background->lower();
+        m_content->raise();
+    }
+private:
+    QWidget *m_container, *m_content, *m_background;
+    QString m_alignment;
+};
+
+class SwiftUIBackgroundWidget : public QWidget {
+public:
+    SwiftUIBackgroundWidget(QWidget *content, QWidget *background, QString alignment)
+        : m_content(content), m_background(background) {
+        m_content->setParent(this);
+        m_background->setParent(this);
+        setSizePolicy(m_content->sizePolicy());
+        setMinimumSize(m_content->minimumSize());
+        setMaximumSize(m_content->maximumSize());
+        new BackgroundPlacer(this, m_content, m_background, std::move(alignment));
+    }
+    QSize sizeHint() const override { return m_content->sizeHint(); }
+    QSize minimumSizeHint() const override { return m_content->minimumSizeHint(); }
+private:
+    QWidget *m_content;
+    QWidget *m_background;
+};
+
 /// LinearGradient: the colors spread evenly from `startPoint` to `endPoint` (unit points).
 class SwiftUIGradientWidget : public QWidget {
 public:
@@ -1408,6 +1997,85 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = buildStack(handle, panel, node, QBoxLayout::TopToBottom);
     } else if (kind == "HStack") {
         widget = buildStack(handle, panel, node, QBoxLayout::LeftToRight);
+    } else if (kind == "Popover") {
+        QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
+        if (!base) base = new QWidget;
+        if (bools.value("isPresented").toBool() && children.size() > 1) {
+            QWidget *content = buildNode(handle, panel, children[1].toObject());
+            if (content) {
+                auto *popover = new QFrame(base, Qt::Popup | Qt::FramelessWindowHint);
+                popover->setObjectName(QStringLiteral("swiftuiPopover"));
+                popover->setAttribute(Qt::WA_StyledBackground, true);
+                popover->setStyleSheet(QStringLiteral(
+                    "QFrame#swiftuiPopover { background: #29292d; color: #f5f5f7; border: 1px solid #45454b; border-radius: 7px; }"));
+                auto *layout = new QVBoxLayout(popover);
+                layout->setContentsMargins(0, 0, 0, 0);
+                layout->addWidget(content);
+                new PopoverDismissFilter(popover, handle, panel, id);
+                QPointer<QWidget> anchor = base;
+                QPointer<QFrame> popup = popover;
+                QTimer::singleShot(0, popover, [anchor, popup] {
+                    if (!anchor || !popup) return;
+                    popup->adjustSize();
+                    popup->move(anchor->mapToGlobal(QPoint(anchor->width() / 2, anchor->height())));
+                    popup->show();
+                });
+            }
+        }
+        widget = base;
+    } else if (kind == "Sheet") {
+        QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
+        if (!base) base = new QWidget;
+        if (bools.value("isPresented").toBool() && children.size() > 1) {
+            QWidget *content = buildNode(handle, panel, children[1].toObject());
+            if (content) {
+                auto *sheet = new QDialog(base);
+                sheet->setAttribute(Qt::WA_DeleteOnClose, true);
+                sheet->setWindowModality(Qt::WindowModal);
+                auto *layout = new QVBoxLayout(sheet);
+                layout->setContentsMargins(16, 16, 16, 16);
+                layout->addWidget(content);
+                QObject::connect(sheet, &QDialog::finished, sheet, [handle, panel, id](int) {
+                    dispatch(handle, panel, id, QStringLiteral("dismiss"));
+                });
+                QTimer::singleShot(0, sheet, [sheet] {
+                    sheet->adjustSize();
+                    sheet->open();
+                });
+            }
+        }
+        widget = base;
+    } else if (kind == "Alert") {
+        QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
+        if (!base) base = new QWidget;
+        if (bools.value("isPresented").toBool()) {
+            auto *alert = new QMessageBox(base);
+            alert->setAttribute(Qt::WA_DeleteOnClose, true);
+            alert->setIcon(QMessageBox::Warning);
+            alert->setText(strings.value("title").toString());
+            alert->setInformativeText(strings.value("message").toString());
+            const QJsonArray actions = QJsonDocument::fromJson(strings.value("actions").toString().toUtf8()).array();
+            for (const QJsonValue &value : actions) {
+                const QJsonObject action = value.toObject();
+                const int index = action.value("index").toInt(-1);
+                const QString role = action.value("role").toString();
+                const QMessageBox::ButtonRole buttonRole = role == QLatin1String("cancel") ? QMessageBox::RejectRole
+                    : role == QLatin1String("destructive") ? QMessageBox::DestructiveRole : QMessageBox::AcceptRole;
+                auto *button = alert->addButton(action.value("title").toString(), buttonRole);
+                if (role == QLatin1String("cancel")) alert->setEscapeButton(button);
+                const QString handler = QStringLiteral("alertAction%1").arg(index);
+                QObject::connect(button, &QAbstractButton::clicked, alert, [handle, panel, id, handler] {
+                    dispatch(handle, panel, id, handler);
+                });
+            }
+            if (actions.isEmpty()) alert->addButton(QStringLiteral("OK"), QMessageBox::AcceptRole);
+            alert->setWindowModality(Qt::WindowModal);
+            QObject::connect(alert, &QDialog::finished, alert, [handle, panel, id](int) {
+                dispatch(handle, panel, id, QStringLiteral("dismiss"));
+            });
+            QTimer::singleShot(0, alert, [alert] { alert->open(); });
+        }
+        widget = base;
     } else if (kind == "Overlay") {
         QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
         QWidget *over = children.size() > 1 ? buildNode(handle, panel, children[1].toObject()) : nullptr;
@@ -1423,6 +2091,33 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             if (!interactive) over->setAttribute(Qt::WA_TransparentForMouseEvents, true);
             new OverlayPlacer(base, over, strings.value("alignment").toString());
             over->show();
+        }
+        widget = base;
+    } else if (kind == "Background") {
+        QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
+        QWidget *background = children.size() > 1 ? buildNode(handle, panel, children[1].toObject()) : nullptr;
+        if (!base) base = new QWidget;
+        if (background) {
+            bool interactive = false;
+            std::function<void(const QJsonObject &)> scan = [&](const QJsonObject &current) {
+                if (!current.value("handlerKeys").toArray().isEmpty()) interactive = true;
+                for (const auto &child : current.value("children").toArray()) scan(child.toObject());
+            };
+            if (children.size() > 1) scan(children[1].toObject());
+            if (!interactive) background->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        }
+        widget = background ? static_cast<QWidget *>(new SwiftUIBackgroundWidget(base, background, strings.value("alignment").toString())) : base;
+    } else if (kind == "Mask") {
+        QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
+        QWidget *mask = children.size() > 1 ? buildNode(handle, panel, children[1].toObject()) : nullptr;
+        if (!base) base = new QWidget;
+        if (mask) {
+            std::function<void(QWidget *)> prepareShapes = [&](QWidget *current) {
+                if (auto *shape = dynamic_cast<SwiftUIShapeWidget *>(current)) shape->prepareAsMask();
+                for (QWidget *child : current->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) prepareShapes(child);
+            };
+            prepareShapes(mask);
+            base->setGraphicsEffect(new SwiftUIMaskEffect(base, mask));
         }
         widget = base;
     } else if (kind == "LinearGradient") {
@@ -1729,7 +2424,20 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }();
         if (handlerKeys.contains(QStringLiteral("value"))) {
             const QJsonObject doubles = node.value("doubleParams").toObject();
-            field->setText(QString::number(doubles.value("value").toDouble()));
+            const int minimumFractionLength = qBound(0, doubles.value("minimumFractionLength").toInt(), 15);
+            const int maximumFractionLength = qBound(minimumFractionLength, doubles.value("maximumFractionLength").toInt(), 15);
+            const bool hasPrecision = doubles.contains("maximumFractionLength");
+            auto formatNumber = [minimumFractionLength, maximumFractionLength, hasPrecision](double value) {
+                if (!hasPrecision) return QString::number(value);
+                QString text = QString::number(value, 'f', maximumFractionLength);
+                while (text.contains('.') && text.endsWith('0') &&
+                       text.length() - text.indexOf('.') - 1 > minimumFractionLength) {
+                    text.chop(1);
+                }
+                if (text.endsWith('.')) text.chop(1);
+                return text;
+            };
+            field->setText(formatNumber(doubles.value("value").toDouble()));
             QObject::connect(field, &QLineEdit::textChanged, field, [handle, panel, id](const QString &text) {
                 bool ok = false;
                 const double number = text.toDouble(&ok);
@@ -1896,6 +2604,24 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             });
             widget = combo;
         }
+        if (!children.isEmpty()) {
+            const QJsonObject labelNode = children.first().toObject();
+            if (bools.value("labelsHidden").toBool()) {
+                const QString labelText = labelNode.value("stringParams").toObject().value("text").toString();
+                if (!labelText.isEmpty()) widget->setAccessibleName(labelText);
+            } else {
+                QWidget *label = buildNode(handle, panel, labelNode);
+                if (label) {
+                    auto *container = new QWidget;
+                    auto *layout = new QHBoxLayout(container);
+                    layout->setContentsMargins(0, 0, 0, 0);
+                    layout->setSpacing(8);
+                    layout->addWidget(label);
+                    layout->addWidget(widget);
+                    widget = container;
+                }
+            }
+        }
     } else if (kind == "Menu") {
         auto *btn = new QPushButton;
         QString textLabel;
@@ -1979,7 +2705,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 fillColor = parseColorToken(mo.value("stringParams").toObject().value("name").toString());
             }
         }
-        auto *shape = new SwiftUIShapeWidget(shapeKind, cornerRadius, fillColor, strokeColor, strokeWidth);
+        const double inset = node.value("doubleParams").toObject().value("inset").toDouble();
+        auto *shape = new SwiftUIShapeWidget(shapeKind, cornerRadius, fillColor, strokeColor, strokeWidth, inset);
         shape->m_path = strings.value("path").toString();
         shape->m_pathAbsolute = bools.value("pathAbsolute").toBool();
         shape->m_mirrorX = bools.value("mirrorX").toBool();
@@ -2011,8 +2738,9 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                         box = QSize(qRound(d.value("width").toDouble()), qRound(d.value("height").toDouble()));
                 }
                 if (node.value("boolParams").toObject().value("resizable").toBool()) {
-                    // .resizable(): fill the slot it's given, keeping the aspect (a preview in a fixed frame).
-                    fitted = new SwiftUIFitImageWidget(image);
+                    const QString contentMode = strings.value("contentMode").toString();
+                    const qreal aspectRatio = node.value("doubleParams").toObject().value("aspectRatio").toDouble();
+                    fitted = new SwiftUIFitImageWidget(image, contentMode, aspectRatio);
                     fitted->setAttribute(Qt::WA_TransparentForMouseEvents, true);
                 }
                 const qreal dpr = label->devicePixelRatioF();
@@ -2071,7 +2799,10 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                     for (int i = 0; i < content->layout()->count(); ++i)
                         if (QWidget *item = content->layout()->itemAt(i)->widget()) rows << item;
                     if (!rows.isEmpty()) rows.removeLast();
-                    new ListDragController(content, rows, strings.value("listFolders").toString(), handle, panel, id);
+                    new ListDragController(content, rows, strings.value("listFolders").toString(),
+                                           strings.value("listLayerIdentifiers").toString(),
+                                           strings.value("listMaskDragIdentifiers").toString(),
+                                           strings.value("listMaskDropIdentifiers").toString(), handle, panel, id);
                 }
             }
         }
@@ -2125,16 +2856,38 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             for (const auto &k : node.value("handlerKeys").toArray()) keys << k.toString();
             return keys;
         }();
+        for (const auto &entry : node.value("modifiers").toArray()) {
+            const QJsonObject modifier = entry.toObject();
+            if (modifier.value("kind").toString() != QLatin1String("timer")) continue;
+            const double interval = modifier.value("doubleParams").toObject().value("interval").toDouble();
+            auto *timer = new QTimer(widget);
+            timer->setInterval(qMax(1, qRound(interval * 1000.0)));
+            QObject::connect(timer, &QTimer::timeout, widget, [widget, handle, panel, id] {
+                QTimer::singleShot(0, widget, [handle, panel, id] {
+                    dispatch(handle, panel, id, QStringLiteral("onReceive"));
+                });
+            });
+            timer->start();
+        }
         if (hKeys.contains(QStringLiteral("dragChanged")) || hKeys.contains(QStringLiteral("dragEnded"))) {
-            new DragPressFilter(widget, handle, panel, id);
-            for (QWidget *inner : widget->findChildren<QWidget *>()) new DragPressFilter(inner, handle, panel, id);
+            new DragPressFilter(widget, widget, handle, panel, id);
+            for (QWidget *inner : widget->findChildren<QWidget *>()) new DragPressFilter(inner, widget, handle, panel, id);
         }
         if (hKeys.contains(QStringLiteral("swipeBegan"))) new SwipeFilter(widget, handle, panel, id, strings.value("swipeGroup").toString());
-        if (hKeys.contains(QStringLiteral("onTapGesture"))) {
+        if (hKeys.contains(QStringLiteral("onTapGesture")) || hKeys.contains(QStringLiteral("spatialTapGesture"))) {
             widget->setCursor(Qt::PointingHandCursor);
-            widget->installEventFilter(new TapGestureFilter(widget, [handle, panel, id](int modifiers) {
+            auto onTap = [handle, panel, id](int modifiers) {
                 dispatch(handle, panel, id, QStringLiteral("onTapGesture"), QByteArray::number(modifiers));
-            }));
+            };
+            auto onSpatialTap = [handle, panel, id](QPointF position) {
+                const QByteArray payload = "[" + QByteArray::number(position.x()) + "," + QByteArray::number(position.y()) + "]";
+                dispatch(handle, panel, id, QStringLiteral("spatialTapGesture"), payload);
+            };
+            widget->installEventFilter(new TapGestureFilter(widget,
+                widget->property("swiftuiTapGestureCount").toInt(),
+                widget->property("swiftuiSpatialTapGestureCount").toInt(),
+                hKeys.contains(QStringLiteral("onTapGesture")) ? onTap : std::function<void(int)>(),
+                hKeys.contains(QStringLiteral("spatialTapGesture")) ? onSpatialTap : std::function<void(QPointF)>()));
         }
         if (hKeys.contains(QStringLiteral("contextMenu")) && strings.contains("contextMenu")) {
             const QJsonArray items = QJsonDocument::fromJson(strings.value("contextMenu").toString().toUtf8()).array();
@@ -2152,6 +2905,11 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             });
         }
         if (hKeys.contains(QStringLiteral("keyCapture"))) new KeyCaptureFilter(widget, handle, panel, id);
+        if (hKeys.contains(QStringLiteral("geometryChange"))) new GeometryChangeFilter(widget, handle, panel, id);
+        if (hKeys.contains(QStringLiteral("dropEvent"))) {
+            const QStringList dropTypes = strings.value("dropTypes").toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
+            if (!dropTypes.isEmpty()) new DropTargetFilter(widget, handle, panel, id, dropTypes);
+        }
     }
 
     return widget;
@@ -2208,4 +2966,3 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
 void registerSwiftUIActionListener(std::function<void(uint64_t, const QString &)> listener) {
     g_actionListeners.push_back(std::move(listener));
 }
-

@@ -23,13 +23,36 @@ struct NativeLayerList: View {
         Dictionary(uniqueKeysWithValues: session.layerRows.map { ($0.layer.id, $0.depth) })
     }
 
+    private var dragLayerIdentifiers: [String] {
+        let rows = session.layerRows
+        let selected = session.selectedLayerIDs
+        let descendants = selected.reduce(into: Set<UUID>()) { $0.formUnion(session.descendantIDs(of: $1)) }
+        let selectedRoots = rows.map(\.layer.id).filter { selected.contains($0) && !descendants.contains($0) }
+        return rows.map { row in
+            let identifiers = selected.contains(row.layer.id) ? selectedRoots : [row.layer.id]
+            return identifiers.map(\.uuidString).joined(separator: "\n")
+        }
+    }
+
     var body: some View {
         List(session.layerRows, id: \.layer.id) { entry in
             row(for: entry.layer.id)
         }
         // Drag to reorder, into a folder, or (Alt) duplicate — what the real list's NSTableView drop does.
-        .compatListDrop(folders: session.layerRows.map { $0.layer.isGroup == true }) { source, row, fraction, copying in
+        .compatListDrop(folders: session.layerRows.map { $0.layer.isGroup == true },
+                        layerIdentifiers: dragLayerIdentifiers) { source, row, fraction, copying in
             drop(from: source, on: row, at: fraction, copying: copying)
+        }
+        .compatListMaskDrop(
+            // Rows hold hierarchy records; the masks are on the document's layers.
+            dragIdentifiers: session.layerRows.map { row in
+                session.document?.layers.first(where: { $0.id == row.layer.id })?.mask == nil ? "" : row.layer.id.uuidString
+            },
+            dropTargetIdentifiers: session.layerRows.map { $0.layer.isGroup == true ? "" : $0.layer.id.uuidString }
+        ) { source, target in
+            guard let sourceID = UUID(uuidString: source), let targetID = UUID(uuidString: target),
+                  session.canCopyMask(from: sourceID, to: targetID) else { return }
+            session.copyMask(from: sourceID, to: targetID)
         }
         .accessibilityIdentifier("layersList")
     }
@@ -121,7 +144,10 @@ struct NativeLayerList: View {
                             Image(nsImage: LayerThumbnails.mask(mask, transform: layer.maskTransform, layerID: layer.id, canvas: canvas))
                                 .frame(width: maskSize.width, height: maskSize.height)
                                 .border(session.activeLayerID == layer.id && session.isMaskSelected ? Color.accentColor : Color.clear, width: 2)
-                        }.frame(width: 30, height: 51)
+                        }
+                        .frame(width: 30, height: 51)
+                        .accessibilityIdentifier("layerMaskThumb:\(layer.id.uuidString)")
+                        .onTapGesture { maskThumbnailTapped(layer.id, modifiers: CompatInput.clickModifiers) }
                     }
                     VStack(alignment: .leading, spacing: 3) {
                         Text(name).font(.system(size: 13)).lineLimit(1)
@@ -162,6 +188,16 @@ struct NativeLayerList: View {
         } else {
             session.selectLayer(id)
         }
+    }
+
+    private func maskThumbnailTapped(_ id: UUID, modifiers: Int) {
+        if modifiers & 1 != 0 {
+            let mode: SelectionMode = modifiers & 2 != 0 ? .subtract : modifiers & 8 != 0 ? .add : .replace
+            session.loadMaskSelection(layerID: id, mode: mode)
+            return
+        }
+        session.selectLayerTarget(id, mask: true)
+        if modifiers & 8 != 0 { session.toggleLayerMask() }
     }
 
     /// The real list's right-click menu (NativeLayerList.contextMenu(for:) and validateMenuItem), item for item.

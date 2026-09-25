@@ -46,6 +46,17 @@ extension RenderNode {
         if !h.isEmpty { registry[id] = h }
         for child in children { child.collectHandlers(into: &registry) }
     }
+
+    public func collectResultHandlers(into registry: inout [String: [String: (Any) -> Int32]]) {
+        var h: [String: (Any) -> Int32] = [:]
+        for m in modifiers {
+            if case .resultSink(let key, let closure) = m {
+                h[key] = closure
+            }
+        }
+        if !h.isEmpty { registry[id] = h }
+        for child in children { child.collectResultHandlers(into: &registry) }
+    }
 }
 
 /// A style/layout annotation attached to a resolved node by a SwiftUI modifier (`.frame`, `.padding`, ...). Each
@@ -63,14 +74,20 @@ public enum RenderModifier {
     case disabled(Bool)
     case fixedSize(horizontal: Bool, vertical: Bool)
     case buttonStyle(String)
+    case buttonBorderShape(String)
+    case pointerStyle(String)
     case toggleStyle(String)
     case pickerStyle(String)
     case menuStyle(String)
     case controlSize(String)
     case textFieldStyle(String)
     case multilineTextAlignment(String)
+    case lineLimit(Int)
     case contentShape(String)
     case clipShape(String)
+    case clipped
+    case tapGesture(count: Int)
+    case spatialTapGesture(count: Int)
     case overlay(RenderNode, alignment: String)
     case offset(x: Double, y: Double)
     case cornerRadius(Double)
@@ -91,6 +108,14 @@ public enum RenderModifier {
     /// `.onChange`/`.focused` etc. read/write through a boxed value the Qt side polls or pushes into; keyed by an
     /// opaque tag so a node can carry more than one.
     case sink(String, (Any) -> Void)
+    case resultSink(String, (Any) -> Int32)
+    case timer(interval: Double)
+    case coordinateSpace(String)
+    case dragGesture(minimumDistance: Double, coordinateSpace: String)
+    case accessibilityHidden(Bool)
+    case accessibilityValue(String)
+    case accessibilityElement(String)
+    case allowsHitTesting(Bool)
     /// Share of a stack's space: higher priorities are sized first (`.layoutPriority`).
     case layoutPriority(Double)
     /// `.position(x:y:)`: the view's center in its parent's (a GeometryReader's) space.

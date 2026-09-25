@@ -9,7 +9,17 @@ public struct Text: View, PrimitiveView, ExpressibleByStringInterpolation {
     public init(verbatim content: String) { self.content = content }
     public init<V: BinaryFloatingPoint>(_ value: V, format: FloatingPointFormatStyle<V>) {
         let pct = Double(value) * 100.0
-        let str = String(format: "%.1f%%", pct).replacingOccurrences(of: ".0%", with: "%")
+        let maximumFractionLength = format.maximumFractionLength ?? 1
+        let minimumFractionLength = format.minimumFractionLength ?? 0
+        var number = String(format: "%.*f", maximumFractionLength, pct)
+        if maximumFractionLength > minimumFractionLength, let decimalIndex = number.firstIndex(of: ".") {
+            while number.distance(from: number.index(after: decimalIndex), to: number.endIndex) > minimumFractionLength,
+                  number.last == "0" {
+                number.removeLast()
+            }
+            if number.last == "." { number.removeLast() }
+        }
+        let str = number + "%"
         self.init(str)
     }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
@@ -20,10 +30,33 @@ public struct Text: View, PrimitiveView, ExpressibleByStringInterpolation {
 }
 
 public struct FloatingPointFormatStyle<Value: BinaryFloatingPoint>: Sendable {
+    let minimumFractionLength: Int?
+    let maximumFractionLength: Int?
+
+    private init(minimumFractionLength: Int? = nil, maximumFractionLength: Int? = nil) {
+        self.minimumFractionLength = minimumFractionLength
+        self.maximumFractionLength = maximumFractionLength
+    }
+
     public static var percent: FloatingPointFormatStyle<Value> { FloatingPointFormatStyle() }
-    public func precision(_ p: Precision) -> FloatingPointFormatStyle<Value> { self }
+    public func precision(_ p: Precision) -> FloatingPointFormatStyle<Value> {
+        FloatingPointFormatStyle(minimumFractionLength: p.minimumFractionLength,
+                                 maximumFractionLength: p.maximumFractionLength)
+    }
     public struct Precision: Sendable {
-        public static func fractionLength(_ range: ClosedRange<Int>) -> Precision { Precision() }
+        let minimumFractionLength: Int
+        let maximumFractionLength: Int
+
+        private init(minimumFractionLength: Int, maximumFractionLength: Int) {
+            self.minimumFractionLength = minimumFractionLength
+            self.maximumFractionLength = maximumFractionLength
+        }
+
+        public static func fractionLength(_ range: ClosedRange<Int>) -> Precision {
+            let minimumLength = max(0, range.lowerBound)
+            let maximumLength = max(minimumLength, range.upperBound)
+            return Precision(minimumFractionLength: minimumLength, maximumFractionLength: maximumLength)
+        }
     }
 }
 
@@ -79,6 +112,8 @@ public struct Image: View, PrimitiveView {
     /// `.resizable()`: drawn to fill its slot (keeping its aspect with `.aspectRatio(contentMode: .fit)`, the default
     /// here) rather than at its own size.
     var isResizable = false
+    var contentMode: ContentMode?
+    var preferredAspectRatio: Double?
     public init(systemName: String) { source = "system:\(systemName)" }
     public init(_ name: String) { source = "named:\(name)" }
     public init(decorative cgImage: CGImage, scale: Double) { source = "pixels:" + ImageRegistry.token(for: cgImage) }
@@ -90,14 +125,34 @@ public struct Image: View, PrimitiveView {
         }
     }
     public func resizable() -> Image { var copy = self; copy.isResizable = true; return copy }
-    public func scaledToFit() -> some View { self }
-    public func scaledToFill() -> some View { self }
-    public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View { self }
-    public func aspectRatio(contentMode: ContentMode) -> some View { self }
+    public func scaledToFit() -> some View {
+        var copy = self
+        copy.contentMode = .fit
+        return copy
+    }
+    public func scaledToFill() -> some View {
+        var copy = self
+        copy.contentMode = .fill
+        return copy
+    }
+    public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View {
+        var copy = self
+        copy.contentMode = contentMode
+        copy.preferredAspectRatio = aspectRatio
+        return copy
+    }
+    public func aspectRatio(contentMode: ContentMode) -> some View { aspectRatio(nil, contentMode: contentMode) }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "Image")
         node.stringParams["source"] = source
         if isResizable { node.boolParams["resizable"] = true }
+        if let contentMode {
+            switch contentMode {
+            case .fit: node.stringParams["contentMode"] = "fit"
+            case .fill: node.stringParams["contentMode"] = "fill"
+            }
+        }
+        if let preferredAspectRatio { node.doubleParams["aspectRatio"] = preferredAspectRatio }
         return node
     }
 }
@@ -105,24 +160,40 @@ public struct Image: View, PrimitiveView {
 public struct Button<Label: View>: View, PrimitiveView {
     let label: Label
     let action: () -> Void
-    public init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) { self.action = action; self.label = label() }
+    let role: ButtonRole?
+    public init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
+        self.action = action
+        self.label = label()
+        role = nil
+    }
+    fileprivate init(role: ButtonRole, action: @escaping () -> Void, resolvedLabel: Label) {
+        self.action = action
+        self.label = resolvedLabel
+        self.role = role
+    }
     public var _childViews: [any View] { [label] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "Button")
         node.handlers["action"] = { _ in action() }
+        if let role {
+            switch role {
+            case .cancel: node.stringParams["role"] = "cancel"
+            case .destructive: node.stringParams["role"] = "destructive"
+            }
+        }
         node.children = children
         return node
     }
 }
 extension Button where Label == Text {
     public init(_ title: String, action: @escaping () -> Void) { self.init(action: action) { Text(title) } }
-    /// `role:` doesn't change the render tree's shape (no destructive-red styling here yet); it exists so upstream's
-    /// `Button("OK", role: .cancel) { ... }` calls compile.
-    public init(_ title: String, role: ButtonRole, action: @escaping () -> Void) { self.init(action: action) { Text(title) } }
+    public init(_ title: String, role: ButtonRole, action: @escaping () -> Void) {
+        self.init(role: role, action: action) { Text(title) }
+    }
 }
 extension Button {
     public init(role: ButtonRole, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
-        self.init(action: action, label: label)
+        self.init(role: role, action: action, resolvedLabel: label())
     }
 }
 public enum ButtonRole: Sendable { case destructive, cancel }
@@ -182,18 +253,20 @@ public struct TextField<Label: View>: View, PrimitiveView {
     let label: Label
     let text: Binding<String>?
     let value: Binding<Double>?
+    let numberFormat: NumberFormat
     let prompt: Text?
     public init(_ titleKey: String, text: Binding<String>, prompt: Text? = nil) where Label == Text {
-        label = Text(titleKey); self.text = text; value = nil; self.prompt = prompt
+        label = Text(titleKey); self.text = text; value = nil; numberFormat = .number; self.prompt = prompt
     }
     public init(_ titleKey: String, value: Binding<Double>, format: NumberFormat = .number, prompt: Text? = nil) where Label == Text {
-        label = Text(titleKey); self.value = value; text = nil; self.prompt = prompt
+        label = Text(titleKey); self.value = value; text = nil; numberFormat = format; self.prompt = prompt
     }
     /// An integer-valued field: real SwiftUI's `TextField(_:value:format:)` is generic over the format's value
     /// type, so upstream binds it straight to `Int` properties too. Rounds through `Double` internally.
     public init(_ titleKey: String, value intValue: Binding<Int>, format: NumberFormat = .number, prompt: Text? = nil) where Label == Text {
         label = Text(titleKey); text = nil
         value = Binding(get: { Double(intValue.wrappedValue) }, set: { intValue.wrappedValue = Int($0.rounded()) })
+        numberFormat = format
         self.prompt = prompt
     }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
@@ -208,6 +281,12 @@ public struct TextField<Label: View>: View, PrimitiveView {
         }
         if let value {
             node.doubleParams["value"] = value.wrappedValue
+            if let minimumFractionLength = numberFormat.minimumFractionLength {
+                node.doubleParams["minimumFractionLength"] = Double(minimumFractionLength)
+            }
+            if let maximumFractionLength = numberFormat.maximumFractionLength {
+                node.doubleParams["maximumFractionLength"] = Double(maximumFractionLength)
+            }
             node.handlers["value"] = { newValue in if let double = newValue as? Double { value.wrappedValue = double } }
         }
         return node
@@ -374,4 +453,3 @@ public struct UnitPoint: Sendable, Equatable {
     public static let topLeading = UnitPoint(name: "topLeading"), topTrailing = UnitPoint(name: "topTrailing")
     public static let bottomLeading = UnitPoint(name: "bottomLeading"), bottomTrailing = UnitPoint(name: "bottomTrailing")
 }
-

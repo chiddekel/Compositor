@@ -27,6 +27,7 @@ final class Entry {
     /// The last resolved SwiftUI tree's action handlers, per panel: panel name -> node id -> handler key -> closure.
     /// Populated by `SwiftUIBridge.swift`'s `resolvePanel`, read by `compositor_session_dispatch_swiftui_action`.
     var actionHandlers: [String: [String: [String: (Any) -> Void]]] = [:]
+    var resultHandlers: [String: [String: [String: (Any) -> Int32]]] = [:]
     /// Set only for a handle registered through `compositor_workspace_*`: the `ProjectTab.id` (in `Workspace.shared`)
     /// whose `EditorSession` this entry's editor wraps. A plain `compositor_session_create` handle leaves this nil —
     /// it isn't a document tab, just a bare session (e.g. the SwiftUI render-tree debug path).

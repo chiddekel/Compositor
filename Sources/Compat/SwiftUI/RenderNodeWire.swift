@@ -35,6 +35,8 @@ extension RenderNode {
         for m in modifiers {
             if case .sink(let key, _) = m {
                 keys.insert(key)
+            } else if case .resultSink(let key, _) = m {
+                keys.insert(key)
             }
         }
         // JSON has no infinity or NaN: a single one (e.g. `.frame(maxWidth: .infinity)`) would fail the whole panel's
@@ -76,14 +78,20 @@ extension RenderModifier {
         case let .disabled(v): return RenderModifierWire(kind: "disabled", boolParams: ["value": v])
         case let .fixedSize(h, v): return RenderModifierWire(kind: "fixedSize", boolParams: ["horizontal": h, "vertical": v])
         case let .buttonStyle(name): return RenderModifierWire(kind: "buttonStyle", stringParams: ["name": name])
+        case let .buttonBorderShape(name): return RenderModifierWire(kind: "buttonBorderShape", stringParams: ["name": name])
+        case let .pointerStyle(name): return RenderModifierWire(kind: "pointerStyle", stringParams: ["name": name])
         case let .toggleStyle(name): return RenderModifierWire(kind: "toggleStyle", stringParams: ["name": name])
         case let .pickerStyle(name): return RenderModifierWire(kind: "pickerStyle", stringParams: ["name": name])
         case let .menuStyle(name): return RenderModifierWire(kind: "menuStyle", stringParams: ["name": name])
         case let .controlSize(name): return RenderModifierWire(kind: "controlSize", stringParams: ["name": name])
         case let .textFieldStyle(name): return RenderModifierWire(kind: "textFieldStyle", stringParams: ["name": name])
         case let .multilineTextAlignment(name): return RenderModifierWire(kind: "multilineTextAlignment", stringParams: ["name": name])
+        case let .lineLimit(lines): return RenderModifierWire(kind: "lineLimit", doubleParams: ["lines": Double(lines)])
         case let .contentShape(name): return RenderModifierWire(kind: "contentShape", stringParams: ["name": name])
         case let .clipShape(name): return RenderModifierWire(kind: "clipShape", stringParams: ["name": name])
+        case .clipped: return RenderModifierWire(kind: "clipped")
+        case let .tapGesture(count): return RenderModifierWire(kind: "tapGesture", doubleParams: ["count": Double(count)])
+        case let .spatialTapGesture(count): return RenderModifierWire(kind: "spatialTapGesture", doubleParams: ["count": Double(count)])
         case let .offset(x, y): return RenderModifierWire(kind: "offset", doubleParams: ["x": x, "y": y])
         case let .cornerRadius(r): return RenderModifierWire(kind: "cornerRadius", doubleParams: ["radius": r])
         case let .shadow(r): return RenderModifierWire(kind: "shadow", doubleParams: ["radius": r])
@@ -98,7 +106,20 @@ extension RenderModifier {
             return RenderModifierWire(kind: "keyboardShortcut", stringParams: ["key": key], doubleParams: ["modifiers": Double(modifiers)])
         case let .tag(text): return RenderModifierWire(kind: "tag", stringParams: ["text": text])
         case let .layoutPriority(value): return RenderModifierWire(kind: "layoutPriority", doubleParams: ["value": value])
-        case .overlay, .onAppear, .onDisappear, .onSubmit, .onExitCommand, .sink, .observe: return nil
+        case let .timer(interval): return RenderModifierWire(kind: "timer", doubleParams: ["interval": interval])
+        case let .coordinateSpace(name): return RenderModifierWire(kind: "coordinateSpace", stringParams: ["name": name])
+        case let .dragGesture(minimumDistance, coordinateSpace):
+            return RenderModifierWire(kind: "dragGesture", stringParams: ["coordinateSpace": coordinateSpace],
+                                      doubleParams: ["minimumDistance": minimumDistance])
+        case let .accessibilityHidden(hidden):
+            return RenderModifierWire(kind: "accessibilityHidden", boolParams: ["value": hidden])
+        case let .accessibilityValue(value):
+            return RenderModifierWire(kind: "accessibilityValue", stringParams: ["value": value])
+        case let .accessibilityElement(children):
+            return RenderModifierWire(kind: "accessibilityElement", stringParams: ["children": children])
+        case let .allowsHitTesting(enabled):
+            return RenderModifierWire(kind: "allowsHitTesting", boolParams: ["enabled": enabled])
+        case .overlay, .onAppear, .onDisappear, .onSubmit, .onExitCommand, .sink, .resultSink, .observe: return nil
         }
     }
 }

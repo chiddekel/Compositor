@@ -163,12 +163,38 @@ extension StyleToken {
 /// A minimal stand-in for Foundation's `FormatStyle` machinery — just enough for `TextField(_:value:format:)`'s
 /// `.number.precision(.fractionLength(_:))` chains to compile; the Qt renderer formats the number itself.
 public struct NumberFormat: Sendable {
-    public static let number = NumberFormat()
-    public func precision(_ precision: NumberFormatPrecision) -> NumberFormat { self }
+    public static let number = NumberFormat(minimumFractionLength: nil, maximumFractionLength: nil)
+    public let minimumFractionLength: Int?
+    public let maximumFractionLength: Int?
+
+    private init(minimumFractionLength: Int?, maximumFractionLength: Int?) {
+        self.minimumFractionLength = minimumFractionLength
+        self.maximumFractionLength = maximumFractionLength
+    }
+
+    public func precision(_ precision: NumberFormatPrecision) -> NumberFormat {
+        NumberFormat(minimumFractionLength: precision.minimumFractionLength,
+                     maximumFractionLength: precision.maximumFractionLength)
+    }
 }
 public struct NumberFormatPrecision: Sendable {
-    public static func fractionLength(_ length: Int) -> NumberFormatPrecision { NumberFormatPrecision() }
-    public static func fractionLength(_ range: ClosedRange<Int>) -> NumberFormatPrecision { NumberFormatPrecision() }
+    public let minimumFractionLength: Int
+    public let maximumFractionLength: Int
+
+    private init(minimumFractionLength: Int, maximumFractionLength: Int) {
+        self.minimumFractionLength = minimumFractionLength
+        self.maximumFractionLength = maximumFractionLength
+    }
+
+    public static func fractionLength(_ length: Int) -> NumberFormatPrecision {
+        let normalizedLength = max(0, length)
+        return NumberFormatPrecision(minimumFractionLength: normalizedLength, maximumFractionLength: normalizedLength)
+    }
+    public static func fractionLength(_ range: ClosedRange<Int>) -> NumberFormatPrecision {
+        let minimumLength = max(0, range.lowerBound)
+        let maximumLength = max(minimumLength, range.upperBound)
+        return NumberFormatPrecision(minimumFractionLength: minimumLength, maximumFractionLength: maximumLength)
+    }
 }
 
 /// A single key for `.keyboardShortcut`/`configuredNativeShortcut` (upstream names keys like `.escape`, `.return`,
@@ -191,6 +217,29 @@ public protocol Shape: PrimitiveView {
     var shapeKind: String { get }
     var cornerRadiusValue: Double { get }
 }
+private protocol InsetShapeMetadata {
+    var insetAmount: Double { get }
+    var usesNativeGeometry: Bool { get }
+}
+private struct InsetShape<Base: Shape>: Shape, InsetShapeMetadata {
+    let base: Base
+    let amount: Double
+    var insetAmount: Double { amount }
+    var usesNativeGeometry: Bool { base is Rectangle || base is Circle || base is RoundedRectangle || base is Capsule }
+    var shapeKind: String { base.shapeKind }
+    var cornerRadiusValue: Double { max(0, base.cornerRadiusValue - amount) }
+
+    func path(in rect: CGRect) -> Path {
+        let inset = CGFloat(amount)
+        let insetRect = CGRect(x: rect.minX + inset, y: rect.minY + inset,
+                               width: max(0, rect.width - inset * 2), height: max(0, rect.height - inset * 2))
+        if let roundedRectangle = base as? RoundedRectangle {
+            return Path(roundedRect: insetRect, cornerRadius: max(0, roundedRectangle.cornerRadius - amount),
+                        style: roundedRectangle.style)
+        }
+        return base.path(in: insetRect)
+    }
+}
 extension Shape {
     public var shapeKind: String { "rectangle" }
     public var cornerRadiusValue: Double { 0 }
@@ -199,9 +248,11 @@ extension Shape {
         var node = RenderNode(kind: "Shape")
         node.stringParams["shapeKind"] = shapeKind
         if cornerRadiusValue > 0 { node.doubleParams["cornerRadius"] = cornerRadiusValue }
+        let inset = self as? InsetShapeMetadata
+        if let inset, inset.usesNativeGeometry { node.doubleParams["inset"] = inset.insetAmount }
         // A shape of the app's own (HueArrow, ...): its outline in a 100×100 box, which the renderer scales to the
         // view; a bare Path keeps its own coordinates.
-        if !(self is Rectangle || self is Circle || self is RoundedRectangle || self is Capsule) {
+        if !(self is Rectangle || self is Circle || self is RoundedRectangle || self is Capsule || inset?.usesNativeGeometry == true) {
             let absolute = self is Path
             let path = absolute ? (self as! Path) : path(in: CGRect(x: 0, y: 0, width: 100, height: 100))
             func n(_ v: CGFloat) -> String { String(format: "%.3f", Double(v)) }
@@ -282,7 +333,7 @@ extension Shape {
     public func stroke(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View {
         strokeBorder(style, lineWidth: strokeStyle.lineWidth)
     }
-    public func inset(by amount: Double) -> Self { self }
+    public func inset(by amount: Double) -> some Shape { InsetShape(base: self, amount: amount) }
 }
 
 /// Where a gesture's coordinates are reported in — `.local`/`.global`/`.named(_:)`. Only the identity matters here

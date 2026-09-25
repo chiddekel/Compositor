@@ -187,10 +187,10 @@ struct ShortcutDefinition: Identifiable {
             let chord = values[definition.id] ?? definition.original
             guard chord.key.count == 1, (0...15).contains(chord.modifiers) else { return "Choose a single key with optional modifiers." }
             if definition.group == "Text Editing", chord.modifiers & 7 == 0 {
-                return "Text-editing shortcuts need Command, Option, or Control so they do not replace normal typing."
+                return "Text-editing shortcuts need Ctrl, Alt, or Meta so they do not replace normal typing."
             }
             if [ShortcutChord("q", 1), ShortcutChord(",", 1), ShortcutChord("m", 3)].contains(chord) {
-                return "\(chord.label) is reserved by macOS."
+                return "\(chord.label) is reserved by the app."
             }
             if let other = assigned[chord] { return "\(chord.label) is assigned to both \(other) and \(definition.title)." }
             assigned[chord] = definition.title
@@ -270,8 +270,8 @@ struct KeyboardShortcutsSheet: View {
                     }
                     Divider().padding(.vertical, 8)
                     Text("Contextual keys & mouse gestures").font(.headline)
-                    Text("Text fields keep standard macOS editing keys. Dialogs share the Apply/Cancel assignments above. Numeric fields use Up/Down, with Shift for larger steps. Standard macOS commands include ⌘Q to quit and ⌃⌘F for full screen. The shortcut editor itself always uses Return to save and Esc to cancel when not recording.")
-                    Text("Option temporarily selects the eyedropper in painting tools. Shift constrains shapes/movement or adds to a selection; Option subtracts from selections or draws from center. Command-drag moves selected pixels; Command-Option-drag copies them. Option-drag duplicates layers/folders/effects; Option-click at a layer boundary toggles clipping. Command-click a thumbnail loads its selection. Control bypasses snapping. Right-drag adjusts brush size. Modifier-and-mouse gestures are fixed.")
+                    Text("Text fields keep standard Linux editing keys. Dialogs share the Apply/Cancel assignments above. Numeric fields use Up/Down, with Shift for larger steps. Ctrl+Q quits and Meta+Ctrl+F toggles full screen. The shortcut editor itself always uses Return to save and Esc to cancel when not recording.")
+                    Text("Alt temporarily selects the eyedropper in painting tools. Shift constrains shapes/movement or adds to a selection; Alt subtracts from selections or draws from center. Ctrl-drag moves selected pixels; Ctrl+Alt-drag copies them. Alt-drag duplicates layers/folders/effects; Alt-click at a layer boundary toggles clipping. Ctrl-click a thumbnail loads its selection. Meta bypasses snapping. Right-drag adjusts brush size. Modifier-and-mouse gestures are fixed.")
                 }.padding(.trailing, 8)
             }.frame(height: 465)
             if let problem = ShortcutSettings.problem(in: draft) {
