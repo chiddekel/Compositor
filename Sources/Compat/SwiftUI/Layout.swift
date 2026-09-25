@@ -148,26 +148,36 @@ public struct GeometryProxy: Sendable {
 /// `GeometryReader` cannot know the real Qt layout size at Swift-tree-build time; it resolves its content with a
 /// zero-size proxy today (the Qt renderer re-lays-out the resolved children itself once mounted). Panels using it
 /// for frame math will need a real measurement round-trip in a later phase.
+/// `Grid`: its rows' cells line up in columns as wide as their widest cell (the Qt renderer's QGridLayout).
 public struct Grid<Content: View>: View, PrimitiveView {
+    let alignment: Alignment, horizontalSpacing: Double?, verticalSpacing: Double?
     let content: Content
     public init(alignment: Alignment = .center, horizontalSpacing: Double? = nil, verticalSpacing: Double? = nil,
                 @ViewBuilder content: () -> Content) {
+        self.alignment = alignment; self.horizontalSpacing = horizontalSpacing; self.verticalSpacing = verticalSpacing
         self.content = content()
     }
     public var _childViews: [any View] { [content] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
-        var node = RenderNode(kind: "VStack") // A Grid's rows read top-to-bottom, same as a VStack of HStacks.
+        var node = RenderNode(kind: "Grid")
+        node.stringParams["alignment"] = alignment.name
+        if let horizontalSpacing { node.doubleParams["horizontalSpacing"] = horizontalSpacing }
+        if let verticalSpacing { node.doubleParams["verticalSpacing"] = verticalSpacing }
         node.children = children
         return node
     }
 }
 
 public struct GridRow<Content: View>: View, PrimitiveView {
+    let alignment: VerticalAlignment
     let content: Content
-    public init(alignment: VerticalAlignment = .center, @ViewBuilder content: () -> Content) { self.content = content() }
+    public init(alignment: VerticalAlignment = .center, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment; self.content = content()
+    }
     public var _childViews: [any View] { [content] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
-        var node = RenderNode(kind: "HStack")
+        var node = RenderNode(kind: "GridRow")
+        node.stringParams["alignment"] = alignment.name
         node.children = children
         return node
     }

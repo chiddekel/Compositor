@@ -36,6 +36,8 @@
 #include <QAction>
 #include <QBoxLayout>
 #include <QCheckBox>
+#include <QGridLayout>
+#include <QRadioButton>
 #include <QFont>
 #include <QFrame>
 #include <QImage>
@@ -1436,8 +1438,10 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
             }
         } else if (kind == "buttonBorderShape") {
             const QString shape = strings.value("name").toString();
-            const QString radius = shape == QLatin1String("capsule") || shape == QLatin1String("circle")
-                ? QStringLiteral("9999px")
+            // Qt's style sheets don't clamp a radius to half the height as CSS does (a huge one draws square
+            // corners): a capsule's is half the button's own height.
+            const bool capsule = shape == QLatin1String("capsule") || shape == QLatin1String("circle");
+            const QString radius = capsule ? QStringLiteral("capsule")
                 : shape == QLatin1String("roundedRectangle") ? QStringLiteral("6px") : QString();
             if (!radius.isEmpty()) {
                 QList<QPushButton *> buttons = widget->findChildren<QPushButton *>();
@@ -1447,7 +1451,8 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                     if (style == QLatin1String("plain") || style == QLatin1String("borderless") ||
                         button->styleSheet().contains(QLatin1String("background: transparent")) ||
                         button->property("buttonBorderShape").toString() == shape) continue;
-                    button->setStyleSheet(button->styleSheet() + QStringLiteral(" QPushButton { border-radius: %1; }").arg(radius));
+                    const QString r = capsule ? QStringLiteral("%1px").arg(std::max(1, button->sizeHint().height() / 2)) : radius;
+                    button->setStyleSheet(button->styleSheet() + QStringLiteral(" QPushButton { border-radius: %1; }").arg(r));
                     button->setProperty("buttonBorderShape", shape);
                 }
             }
@@ -1992,12 +1997,10 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
                                      horizontal ? QSizePolicy::Preferred : QSizePolicy::Expanding);
             // A Divider in an HStack is a vertical line.
             if (childKind == "Divider" && horizontal) {
-                if (auto *line = qobject_cast<QFrame *>(child)) {
-                    line->setFrameShape(QFrame::VLine);
-                    line->setStyleSheet("background-color: #141416; max-width: 1px; border: none;");
-                    line->setFixedWidth(1);
-                    line->setMaximumHeight(QWIDGETSIZE_MAX);
-                }
+                child->setMinimumHeight(0);
+                child->setMaximumHeight(QWIDGETSIZE_MAX);
+                child->setFixedWidth(1);
+                child->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
             }
             // A VStack places each child at its own width, at the stack's alignment (center by default); only the
             // flexible ones (fields, sliders, rows with a Spacer, maxWidth: .infinity) span it.
@@ -2018,6 +2021,63 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
     return container;
 }
 
+/// A ForEach's or a conditional's views stand in its place: the grid's rows, a row's cells.
+static void flattenViewLists(const QJsonArray &nodes, QList<QJsonObject> &out) {
+    for (const QJsonValue &value : nodes) {
+        const QJsonObject object = value.toObject();
+        if (object.value("kind").toString() == QLatin1String("_ViewList") && object.value("modifiers").toArray().isEmpty())
+            flattenViewLists(object.value("children").toArray(), out);
+        else
+            out << object;
+    }
+}
+
+/// `Grid`: each GridRow's views in columns as wide as their widest cell, placed at the grid's alignment; a view that is
+/// not in a GridRow spans the whole row. No spacing given: SwiftUI's default, 8 points.
+QWidget *buildGrid(uint64_t handle, const QString &panel, const QJsonObject &node) {
+    auto *container = new QWidget;
+    auto *layout = new QGridLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    const QJsonObject doubles = node.value("doubleParams").toObject();
+    layout->setHorizontalSpacing(doubles.contains("horizontalSpacing") ? int(doubles.value("horizontalSpacing").toDouble()) : 8);
+    layout->setVerticalSpacing(doubles.contains("verticalSpacing") ? int(doubles.value("verticalSpacing").toDouble()) : 8);
+    const QString alignment = node.value("stringParams").toObject().value("alignment").toString();
+    const Qt::Alignment horizontal = alignment.contains(QLatin1String("eading")) ? Qt::AlignLeft
+                                   : alignment.contains(QLatin1String("railing")) ? Qt::AlignRight : Qt::AlignHCenter;
+    const Qt::Alignment vertical = alignment.startsWith(QLatin1String("top")) ? Qt::AlignTop
+                                 : alignment.startsWith(QLatin1String("bottom")) ? Qt::AlignBottom : Qt::AlignVCenter;
+    QList<QJsonObject> rows;
+    flattenViewLists(node.value("children").toArray(), rows);
+    int columns = 1;
+    for (const QJsonObject &row : rows) {
+        if (row.value("kind").toString() != QLatin1String("GridRow")) continue;
+        QList<QJsonObject> cells;
+        flattenViewLists(row.value("children").toArray(), cells);
+        columns = std::max(columns, int(cells.size()));
+    }
+    int r = 0;
+    for (const QJsonObject &row : rows) {
+        if (row.value("kind").toString() != QLatin1String("GridRow")) {
+            if (QWidget *child = buildNode(handle, panel, row)) layout->addWidget(child, r++, 0, 1, columns, vertical | horizontal);
+            continue;
+        }
+        const QString rowAlignment = row.value("stringParams").toObject().value("alignment").toString();
+        const Qt::Alignment rowVertical = rowAlignment == QLatin1String("top") ? Qt::AlignTop
+                                        : rowAlignment == QLatin1String("bottom") ? Qt::AlignBottom : vertical;
+        QList<QJsonObject> cells;
+        flattenViewLists(row.value("children").toArray(), cells);
+        int c = 0;
+        for (const QJsonObject &cell : cells) {
+            QWidget *child = buildNode(handle, panel, cell);
+            if (!child) { ++c; continue; }
+            const bool flexible = child->sizePolicy().horizontalPolicy() & QSizePolicy::ExpandFlag;
+            layout->addWidget(child, r, c++, 1, 1, flexible ? rowVertical : (rowVertical | horizontal));
+        }
+        ++r;
+    }
+    return container;
+}
+
 QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &node) {
     const QString kind = node.value("kind").toString();
     const QString id = node.value("id").toString();
@@ -2030,6 +2090,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = buildStack(handle, panel, node, QBoxLayout::TopToBottom);
     } else if (kind == "HStack") {
         widget = buildStack(handle, panel, node, QBoxLayout::LeftToRight);
+    } else if (kind == "Grid") {
+        widget = buildGrid(handle, panel, node);
     } else if (kind == "Popover") {
         QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
         if (!base) base = new QWidget;
@@ -2522,14 +2584,13 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         });
         widget = slider;
     } else if (kind == "Picker") {
-        bool isSegmented = false;
+        bool isSegmented = false, isRadioGroup = false;
         for (const auto &m : node.value("modifiers").toArray()) {
             const QJsonObject mo = m.toObject();
-            if (mo.value("kind").toString() == "pickerStyle" &&
-                mo.value("stringParams").toObject().value("name").toString() == "segmented") {
-                isSegmented = true;
-                break;
-            }
+            if (mo.value("kind").toString() != "pickerStyle") continue;
+            const QString style = mo.value("stringParams").toObject().value("name").toString();
+            isSegmented = style == "segmented";
+            isRadioGroup = style == "radioGroup";
         }
         const QString selection = strings.value("selection").toString();
 
@@ -2553,7 +2614,31 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             items.push_back({itemText, itemTag});
         }
 
-        if (isSegmented) {
+        if (isRadioGroup) {
+            // NSMatrix of radio buttons: one per option, stacked, 6 apart; the chosen one a blue disc with a white dot.
+            auto *group = new QWidget;
+            auto *layout = new QVBoxLayout(group);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(6);
+            const QString dot = styleSheetImage(QStringLiteral("radio-dot"),
+                "<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'><circle cx='7' cy='7' r='2.6' fill='white'/></svg>");
+            for (const auto &it : items) {
+                if (it.tag == QStringLiteral("\u0001separator")) continue;
+                auto *radio = new QRadioButton(it.text, group);
+                radio->setChecked(it.tag.compare(selection, Qt::CaseInsensitive) == 0 || it.text.compare(selection, Qt::CaseInsensitive) == 0);
+                radio->setStyleSheet(
+                    "QRadioButton { color: #f5f5f7; spacing: 6px; } "
+                    "QRadioButton::indicator { width: 14px; height: 14px; border: 1px solid #4a4a50; border-radius: 7px; background-color: #28282b; } "
+                    "QRadioButton::indicator:checked { background-color: #007aff; border-color: #007aff; image: url(" + dot + "); } "
+                    "QRadioButton:disabled { color: rgba(255, 255, 255, 0.25); }");
+                const QString tagToSend = it.tag;
+                QObject::connect(radio, &QRadioButton::clicked, radio, [handle, panel, id, tagToSend] {
+                    dispatch(handle, panel, id, QStringLiteral("selection"), jsonFragment(tagToSend));
+                });
+                layout->addWidget(radio);
+            }
+            widget = group;
+        } else if (isSegmented) {
             auto *segContainer = new QWidget;
             segContainer->setObjectName("segmentedPicker");
             segContainer->setAttribute(Qt::WA_StyledBackground, true);
@@ -2852,10 +2937,13 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         spacer->setMinimumSize(0, 0);
         widget = spacer;
     } else if (kind == "Divider") {
+        // NSColor.separatorColor in dark aqua (white at 10%), one point thick across its stack (an HStack turns it).
         auto *line = new QFrame;
-        line->setFrameShape(QFrame::HLine);
-        line->setFrameShadow(QFrame::Plain);
-        line->setStyleSheet("background-color: #141416; max-height: 1px; border: none;");
+        line->setFrameShape(QFrame::NoFrame);
+        line->setAttribute(Qt::WA_StyledBackground, true);
+        line->setStyleSheet("background-color: rgba(255, 255, 255, 0.10); border: none;");
+        line->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        line->setFixedHeight(1);
         widget = line;
     } else if (kind == "Canvas") {
         widget = new SwiftUICanvasWidget(handle, panel, id);
