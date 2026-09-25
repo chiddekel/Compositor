@@ -13,6 +13,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include "EditorDialogs.h"
 #include "SwiftUIQtRenderer.h"
 #include "LucideIcons.h"
+#include "AppVersion.h"
 #include <QSvgRenderer>
 
 #include <QPainter>
@@ -2169,6 +2170,38 @@ void SessionWindow::handleShellRequests() {
     }
 }
 
+/// AppKit's standard About panel: the app icon, its name in bold, "Version x (build)", centred in a small window.
+void SessionWindow::showAboutPanel() {
+    auto *panel = new QDialog(this, Qt::Dialog);
+    panel->setAttribute(Qt::WA_DeleteOnClose);
+    panel->setObjectName("aboutPanel");
+    panel->setWindowTitle(QString());
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(40, 24, 40, 24);
+    layout->setSpacing(6);
+    auto *icon = new QLabel(panel);
+    icon->setPixmap(windowIcon().pixmap(64, 64));
+    icon->setAlignment(Qt::AlignCenter);
+    layout->addWidget(icon);
+    layout->addSpacing(8);
+    auto *name = new QLabel(QStringLiteral("Compositor"), panel);
+    QFont bold = name->font();
+    bold.setPixelSize(14);
+    bold.setWeight(QFont::Bold);
+    name->setFont(bold);
+    name->setAlignment(Qt::AlignCenter);
+    layout->addWidget(name);
+    auto *version = new QLabel(tr("Version %1 (%2)").arg(QStringLiteral(COMPOSITOR_VERSION), QStringLiteral(COMPOSITOR_BUILD)), panel);
+    QFont small = version->font();
+    small.setPixelSize(11);
+    version->setFont(small);
+    version->setAlignment(Qt::AlignCenter);
+    version->setStyleSheet(QStringLiteral("color: rgba(255, 255, 255, 0.55);"));
+    layout->addWidget(version);
+    panel->setFixedSize(panel->sizeHint().expandedTo(QSize(280, 0)));
+    panel->show();
+}
+
 void SessionWindow::createMenus() {
     // Where the desktop offers a global menu (Plasma's, or an appmenu extension elsewhere), the menus leave the window
     // for the top of the screen, as on the Mac; otherwise Qt keeps them in the window. COMPOSITOR_IN_WINDOW_MENUS=1
@@ -2777,12 +2810,7 @@ void SessionWindow::createMenus() {
 
     // --- Help ---
     auto *help = menuBar()->addMenu(tr("Help"));
-    help->addAction(tr("About Compositor"), this, [this] {
-        QMessageBox::about(this, tr("About Compositor"),
-            tr("<h3>Compositor</h3>"
-               "<p>Professional Non-Destructive Image Editor.</p>"
-               "<p>Native GNU/Linux port powered by Qt 6, Skia, and unmodified upstream Swift engine.</p>"));
-    })->setObjectName("help.about");
+    help->addAction(tr("About Compositor"), this, [this] { showAboutPanel(); })->setObjectName("help.about");
 
     help->addAction(tr("Check for Updates…"), this, [this] {
         if (m_platform.updates) {

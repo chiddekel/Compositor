@@ -191,6 +191,7 @@ public:
     /// ContentView's welcome: upstream's New Canvas sheet over the canvas while the tab has no document.
     void updateWelcome();
     void installAppMenus();
+    void showAboutPanel();
     bool routesToUpstreamCanvas() const;
     void sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount);
     void syncAppMenus();
