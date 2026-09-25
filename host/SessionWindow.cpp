@@ -2170,7 +2170,10 @@ void SessionWindow::handleShellRequests() {
 }
 
 void SessionWindow::createMenus() {
-    menuBar()->setNativeMenuBar(false);
+    // Where the desktop offers a global menu (Plasma's, or an appmenu extension elsewhere), the menus leave the window
+    // for the top of the screen, as on the Mac; otherwise Qt keeps them in the window. COMPOSITOR_IN_WINDOW_MENUS=1
+    // keeps them in the window regardless.
+    menuBar()->setNativeMenuBar(!qEnvironmentVariableIsSet("COMPOSITOR_IN_WINDOW_MENUS"));
     // The menu bar is the window's topmost strip, where a frameless window is naturally grabbed — its empty area
     // (right of the last menu) moves the window too. See eventFilter().
     menuBar()->installEventFilter(this);

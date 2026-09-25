@@ -44,6 +44,7 @@ finish-args:
   # All file access routes through the XDG FileChooser/Documents portals
   # (plan §8.8); no --filesystem grants required.
   - --talk-name=org.freedesktop.portal.*   # FileChooser, Documents, Clipboard portals
+  - --talk-name=com.canonical.AppMenu.Registrar   # the desktop's global menu, where there is one (menus as on the Mac)
 
 # Strip static archives post-link (they are consumed at build time).
 cleanup:
