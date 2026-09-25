@@ -171,6 +171,13 @@ extension View {
     public func onExitCommand(perform action: @escaping () -> Void) -> some View {
         modified { $0.modifiers.append(.onExitCommand(action)) }
     }
+    /// Compat-only (the Mac does this with an NSMenuDelegate's `willHighlight`, e.g. BlendModePicker): while this
+    /// Picker's menu is open, `highlight` gets the tag of the item under the pointer; when it closes, `nil`.
+    public func compatPickerHighlight(_ highlight: @escaping (String?) -> Void) -> some View {
+        modified {
+            $0.modifiers.append(.sink("pickerHighlight", { value in highlight(value as? String) }))
+        }
+    }
     /// Compat-only (the Mac does this with an NSButton tracking its own drag, e.g. NativeLayerList's EyeSwipeButton):
     /// pressing this view runs `began`; dragging over other views in the same `group` runs their `entered`; letting go
     /// runs the pressed view's `ended`.

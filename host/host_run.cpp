@@ -44,6 +44,7 @@
 #include <QDockWidget>
 #include <QMenuBar>
 #include <QMenu>
+#include <QComboBox>
 #include <vector>
 #include <QIcon>
 #include <QStyleFactory>
@@ -200,6 +201,17 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 }
             }
             for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+        }
+        // COMPOSITOR_GRAB_BLEND_HOVER=<mode>: open the Layers panel's blend menu and hover that mode (menu left open).
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_BLEND_HOVER").isEmpty()) {
+            for (QComboBox *combo : window.findChildren<QComboBox *>()) {
+                const int index = combo->findText(qEnvironmentVariable("COMPOSITOR_GRAB_BLEND_HOVER"));
+                if (index < 0 || !combo->isVisible()) continue;
+                combo->showPopup();
+                emit combo->highlighted(index);
+                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+                break;
+            }
         }
         // COMPOSITOR_GRAB_EYE_SWIPE="from,to": press the eye of Layers row `from` (top first), drag to row `to`, let go.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_EYE_SWIPE").isEmpty()) {

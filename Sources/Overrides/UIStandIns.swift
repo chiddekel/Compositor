@@ -32,8 +32,22 @@ struct BlendModePicker: View {
         .frame(maxWidth: .infinity)
         .disabled(!session.canEditAppearance)
         .accessibilityLabel("Blend mode")
+        // The Coordinator's menu tracking: each highlighted mode previews on the canvas; closing restores the layer's.
+        .compatPickerHighlight { tag in
+            if let tag, let mode = LayerBlendMode(rawValue: tag) {
+                if BlendPreview.layerID == nil { BlendPreview.layerID = session.activeLayerID }
+                session.previewBlendMode(mode, for: BlendPreview.layerID)
+            } else {
+                BlendPreview.layerID = nil
+                session.previewBlendMode(nil, for: nil)
+            }
+            session.refreshCanvasPreview?()
+        }
     }
 }
+
+/// The layer a blend-mode menu opened on, while it is open.
+@MainActor enum BlendPreview { static var layerID: UUID? }
 
 // `LayersPanel` is wired in for real (Compositor/UI/LayersPanel.swift); it uses `NativeLayerList`, which is
 // overridden (`Sources/Overrides/NativeLayerListOverride.swift` — a real functional backend swap, not a stand-in;

@@ -18,6 +18,7 @@
 #include "LucideIcons.h"
 #include <QPointer>
 #include <QStyleOption>
+#include <QAbstractItemView>
 #include <QSvgRenderer>
 #include "PerfTrace.h"
 #include <QTimer>
@@ -1776,6 +1777,30 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 }
             }
             if (selIdx >= 0) combo->setCurrentIndex(selIdx);
+            // compatPickerHighlight: the highlighted item previews while the menu is open; closing ends it (after the
+            // choice, if any, has been applied).
+            bool highlights = false;
+            for (const auto &k : node.value("handlerKeys").toArray()) highlights = highlights || k.toString() == QLatin1String("pickerHighlight");
+            if (highlights) {
+                QObject::connect(combo, QOverload<int>::of(&QComboBox::highlighted), combo, [handle, panel, id, tags](int idx) {
+                    if (idx >= 0 && idx < tags.size() && !tags[idx].isEmpty())
+                        dispatch(handle, panel, id, QStringLiteral("pickerHighlight"), jsonFragment(tags[idx]));
+                });
+                class PopupClose : public QObject {
+                public:
+                    PopupClose(QComboBox *combo, std::function<void()> closed) : QObject(combo), m_closed(std::move(closed)) {
+                        combo->view()->window()->installEventFilter(this);
+                    }
+                    bool eventFilter(QObject *, QEvent *event) override {
+                        if (event->type() == QEvent::Hide) QTimer::singleShot(0, this, m_closed);
+                        return false;
+                    }
+                private:
+                    std::function<void()> m_closed;
+                };
+                new PopupClose(combo, [handle, panel, id] {
+ dispatch(handle, panel, id, QStringLiteral("pickerHighlight"), "null"); });
+            }
             QObject::connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), combo, [handle, panel, id, tags](int idx) {
                 if (idx >= 0 && idx < tags.size() && !tags[idx].isEmpty()) {
                     dispatch(handle, panel, id, QStringLiteral("selection"), jsonFragment(tags[idx]));
