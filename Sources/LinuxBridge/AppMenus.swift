@@ -152,14 +152,25 @@ import Sparkle
 @_cdecl("compositor_app_menus")
 nonisolated public func compositorAppMenus(_ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     onMain {
+        // Size query, then fill: the fill copies what the size query built instead of resolving the menus again.
+        if let output, let data = pendingMenus {
+            pendingMenus = nil
+            guard capacity >= data.count else { return -1 }
+            data.copyBytes(to: output, count: data.count)
+            return Int64(data.count)
+        }
         let json = AppMenus.menus().map(\.json)
-        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return -5 }
-        guard let output else { return Int64(data.count) }
+        // Sorted keys: the same menus give the same bytes, so the shell can tell nothing changed.
+        guard let data = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) else { return -5 }
+        guard let output else { pendingMenus = data; return Int64(data.count) }
         guard capacity >= data.count else { return -1 }
         data.copyBytes(to: output, count: data.count)
         return Int64(data.count)
     }
 }
+
+/// The menus a `compositor_app_menus` size query built, waiting for the fill call that follows it.
+nonisolated(unsafe) private var pendingMenus: Data?
 
 /// Chooses the menu item at `path` (see compositor_app_menus); 0 when it ran, -1 when it is gone or disabled.
 @_cdecl("compositor_app_menu_perform")

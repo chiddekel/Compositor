@@ -29,6 +29,7 @@
 #include <QMimeData>
 #include <QAction>
 #include <QElapsedTimer>
+#include <cstdio>
 #include <QCoreApplication>
 #include <QProcessEnvironment>
 #include <QTemporaryDir>
@@ -397,6 +398,60 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             // Simulates mouse events for stroke testing - sets Brush and paints
             window.setTool(SessionWindow::Tool::Brush);
             window.paintStroke(100, 100, 500, 400);
+        }
+        // COMPOSITOR_BENCH=WxH (with COMPOSITOR_GRAB_PATH): interaction latency on a WxH document — per tool, hovering and dragging through the real
+        // canvas widget with the event loop run after each event (the repaints it asked for included); prints ms per event.
+        if (!qEnvironmentVariable("COMPOSITOR_BENCH").isEmpty()) {
+            const QStringList size = qEnvironmentVariable("COMPOSITOR_BENCH").split(QLatin1Char('x'));
+            const int bw = size.value(0).toInt() > 0 ? size.value(0).toInt() : 4000, bh = size.value(1).toInt() > 0 ? size.value(1).toInt() : 3000;
+            window.resize(1440, 900);
+            window.show();
+            QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"));
+            auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+                QMouseEvent e(type, at, canvas->mapToGlobal(at), button, buttons, Qt::NoModifier);
+                QCoreApplication::sendEvent(canvas, &e);
+            };
+            auto flush = [&] { QCoreApplication::sendPostedEvents(); QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents); };
+            auto doc = [&](double fx, double fy) { return window.documentToCanvasPoint(QPointF(bw * fx, bh * fy)); };
+            const std::pair<const char *, SessionWindow::Tool> tools[] = {
+                {"move", SessionWindow::Tool::Move}, {"marquee", SessionWindow::Tool::Marquee},
+                {"lasso", SessionWindow::Tool::Lasso}, {"brush", SessionWindow::Tool::Brush},
+                {"hand", SessionWindow::Tool::Hand}, {"gradient", SessionWindow::Tool::Gradient}};
+            const int steps = 60;
+            for (const auto &[name, tool] : tools) {
+                window.sendCommand({{"version", 1}, {"action", "new"}, {"width", bw}, {"height", bh}});
+                QElapsedTimer settleNew; settleNew.start();   // the main pump picks up the new document
+                while (settleNew.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                window.setTool(tool);
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                QElapsedTimer t; t.start();
+                for (int i = 0; i < steps; ++i) {
+                    send(QEvent::MouseMove, doc(0.3 + 0.4 * i / steps, 0.5), Qt::NoButton, Qt::NoButton);
+                    flush();
+                }
+                const double hover = t.nsecsElapsed() / 1e6 / steps;
+                t.restart();
+                send(QEvent::MouseButtonPress, doc(0.3, 0.3), Qt::LeftButton, Qt::LeftButton);
+                flush();
+                const double press = t.nsecsElapsed() / 1e6;
+                t.restart();
+                for (int i = 1; i <= steps; ++i) {
+                    send(QEvent::MouseMove, doc(0.3 + 0.3 * i / steps, 0.3 + 0.2 * i / steps), Qt::NoButton, Qt::LeftButton);
+                    flush();
+                }
+                const double drag = t.nsecsElapsed() / 1e6 / steps;
+
+                t.restart();
+                send(QEvent::MouseButtonRelease, doc(0.6, 0.5), Qt::LeftButton, Qt::NoButton);
+                flush();
+                const double release = t.nsecsElapsed() / 1e6;
+                t.restart();
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                const double settle = t.nsecsElapsed() / 1e6;
+                std::fprintf(stderr, "BENCH %-9s hover %6.2f ms  press %7.2f ms  drag %6.2f ms  release %7.2f ms  settle %7.2f ms\n",
+                             name, hover, press, drag, release, settle);
+            }
+            return 0;
         }
         // COMPOSITOR_GRAB_DRAG="x0,y0,x1,y1" (document pixels): a real press / moves / release on the canvas widget with
         // the current tool; COMPOSITOR_GRAB_KEY=return|escape then presses that key (e.g. to apply a gradient).

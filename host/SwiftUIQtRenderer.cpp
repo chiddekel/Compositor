@@ -2968,11 +2968,18 @@ QWidget *swiftUIRenderPanel(uint64_t sessionHandle, const QString &panel) {
     return swiftUIRenderPanelIfChanged(sessionHandle, panel, nullptr);
 }
 
+/// An unchanged tree's widgets already show it, except its Canvas nodes, which draw what their handler draws now.
+static void repaintCanvases(QWidget *panel) {
+    // (No Q_OBJECT on the canvas widget: findChildren<T> would match every QWidget.)
+    for (QWidget *child : panel->findChildren<QWidget *>())
+        if (dynamic_cast<SwiftUICanvasWidget *>(child)) child->update();
+}
+
 QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &panel, QWidget *current) {
     PERF_SCOPE(QStringLiteral("swiftUIRenderPanel:") + panel);
     // Mid-drag / mid-typing the panel stays as it is (see below), so don't even resolve its tree.
     if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && isBeingManipulated(current)) {
-        current->update();
+        repaintCanvases(current);
         return current;
     }
     QByteArray bytes;
@@ -2982,13 +2989,13 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
     // handlers the fetch just re-registered; canvases fetch their pixels at paint time, so a repaint refreshes them.
     if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle
         && current->property("swiftUITree").toByteArray() == bytes) {
-        current->update();
+        repaintCanvases(current);
         return current;
     }
     // Being dragged or typed in: rebuilding now would replace the slider under the mouse (ending the drag) or the
     // field being typed in (losing focus mid-word). Keep it; the release / end of editing refreshes the panel.
     if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && isBeingManipulated(current)) {
-        current->update();
+        repaintCanvases(current);
         return current;
     }
     const QJsonObject root = QJsonDocument::fromJson(bytes).object();

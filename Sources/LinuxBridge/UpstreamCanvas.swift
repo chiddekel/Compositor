@@ -82,19 +82,46 @@ import AppKit
                                            isARepeat: isRepeat, keyCode: UInt16(keyCode)) else { return }
         view.keyDown(with: event)
     }
-    /// TransformOverlay's drawing at the canvas's size, premultiplied RGBA8, top row first.
-    func overlay(width: Int, height: Int) -> [UInt8] {
-        let context = CGContext(width: width, height: height)
+    /// The overlay views, in their stacking order (TransformOverlay, the brush circle, the sample ring).
+    private var overlayViews: [NSView] {
+        view.subviews.filter { $0 is TransformOverlay || $0 is BrushCursorOverlay || $0 is SampleRingOverlay }
+    }
+    /// What the overlay was last drawn from besides the views' own invalid rects: the canvas size, and which overlay
+    /// views showed where (moving or hiding a view invalidates what it covered, as AppKit does).
+    private var drawnLayout: [CGRect] = []
+    private var currentLayout: [CGRect] {
+        [view.bounds] + overlayViews.map { $0.isHidden ? .null : $0.frame }
+    }
+    /// What changed in the overlay since it was last drawn, in canvas coordinates (top-left): nil nothing, else the
+    /// union of the overlay views' invalid rects (`setNeedsDisplay`) — the whole canvas when the layout moved.
+    func overlayInvalidRect() -> CGRect? {
+        if currentLayout != drawnLayout { return view.bounds }
+        var dirty: CGRect?
+        func add(_ rect: CGRect) { dirty = dirty.map { $0.union(rect) } ?? rect }
+        for subview in overlayViews where !subview.isHidden {
+            guard var rect = subview.invalidRect else { continue }
+            if !subview.isFlipped { rect.origin.y = subview.bounds.height - rect.maxY }
+            add(rect.offsetBy(dx: subview.frame.minX, dy: subview.frame.minY))
+        }
+        // The Type tool's box being dragged out is drawn by the canvas itself.
+        if let rect = view.invalidRect { add(rect) }
+        return dirty.map { $0.intersection(view.bounds) }.flatMap { $0.isEmpty ? nil : $0 }
+    }
+    /// TransformOverlay's drawing for `region` of the canvas (points, top-left), premultiplied RGBA8 at the region's
+    /// size, top row first; the overlay views' invalid rects are cleared, as a display does.
+    func overlay(region: CGRect) -> [UInt8] {
+        let context = CGContext(width: Int(region.width), height: Int(region.height))
+        context.translateBy(x: -region.minX, y: -region.minY)
         let previous = NSGraphicsContext.current
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
         defer { NSGraphicsContext.current = previous }
-        // The canvas's overlay views in their stacking order (TransformOverlay, the brush circle, the sample ring), each
-        // in its own frame; an unflipped one draws y-up.
-        for subview in view.subviews where !subview.isHidden
-            && (subview is TransformOverlay || subview is BrushCursorOverlay || subview is SampleRingOverlay) {
+        // Each overlay view in its own frame; an unflipped one draws y-up.
+        for subview in overlayViews {
             if subview is TransformOverlay { subview.frame = view.bounds }
+            subview.needsDisplay = false
+            guard !subview.isHidden else { continue }
             let frame = subview.frame
-            guard frame.width > 0, frame.height > 0 else { continue }
+            guard frame.width > 0, frame.height > 0, frame.intersects(region) else { continue }
             context.saveGState()
             context.translateBy(x: frame.minX, y: frame.minY)
             if !subview.isFlipped { context.translateBy(x: 0, y: frame.height); context.scaleBy(x: 1, y: -1) }
@@ -105,6 +132,8 @@ import AppKit
         // The Type tool's box being dragged out (CanvasView.draw ends with it).
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
         view.drawTextBoxDraft()
+        view.needsDisplay = false
+        drawnLayout = currentLayout
         return context.buffer.bytes
     }
 }
@@ -148,13 +177,32 @@ nonisolated public func compositorCanvasKey(_ handle: UInt64, _ keyCode: Int32, 
 @_cdecl("compositor_canvas_overlay")
 nonisolated public func compositorCanvasOverlay(_ handle: UInt64, _ width: Int32, _ height: Int32,
                                                 _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    compositorCanvasOverlayRegion(handle, 0, 0, width, height, output, capacity)
+}
+
+/// The overlay for the canvas rect (x, y, width, height) in points, premultiplied RGBA8 at that size.
+@_cdecl("compositor_canvas_overlay_region")
+nonisolated public func compositorCanvasOverlayRegion(_ handle: UInt64, _ x: Int32, _ y: Int32, _ width: Int32, _ height: Int32,
+                                                      _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     guard width > 0, height > 0, Int(width) * Int(height) <= 50_000_000 else { return -1 }
+    let count = Int(width) * Int(height) * 4
+    guard let output, capacity >= count else { return Int64(count) }
     return withEntry(handle) { entry in
-        let bytes = UpstreamCanvases.canvas(handle, entry).overlay(width: Int(width), height: Int(height))
-        guard let output, capacity >= bytes.count else { return Int64(bytes.count) }
-        bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: bytes.count) }
+        let bytes = UpstreamCanvases.canvas(handle, entry).overlay(region: CGRect(x: Int(x), y: Int(y), width: Int(width), height: Int(height)))
+        bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: min(count, bytes.count)) }
         return Int64(bytes.count)
     }
+}
+
+/// Whether the overlay changed since it was last drawn: 0 no, 1 yes — `rect` (x, y, width, height, points, top-left)
+/// then holds the part that did.
+@_cdecl("compositor_canvas_overlay_invalid")
+nonisolated public func compositorCanvasOverlayInvalid(_ handle: UInt64, _ rect: UnsafeMutablePointer<Double>?) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        guard let dirty = UpstreamCanvases.canvas(handle, entry).overlayInvalidRect() else { return 0 }
+        if let rect { rect[0] = dirty.minX; rect[1] = dirty.minY; rect[2] = dirty.width; rect[3] = dirty.height }
+        return 1
+    })
 }
 
 /// The shell's SF Symbol renderer: (name, width, height, r, g, b, a, output) → 0 when it drew the symbol into `output`

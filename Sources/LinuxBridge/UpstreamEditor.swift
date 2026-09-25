@@ -959,7 +959,11 @@ final class UpstreamEditor {
                 return State.ShortcutState(title: definition.title, group: definition.group, key: chord.key, modifiers: chord.modifiers,
                                            originalKey: definition.original.key, originalModifiers: definition.original.modifiers)
             })
-        return try JSONEncoder().encode(state)
+        // Sorted keys: the same state must encode to the same bytes, or the shell's pump sees a change on every tick
+        // (dictionary order varies) and refreshes the whole window at 60 Hz.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(state)
     }
 
     /// Adds premultiplied RGBA8 pixels as a layer (`replacing`: as a new one-layer document of that size, history cleared).

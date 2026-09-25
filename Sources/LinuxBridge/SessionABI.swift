@@ -186,11 +186,22 @@ nonisolated public func compositorSessionImportRGBA(_ handle: UInt64, _ pixels: 
 nonisolated public func compositorSessionState(_ handle: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     guard capacity >= 0 else { return -1 }
     return withEntry(handle) { entry in
+        // Size query, then fill: the fill copies what the size query encoded rather than encoding the state again.
+        if let output, let pending = pendingState, pending.handle == handle {
+            pendingState = nil
+            if capacity >= pending.data.count { pending.data.copyBytes(to: output, count: pending.data.count) }
+            return Int64(pending.data.count)
+        }
+        pendingState = nil
         guard let data = try? entry.editor.stateJSON() else { return -5 }
         if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
+        if output == nil { pendingState = (handle, data) }
         return Int64(data.count)
     }
 }
+
+/// The state a `compositor_session_state` size query encoded, waiting for the fill call that follows it.
+nonisolated(unsafe) private var pendingState: (handle: UInt64, data: Data)?
 
 @_cdecl("compositor_session_render")
 nonisolated public func compositorSessionRender(_ handle: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {

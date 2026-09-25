@@ -87,7 +87,13 @@ public final class NSTrackingArea {
     open var layer: CALayer? { wantsLayer ? backingLayer : nil }
     private lazy var backingLayer = CALayer()
     public var clipsToBounds = false
-    public var needsDisplay = false
+    /// The part of the view waiting to be redrawn, in its own coordinates — what AppKit accumulates from
+    /// `setNeedsDisplay(_:)` until the next display. A host that draws the view (the Qt canvas) repaints just this.
+    public private(set) var invalidRect: CGRect?
+    public var needsDisplay: Bool {
+        get { invalidRect != nil }
+        set { invalidRect = newValue ? bounds : nil }
+    }
     public var needsLayout = false
     public private(set) var trackingAreas: [NSTrackingArea] = []
     public var backingScaleFactor: CGFloat { window?.backingScaleFactor ?? 1 }
@@ -120,7 +126,10 @@ public final class NSTrackingArea {
     private weak var notifiedWindow: NSWindow?
     open func setFrameOrigin(_ origin: CGPoint) { frame.origin = origin }
     open func setFrameSize(_ size: CGSize) { frame.size = size }
-    open func setNeedsDisplay(_ rect: CGRect) { needsDisplay = true }
+    open func setNeedsDisplay(_ rect: CGRect) {
+        guard !rect.isEmpty else { return }
+        invalidRect = invalidRect.map { $0.union(rect) } ?? rect
+    }
     open func setNeedsDisplay() { needsDisplay = true }
     /// A bitmap sized for this view's rect at the window's backing scale, to draw into with `cacheDisplay`.
     open func bitmapImageRepForCachingDisplay(in rect: CGRect) -> NSBitmapImageRep? {

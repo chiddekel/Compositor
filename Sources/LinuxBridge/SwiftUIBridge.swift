@@ -146,6 +146,15 @@ nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: U
     guard let panel, capacity >= 0 else { return -1 }
     let panelName = String(cString: panel)
     return withEntry(handle) { entry in
+        // The shell asks for the size, then the bytes: the fill call takes the tree the size query resolved, instead of
+        // resolving (and running its .onChange actions) a second time.
+        if let output, let pending = pendingTree, pending.handle == handle, pending.panel == panelName {
+            pendingTree = nil
+            guard capacity >= pending.data.count else { return Int64(pending.data.count) }
+            pending.data.copyBytes(to: output, count: pending.data.count)
+            return Int64(pending.data.count)
+        }
+        pendingTree = nil
         guard let wire = resolvePanel(panelName, entry: entry) else { return -1 }
         // Sorted keys: the same tree must serialise to the same bytes, so the Qt shell can skip rebuilding an unchanged
         // panel (swiftUIRenderPanelIfChanged).
@@ -157,9 +166,13 @@ nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: U
             FileHandle.standardError.write(data + Data("\n".utf8))
         }
         if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
+        if output == nil { pendingTree = (handle, panelName, data) }
         return Int64(data.count)
     }
 }
+
+/// The tree a `compositor_session_render_tree` size query resolved, waiting for the fill call that follows it.
+nonisolated(unsafe) private var pendingTree: (handle: UInt64, panel: String, data: Data)?
 
 /// Draws a `Canvas` node's `draw` handler into a fresh `width`×`height` RGBA context (via the existing
 /// Skia-backed `CGContext`, `Sources/Compat/CoreGraphics/CoreGraphicsCompat`) and returns the raw pixels, so the

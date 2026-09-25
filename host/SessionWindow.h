@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 // SessionWindow — a moc'd Qt window that drives the Swift editor core through the
 // compositor_session_* C ABI, built by SwiftPM (with a committed moc output) and
 // linked into the Swift `@main` composition root.
@@ -270,6 +272,12 @@ private:
     bool m_presentingColorPicker = false;
     bool m_railFitChecked = false;
     bool m_layersRefreshQueued = false;
+    int m_shownTabModified = -1;            // the modified flag the tab bar last showed
+    QByteArray m_shownLayerListKey;          // what the legacy layer model was last built from (refreshLayers)
+    QTimer *m_panelThrottle = nullptr;       // refreshPanels() mid-drag
+    QElapsedTimer m_panelThrottleClock;
+    void refreshPanels();
+    void queueLayersRefresh();
     // Gradient / Shape tools: the pending gradient line (x0,y0,x1,y1), which end is being dragged (1 start, 2 end),
     // and the shape draft being dragged (kind, box, line ends) — all in document pixels, read back from the session.
     QVector<double> m_gradientLine;
@@ -453,12 +461,19 @@ private:
     QVector<QPair<bool, double>> m_guides;   // vertical?, document position
     QVector<double> m_snapXs, m_snapYs;
     QByteArray m_appMenusJson;
-    bool m_appMenusSyncQueued = false;
+    QTimer *m_appMenusSyncTimer = nullptr;   // syncAppMenus() once the session settles
     bool m_handlingShellRequests = false;
     int m_panelPollTick = 0;
     bool m_colorPickerOpen = false, m_samplingPicker = false;
     bool m_upstreamCanvasDrag = false;
     QByteArray m_cursorPicture;
+    // Upstream's overlay as last drawn (canvas-sized, premultiplied): repainted only where its views are invalid
+    // (setNeedsDisplay), wholly when anything else may have changed it (m_overlayCacheValid false, the viewport moved).
+    QImage m_overlayCache;
+    bool m_overlayCacheValid = false;
+    std::array<double, 6> m_overlayViewport{};
+    void invalidateOverlay() { m_overlayCacheValid = false; }
+    void updateInvalidOverlay();   // repaints the part of the canvas whose overlay views asked to be redrawn
     QStringList m_appMenuShape;
     QList<QMenu *> m_appMenus, m_legacyMenus;
     QHash<QString, QAction *> m_appMenuActions;

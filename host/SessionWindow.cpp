@@ -107,6 +107,8 @@ int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *
 int32_t compositor_canvas_key(uint64_t handle, int32_t keyCode, const char *characters, int32_t modifiers, int32_t isRepeat);
 int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double y, int32_t modifiers, int32_t clickCount);
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
+int64_t compositor_canvas_overlay_region(uint64_t handle, int32_t x, int32_t y, int32_t width, int32_t height, uint8_t *output, size_t capacity);
+int32_t compositor_canvas_overlay_invalid(uint64_t handle, double *rect);
 int64_t compositor_app_menus(uint8_t *output, size_t capacity);
 int32_t compositor_app_menu_perform(const char *path);
 int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
@@ -561,6 +563,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     // Central canvas widget:
     m_canvasWidget = new SessionCanvasWidget(this);
     m_canvasWidget->setObjectName("editorCanvas");
+    // canvasPaintEvent fills every pixel (the surround first): nothing behind it needs painting.
+    m_canvasWidget->setAttribute(Qt::WA_OpaquePaintEvent, true);
     // ContentView's canvas column: the ruler corner and the top ruler over the left ruler and the canvas (rulers only
     // while View > Show > Rulers is on and there is a document).
     {
@@ -1096,6 +1100,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     connect(m_mainPumpTimer, &QTimer::timeout, this, [this] {
         compositor_pump_main();
         if (m_sessionHandle == 0 || m_painting) return;
+        updateInvalidOverlay();   // upstream's timers (the marching ants) redraw what they invalidated
         // Floating panels whose view changes without the session state changing (a histogram computed in a Task).
         if (!m_floatingPanels.isEmpty() && ++m_panelPollTick % 6 == 0) updateFloatingPanels();
         // Menu items whose upstream action is a Task (Canvas Size…, Save, ...) ask the shell once that task runs.
@@ -1655,6 +1660,7 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         && !event->text().isEmpty() && event->text().at(0).isPrint()) {
         const QByteArray characters = event->text().toUtf8();
         compositor_canvas_key(m_sessionHandle, 0xffff, characters.constData(), chordBits(event->modifiers()), event->isAutoRepeat());
+        invalidateOverlay();
         compositor_pump_main();
         syncToolFromSession();
         syncPaletteFromSession();
@@ -1677,6 +1683,7 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         if (codes.contains(event->key())) {
             const QByteArray characters = typed.value(event->key()).toUtf8();
             compositor_canvas_key(m_sessionHandle, codes.value(event->key()), characters.constData(), chordBits(event->modifiers()), event->isAutoRepeat());
+            invalidateOverlay();
             compositor_pump_main();
             refreshImage();
             refreshLayers();
@@ -2048,7 +2055,9 @@ void SessionWindow::syncAppMenus() {
         action->setText(QString(o.value("title").toString()).replace(QLatin1Char('&'), QStringLiteral("&&")));   // no mnemonics
         action->setEnabled(o.value("enabled").toBool(true));
         if (o.contains("checked")) action->setChecked(o.value("checked").toBool());
-        action->setShortcut(o.contains("key") ? appMenuSequence(o.value("key").toString(), o.value("modifiers").toInt()) : QKeySequence());
+        // Only when it differs: setting a shortcut re-registers it with the window's shortcut map.
+        const QKeySequence shortcut = o.contains("key") ? appMenuSequence(o.value("key").toString(), o.value("modifiers").toInt()) : QKeySequence();
+        if (action->shortcut() != shortcut) action->setShortcut(shortcut);
     };
     if (shape == m_appMenuShape) {
         std::function<void(const QJsonArray &)> update = [&](const QJsonArray &items) {
@@ -3093,7 +3102,7 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
 
     // From 200% (two screen pixels per document pixel) the pixels are hard-edged (EditorCanvas.crispZoom).
     p.setRenderHint(QPainter::SmoothPixmapTransform, viewportZoom() < 2.0);
-    p.drawImage(target, m_image);
+    { PERF_SCOPE("canvas:image"); p.drawImage(target, m_image); }
 
     // Hairline: white at 13%, one device pixel.
     {
@@ -3107,16 +3116,48 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     }
 
     // Upstream's TransformOverlay, drawn by the hosted CanvasView: grid, guides, crop, gradient line, transform
-    // handles, the selection's marching ants, the lasso or marquee being drawn, snap lines.
+    // handles, the selection's marching ants, the lasso or marquee being drawn, snap lines. Kept between paints: only
+    // what its views invalidated is drawn again (AppKit's dirty rects), all of it when something else changed.
     {
+        PERF_SCOPE("overlay");
         const int w = canvas->width(), h = canvas->height();
-        const size_t capacity = size_t(w) * size_t(h) * 4;
-        QByteArray bytes(qsizetype(capacity), Qt::Uninitialized);
-        if (w > 0 && h > 0 && compositor_canvas_overlay(m_sessionHandle, w, h, reinterpret_cast<uint8_t *>(bytes.data()), capacity) == int64_t(capacity))
-            p.drawImage(0, 0, QImage(reinterpret_cast<const uchar *>(bytes.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied));
+        std::array<double, 6> viewport{};
+        compositor_session_viewport(m_sessionHandle, viewport.data());
+        if (w > 0 && h > 0) {
+            double dirty[4] = {};
+            if (!m_overlayCacheValid || m_overlayCache.size() != QSize(w, h) || viewport != m_overlayViewport) {
+                if (m_overlayCache.size() != QSize(w, h)) m_overlayCache = QImage(w, h, QImage::Format_RGBA8888_Premultiplied);
+                const size_t capacity = size_t(w) * size_t(h) * 4;
+                m_overlayCacheValid = compositor_canvas_overlay(m_sessionHandle, w, h, m_overlayCache.bits(), capacity) == int64_t(capacity);
+                m_overlayViewport = viewport;
+            } else if (compositor_canvas_overlay_invalid(m_sessionHandle, dirty)) {
+                const QRect region = QRectF(dirty[0], dirty[1], dirty[2], dirty[3]).toAlignedRect() & QRect(0, 0, w, h);
+                if (!region.isEmpty()) {
+                    const size_t capacity = size_t(region.width()) * size_t(region.height()) * 4;
+                    QImage patch(region.size(), QImage::Format_RGBA8888_Premultiplied);
+                    if (compositor_canvas_overlay_region(m_sessionHandle, region.x(), region.y(), region.width(), region.height(),
+                                                         patch.bits(), capacity) == int64_t(capacity)) {
+                        QPainter cache(&m_overlayCache);
+                        cache.setCompositionMode(QPainter::CompositionMode_Source);
+                        cache.drawImage(region.topLeft(), patch);
+                    } else {
+                        m_overlayCacheValid = false;
+                    }
+                }
+            }
+            if (m_overlayCacheValid) p.drawImage(0, 0, m_overlayCache);
+        }
     }
+}
 
-
+/// The overlay views that asked to be redrawn since the last paint (a brush circle following the pointer, marching
+/// ants stepping): just that part of the canvas repaints.
+void SessionWindow::updateInvalidOverlay() {
+    if (!m_canvasWidget || m_sessionHandle == 0) return;
+    double dirty[4] = {};
+    if (!m_overlayCacheValid) return;   // whatever invalidated it asked for a full repaint already
+    if (compositor_canvas_overlay_invalid(m_sessionHandle, dirty))
+        m_canvasWidget->update(QRectF(dirty[0], dirty[1], dirty[2], dirty[3]).toAlignedRect().adjusted(-1, -1, 1, 1));
 }
 
 /// The tools upstream's CanvasView handles itself here (its EditorCanvas mouse code, unmodified); the rest are still
@@ -3134,6 +3175,7 @@ bool SessionWindow::routesToUpstreamCanvas() const {
 
 /// A pointer event for the hosted CanvasView, then the shell catches up with what it changed.
 void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount) {
+    PERF_SCOPE(kind == 3 ? "canvasMouse:hover" : kind == 1 ? "canvasMouse:drag" : "canvasMouse:press/release");
     syncViewportGeometry();
     const int cursor = compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
                                                chordBits(event->modifiers()), clickCount);
@@ -3141,6 +3183,7 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
         Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
         Qt::SizeBDiagCursor, Qt::CrossCursor};
+    bool pictured = false;
     if (m_canvasWidget && cursor == 10) {
         // A cursor of upstream's own (a selection tool's, the eyedropper, the zoom magnifier): its picture.
         int32_t w = 0, h = 0;
@@ -3154,12 +3197,16 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
                 const QImage image(reinterpret_cast<const uchar *>(m_cursorPicture.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied);
                 m_canvasWidget->setCursor(QCursor(QPixmap::fromImage(image.copy()), qRound(hx), qRound(hy)));
             }
-            return;
+            pictured = true;
         }
     }
-    m_cursorPicture.clear();
-    if (m_canvasWidget && cursor >= 0 && cursor <= 10) m_canvasWidget->setCursor(shapes[cursor]);
-    if (kind == 3) { if (m_canvasWidget) m_canvasWidget->update(); return; }
+    if (!pictured) {
+        m_cursorPicture.clear();
+        if (m_canvasWidget && cursor >= 0 && cursor <= 10 && m_canvasWidget->cursor().shape() != shapes[cursor])
+            m_canvasWidget->setCursor(shapes[cursor]);
+    }
+    if (kind == 3) { updateInvalidOverlay(); return; }
+    invalidateOverlay();
     compositor_pump_main();
     // Mid-stroke, only the area the brush changed is re-rendered (as EditorCanvas redraws its dirty rect).
     const bool brush = m_tool == Tool::Brush || m_tool == Tool::SpotHealing || m_tool == Tool::CloneStamp || m_tool == Tool::Smear;
@@ -3168,7 +3215,7 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     if (kind == 2 || kind == 0) {
         syncToolFromSession();    // a double-click on live text switches to the Type tool, as on the Mac
         syncTextEditor();         // the shell's inline editor follows the session's text draft
-        refreshLayers(); updateLayersPanel(); updateOptionsBar();
+        refreshLayers(); updateOptionsBar();   // refreshLayers() brings the Layers panel along
     }
     if (m_canvasWidget) m_canvasWidget->update();
 }
@@ -3315,6 +3362,7 @@ QImage SessionWindow::fullResolutionImage() {
 void SessionWindow::refreshImage() {
     PERF_SCOPE("refreshImage");
     if (m_sessionHandle == 0) return;
+    invalidateOverlay();   // the session changed: whatever the overlay shows may have too
     if (m_strokeRefreshTimer) m_strokeRefreshTimer->stop(); // this full refresh supersedes a pending stroke redraw
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
@@ -3323,11 +3371,27 @@ void SessionWindow::refreshImage() {
     for (const char *name : {"fitCanvas", "actualPixels", "zoomIn", "zoomOut"})
         if (auto *button = m_headerToolBar ? m_headerToolBar->findChild<QPushButton *>(QLatin1String(name)) : nullptr)
             button->setEnabled(width > 0 && height > 0);
-    if (m_documentTabBar) { m_documentTabBar->updateGeometry(); m_documentTabBar->update(); }
+    // The tabs show the unsaved-changes dot: re-laid out when that changes, not on every refresh (a relayout repaints
+    // the whole header).
+    const int modified = state.value("modified").toBool() ? 1 : 0;
+    if (m_documentTabBar && modified != m_shownTabModified) {
+        m_shownTabModified = modified;
+        m_documentTabBar->updateGeometry();
+        m_documentTabBar->update();
+    }
     // Menu items enable as the session changes, so their shortcuts work when they should (AppKit validates on use).
-    if (!m_appMenus.isEmpty() && !m_appMenusSyncQueued) {
-        m_appMenusSyncQueued = true;
-        QTimer::singleShot(0, this, [this] { m_appMenusSyncQueued = false; syncAppMenus(); });
+    // Not per event: once the session settles (a menu opening, or its item being chosen, validates it right then).
+    if (!m_appMenus.isEmpty()) {
+        if (!m_appMenusSyncTimer) {
+            m_appMenusSyncTimer = new QTimer(this);
+            m_appMenusSyncTimer->setSingleShot(true);
+            m_appMenusSyncTimer->setInterval(120);
+            connect(m_appMenusSyncTimer, &QTimer::timeout, this, [this] {
+                if (m_upstreamCanvasDrag) { m_appMenusSyncTimer->start(); return; }
+                syncAppMenus();
+            });
+        }
+        m_appMenusSyncTimer->start();
     }
     if (width <= 0 || height <= 0) {
         // No document (a new tab, a closed project): nothing to draw but the welcome.
@@ -3353,12 +3417,7 @@ void SessionWindow::refreshImage() {
     const bool unchanged = revision >= 0 && revision == m_shownRenderRevision && m_shownRenderHandle == m_sessionHandle
         && !m_image.isNull() && m_displayScale == scale;
     if (unchanged) {
-        updateStatusTelemetry();
-        updateOptionsBar();
-        if (!m_layersRefreshQueued) {
-            m_layersRefreshQueued = true;
-            QMetaObject::invokeMethod(this, [this] { m_layersRefreshQueued = false; refreshLayers(); }, Qt::QueuedConnection);
-        }
+        refreshPanels();
         return;
     }
     QImage rendered = renderDisplayImage(scale);
@@ -3370,15 +3429,36 @@ void SessionWindow::refreshImage() {
     rendered.setDotsPerMeterX(dpm);
     rendered.setDotsPerMeterY(dpm);
     m_image = rendered;
-    if (m_canvasWidget) m_canvasWidget->update();
-    update();
+    if (m_canvasWidget) m_canvasWidget->update(); else update();
+    refreshPanels();
+}
+
+/// The panels that follow the session (status bar, tool options, layers). Mid-drag on the canvas they catch up at most
+/// every 50 ms (the release brings them up to date), so a drag costs the canvas and not a rebuild of every panel.
+void SessionWindow::refreshPanels() {
+    if (m_upstreamCanvasDrag) {
+        if (!m_panelThrottle) {
+            m_panelThrottle = new QTimer(this);
+            m_panelThrottle->setSingleShot(true);
+            m_panelThrottle->setInterval(50);
+            connect(m_panelThrottle, &QTimer::timeout, this, [this] { refreshPanels(); });
+        }
+        if (!m_panelThrottle->isActive()) m_panelThrottle->start();
+        if (m_panelThrottleClock.isValid() && m_panelThrottleClock.elapsed() < 50) return;
+    }
+    if (!m_upstreamCanvasDrag && m_panelThrottle) m_panelThrottle->stop();
+    m_panelThrottleClock.start();
     updateStatusTelemetry();
     updateOptionsBar();
-    // Coalesced: many commands refresh the image, then the layers, in one turn; the layers panel rebuilds once.
-    if (!m_layersRefreshQueued) {
-        m_layersRefreshQueued = true;
-        QMetaObject::invokeMethod(this, [this] { m_layersRefreshQueued = false; refreshLayers(); }, Qt::QueuedConnection);
-    }
+    queueLayersRefresh();
+}
+
+/// Coalesced: many commands refresh the image, then the layers, in one turn; the layers panel rebuilds once (a direct
+/// refreshLayers() in between takes the queued one's place).
+void SessionWindow::queueLayersRefresh() {
+    if (m_layersRefreshQueued) return;
+    m_layersRefreshQueued = true;
+    QMetaObject::invokeMethod(this, [this] { if (m_layersRefreshQueued) refreshLayers(); }, Qt::QueuedConnection);
 }
 
 // Mid-stroke, every brushMove still reaches the session (so the stroke stays continuous), but the canvas is
@@ -3443,6 +3523,7 @@ bool SessionWindow::setLayerFlag(const char *action, bool on) {
 
 void SessionWindow::refreshLayers() {
     PERF_SCOPE("refreshLayers");
+    m_layersRefreshQueued = false;
     if (!m_layersView || !m_layerModel || m_sessionHandle == 0) return;
     const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
     if (size <= 0 || size > 4 * 1024 * 1024) return;
@@ -3476,6 +3557,20 @@ void SessionWindow::refreshLayers() {
         if (g.id == active) m_activeGeometry = g;
     }
     syncTransformFields();
+
+    // The list itself (not the layers' geometry, which a move drag changes on every step): unchanged, the model stays.
+    QByteArray listKey = active.toUtf8();
+    for (const QJsonValue &value : layers) {
+        QJsonObject entry = value.toObject();
+        entry.remove(QStringLiteral("transform"));
+        listKey += QJsonDocument(entry).toJson(QJsonDocument::Compact);
+    }
+    if (listKey == m_shownLayerListKey && m_layerModel->rowCount() > 0) {
+        refreshMenuTitles(state.object());
+        updateLayersPanel();
+        return;
+    }
+    m_shownLayerListKey = listKey;
 
     m_syncingLayers = true;
     m_layerModel->clear();
