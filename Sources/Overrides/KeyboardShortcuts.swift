@@ -55,11 +55,12 @@ struct ShortcutChord: Codable, Equatable, Hashable {
         return flags
     }
     var label: String {
-        let special = ["\u{7f}": "Delete", "\r": "Return", "\u{1b}": "Esc", "\t": "Tab", " ": "Space",
+        let special = ["\u{7f}": "Backspace", "\r": "Return", "\u{1b}": "Esc", "\t": "Tab", " ": "Space",
                        "\u{f702}": "←", "\u{f703}": "→", "\u{f701}": "↓", "\u{f700}": "↑"]
-        return (modifiers & 4 != 0 ? "⌃" : "") + (modifiers & 2 != 0 ? "⌥" : "")
-            + (modifiers & 8 != 0 ? "⇧" : "") + (modifiers & 1 != 0 ? "⌘" : "")
-            + (special[key] ?? key.uppercased())
+        // Linux names the keys the chords are pressed with (⌘ is Ctrl, ⌥ Alt, ⌃ Meta), as the menus show them
+        // (MACOS_UI_PARITY_RULES.md §12.2); the Mac draws its glyphs.
+        return (modifiers & 1 != 0 ? "Ctrl+" : "") + (modifiers & 4 != 0 ? "Meta+" : "") + (modifiers & 2 != 0 ? "Alt+" : "")
+            + (modifiers & 8 != 0 ? "Shift+" : "") + (special[key] ?? key.uppercased())
     }
     func event(like event: NSEvent) -> NSEvent? {
         let codes: [String: UInt16] = ["\u{7f}": 51, "\r": 36, "\u{1b}": 53, "\t": 48, " ": 49,
