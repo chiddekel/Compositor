@@ -201,13 +201,16 @@ public struct NumberFormatPrecision: Sendable {
 /// or writes a plain letter as a string literal, e.g. `"p"`).
 public struct KeyEquivalent: Sendable, Equatable, ExpressibleByExtendedGraphemeClusterLiteral {
     public let character: Character
-    public init(_ character: Character) { self.character = character }
-    public init(extendedGraphemeClusterLiteral value: Character) { character = value }
+    /// `.defaultAction` / `.cancelAction`: SwiftUI's KeyboardShortcuts of those names are the bare key (no ⌘).
+    let isAction: Bool
+    public init(_ character: Character) { self.character = character; isAction = false }
+    public init(extendedGraphemeClusterLiteral value: Character) { character = value; isAction = false }
+    init(action character: Character) { self.character = character; isAction = true }
     public static let escape = KeyEquivalent("\u{1b}"), `return` = KeyEquivalent("\r")
     public static let tab = KeyEquivalent("\t"), space = KeyEquivalent(" "), delete = KeyEquivalent("\u{8}")
     public static let upArrow = KeyEquivalent("\u{F700}"), downArrow = KeyEquivalent("\u{F701}")
     public static let leftArrow = KeyEquivalent("\u{F702}"), rightArrow = KeyEquivalent("\u{F703}")
-    public static let cancelAction = KeyEquivalent("\u{1b}"), defaultAction = KeyEquivalent("\r")
+    public static let cancelAction = KeyEquivalent(action: "\u{1b}"), defaultAction = KeyEquivalent(action: "\r")
 }
 
 /// A minimal `Shape` for the handful of custom shapes upstream draws (e.g. `HueArrow`); it only needs to exist as

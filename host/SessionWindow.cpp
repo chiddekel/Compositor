@@ -1635,34 +1635,6 @@ void SessionWindow::syncPaletteFromSession() {
     updateToolRail();   // the SwiftUI rail's swatches are drawn from the session: re-render them
 }
 
-/// Upstream opens its own picker panel (ColorPickerPanelController) when `EditorSession.colorPicker` is set; the Qt
-/// shell presents its picker dialog for it instead and reports back OK (commit) or Cancel, like the panel does.
-void SessionWindow::presentSessionColorPicker() {
-    if (m_presentingColorPicker || m_sessionHandle == 0) return;
-    const QJsonObject state = sessionState();
-    const QString title = state.value("colorPickerTitle").toString();
-    const QJsonArray rgb = state.value("colorPickerColor").toArray();
-    if (title.isEmpty() || rgb.size() != 3) return;
-    m_presentingColorPicker = true;
-    const QColor initial = QColor::fromRgbF(rgb[0].toDouble(), rgb[1].toDouble(), rgb[2].toDouble());
-    // Live: every change of the working colour goes to the session's picker, whose previews (text being edited,
-    // a layer effect, ...) show on the canvas while the dialog is open; Cancel restores through closeColorPicker.
-    const QColor chosen = m_platform.colors->pick(initial, title, [this](const QColor &working) {
-        if (sendCommand({{"action", "setColorPickerColor"},
-                         {"parameters", QJsonObject{{"red", working.redF()}, {"green", working.greenF()}, {"blue", working.blueF()}}}}))
-            refreshImage();
-    });
-    if (chosen.isValid()) {
-        sendCommand({{"action", "setColorPickerColor"},
-                     {"parameters", QJsonObject{{"red", chosen.redF()}, {"green", chosen.greenF()}, {"blue", chosen.blueF()}}}});
-    }
-    sendCommand({{"action", "closeColorPicker"}, {"enabled", chosen.isValid()}});
-    m_presentingColorPicker = false;
-    syncPaletteFromSession();
-    syncOptionsFromSession();
-    updateOptionsBar();
-    refreshImage();
-}
 
 void SessionWindow::pickBackgroundColor() {
     const QColor color = m_platform.colors ? m_platform.colors->pick(m_backgroundColor, tr("Background color")) : QColorDialog::getColor(m_backgroundColor, this, tr("Background color"));
@@ -2859,12 +2831,6 @@ QPointF geometryPoint(const SessionWindow::LayerGeometry &g, const QPointF &unit
                    g.y + g.h / 2 + lx * std::sin(r) + ly * std::cos(r));
 }
 
-bool geometryContains(const SessionWindow::LayerGeometry &g, const QPointF &p) {
-    const double r = g.rotation * kPi / 180.0;
-    const double x = p.x() - (g.x + g.w / 2), y = p.y() - (g.y + g.h / 2);
-    return std::abs(x * std::cos(r) + y * std::sin(r)) <= g.w / 2
-        && std::abs(-x * std::sin(r) + y * std::cos(r)) <= g.h / 2;
-}
 }  // namespace
 
 /// CanvasRulerNSView.draw: white 0.2, ticks (0.62) every tenth of a 1-2-5 major step about 70 points apart, 8 long at
@@ -2975,64 +2941,7 @@ void SessionWindow::syncCanvasChrome(const QJsonObject &state) {
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
-/// TransformOverlay's grid (dotted 8-px subdivisions at white 0.55/28% when 4+ points apart, solid 64-px majors at
-/// 0.7/45%), the guides (cyan 90%, a device pixel, across the whole view) and the snap lines (accent).
-void SessionWindow::drawCanvasChrome(QPainter &p, QWidget *canvas) {
-    const QRectF doc = canvasTargetRect();
-    if (doc.isEmpty()) return;
-    const double scale = doc.width() / docWidth(), dpr = canvas->devicePixelRatioF(), hairline = 1.0 / std::max(dpr, 1.0);
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, false);
-    if (m_showsGrid) {
-        const double step = 8, spacing = 64;
-        auto isMajor = [&](double v) { return std::abs(std::fmod(std::round(v), spacing)) < 0.001; };
-        if (step * scale >= 4) {
-            QPen pen(QColor::fromRgbF(0.55, 0.55, 0.55, 0.28), hairline);
-            pen.setDashPattern({1 / hairline, 2 / hairline});
-            p.setPen(pen);
-            for (double x = 0; x <= docWidth() + 0.001; x += step)
-                if (!isMajor(x)) p.drawLine(QPointF(doc.left() + std::round(x) * scale, doc.top()), QPointF(doc.left() + std::round(x) * scale, doc.bottom()));
-            for (double y = 0; y <= docHeight() + 0.001; y += step)
-                if (!isMajor(y)) p.drawLine(QPointF(doc.left(), doc.top() + std::round(y) * scale), QPointF(doc.right(), doc.top() + std::round(y) * scale));
-        }
-        p.setPen(QPen(QColor::fromRgbF(0.7, 0.7, 0.7, 0.45), hairline));
-        for (double x = 0; x <= docWidth() + 0.001; x += step)
-            if (isMajor(x)) p.drawLine(QPointF(doc.left() + std::round(x) * scale, doc.top()), QPointF(doc.left() + std::round(x) * scale, doc.bottom()));
-        for (double y = 0; y <= docHeight() + 0.001; y += step)
-            if (isMajor(y)) p.drawLine(QPointF(doc.left(), doc.top() + std::round(y) * scale), QPointF(doc.right(), doc.top() + std::round(y) * scale));
-    }
-    if (m_showsGuides && !m_guides.isEmpty()) {
-        p.setPen(QPen(QColor::fromRgbF(0, 1, 1, 0.9), hairline));
-        for (const auto &[vertical, position] : m_guides) {
-            if (vertical) { const double x = doc.left() + position * scale; p.drawLine(QPointF(x, 0), QPointF(x, canvas->height())); }
-            else { const double y = doc.top() + position * scale; p.drawLine(QPointF(0, y), QPointF(canvas->width(), y)); }
-        }
-    }
-    if (!m_snapXs.isEmpty() || !m_snapYs.isEmpty()) {
-        p.setPen(QPen(QColor(0x0a, 0x84, 0xff), 1));
-        for (double x : m_snapXs) p.drawLine(QPointF(doc.left() + x * scale, doc.top()), QPointF(doc.left() + x * scale, doc.bottom()));
-        for (double y : m_snapYs) p.drawLine(QPointF(doc.left(), doc.top() + y * scale), QPointF(doc.right(), doc.top() + y * scale));
-    }
-    p.restore();
-}
 
-/// EditorCanvas.beginGuideDrag: the Move tool grabs a guide under the pointer before anything else.
-bool SessionWindow::beginCanvasGuideDrag(const QPointF &at) {
-    if (!m_showsGuides || !m_canEditGuides || m_guides.isEmpty()) return false;
-    if (!sendCommandQuiet({{"action", "guideHit"}, {"x", at.x()}, {"y", at.y()}})) return false;
-    const QJsonObject state = sessionState();
-    syncCanvasChrome(state);
-    // Which axis: the guide nearest the pointer.
-    const QRectF doc = canvasTargetRect();
-    const double scale = doc.width() / std::max(1, docWidth());
-    double best = 1e9;
-    for (const auto &[vertical, position] : m_guides) {
-        const double d = vertical ? std::abs(doc.left() + position * scale - at.x()) : std::abs(doc.top() + position * scale - at.y());
-        if (d < best) { best = d; m_guideDragVertical = vertical; }
-    }
-    m_guideDragging = true;
-    return true;
-}
 
 /// Where the document sits on the canvas: upstream's CanvasViewport.documentRect (zoom 1 = one image pixel per device
 /// pixel, centered, offset by the pan).
@@ -3213,7 +3122,7 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
 /// The tools upstream's CanvasView handles itself here (its EditorCanvas mouse code, unmodified); the rest are still
 /// the shell's. Space held pans, as the shell does it.
 bool SessionWindow::routesToUpstreamCanvas() const {
-    if (m_spaceHandActive || m_colorPickerOpen) return false;
+    if (m_spaceHandActive || m_colorPickerOpen || m_pixelSampler) return false;
     switch (m_tool) {
     case Tool::Move: case Tool::Marquee: case Tool::Lasso: case Tool::Magic: case Tool::Crop:
     case Tool::Brush: case Tool::SpotHealing: case Tool::CloneStamp: case Tool::Smear:
@@ -3718,15 +3627,6 @@ void SessionWindow::refreshLayers() {
     updateLayersPanel();
 }
 
-void SessionWindow::selectLayerRow(int row) {
-    if (m_syncingLayers || row < 0 || !m_layerModel || !m_layersView) return;
-    if (row >= m_layerModel->rowCount()) return;
-    const QModelIndex idx = m_layerModel->index(row, 0);
-    if (!idx.isValid()) return;
-    const QString id = idx.data(Qt::UserRole).toString();
-    const QByteArray json = QString(R"({"version":1,"action":"selectLayer","layerID":"%1"})").arg(id).toUtf8();
-    if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
-}
 
 void SessionWindow::setOpacityFromSlider(int value) {
     if (m_opacityLabel) m_opacityLabel->setText(QString("%1 %").arg(value));
@@ -3887,6 +3787,8 @@ void SessionWindow::setTool(Tool tool) {
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
+/// What the canvas does itself (the tools are upstream's CanvasView, see canvasMousePressEvent): sampling into the
+/// open color picker, a shell dialog's one-shot pixel sample, and the Space-held temporary hand.
 void SessionWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || m_painting) return;
     if (m_colorPickerOpen) {
@@ -3898,258 +3800,16 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         updateFloatingPanels();
         return;
     }
-    syncBrushFromSession();   // the options bar may have changed them since
-    const QPointF point = documentPoint(event->position());
-    m_dragStart = point;
     if (m_pixelSampler) {
         auto sample = std::move(m_pixelSampler);
         m_pixelSampler = nullptr;
         if (m_canvasWidget) m_canvasWidget->unsetCursor();
-        sample(point);
+        sample(documentPoint(event->position()));
         return;
     }
-
-    switch (m_tool) {
-    case Tool::Move: {
-        if (beginCanvasGuideDrag(event->position())) { m_painting = true; break; }
-        m_transformHandle = -1;
-        m_transformDraft = LayerGeometry();
-        // Auto Select: pick the topmost visible layer under the cursor unless a
-        // handle of the current layer was grabbed.
-        const int handle = hitTestTransformHandle(event->position());
-        if (handle < 0 && m_autoSelectCheck && m_autoSelectCheck->isChecked()) {
-            const bool insideActive = m_activeGeometry.valid && geometryContains(m_activeGeometry, point);
-            for (auto it = m_layerGeometries.crbegin(); it != m_layerGeometries.crend(); ++it) {
-                if (!it->valid || !it->visible || !geometryContains(*it, point)) continue;
-                if (!insideActive || it->id != m_activeGeometry.id) {
-                    if (!insideActive && sendCommand({{"action", "selectLayer"}, {"layerID", it->id}})) {
-                        refreshImage();
-                        refreshLayers();
-                    }
-                }
-                break;
-            }
-        }
-        if (m_activeGeometry.valid) {
-            m_transformHandle = handle >= 0 ? handle : (geometryContains(m_activeGeometry, point) ? 9 : -1);
-        }
-        // Ctrl-dragging a handle distorts, as in Photoshop; once distorted, handles (and the body) keep distorting.
-        syncDistortFromSession();
-        const bool distorted = m_distortCorners.size() == 4;
-        m_distortDrag = m_transformHandle >= 0 && m_transformHandle != 8
-            && ((m_transformHandle < 8 && (event->modifiers() & Qt::ControlModifier)) || distorted);
-        if (m_distortDrag) {
-            m_distortDrag = sendCommand({{"action", "distortDragBegin"}, {"value", m_transformHandle}, {"x", point.x()}, {"y", point.y()}});
-            if (!m_distortDrag) m_transformHandle = -1;
-            syncDistortFromSession();
-        } else if (m_transformHandle >= 0) {
-            m_transformStart = m_activeGeometry;
-            sendCommand({{"action", "transformBegin"}});
-        }
-        m_painting = true;
-        break;
-    }
-    case Tool::Marquee:
-        m_painting = true;
-        break;
-    case Tool::Crop: {
-        m_painting = true;
-        if (!m_hasPendingCrop || m_pendingCropRect.isEmpty()) {
-            if (!m_image.isNull()) {
-                m_pendingCropRect = QRectF(0, 0, docWidth(), docHeight());
-                m_hasPendingCrop = true;
-            }
-        }
-        m_cropHandle = hitTestCropHandle(event->position());
-        if (m_cropHandle < 0) {
-            m_dragStart = point;
-            m_pendingCropRect = QRectF(point, point);
-            m_cropHandle = 4;
-            m_hasPendingCrop = true;
-        } else {
-            m_dragStart = point;
-        }
-        if (m_canvasWidget) m_canvasWidget->update();
-        break;
-    }
-    case Tool::Lasso: {
-        if (!m_polygonalLasso) {
-            m_lassoPoints.clear();
-            m_lassoPoints.push_back(point);
-            m_painting = true;
-            break;
-        }
-        // Polygonal: each click adds a vertex; a double-click or a click on the first vertex closes it.
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (!m_polyActive) {
-            m_lassoPoints.clear();
-            m_lassoPoints.push_back(point);
-            m_polyActive = true;
-        } else {
-            const QPointF first = documentToCanvasPoint(m_lassoPoints.front());
-            const bool onFirst = QLineF(first, event->position()).length() <= 7.0;
-            const bool doubleClick = now - m_lastPolyClick < 350 && QLineF(documentToCanvasPoint(m_lassoPoints.back()), event->position()).length() <= 6.0;
-            if ((onFirst || doubleClick) && m_lassoPoints.size() >= 3) {
-                commitLassoSelection();
-                m_polyActive = false;
-            } else if (!doubleClick) {
-                m_lassoPoints.push_back(point);
-            }
-        }
-        m_lastPolyClick = now;
-        break;
-    }
-    case Tool::Magic: {
-        const int contig = m_magicContiguous ? 1 : 0;
-        const int sampleAll = m_magicSampleAll ? 1 : 0;
-        const QString json = QString(R"({"version":1,"action":"magicWand","x":%1,"y":%2,"kind":"%3","parameters":{"tolerance":%4,"contiguous":%5,"sampleAllLayers":%6}})")
-            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_selectionMode)
-            .arg(m_magicTolerance).arg(contig).arg(sampleAll);
-        const QByteArray bytes = json.toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-            refreshImage();
-        }
-        break;
-    }
-    case Tool::CloneStamp: {
-        if (event->modifiers() & Qt::AltModifier) {
-            // Upstream's EditorSession tracks the source and the aligned offset itself (EditorSession.setCloneSource);
-            // the host no longer computes or sends an offset.
-            const QString json = QString(R"({"version":1,"action":"cloneSetSource","x":%1,"y":%2})")
-                .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
-            const QByteArray bytes = json.toUtf8();
-            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-                m_hasCloneSource = true;
-                statusBar()->showMessage(tr("Clone Stamp source set to (%1, %2)").arg(qRound(point.x())).arg(qRound(point.y())), 2000);
-            }
-            return;
-        }
-        if (!m_hasCloneSource) {
-            statusBar()->showMessage(tr("Option-click where Clone Stamp should copy from first."), 2000);
-            return;
-        }
-        const int aligned = m_cloneAligned ? 1 : 0;
-        const int sampleAll = m_cloneSampleAll ? 1 : 0;
-        const QString json = QString(
-            R"({"version":1,"action":"brushBegin","kind":"Clone","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"aligned":%6,"sampleAllLayers":%7}})")
-            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
-            .arg(aligned).arg(sampleAll);
-        const QByteArray bytes = json.toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-            m_painting = true;
-            refreshImage();
-        }
-        break;
-    }
-    case Tool::SpotHealing: {
-        int healingMode = 0;
-        if (m_spotHealingMode == SpotHealingMode::CreateTexture) healingMode = 1;
-        else if (m_spotHealingMode == SpotHealingMode::ProximityMatch) healingMode = 2;
-        const QString json = QString(
-            R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":0,"green":0,"blue":0,"healing":1,"healingMode":%6}})")
-            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
-            .arg(healingMode);
-        const QByteArray bytes = json.toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-            m_painting = true;
-            refreshImage();
-        }
-        break;
-    }
-    case Tool::Brush: {
-        const bool warp = m_brushMode != "Paint";
-        const int erasing = (m_brushToolMode == BrushToolMode::Erase) ? 1 : 0;
-        const QString json = warp
-            ? QString(R"({"version":1,"action":"warpBegin","kind":"%1","x":%2,"y":%3,"parameters":{"diameter":%4,"hardness":%5,"opacity":1}})")
-                .arg(m_brushMode).arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4).arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3)
-            : QString(R"({"version":1,"action":"brushBegin","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5,"red":%6,"green":%7,"blue":%8,"erasing":%9,"mask":0}})")
-                .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-                .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3)
-                .arg(m_brushColor.redF(), 0, 'f', 4).arg(m_brushColor.greenF(), 0, 'f', 4).arg(m_brushColor.blueF(), 0, 'f', 4).arg(erasing);
-        const QByteArray bytes = json.toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-            m_painting = true;
-            refreshImage();
-        }
-        break;
-    }
-    case Tool::Smear: {
-        const QString json = QString(
-            R"({"version":1,"action":"brushBegin","kind":"Blur","x":%1,"y":%2,"parameters":{"diameter":%3,"hardness":%4,"opacity":%5}})")
-            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4)
-            .arg(m_brushDiameter).arg(m_brushHardness / 100.0, 0, 'f', 3).arg(m_brushOpacity / 100.0, 0, 'f', 3);
-        const QByteArray bytes = json.toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-            m_painting = true;
-            refreshImage();
-        }
-        break;
-    }
-    case Tool::Eyedropper: {
-        // The canvas image is at the display scale: sample where the document point lands in it.
-        const int px = qFloor(point.x() * m_displayScale), py = qFloor(point.y() * m_displayScale);
-        if (!m_image.isNull() && px >= 0 && px < m_image.width() && py >= 0 && py < m_image.height()) {
-            const QColor c = m_image.pixelColor(px, py);
-            setBrushColor(c);
-        }
-        break;
-    }
-    case Tool::Zoom: {
-        // EditorCanvas: a click zooms 2x (Alt: out) about the point; a drag zooms smoothly from it.
-        m_painting = true;
-        m_zoomDragStart = event->position();
-        m_zoomDragZoom = viewportZoom();
-        m_zoomDragMoved = false;
-        break;
-    }
-    case Tool::Hand: {
+    if (m_spaceHandActive) {
         m_painting = true;
         m_panStart = event->position();
-        break;
-    }
-    case Tool::Gradient: {
-        // Grab an endpoint of the pending line (10 px on screen), or start a new line here (upstream beginGradientDrag).
-        m_gradientHandle = 0;
-        if (m_gradientLine.size() == 4) {
-            const QPointF start = documentToCanvasPoint(QPointF(m_gradientLine[0], m_gradientLine[1]));
-            const QPointF end = documentToCanvasPoint(QPointF(m_gradientLine[2], m_gradientLine[3]));
-            const QPointF at = event->position();
-            if (QLineF(at, end).length() <= 10) m_gradientHandle = 2;
-            else if (QLineF(at, start).length() <= 10) m_gradientHandle = 1;
-        }
-        if (m_gradientHandle == 0) {
-            if (!sendCommand({{"action", "gradientBegin"}, {"x", point.x()}, {"y", point.y()}})) break;
-            m_gradientHandle = 2;
-        }
-        m_painting = true;
-        syncCanvasDrafts();
-        refreshImage();
-        break;
-    }
-    case Tool::Shape: {
-        if (!sendCommand({{"action", "shapeBegin"}, {"x", point.x()}, {"y", point.y()}})) break;
-        m_painting = true;
-        syncCanvasDrafts();
-        break;
-    }
-    case Tool::Type: {
-        // Live text under the click opens for editing; otherwise a drag lays out a text box and a click places point
-        // text (upstream beginTextGesture / finishTextGesture).
-        if (sendCommandQuiet({{"action", "textEditAt"}, {"x", point.x()}, {"y", point.y()}})) {
-            syncTextEditor();
-            refreshImage();
-            break;
-        }
-        m_textBoxAnchor = point;
-        m_textBoxRect = QRectF(point, QSizeF(0, 0));
-        m_painting = true;
-        break;
-    }
-    case Tool::Idle:
-    default:
-        break;
     }
 }
 
@@ -4271,252 +3931,22 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
         updateFloatingPanels();
         return;
     }
-    if (m_guideDragging) {
-        const QPointF doc = documentPoint(event->position());
-        sendCommandQuiet({{"action", "guideMove"}, {"value", m_guideDragVertical ? doc.x() : doc.y()}});
-        syncCanvasChrome(sessionState());
-        return;
-    }
-    const QPointF point = documentPoint(event->position());
-    if (m_tool == Tool::Hand || m_spaceHandActive) {
+    if (m_spaceHandActive) {
         const QPointF delta = event->position() - m_panStart;
         m_panStart = event->position();
         changeViewport(4, delta.x(), delta.y());
-        return;
-    }
-    if (m_tool == Tool::Zoom) {
-        // Right zooms in, left out: doubling for every 100 points dragged.
-        const double dx = event->position().x() - m_zoomDragStart.x();
-        if (std::abs(dx) >= 3) m_zoomDragMoved = true;
-        if (m_zoomDragMoved) changeViewport(2, m_zoomDragZoom * std::pow(2.0, dx / 100.0), m_zoomDragStart.x(), m_zoomDragStart.y());
-        return;
-    }
-    if (m_tool == Tool::Crop && m_hasPendingCrop) {
-        QRectF r = m_pendingCropRect;
-        const double dx = point.x() - m_dragStart.x();
-        const double dy = point.y() - m_dragStart.y();
-        m_dragStart = point;
-        if (m_cropHandle == 8) {
-            r.translate(dx, dy);
-        } else {
-            switch (m_cropHandle) {
-            case 0: r.setTopLeft(r.topLeft() + QPointF(dx, dy)); break;
-            case 1: r.setTop(r.top() + dy); break;
-            case 2: r.setTopRight(r.topRight() + QPointF(dx, dy)); break;
-            case 3: r.setRight(r.right() + dx); break;
-            case 4: r.setBottomRight(r.bottomRight() + QPointF(dx, dy)); break;
-            case 5: r.setBottom(r.bottom() + dy); break;
-            case 6: r.setBottomLeft(r.bottomLeft() + QPointF(dx, dy)); break;
-            case 7: r.setLeft(r.left() + dx); break;
-            }
-        }
-        m_pendingCropRect = r.normalized();
-        if (m_canvasWidget) m_canvasWidget->update();
-        return;
-    }
-    if (m_tool == Tool::Gradient && m_gradientHandle != 0) {
-        QPointF target = point;
-        // Shift: 45° steps around the other end (upstream CanvasView.snapped).
-        if ((event->modifiers() & Qt::ShiftModifier) && m_gradientLine.size() == 4) {
-            const QPointF anchor = m_gradientHandle == 1 ? QPointF(m_gradientLine[2], m_gradientLine[3])
-                                                         : QPointF(m_gradientLine[0], m_gradientLine[1]);
-            const double dx = target.x() - anchor.x(), dy = target.y() - anchor.y();
-            const double length = std::hypot(dx, dy), angle = std::round(std::atan2(dy, dx) / (M_PI / 4)) * (M_PI / 4);
-            target = anchor + QPointF(std::cos(angle) * length, std::sin(angle) * length);
-        }
-        sendCommand({{"action", "gradientMove"}, {"kind", m_gradientHandle == 1 ? "start" : "end"}, {"x", target.x()}, {"y", target.y()}});
-        if (m_gradientLine.size() == 4) {   // the overlay follows the pointer without waiting for a state read
-            m_gradientLine[m_gradientHandle == 1 ? 0 : 2] = target.x();
-            m_gradientLine[m_gradientHandle == 1 ? 1 : 3] = target.y();
-        }
-        scheduleStrokeRefresh();
-        return;
-    }
-    if (m_tool == Tool::Type) {
-        m_textBoxRect = QRectF(m_textBoxAnchor, point).normalized();
-        if (m_canvasWidget) m_canvasWidget->update();
-        return;
-    }
-    if (m_tool == Tool::Shape) {
-        // Shift: square / circle / 45° line; Alt: from the center (Option in upstream).
-        sendCommand({{"action", "shapeDrag"}, {"x", point.x()}, {"y", point.y()},
-                     {"parameters", QJsonObject{{"square", (event->modifiers() & Qt::ShiftModifier) ? 1 : 0},
-                                                {"fromCenter", (event->modifiers() & Qt::AltModifier) ? 1 : 0}}}});
-        syncCanvasDrafts();
-        return;
-    }
-    if (m_tool == Tool::Move) {
-        if (m_distortDrag) {
-            if (sendCommandQuiet({{"action", "distortDragMove"}, {"x", point.x()}, {"y", point.y()},
-                                  {"enabled", bool(event->modifiers() & Qt::ShiftModifier)}})) {
-                syncDistortFromSession();
-                refreshImage();
-            }
-        } else if (m_transformHandle >= 0) {
-            m_transformDraft = draggedGeometry(point, event->modifiers());
-            previewGeometry(m_transformDraft);
-        }
-    } else if (m_tool == Tool::Lasso) {
-        m_lassoPoints.push_back(point);
-    } else if (m_tool == Tool::Brush || m_tool == Tool::CloneStamp || m_tool == Tool::SpotHealing || m_tool == Tool::Smear) {
-        const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3})")
-            .arg(m_brushMode == "Paint" ? "brushMove" : "warpMove")
-            .arg(point.x(), 0, 'f', 4).arg(point.y(), 0, 'f', 4);
-        const QByteArray bytes = json.toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) scheduleStrokeRefresh();
     }
 }
 
-void SessionWindow::commitLassoSelection() {
-    if (m_lassoPoints.size() >= 3) {
-        QJsonArray pts;
-        for (const QPointF &pt : m_lassoPoints) pts.append(QJsonArray{pt.x(), pt.y()});
-        if (sendCommand({{"action", "selectLasso"}, {"points", pts}, {"kind", m_selectionMode}})) refreshImage();
-    }
-    m_lassoPoints.clear();
-    if (m_canvasWidget) m_canvasWidget->update();
-}
 
 void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || !m_painting) return;
     m_painting = false;
-    if (m_samplingPicker) { m_samplingPicker = false; return; }
-    const QPointF point = documentPoint(event->position());
-    if (m_guideDragging) {
-        m_guideDragging = false;
-        sendCommandQuiet({{"action", "guideFinish"}, {"enabled", m_showsRulers && (event->position().x() < 0 || event->position().y() < 0)}});
-        syncCanvasChrome(sessionState());
-        refreshImage();
-        return;
-    }
-    if (m_tool == Tool::Zoom && !m_spaceHandActive) {
-        if (!m_zoomDragMoved)
-            changeViewport(2, viewportZoom() * ((event->modifiers() & Qt::AltModifier) ? 0.5 : 2.0), m_zoomDragStart.x(), m_zoomDragStart.y());
-        return;
-    }
-
-    if (m_tool == Tool::Gradient && m_gradientHandle != 0) {
-        m_gradientHandle = 0;
-        sendCommand({{"action", "gradientEndDrag"}});   // a click without a line leaves nothing pending
-        syncCanvasDrafts();
-        refreshImage();
-        return;
-    }
-    if (m_tool == Tool::Type) {
-        const QRectF box = m_textBoxRect;
-        m_textBoxRect = QRectF();
-        const bool click = box.width() < 4 && box.height() < 4;
-        if (click) sendCommand({{"action", "textBegin"}, {"x", box.x()}, {"y", box.y()}, {"enabled", true}});
-        else sendCommand({{"action", "textBeginBox"}, {"x", box.x()}, {"y", box.y()},
-                          {"width", qRound(box.width())}, {"height", qRound(box.height())}});
-        syncTextEditor();
-        if (m_canvasWidget) m_canvasWidget->update();
-        return;
-    }
-    if (m_tool == Tool::Shape) {
-        sendCommand({{"action", "shapeFinish"}});
-        syncCanvasDrafts();
-        refreshImage();
-        refreshLayers();
-        return;
-    }
-    switch (m_tool) {
-    case Tool::Move: {
-        if (m_distortDrag) {
-            // The distortion stays pending (Enter / Apply commits it, Escape cancels), as on the Mac.
-            sendCommandQuiet({{"action", "distortDragEnd"}});
-            m_distortDrag = false;
-            m_transformHandle = -1;
-            syncDistortFromSession();
-            refreshImage();
-            updateOptionsBar();
-            break;
-        }
-        if (m_transformHandle >= 0) {
-            if (m_transformDraft.valid) sendCommand({{"action", "transformCommit"}});
-            else sendCommand({{"action", "transformCancel"}});
-            m_transformHandle = -1;
-            m_transformDraft = LayerGeometry();
-            refreshImage();
-            refreshLayers();
-        }
-        break;
-    }
-    case Tool::Marquee: {
-        const double x = std::min(m_dragStart.x(), point.x());
-        const double y = std::min(m_dragStart.y(), point.y());
-        const int w = qRound(std::abs(point.x() - m_dragStart.x()));
-        const int h = qRound(std::abs(point.y() - m_dragStart.y()));
-        if (w > 0 && h > 0) {
-            const char *action = (m_marqueeMode == MarqueeMode::Rectangle) ? "selectRectangle" : "selectEllipse";
-            const QString json = QString(R"({"version":1,"action":"%1","x":%2,"y":%3,"width":%4,"height":%5,"kind":"%6"})")
-                .arg(action).arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(w).arg(h).arg(m_selectionMode);
-            const QByteArray bytes = json.toUtf8();
-            if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-                refreshImage();
-            }
-        }
-        break;
-    }
-    case Tool::Crop: {
-        m_cropHandle = -1;
-        if (m_canvasWidget) m_canvasWidget->update();
-        break;
-    }
-    case Tool::Lasso: {
-        m_lassoPoints.push_back(point);
-        commitLassoSelection();
-        break;
-    }
-    case Tool::Smear:
-    case Tool::Brush:
-    case Tool::CloneStamp:
-    case Tool::SpotHealing: {
-        const char *action = m_brushMode == "Paint" ? "brushEnd" : "warpEnd";
-        const QByteArray json = QString(R"({"version":1,"action":"%1"})").arg(action).toUtf8();
-        if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(json.constData()), json.size()) == 0) refreshImage();
-        break;
-    }
-    case Tool::Magic:
-    default:
-        break;
-    }
+    m_samplingPicker = false;
 }
 
+/// A pen is a mouse here, as on the Mac (upstream's canvas takes no pressure): ignored, Qt delivers it as mouse events.
 void SessionWindow::tabletEvent(QTabletEvent *event) {
-    const QPointF point = documentPoint(event->position());
-    if (m_tool == Tool::Brush) {
-        switch (event->type()) {
-        case QEvent::TabletPress:
-            syncBrushFromSession();
-            if (m_tabletHandler && m_tabletHandler->handleTabletPress(event, m_sessionHandle, point, m_brushDiameter,
-                                                                      m_brushHardness, m_brushOpacity, m_brushColor,
-                                                                      m_brushToolMode == BrushToolMode::Erase)) {
-                m_painting = true;
-                refreshImage();
-                event->accept();
-                return;
-            }
-            break;
-        case QEvent::TabletMove:
-            if (m_tabletHandler && m_tabletHandler->handleTabletMove(event, m_sessionHandle, point, m_painting)) {
-                scheduleStrokeRefresh();
-                event->accept();
-                return;
-            }
-            break;
-        case QEvent::TabletRelease:
-            if (m_tabletHandler && m_tabletHandler->handleTabletRelease(event, m_sessionHandle, m_painting)) {
-                m_painting = false;
-                refreshImage();
-                event->accept();
-                return;
-            }
-            break;
-        default:
-            break;
-        }
-    }
     event->ignore();
 }
 
@@ -5020,34 +4450,7 @@ void SessionWindow::applyTransformFields(int changedField) {
     if (sendCommand(command)) { refreshImage(); refreshLayers(); }
 }
 
-int SessionWindow::hitTestTransformHandle(const QPointF &canvasPoint) const {
-    if (!m_activeGeometry.valid) return -1;
-    const LayerGeometry &g = m_activeGeometry;
-    const double reach = 8.0;
-    if (m_distortCorners.size() == 4) {   // distorted: handles sit on the warped shape, and there is no rotate handle
-        for (int i = 0; i < 8; ++i)
-            if (QLineF(canvasPoint, documentToCanvasPoint(distortHandlePoint(i))).length() <= reach) return i;
-        return QPolygonF(QVector<QPointF>{documentToCanvasPoint(m_distortCorners[0]), documentToCanvasPoint(m_distortCorners[1]),
-                                          documentToCanvasPoint(m_distortCorners[2]), documentToCanvasPoint(m_distortCorners[3])})
-                   .containsPoint(canvasPoint, Qt::OddEvenFill) ? 9 : -1;
-    }
-    const QPointF top = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0)));
-    const QPointF center = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0.5)));
-    QPointF outward = top - center;
-    const double length = std::hypot(outward.x(), outward.y());
-    if (length > 0) outward /= length;
-    if (QLineF(canvasPoint, top + outward * 26.0).length() <= reach) return 8;
-    for (int i = 0; i < 8; ++i) {
-        if (QLineF(canvasPoint, documentToCanvasPoint(geometryPoint(g, kHandleUnits[i]))).length() <= reach) return i;
-    }
-    return -1;
-}
 
-QPointF SessionWindow::distortHandlePoint(int i) const {
-    if (m_distortCorners.size() != 4) return QPointF();
-    const QPointF a = m_distortCorners[(i / 2) % 4];
-    return i % 2 == 0 ? a : (a + m_distortCorners[(i / 2 + 1) % 4]) / 2.0;
-}
 
 void SessionWindow::syncDistortFromSession() {
     m_distortCorners.clear();
@@ -5058,174 +4461,10 @@ void SessionWindow::syncDistortFromSession() {
     if (m_distortCorners.size() != 4) m_distortCorners.clear();
 }
 
-void SessionWindow::drawTransformControls(QPainter &p) const {
-    if (m_tool != Tool::Move || !m_activeGeometry.valid || !m_showControlsCheck || !m_showControlsCheck->isChecked()) return;
-    if (m_distortCorners.size() == 4) {
-        // A pending distortion: its outline and handles follow the warped corners (EditorCanvas draws the same).
-        p.save();
-        p.setRenderHint(QPainter::Antialiasing, true);
-        QPolygonF outline;
-        for (const QPointF &corner : m_distortCorners) outline << documentToCanvasPoint(corner);
-        p.setPen(QPen(QColor(0xf2, 0xf2, 0xf5), 1));
-        p.setBrush(Qt::NoBrush);
-        p.drawPolygon(outline);
-        p.setBrush(QColor(0xff, 0xff, 0xff));
-        p.setPen(QPen(QColor(0x50, 0x50, 0x58), 1));
-        for (int i = 0; i < 8; ++i) {
-            const QPointF c = documentToCanvasPoint(distortHandlePoint(i));
-            p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8));
-        }
-        p.restore();
-        return;
-    }
-    const LayerGeometry &g = (m_transformHandle >= 0 && m_transformDraft.valid) ? m_transformDraft : m_activeGeometry;
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    QPolygonF outline;
-    for (const QPointF &corner : {QPointF(0, 0), QPointF(1, 0), QPointF(1, 1), QPointF(0, 1)}) {
-        outline << documentToCanvasPoint(geometryPoint(g, corner));
-    }
-    p.setPen(QPen(QColor(0xf2, 0xf2, 0xf5), 1));
-    p.setBrush(Qt::NoBrush);
-    p.drawPolygon(outline);
-    const QPointF top = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0)));
-    const QPointF center = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0.5)));
-    QPointF outward = top - center;
-    const double length = std::hypot(outward.x(), outward.y());
-    if (length > 0) outward /= length;
-    const QPointF rotateHandle = top + outward * 26.0;
-    p.drawLine(top, rotateHandle);
-    p.setBrush(QColor(0xf2, 0xf2, 0xf5));
-    p.drawEllipse(rotateHandle, 3.5, 3.5);
-    p.setBrush(QColor(0xff, 0xff, 0xff));
-    p.setPen(QPen(QColor(0x50, 0x50, 0x58), 1));
-    for (const QPointF &unit : kHandleUnits) {
-        const QPointF c = documentToCanvasPoint(geometryPoint(g, unit));
-        p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8));
-    }
-    p.restore();
-}
 
-void SessionWindow::previewGeometry(const LayerGeometry &g) {
-    const QJsonObject command{{"action", "transformPreview"}, {"parameters", QJsonObject{
-        {"x", g.x}, {"y", g.y}, {"width", g.w}, {"height", g.h}, {"rotation", g.rotation}}}};
-    if (sendCommand(command)) refreshImage();
-}
 
-SessionWindow::LayerGeometry SessionWindow::draggedGeometry(const QPointF &point, Qt::KeyboardModifiers modifiers) const {
-    LayerGeometry g = m_transformStart;
-    const double r = g.rotation * kPi / 180.0;
-    if (m_transformHandle == 9) {
-        g.x += point.x() - m_dragStart.x();
-        g.y += point.y() - m_dragStart.y();
-        return g;
-    }
-    const QPointF c0(g.x + g.w / 2, g.y + g.h / 2);
-    if (m_transformHandle == 8) {
-        double degrees = std::atan2(point.y() - c0.y(), point.x() - c0.x()) * 180.0 / kPi + 90.0;
-        if (modifiers & Qt::ShiftModifier) degrees = std::round(degrees / 15.0) * 15.0;
-        while (degrees > 180.0) degrees -= 360.0;
-        while (degrees <= -180.0) degrees += 360.0;
-        g.rotation = degrees;
-        return g;
-    }
-    // Resize in the layer's own (rotated) frame around the opposite edge / corner.
-    const QPointF unit = kHandleUnits[m_transformHandle];
-    const double dx = point.x() - c0.x(), dy = point.y() - c0.y();
-    const QPointF local(dx * std::cos(r) + dy * std::sin(r), -dx * std::sin(r) + dy * std::cos(r));
-    const bool moveX = unit.x() != 0.5, moveY = unit.y() != 0.5;
-    const double signX = unit.x() > 0.5 ? 1.0 : -1.0, signY = unit.y() > 0.5 ? 1.0 : -1.0;
-    const double anchorX = moveX ? -signX * g.w / 2 : 0, anchorY = moveY ? -signY * g.h / 2 : 0;
-    double newW = moveX ? std::max(1.0, signX * (local.x() - anchorX)) : g.w;
-    double newH = moveY ? std::max(1.0, signY * (local.y() - anchorY)) : g.h;
-    const bool corner = moveX && moveY;
-    if (corner && ((m_linkCheck && m_linkCheck->isChecked()) != bool(modifiers & Qt::ShiftModifier))) {
-        const double scale = std::max(newW / g.w, newH / g.h);
-        newW = std::max(1.0, g.w * scale);
-        newH = std::max(1.0, g.h * scale);
-    }
-    const double cx = moveX ? anchorX + signX * newW / 2 : 0;
-    const double cy = moveY ? anchorY + signY * newH / 2 : 0;
-    const QPointF center(c0.x() + cx * std::cos(r) - cy * std::sin(r), c0.y() + cx * std::sin(r) + cy * std::cos(r));
-    g.w = std::round(newW);
-    g.h = std::round(newH);
-    g.x = center.x() - g.w / 2;
-    g.y = center.y() - g.h / 2;
-    return g;
-}
 
-int SessionWindow::hitTestCropHandle(const QPointF &canvasPoint) const {
-    if (!m_hasPendingCrop || m_pendingCropRect.isEmpty() || m_image.isNull()) return -1;
-    const double reach = 10.0;
-    const QRectF cRect(documentToCanvasPoint(m_pendingCropRect.topLeft()),
-                       documentToCanvasPoint(m_pendingCropRect.bottomRight()));
-    const QRectF norm = cRect.normalized();
-    const QPointF handles[8] = {
-        norm.topLeft(),
-        QPointF(norm.center().x(), norm.top()),
-        norm.topRight(),
-        QPointF(norm.right(), norm.center().y()),
-        norm.bottomRight(),
-        QPointF(norm.center().x(), norm.bottom()),
-        norm.bottomLeft(),
-        QPointF(norm.left(), norm.center().y())
-    };
-    for (int i = 0; i < 8; ++i) {
-        if (QLineF(canvasPoint, handles[i]).length() <= reach) return i;
-    }
-    if (norm.contains(canvasPoint)) return 8; // Body move
-    return -1;
-}
 
-void SessionWindow::drawCropOverlay(QPainter &p) const {
-    if (m_tool != Tool::Crop || !m_hasPendingCrop || m_pendingCropRect.isEmpty() || m_image.isNull()) return;
-    const QRectF target = canvasTargetRect();
-    const QRectF cRect(documentToCanvasPoint(m_pendingCropRect.topLeft()),
-                       documentToCanvasPoint(m_pendingCropRect.bottomRight()));
-    const QRectF norm = cRect.normalized().intersected(target);
-    if (norm.isEmpty()) return;
-
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-
-    // Dim outer canvas area
-    QPainterPath dimPath;
-    dimPath.addRect(target);
-    dimPath.addRect(norm);
-    p.fillPath(dimPath, QColor(0, 0, 0, 140));
-
-    // Rule-of-thirds grid
-    p.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt::SolidLine));
-    const double w3 = norm.width() / 3.0;
-    const double h3 = norm.height() / 3.0;
-    p.drawLine(QPointF(norm.left() + w3, norm.top()), QPointF(norm.left() + w3, norm.bottom()));
-    p.drawLine(QPointF(norm.left() + w3 * 2, norm.top()), QPointF(norm.left() + w3 * 2, norm.bottom()));
-    p.drawLine(QPointF(norm.left(), norm.top() + h3), QPointF(norm.right(), norm.top() + h3));
-    p.drawLine(QPointF(norm.left(), norm.top() + h3 * 2), QPointF(norm.right(), norm.top() + h3 * 2));
-
-    // White border
-    p.setPen(QPen(Qt::white, 1));
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(norm);
-
-    // Corner / edge handles
-    p.setPen(QPen(QColor(0x30, 0x30, 0x30), 1));
-    p.setBrush(Qt::white);
-    const QPointF handles[8] = {
-        norm.topLeft(),
-        QPointF(norm.center().x(), norm.top()),
-        norm.topRight(),
-        QPointF(norm.right(), norm.center().y()),
-        norm.bottomRight(),
-        QPointF(norm.center().x(), norm.bottom()),
-        norm.bottomLeft(),
-        QPointF(norm.left(), norm.center().y())
-    };
-    for (const QPointF &pt : handles) {
-        p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8));
-    }
-    p.restore();
-}
 
 void SessionWindow::applyDarkTheme() {
     QPalette darkPalette;

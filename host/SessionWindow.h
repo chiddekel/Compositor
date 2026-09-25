@@ -267,7 +267,6 @@ private:
     // into it, and present the color picker upstream's UI asked for (EditorSession.colorPicker).
     void syncPaletteFromSession();
     void sendPaletteColor(const QColor &color, bool background);
-    void presentSessionColorPicker();
     bool m_presentingColorPicker = false;
     bool m_railFitChecked = false;
     bool m_layersRefreshQueued = false;
@@ -313,7 +312,6 @@ private:
     void syncTextEditor();
     void layoutTextEditor();
     void refreshLayers();
-    void selectLayerRow(int row);
     void setOpacityFromSlider(int value);
     void setBrushDiameter(int value);
     void setBrushHardness(int value);
@@ -448,8 +446,6 @@ private:
     QWidget *m_welcomeContent = nullptr;
     // Canvas chrome from the session (syncCanvasChrome): rulers, layout grid, guides, snap lines.
     void syncCanvasChrome(const QJsonObject &state);
-    void drawCanvasChrome(QPainter &p, QWidget *canvas);
-    bool beginCanvasGuideDrag(const QPointF &at);
     QWidget *m_rulerCorner = nullptr, *m_rulerH = nullptr, *m_rulerV = nullptr;
     bool m_showsRulers = false, m_showsGrid = false, m_showsGuides = false, m_canEditGuides = false;
     bool m_guideDragging = false;   // a guide drag this shell started (ruler or canvas)
@@ -540,21 +536,14 @@ private:
     QVector<QPointF> m_distortCorners;
     bool m_distortDrag = false;   // the Move tool's current drag distorts (upstream TransformDrag, in the bridge)
     void syncDistortFromSession();
-    /// Handle `i` (0...7 from top-left, clockwise) of the pending distortion: corners, then edge midpoints.
-    QPointF distortHandlePoint(int i) const;
     LayerGeometry m_transformDraft;
     // Selection tools: combine mode (New/Add/Subtract) and lasso style.
     QString m_selectionMode = "New";
     bool m_polygonalLasso = false;
     bool m_polyActive = false;
     qint64 m_lastPolyClick = 0;
-    void commitLassoSelection();
     void syncTransformFields();
     void applyTransformFields(int changedField);
-    int hitTestTransformHandle(const QPointF &canvasPoint) const;
-    void drawTransformControls(QPainter &painter) const;
-    void previewGeometry(const LayerGeometry &geometry);
-    LayerGeometry draggedGeometry(const QPointF &documentPoint, Qt::KeyboardModifiers modifiers) const;
 
     // Tool parameter state
     int m_magicTolerance = 32;
@@ -575,6 +564,4 @@ private:
     int m_cropHandle = -1;
     QPointF m_panStart;
 
-    int hitTestCropHandle(const QPointF &canvasPoint) const;
-    void drawCropOverlay(QPainter &painter) const;
 };

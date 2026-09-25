@@ -232,7 +232,8 @@ extension View {
         modified { $0.modifiers.append(.scrollIndicators(visibility.name)) }
     }
     public func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = .command) -> some View {
-        modified { $0.modifiers.append(.keyboardShortcut(key: String(key.character), modifiers: modifiers.rawValue)) }
+        let modifiers = key.isAction ? [] : modifiers
+        return modified { $0.modifiers.append(.keyboardShortcut(key: String(key.character), modifiers: modifiers.rawValue)) }
     }
     public func onAppear(perform action: @escaping () -> Void = {}) -> some View {
         modified { $0.modifiers.append(.onAppear(action)) }
