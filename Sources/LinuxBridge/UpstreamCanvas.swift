@@ -223,6 +223,13 @@ nonisolated public func compositorSetSymbolRenderer(_ render: SymbolRenderFuncti
     }
 }
 
+/// The cursor upstream's code last set (NSCursor.set()), as UpstreamCanvas.cursorCode maps it — for views outside the
+/// canvas that set it themselves (NumericScrub's resize arrows while hovering a label).
+@_cdecl("compositor_current_cursor")
+nonisolated public func compositorCurrentCursor() -> Int32 {
+    onMain { UpstreamCanvas.cursorCode(NSCursor.current) }
+}
+
 /// The current cursor's picture (a custom cursor: upstream draws it), premultiplied RGBA8, with its size and hot spot.
 /// Returns the byte count (call with a nil output to size it), -1 when the cursor has no picture.
 @_cdecl("compositor_canvas_cursor_image")

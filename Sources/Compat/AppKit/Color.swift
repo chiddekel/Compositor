@@ -3,11 +3,16 @@ import CoreGraphics
 
 /// `NSColor` for the subset upstream uses: device-independent sRGB values with a `cgColor`, and drawing helpers
 /// that set the colour on the current `NSGraphicsContext`.
-open class NSColor: @unchecked Sendable {
+open class NSColor: @unchecked Sendable, Equatable {
     public let redComponent: CGFloat
     public let greenComponent: CGFloat
     public let blueComponent: CGFloat
     public let alphaComponent: CGFloat
+    /// Same components, same color (AppKit compares colors in the same space by value).
+    public static func == (lhs: NSColor, rhs: NSColor) -> Bool {
+        lhs.redComponent == rhs.redComponent && lhs.greenComponent == rhs.greenComponent
+            && lhs.blueComponent == rhs.blueComponent && lhs.alphaComponent == rhs.alphaComponent
+    }
 
     public init(srgbRed red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
         redComponent = red; greenComponent = green; blueComponent = blue; alphaComponent = alpha
@@ -45,6 +50,8 @@ open class NSColor: @unchecked Sendable {
     public func set() { setFill(); setStroke() }
 
     public static let white = NSColor(white: 1, alpha: 1)
+    /// Dark-aqua text selection highlight (the system accent's selection tint).
+    public static let selectedTextBackgroundColor = NSColor(srgbRed: 0.25, green: 0.4, blue: 0.64, alpha: 1)
     public static let black = NSColor(white: 0, alpha: 1)
     public static let clear = NSColor(white: 0, alpha: 0)
     public static let gray = NSColor(white: 0.5, alpha: 1)

@@ -51,6 +51,22 @@ public enum TextBackend {
         return []
     }()
 
+    /// Ascender, descender (negative) and leading of `font`, in points, from the Qt text engine; nil without it.
+    static func metrics(_ font: NSFont) -> (ascender: CGFloat, descender: CGFloat, leading: CGFloat)? {
+        #if canImport(Glibc)
+        typealias MetricsFn = @convention(c) (UnsafePointer<CChar>?, Double, UnsafeMutablePointer<Double>?,
+                                              UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?) -> Int32
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_font_metrics") else { continue }
+            var ascent = 0.0, descent = 0.0, leading = 0.0
+            guard unsafeBitCast(sym, to: MetricsFn.self)(font.fontName, Double(font.pointSize), &ascent, &descent, &leading) == 1 else { return nil }
+            return (CGFloat(ascent), CGFloat(descent), CGFloat(leading))
+        }
+        #endif
+        return nil
+    }
+
     public struct Layout { public let width: CGFloat; public let height: CGFloat; public let baseline: CGFloat }
 
     /// Size and first baseline of `text`, lines `lineHeight` apart (0: 1.2 em), wrapping at `maxWidth` (0: never).

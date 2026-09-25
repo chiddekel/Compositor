@@ -339,6 +339,12 @@ extension Shape {
     public func inset(by amount: Double) -> some Shape { InsetShape(base: self, amount: amount) }
 }
 
+/// `onContinuousHover`'s phases.
+public enum HoverPhase: Equatable, Sendable {
+    case active(CGPoint)
+    case ended
+}
+
 /// Where a gesture's coordinates are reported in — `.local`/`.global`/`.named(_:)`. Only the identity matters here
 /// (nothing computes real cross-widget coordinate transforms yet), so this is just a tag.
 public struct CoordinateSpace: Sendable {

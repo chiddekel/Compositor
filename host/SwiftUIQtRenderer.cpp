@@ -805,6 +805,49 @@ private:
     bool m_done = false;
 };
 
+extern "C" int32_t compositor_current_cursor(void);
+
+/// SwiftUI's `onContinuousHover`: the pointer's position in the view as it moves over it, "ended" when it leaves; the
+/// cursor is whatever the handler set (NSCursor.set()).
+class HoverFilter : public QObject {
+public:
+    HoverFilter(QWidget *widget, uint64_t handle, QString panel, QString id)
+        : QObject(widget), m_widget(widget), m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)) {
+        widget->setAttribute(Qt::WA_Hover, true);
+        widget->installEventFilter(this);
+    }
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        QByteArray payload;
+        if (event->type() == QEvent::HoverEnter || event->type() == QEvent::HoverMove) {
+            const QPointF p = static_cast<QHoverEvent *>(event)->position();
+            if (event->type() == QEvent::HoverMove && p == m_last) return false;
+            m_last = p;
+            payload = "[" + QByteArray::number(p.x()) + "," + QByteArray::number(p.y()) + "]";
+        } else if (event->type() == QEvent::HoverLeave) {
+            m_last = QPointF(-1, -1);
+            payload = "\"ended\"";
+        } else {
+            return false;
+        }
+        QPointer<QWidget> widget = m_widget;
+        dispatch(m_handle, m_panel, m_id, QStringLiteral("onContinuousHover"), payload);
+        if (widget) {
+            static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
+                Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
+                Qt::SizeBDiagCursor, Qt::ArrowCursor};
+            const int code = compositor_current_cursor();
+            if (code >= 0 && code <= 10) widget->setCursor(shapes[code]);
+        }
+        return false;
+    }
+private:
+    QWidget *m_widget;
+    uint64_t m_handle;
+    QString m_panel, m_id;
+    QPointF m_last{-1, -1};
+};
+
 class TapGestureFilter : public QObject {
 public:
     /// `onTap` gets the click's modifier keys as ShortcutChord bits (Ctrl 1, Alt 2, Meta 4, Shift 8).
@@ -3038,6 +3081,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             new DragPressFilter(widget, widget, handle, panel, id);
             for (QWidget *inner : widget->findChildren<QWidget *>()) new DragPressFilter(inner, widget, handle, panel, id);
         }
+        if (hKeys.contains(QStringLiteral("onContinuousHover"))) new HoverFilter(widget, handle, panel, id);
         if (hKeys.contains(QStringLiteral("swipeBegan"))) new SwipeFilter(widget, handle, panel, id, strings.value("swipeGroup").toString());
         if (hKeys.contains(QStringLiteral("onTapGesture")) || hKeys.contains(QStringLiteral("spatialTapGesture"))) {
             widget->setCursor(Qt::PointingHandCursor);

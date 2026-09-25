@@ -20,11 +20,43 @@ public typealias NSModalResponse = NSApplication.ModalResponse
     public var messageText = ""
     public var informativeText = ""
     public private(set) var buttonTitles: [String] = []
+    public private(set) var buttons: [NSButton] = []
     nonisolated(unsafe) public static var handler: ((NSAlert) -> NSApplication.ModalResponse)?
     public init() {}
-    @discardableResult public func addButton(withTitle title: String) -> AnyObject? { buttonTitles.append(title); return nil }
+    @discardableResult public func addButton(withTitle title: String) -> NSButton {
+        buttonTitles.append(title)
+        let button = NSButton(frame: .zero)
+        button.title = title
+        buttons.append(button)
+        return button
+    }
     public func runModal() -> NSApplication.ModalResponse { Self.handler?(self) ?? .alertFirstButtonReturn }
-    public func beginSheetModal(for window: NSWindow) async -> NSApplication.ModalResponse { runModal() }
+    /// As AppKit does: a sheet attached to `window` (`attachedSheet`) holding the alert's buttons, answered when one of
+    /// them is clicked. The host's `handler` (a Qt message box) takes precedence; a window never shown answers
+    /// headlessly with the first button, as `runModal` does.
+    public func beginSheetModal(for window: NSWindow) async -> NSApplication.ModalResponse {
+        if Self.handler != nil || !window.isVisible { return runModal() }
+        let sheet = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 420, height: 160), styleMask: [.titled],
+                             backing: .buffered, defer: false)
+        let content = NSView(frame: sheet.frame)
+        sheet.contentView = content
+        let response: NSApplication.ModalResponse = await withCheckedContinuation { continuation in
+            var answered = false
+            for (index, button) in buttons.enumerated() {
+                content.addSubview(button)
+                button.clickHandler = {
+                    guard !answered else { return }
+                    answered = true
+                    continuation.resume(returning: NSApplication.ModalResponse(rawValue: 1000 + index) ?? .cancel)
+                }
+            }
+            window.attachedSheet = sheet
+            sheet.isVisible = true
+        }
+        window.attachedSheet = nil
+        sheet.orderOut(nil)
+        return response
+    }
 }
 
 @MainActor open class NSSavePanel {

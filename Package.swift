@@ -130,6 +130,8 @@ let package = Package(
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        // CryptoKit: SHA256 with Apple's API over a portable implementation (upstream's ProjectDigest).
+        .target(name: "CryptoKit", path: "Sources/Compat/CryptoKit"),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO", "CompatSupport"],
@@ -146,7 +148,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",

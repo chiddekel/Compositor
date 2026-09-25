@@ -94,6 +94,7 @@ extension NSImage {
     public func draw(in rect: CGRect, from source: CGRect, operation: NSCompositingOperation, fraction: CGFloat) {
         // A symbol is drawn at twice its size in points, so it stays sharp in a 2x cursor or bitmap.
         guard let cg = symbolImage(pixels: CGSize(width: rect.width * 2, height: rect.height * 2))
+                ?? svgImage(pixels: rect.size)
                 ?? cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         NSGraphicsContext.current?.cgContext.draw(cg, in: rect, opacity: Double(fraction))
     }

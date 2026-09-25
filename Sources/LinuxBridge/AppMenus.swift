@@ -189,7 +189,11 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
     private func request(_ name: String) { Self.pending.append(name) }
 
     var canStart: Bool { workspace?.current.controller.canStart ?? true }
-    var window: NSWindow? { nil }
+    /// The current tab's window, as upstream's delegate's `projects` (the current ProjectController) keeps it.
+    var window: NSWindow? {
+        get { workspace?.current.controller.window }
+        set { workspace?.current.controller.window = newValue }
+    }
     func save(asNew: Bool = false) async -> Bool { request(asNew ? "saveAs" : "save"); return true }
     func exportPNG() async { request("exportPNG") }
     func exportJPEG() async { request("exportJPEG") }

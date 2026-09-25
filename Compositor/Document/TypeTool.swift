@@ -84,7 +84,12 @@ extension EditorSession {
             style.boxSize = nil
         }
         tool = .type
-        textDraft = TextDraft(documentID: document.id, layerID: target?.id, origin: target?.origin ?? point, transform: target?.transform, style: style)
+        // A click puts new text's first baseline on the pointer, starting at it, as Photoshop's does. A fixed line height leaves its
+        // extra room above the letters, so the baseline sits the font's descent up from the bottom of the line.
+        let descent = abs((Self.textAttributes(style)[.font] as? NSFont)?.descender ?? 0)
+        let baseline = LayerTextStyle.padding + style.lineHeight - descent
+        let origin = target?.origin ?? CGPoint(x: point.x - LayerTextStyle.padding, y: point.y - baseline)
+        textDraft = TextDraft(documentID: document.id, layerID: target?.id, origin: origin, transform: target?.transform, style: style)
     }
 
     func editActiveText() {
@@ -159,6 +164,8 @@ extension EditorSession {
         style.boxSize = CGSize(width: max(16, rect.width.rounded()), height: max(16, rect.height.rounded()))
         guard style.boxIsValid else { brushError = "That text box exceeds the \(DocumentLimits.maxSide.formatted())-pixel or \(DocumentLimits.maxSurfaceMegapixels)-megapixel limit."; return }
         beginText(at: rect.origin, newLayer: true)
+        // A dragged box is exactly where it was drawn.
+        textDraft?.origin = rect.origin
         textDraft?.style.boxSize = style.boxSize
     }
 
@@ -202,7 +209,7 @@ extension EditorSession {
         return flattened.isEmpty ? "Text" : String(flattened.prefix(40))
     }
 
-    static func textAttributes(_ style: LayerTextStyle) -> [NSAttributedString.Key: Any] {
+    nonisolated static func textAttributes(_ style: LayerTextStyle) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = style.alignment == .left ? .left : style.alignment == .center ? .center : .right
         let font = NSFont(name: style.fontName, size: style.fontSize) ?? NSFont.systemFont(ofSize: style.fontSize)

@@ -52,6 +52,8 @@ extension NSTextViewDelegate {
     public var isAutomaticQuoteSubstitutionEnabled = true, isAutomaticDashSubstitutionEnabled = true
     public var isAutomaticSpellingCorrectionEnabled = true, isAutomaticTextReplacementEnabled = true
     public var typingAttributes: [NSAttributedString.Key: Any] = [:]
+    /// How selected text is marked (a background color); the host's editor draws the selection with it.
+    public var selectedTextAttributes: [NSAttributedString.Key: Any] = [.backgroundColor: NSColor.selectedTextBackgroundColor]
     open func hasMarkedText() -> Bool { false }
     open func pasteAsPlainText(_ sender: Any?) {}
     open func insertText(_ string: Any, replacementRange: NSRange) {

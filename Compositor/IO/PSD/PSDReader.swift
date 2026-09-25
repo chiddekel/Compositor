@@ -79,6 +79,12 @@ nonisolated enum PSDReader {
         var raw = [RawLayer]()
         raw.reserveCapacity(count)
         for _ in 0..<count { raw.append(try readRecord(&cursor, isPSB: isPSB)) }
+        if !fitsBudget(raw, remainingPixels: remainingPixels) {
+            for index in raw.indices {
+                cropToCanvas(&raw[index], width: canvasWidth, height: canvasHeight)
+            }
+            guard fitsBudget(raw, remainingPixels: remainingPixels) else { throw ImageImportError.tooLarge }
+        }
         var usedPixels = 0
         for index in raw.indices {
             try decodeChannels(&cursor, layer: &raw[index], remainingPixels: remainingPixels - usedPixels, isPSB: isPSB)
@@ -93,6 +99,7 @@ nonisolated enum PSDReader {
     private struct RawLayer {
         var name = ""
         var top = 0, left = 0, bottom = 0, right = 0
+        var sourceTop = 0, sourceLeft = 0, sourceBottom = 0, sourceRight = 0
         var opacity: UInt8 = 255
         var fill: UInt8 = 255
         var clipping = false
@@ -101,6 +108,7 @@ nonisolated enum PSDReader {
         var channels: [(id: Int, length: Int)] = []
         var extra: [String: Data] = [:]
         var maskTop = 0, maskLeft = 0, maskBottom = 0, maskRight = 0
+        var sourceMaskTop = 0, sourceMaskLeft = 0, sourceMaskBottom = 0, sourceMaskRight = 0
         var maskDefault: UInt8 = 255
         var maskDisabled = false
         var maskLinked = true
@@ -109,6 +117,9 @@ nonisolated enum PSDReader {
         var section: Int?
         var image: CGImage?
         var maskImage: CGImage?
+        var imageCrop: PSDCrop?
+        var maskCrop: PSDCrop?
+        var cropped = false
     }
 
     private static let psbLargeAdditionalInfoKeys: Set<String> = [
@@ -126,6 +137,10 @@ nonisolated enum PSDReader {
         layer.left = Int(try cursor.i32())
         layer.bottom = Int(try cursor.i32())
         layer.right = Int(try cursor.i32())
+        layer.sourceTop = layer.top
+        layer.sourceLeft = layer.left
+        layer.sourceBottom = layer.bottom
+        layer.sourceRight = layer.right
         let channelCount = Int(try cursor.u16())
         guard channelCount <= 56 else { throw ImageImportError.tooLarge }
         for _ in 0..<channelCount {
@@ -150,6 +165,10 @@ nonisolated enum PSDReader {
             layer.maskLeft = Int(try cursor.i32())
             layer.maskBottom = Int(try cursor.i32())
             layer.maskRight = Int(try cursor.i32())
+            layer.sourceMaskTop = layer.maskTop
+            layer.sourceMaskLeft = layer.maskLeft
+            layer.sourceMaskBottom = layer.maskBottom
+            layer.sourceMaskRight = layer.maskRight
             layer.maskDefault = try cursor.u8()
             let maskFlags = try cursor.u8()
             layer.maskDisabled = (maskFlags & 2) != 0
@@ -204,21 +223,75 @@ nonisolated enum PSDReader {
     /// Transparency, R, G, B, and the user mask. Spot and other extra IDs are skipped before decode.
     private static let unpackedChannelIDs: Set<Int> = [-1, 0, 1, 2, -2]
 
+    private static func fitsBudget(_ layers: [RawLayer], remainingPixels: Int) -> Bool {
+        var usedPixels = 0
+        for layer in layers {
+            let width = max(0, layer.right - layer.left)
+            let height = max(0, layer.bottom - layer.top)
+            let maskWidth = max(0, layer.maskRight - layer.maskLeft)
+            let maskHeight = max(0, layer.maskBottom - layer.maskTop)
+            guard fitsBudget(width: width, height: height, maskWidth: maskWidth, maskHeight: maskHeight,
+                             hasMask: layer.hasMask, remainingPixels: remainingPixels - usedPixels) else { return false }
+            if width > 0, height > 0 { usedPixels += width * height }
+        }
+        return true
+    }
+
+    private static func fitsBudget(width: Int, height: Int, maskWidth: Int, maskHeight: Int, hasMask: Bool,
+                                   remainingPixels: Int) -> Bool {
+        let budget = max(0, remainingPixels)
+        if width > 0, height > 0,
+           !(width <= DocumentLimits.maxSide && height <= DocumentLimits.maxSide && width * height <= budget) { return false }
+        if hasMask, maskWidth > 0, maskHeight > 0,
+           !(maskWidth <= DocumentLimits.maxSide && maskHeight <= DocumentLimits.maxSide && maskWidth * maskHeight <= budget) { return false }
+        return true
+    }
+
+    private static func cropToCanvas(_ layer: inout RawLayer, width: Int, height: Int) {
+        let imageCrop = crop(left: layer.left, top: layer.top, right: layer.right, bottom: layer.bottom,
+                             canvasWidth: width, canvasHeight: height)
+        if imageCrop.x != 0 || imageCrop.y != 0 || imageCrop.width != layer.right - layer.left || imageCrop.height != layer.bottom - layer.top {
+            layer.left += imageCrop.x
+            layer.top += imageCrop.y
+            layer.right = layer.left + imageCrop.width
+            layer.bottom = layer.top + imageCrop.height
+            layer.imageCrop = imageCrop
+            layer.cropped = true
+        }
+        guard layer.hasMask else { return }
+        let maskCrop = crop(left: layer.maskLeft, top: layer.maskTop, right: layer.maskRight, bottom: layer.maskBottom,
+                            canvasWidth: width, canvasHeight: height)
+        if maskCrop.x != 0 || maskCrop.y != 0 || maskCrop.width != layer.maskRight - layer.maskLeft || maskCrop.height != layer.maskBottom - layer.maskTop {
+            layer.maskLeft += maskCrop.x
+            layer.maskTop += maskCrop.y
+            layer.maskRight = layer.maskLeft + maskCrop.width
+            layer.maskBottom = layer.maskTop + maskCrop.height
+            layer.maskCrop = maskCrop
+            layer.cropped = true
+        }
+    }
+
+    private static func crop(left: Int, top: Int, right: Int, bottom: Int, canvasWidth: Int, canvasHeight: Int) -> PSDCrop {
+        let croppedLeft = min(canvasWidth, max(0, left))
+        let croppedTop = min(canvasHeight, max(0, top))
+        let croppedRight = max(croppedLeft, min(canvasWidth, right))
+        let croppedBottom = max(croppedTop, min(canvasHeight, bottom))
+        return PSDCrop(x: croppedLeft - left, y: croppedTop - top,
+                       width: croppedRight - croppedLeft, height: croppedBottom - croppedTop)
+    }
+
     private static func decodeChannels(_ cursor: inout PSDCursor, layer: inout RawLayer, remainingPixels: Int, isPSB: Bool) throws {
         var planes: [Int: [UInt8]] = [:]
         let width = max(0, layer.right - layer.left)
         let height = max(0, layer.bottom - layer.top)
         let maskWidth = max(0, layer.maskRight - layer.maskLeft)
         let maskHeight = max(0, layer.maskBottom - layer.maskTop)
-        let budget = max(0, remainingPixels)
-        if width > 0, height > 0 {
-            guard width <= DocumentLimits.maxSide, height <= DocumentLimits.maxSide, width * height <= budget else { throw ImageImportError.tooLarge }
-        }
-        if layer.hasMask, maskWidth > 0, maskHeight > 0 {
-            guard maskWidth <= DocumentLimits.maxSide, maskHeight <= DocumentLimits.maxSide, maskWidth * maskHeight <= budget else {
-                throw ImageImportError.tooLarge
-            }
-        }
+        guard fitsBudget(width: width, height: height, maskWidth: maskWidth, maskHeight: maskHeight,
+                         hasMask: layer.hasMask, remainingPixels: remainingPixels) else { throw ImageImportError.tooLarge }
+        let sourceWidth = max(0, layer.sourceRight - layer.sourceLeft)
+        let sourceHeight = max(0, layer.sourceBottom - layer.sourceTop)
+        let sourceMaskWidth = max(0, layer.sourceMaskRight - layer.sourceMaskLeft)
+        let sourceMaskHeight = max(0, layer.sourceMaskBottom - layer.sourceMaskTop)
         for channel in layer.channels {
             let start = cursor.offset
             defer { cursor.offset = start + max(0, channel.length) }
@@ -226,10 +299,14 @@ nonisolated enum PSDReader {
             let compression = Int(try cursor.u16())
             let payload = try cursor.bytes(channel.length - 2)
             let isMask = channel.id == -2
-            let w = isMask ? maskWidth : width
-            let h = isMask ? maskHeight : height
-            if w > 0, h > 0 {
-                planes[channel.id] = try PSDChannelCoder.decode(compression: compression, width: w, height: h, data: payload, largeDocument: isPSB)
+            let sourceW = isMask ? sourceMaskWidth : sourceWidth
+            let sourceH = isMask ? sourceMaskHeight : sourceHeight
+            let targetW = isMask ? maskWidth : width
+            let targetH = isMask ? maskHeight : height
+            let crop = isMask ? layer.maskCrop : layer.imageCrop
+            if targetW > 0, targetH > 0 {
+                planes[channel.id] = try PSDChannelCoder.decode(compression: compression, width: sourceW, height: sourceH,
+                                                                 data: payload, largeDocument: isPSB, crop: crop)
             }
         }
         if layer.hasMask, maskWidth > 0, maskHeight > 0, let gray = planes[-2], gray.count >= maskWidth * maskHeight {
@@ -267,6 +344,7 @@ nonisolated enum PSDReader {
             record.blendKey = isGroup && (layer.blendKey == "pass" || layer.blendKey == "norm") ? "pass" : layer.blendKey
             record.clipping = layer.clipping
             record.kind = kind(layer, isGroup: isGroup)
+            record.croppedToCanvas = layer.cropped
             let hasEffects = record.kind == .effects || layer.extra.keys.contains(where: { ["lfx2", "lrFX", "lmfx"].contains($0) })
             if hasEffects, layer.fill != 255 {
                 record.opacity = Double(layer.opacity) / 255

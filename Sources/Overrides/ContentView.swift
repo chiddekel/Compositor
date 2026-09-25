@@ -40,6 +40,8 @@ import Sparkle
         self.workspace = workspace
         projects = ShellProjects(workspace: workspace)
     }
+    /// A fresh workspace, as the real delegate starts with (`let workspace = ProjectWorkspace()`).
+    convenience init() { self.init(workspace: ProjectWorkspace()) }
 }
 
 struct ContentView: View {

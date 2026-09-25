@@ -13,6 +13,7 @@ public struct UTType: Hashable, Sendable {
         "public.content": Info(ext: [], mime: nil, parents: ["public.item"]),
         "public.image": Info(ext: [], mime: nil, parents: ["public.data", "public.content"]),
         "public.png": Info(ext: ["png"], mime: "image/png", parents: ["public.image"]),
+        "public.svg-image": Info(ext: ["svg"], mime: "image/svg+xml", parents: ["public.image"]),
         "public.jpeg": Info(ext: ["jpg", "jpeg"], mime: "image/jpeg", parents: ["public.image"]),
         "public.tiff": Info(ext: ["tiff", "tif"], mime: "image/tiff", parents: ["public.image"]),
         "public.heic": Info(ext: ["heic"], mime: "image/heic", parents: ["public.image"]),
@@ -81,6 +82,7 @@ public struct UTType: Hashable, Sendable {
     public static let content = UTType("public.content")!
     public static let image = UTType("public.image")!
     public static let png = UTType("public.png")!
+    public static let svg = UTType("public.svg-image")!
     public static let jpeg = UTType("public.jpeg")!
     public static let tiff = UTType("public.tiff")!
     public static let heic = UTType("public.heic")!

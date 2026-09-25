@@ -360,6 +360,26 @@ extension View {
             if let ended = gesture.onEndedAction { node.modifiers.append(.sink("dragEnded", { if let v = value($0) { ended(v) } })) }
         }
     }
+    /// The pointer over the view: `.active(location)` as it moves (the shell reports points in the view), `.ended`
+    /// when it leaves.
+    public func onContinuousHover(coordinateSpace: CoordinateSpace = .local, perform action: @escaping (HoverPhase) -> Void) -> some View {
+        modified {
+            $0.modifiers.append(.sink("onContinuousHover", { value in
+                if let point = value as? [Any], point.count == 2 {
+                    let x = (point[0] as? Double) ?? Double((point[0] as? Int) ?? 0)
+                    let y = (point[1] as? Double) ?? Double((point[1] as? Int) ?? 0)
+                    action(.active(CGPoint(x: x, y: y)))
+                } else {
+                    action(.ended)
+                }
+            }))
+        }
+    }
+    public func onHover(perform action: @escaping (Bool) -> Void) -> some View {
+        onContinuousHover { phase in
+            if case .active = phase { action(true) } else { action(false) }
+        }
+    }
     public func onTapGesture(count: Int = 1, perform action: @escaping () -> Void) -> some View {
         modified {
             $0.modifiers.append(.tapGesture(count: max(1, count)))

@@ -25,7 +25,27 @@ open class NSImage: @unchecked Sendable {
         }
     }
 
+    /// An SVG file's contents: kept as vectors and drawn at the size it is drawn at (AppKit's NSSVGImageRep), not
+    /// rasterized once and scaled.
+    var svgData: Data?
     public init(size: CGSize) { self.size = size }
+    /// A file's image: SVG kept as vectors (drawn by the host's SVG renderer), anything else decoded as ImageIO does.
+    public convenience init?(contentsOf url: URL) {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let head = String(decoding: data.prefix(1024), as: UTF8.self)
+        if url.pathExtension.lowercased() == "svg" || head.contains("<svg") {
+            guard let declared = SVGRenderer.declaredSize(data) else { return nil }
+            self.init(size: declared)
+            svgData = data
+            return
+        }
+        self.init(data: data)
+    }
+    /// The SVG at `pixels`, or nil when this isn't an SVG (or no renderer is available).
+    func svgImage(pixels: CGSize) -> CGImage? {
+        guard let svgData else { return nil }
+        return SVGRenderer.render(svgData, width: max(1, Int(pixels.width.rounded())), height: max(1, Int(pixels.height.rounded())))
+    }
     public init(cgImage: CGImage, size: CGSize) { self.bitmap = cgImage; self.size = size }
     public convenience init?(data: Data) {
         guard let decoded = ImageCodecRegistry.decode(data) else { return nil }
@@ -68,7 +88,7 @@ open class NSImage: @unchecked Sendable {
     }
 
     public func cgImage(forProposedRect proposedDestRect: UnsafeMutablePointer<CGRect>?, context: NSGraphicsContext?,
-                        hints: [NSImageRep.HintKey: Any]?) -> CGImage? { bitmap }
+                        hints: [NSImageRep.HintKey: Any]?) -> CGImage? { bitmap ?? svgImage(pixels: size) }
     public func draw(in rect: CGRect, from source: CGRect, operation: NSCompositingOperation, fraction: CGFloat,
                      respectFlipped: Bool, hints: [NSImageRep.HintKey: Any]?) {
         draw(in: rect, from: source, operation: operation, fraction: fraction)
@@ -146,5 +166,40 @@ extension NSGraphicsContext {
     public convenience init?(bitmapImageRep rep: NSBitmapImageRep) {
         guard let ctx = rep.context else { return nil }
         self.init(cgContext: ctx, flipped: false)
+    }
+}
+
+/// The host's SVG renderer (Qt's SVG image plugin, through the ImageIO backend library).
+enum SVGRenderer {
+    typealias RenderFn = @convention(c) (UnsafePointer<UInt8>?, Int, Int32, Int32, UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+                                         UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
+    nonisolated(unsafe) static let function: RenderFn? = {
+        #if canImport(Glibc)
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_svg_render") else { continue }
+            return unsafeBitCast(sym, to: RenderFn.self)
+        }
+        #endif
+        return nil
+    }()
+    static func declaredSize(_ data: Data) -> CGSize? {
+        guard let function else { return nil }
+        var w: Int32 = 0, h: Int32 = 0
+        let status = data.withUnsafeBytes { function($0.bindMemory(to: UInt8.self).baseAddress, data.count, 0, 0, nil, &w, &h) }
+        return status == 0 && w > 0 && h > 0 ? CGSize(width: Int(w), height: Int(h)) : nil
+    }
+    static func render(_ data: Data, width: Int, height: Int) -> CGImage? {
+        guard let function else { return nil }
+        var pixels: UnsafeMutablePointer<UInt8>?
+        let status = data.withUnsafeBytes { function($0.bindMemory(to: UInt8.self).baseAddress, data.count, Int32(width), Int32(height), &pixels, nil, nil) }
+        guard status == 0, let pixels else { return nil }
+        defer { free(pixels) }
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let destination = context.data else { return nil }
+        destination.copyMemory(from: pixels, byteCount: width * height * 4)
+        return context.makeImage()
     }
 }

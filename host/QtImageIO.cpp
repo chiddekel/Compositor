@@ -414,6 +414,40 @@ extern "C" int64_t compositor_qt_font_names(char *out, size_t capacity) {
     return bytes.size();
 }
 
+// An SVG drawn by Qt's SVG image plugin: its declared size in `declaredWidth/Height`, and — when `width` and `height`
+// are positive — the drawing at exactly that size in `out` (premultiplied RGBA8, malloc'd, the caller frees). 0 on success.
+extern "C" int32_t compositor_qt_svg_render(const uint8_t *data, size_t length, int32_t width, int32_t height, uint8_t **out,
+                                           int32_t *declaredWidth, int32_t *declaredHeight) {
+    if (!data || !length) return -1;
+    QByteArray bytes = QByteArray::fromRawData(reinterpret_cast<const char *>(data), static_cast<qsizetype>(length));
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer, "svg");
+    const QSize declared = reader.size();
+    if (!declared.isValid() || declared.isEmpty()) return -2;
+    if (declaredWidth) *declaredWidth = declared.width();
+    if (declaredHeight) *declaredHeight = declared.height();
+    if (width <= 0 || height <= 0 || !out) return 0;
+    reader.setScaledSize(QSize(width, height));
+    const QImage image = reader.read().convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+    if (image.isNull() || image.width() != width || image.height() != height) return -3;
+    const size_t bytesPerLine = size_t(width) * 4;
+    auto *pixels = static_cast<uint8_t *>(malloc(bytesPerLine * size_t(height)));
+    if (!pixels) return -4;
+    for (int y = 0; y < height; ++y) memcpy(pixels + y * bytesPerLine, image.constScanLine(y), bytesPerLine);
+    *out = pixels;
+    return 0;
+}
+
+// The font's vertical metrics in points (NSFont's ascender, descender — negative, below the baseline — and leading).
+extern "C" int compositor_qt_font_metrics(const char *name, double pointSize, double *ascent, double *descent, double *leading) {
+    const QFontMetricsF metrics(fontFor(name, pointSize));
+    if (ascent) *ascent = metrics.ascent();
+    if (descent) *descent = -metrics.descent();
+    if (leading) *leading = metrics.leading();
+    return 1;
+}
+
 extern "C" int compositor_qt_text_functions(CompositorTextLayoutFn *layout, CompositorTextRenderFn *render) {
     if (!layout || !render) return 0;
     *layout = textLayout;

@@ -20,6 +20,11 @@ open class NSFont: @unchecked Sendable {
         fontName = name; pointSize = size
     }
     private init(system size: CGFloat) { fontName = "System"; pointSize = size }
+    /// AppKit's vertical metrics: from the installed face through the Qt text engine; without it, typical proportions
+    /// (0.8 em above the baseline, 0.2 below).
+    public var ascender: CGFloat { TextBackend.metrics(self)?.ascender ?? pointSize * 0.8 }
+    public var descender: CGFloat { TextBackend.metrics(self)?.descender ?? -pointSize * 0.2 }
+    public var leading: CGFloat { TextBackend.metrics(self)?.leading ?? 0 }
     public static func systemFont(ofSize size: CGFloat) -> NSFont { NSFont(system: size) }
     public static func systemFont(ofSize size: CGFloat, weight: Weight) -> NSFont { NSFont(system: size) }
     public static func monospacedDigitSystemFont(ofSize size: CGFloat, weight: Weight = .regular) -> NSFont { NSFont(system: size) }
@@ -42,6 +47,7 @@ extension NSAttributedString.Key {
     public static let foregroundColor = NSAttributedString.Key("NSColor")
     public static let paragraphStyle = NSAttributedString.Key("NSParagraphStyle")
     public static let kern = NSAttributedString.Key("NSKern")
+    public static let backgroundColor = NSAttributedString.Key("NSBackgroundColor")
 }
 
 public struct NSStringDrawingOptions: OptionSet, Sendable {
@@ -261,7 +267,25 @@ open class NSTextStorage {
         manager.textStorage = self
     }
 
-    open func setAttributes(_ attributes: [NSAttributedString.Key: Any]?, range: NSRange) {}
+    /// Attribute runs set on the text, latest last.
+    private var runs: [(range: NSRange, attributes: [NSAttributedString.Key: Any])] = []
+    open func setAttributes(_ attributes: [NSAttributedString.Key: Any]?, range: NSRange) {
+        runs.append((range, attributes ?? [:]))
+    }
+    open func addAttribute(_ name: NSAttributedString.Key, value: Any, range: NSRange) {
+        runs.append((range, [name: value]))
+    }
+    /// The attribute at `location`: the last run covering it that set `name` (then the whole text's attributes).
+    open func attribute(_ name: NSAttributedString.Key, at location: Int, effectiveRange range: NSRangePointer?) -> Any? {
+        for run in runs.reversed() where NSLocationInRange(location, run.range) || (run.range.length == 0 && location == run.range.location) {
+            if let value = run.attributes[name] {
+                range?.pointee = run.range
+                return value
+            }
+        }
+        guard location < attributedString.length else { return nil }
+        return attributedString.attribute(name, at: location, effectiveRange: range)
+    }
 }
 
 extension NSString {

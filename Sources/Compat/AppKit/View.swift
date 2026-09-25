@@ -334,6 +334,22 @@ public enum NSAccessibility {
     /// The pointer in window coordinates; the host updates `NSEvent.mouseLocation`.
     open var mouseLocationOutsideOfEventStream: CGPoint { convertPoint(fromScreen: NSEvent.mouseLocation) }
     open func close() { isVisible = false }
+    public enum ButtonType: Int, Sendable { case closeButton, miniaturizeButton, zoomButton, toolbarButton, documentIconButton }
+    private var titleBarButtons: [ButtonType: NSButton] = [:]
+    /// The title bar's buttons; the close button asks the delegate first (`performClose`), as AppKit's does.
+    open func standardWindowButton(_ type: ButtonType) -> NSButton? {
+        guard type == .closeButton ? styleMask.contains(.closable) : true else { return nil }
+        if let button = titleBarButtons[type] { return button }
+        let button = NSButton(frame: .zero)
+        if type == .closeButton { button.clickHandler = { [weak self] in self?.performClose(nil) } }
+        titleBarButtons[type] = button
+        return button
+    }
+    /// Closes the window unless its delegate refuses (`windowShouldClose`), as the close button and File > Close do.
+    open func performClose(_ sender: Any?) {
+        if let delegate, !delegate.windowShouldClose(self) { return }
+        close()
+    }
     open func orderOut(_ sender: Any?) { isVisible = false }
     /// A title-bar drag (upstream's `TitleBarDragView.mouseDown`). The Qt shell's frameless window moves itself —
     /// `SessionWindow::eventFilter` starts `QWindow::startSystemMove()` from the header's empty space — so there is no
@@ -426,6 +442,15 @@ public struct NSScreen {
 @MainActor open class NSButton: NSControl {
     public var title = "", state = 0
     public var isBordered = true
+    public var keyEquivalent = ""
+    /// What a click does when AppKit itself owns the button (an alert's, a window's close button).
+    var clickHandler: (() -> Void)?
+    /// Clicks the button: its own action (an alert or title-bar button), else its target-action, as AppKit does.
+    open func performClick(_ sender: Any?) {
+        guard isEnabled else { return }
+        if let clickHandler { clickHandler(); return }
+        if let action { NSApp.sendAction(action, to: target, from: self) }
+    }
 }
 @MainActor open class NSTableColumn { public var identifier: NSUserInterfaceItemIdentifier; public var width: CGFloat = 100
     public init(identifier: NSUserInterfaceItemIdentifier) { self.identifier = identifier } }

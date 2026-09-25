@@ -127,7 +127,7 @@ struct PSDRoundTripTests {
 
     @Test func oversizedLayerBoundsAreRejected() throws {
         #expect(throws: ImageImportError.tooLarge) {
-            try PSDReader.read(oversizedLayerFile(width: 8, height: 8, layerWidth: 30_000, layerHeight: 30_000))
+            try PSDReader.read(oversizedLayerFile(width: 8, height: 8, layerWidth: 30_000, layerHeight: 30_000), remainingPixels: 50)
         }
         let fill = try colorImage(width: 20, height: 20, red: 1, green: 0, blue: 0)
         var layer = PSDRecord(id: UUID(), name: "Huge")

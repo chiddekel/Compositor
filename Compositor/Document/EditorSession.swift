@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ImageLayer: Identifiable, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -23,7 +24,7 @@ struct ImageLayer: Identifiable, Equatable {
     /// A stroke and drop shadow drawn around the layer, kept apart from its pixels.
     var effects: LayerEffects?
     var text: LayerText?
-    var size: CGSize { transform.size }
+    nonisolated var size: CGSize { transform.size }
 
     init(asset: ImportedImage, origin: CGPoint) {
         self.id = UUID()
@@ -766,6 +767,10 @@ final class EditorSession {
                     let thumbnail = try PixelAdjust.thumbnail(of: developed)
                     insert(ImportedImage(image: developed, thumbnail: thumbnail,
                                          name: url.deletingPathExtension().lastPathComponent), centeredAt: point)
+                } else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .svg) == true {
+                    let asset = try await ImageImporter.shared.decodeSVG(url, fitting: document?.size,
+                                                                         remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
+                    insert(asset, centeredAt: point)
                 } else if PSDReader.matches(url) {
                     beginPSDReading(title: "Open “\(url.lastPathComponent)”?", confirmTitle: "Import")
                     let imported: PSDImport

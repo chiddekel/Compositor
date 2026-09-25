@@ -71,6 +71,10 @@ public final class NSCursor: @unchecked Sendable, Equatable {
     public func pop() { NSCursor.pop() }
     public static func pop() { (stack.popLast() ?? arrow).set() }
     public static func hide() {}
+    /// AppKit hides the pointer while typing until the mouse moves; the Qt shell owns pointer visibility, so this
+    /// records the request only.
+    nonisolated(unsafe) public static var hiddenUntilMouseMoves = false
+    public static func setHiddenUntilMouseMoves(_ flag: Bool) { hiddenUntilMouseMoves = flag }
     public static func unhide() {}
 
     public static func == (lhs: NSCursor, rhs: NSCursor) -> Bool { lhs === rhs }

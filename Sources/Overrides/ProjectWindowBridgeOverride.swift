@@ -69,3 +69,10 @@ extension ProjectWindowBridge {
         self.init(controller: (projects.workspace ?? Workspace.shared).current.controller)
     }
 }
+
+extension ProjectWindowView {
+    /// The Linux delegate's `projects` (ShellProjects) stands for the current tab's controller.
+    convenience init(controller projects: ShellProjects) {
+        self.init(controller: (projects.workspace ?? Workspace.shared).current.controller)
+    }
+}
