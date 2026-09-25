@@ -99,9 +99,9 @@ metrics (GuideTests excluded).
 
 | Element | macOS | Linux |
 |---|---|---|
-| **System clipboard** (copy to / paste from other apps) | ✅ | ❌ in-process only — `NSPasteboard` has no desktop backend installed |
-| **Trackpad pinch to zoom** (`magnify(with:)`) | ✅ | ❌ Qt native zoom gestures aren't forwarded to the canvas |
-| New canvas from clipboard size (`NewCanvasSheet.clipboardDimensions`) | ✅ | ❌ follows from the clipboard gap |
+| System clipboard (copy to / paste from other apps) | ✅ | ✅ `NSPasteboard.general` over `QClipboard` (c9a45a7) |
+| Trackpad pinch to zoom (`magnify(with:)`) | ✅ | ✅ Qt zoom gesture → upstream `CanvasView.magnify(with:)` |
+| New canvas from clipboard size (`NewCanvasSheet.clipboardDimensions`) | ✅ | ✅ |
 | GPU canvas compositing | Metal | 🟡 Skia raster (Vulkan device set up, rendering falls back) — correct, slower on huge documents |
 | Subject / Remove Background model | Vision | 🟡 classical segmenter |
 | Window chrome | native title bar | 🟡 drawn traffic lights + header by the Qt shell |
@@ -109,9 +109,9 @@ metrics (GuideTests excluded).
 
 ## Order of work (one by one)
 
-1. System clipboard both ways (images and text) — `NSPasteboard.Backend` over `QClipboard`.
-2. Trackpad pinch zoom — `QNativeGestureEvent` → upstream `CanvasView.magnify(with:)`.
-3. New canvas from clipboard size (falls out of 1; verify).
+1. ~~System clipboard both ways~~ — done.
+2. ~~Trackpad pinch zoom~~ — done.
+3. ~~New canvas from clipboard size~~ — done.
 4. Keyboard Shortcuts recorder parity (click to record, Esc/Delete semantics).
 5. Recent documents to the desktop (XDG `recently-used.xbel`).
 6. Subject / Remove Background quality (model-backed segmentation behind the Vision API).

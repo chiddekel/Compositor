@@ -83,6 +83,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QMenu>
 #include <QPixmap>
 #include <QWheelEvent>
+#include <QNativeGestureEvent>
 #include <QKeyEvent>
 #include <QInputDialog>
 
@@ -104,6 +105,7 @@ int32_t compositor_canvas_resize(uint64_t handle, double width, double height, d
 typedef int32_t (*compositor_symbol_renderer)(const char *name, int32_t width, int32_t height, double r, double g, double b, double a, uint8_t *output);
 void compositor_set_symbol_renderer(compositor_symbol_renderer render);
 int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
+int32_t compositor_canvas_magnify(uint64_t handle, double x, double y, double magnification);
 int32_t compositor_canvas_key(uint64_t handle, int32_t keyCode, const char *characters, int32_t modifiers, int32_t isRepeat);
 int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double y, int32_t modifiers, int32_t clickCount);
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
@@ -222,6 +224,17 @@ protected:
     }
     void wheelEvent(QWheelEvent *event) override {
         m_window->canvasWheelEvent(event);
+    }
+    // A trackpad pinch: upstream's magnify(with:) (EditorCanvas zooms about the pointer).
+    bool event(QEvent *event) override {
+        if (event->type() == QEvent::NativeGesture) {
+            auto *gesture = static_cast<QNativeGestureEvent *>(event);
+            if (gesture->gestureType() == Qt::ZoomNativeGesture) {
+                m_window->canvasMagnify(gesture->position(), gesture->value());
+                return true;
+            }
+        }
+        return QWidget::event(event);
     }
 private:
     SessionWindow *m_window;
@@ -2989,6 +3002,14 @@ double SessionWindow::viewportZoom() const {
     double v[6] = {};
     if (m_sessionHandle == 0 || compositor_session_viewport(m_sessionHandle, v) != 0) return 1.0;
     return v[0];
+}
+
+void SessionWindow::canvasMagnify(const QPointF &position, double magnification) {
+    if (m_sessionHandle == 0 || m_image.isNull() || m_painting) return;
+    syncViewportGeometry();
+    compositor_canvas_magnify(m_sessionHandle, position.x(), position.y(), magnification);
+    refreshImage();
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 /// EditorCanvas.scrollWheel: Ctrl (⌘) or Alt zooms about the pointer, otherwise the wheel pans.

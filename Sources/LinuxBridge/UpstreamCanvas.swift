@@ -47,6 +47,16 @@ import AppKit
         }
     }
 
+    /// A trackpad pinch (Qt's zoom gesture): upstream's `magnify(with:)`, zooming about the pointer by `1 + magnification`.
+    func magnify(x: Double, y: Double, magnification: Double) {
+        let location = CGPoint(x: x, y: view.bounds.height - y)
+        guard let event = NSEvent.mouseEvent(with: .magnify, location: location, modifierFlags: [],
+                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                             context: nil, eventNumber: 0, clickCount: 1, pressure: 0) else { return }
+        event.magnification = CGFloat(magnification)
+        view.magnify(with: event)
+    }
+
     /// The cursor as a code the shell maps: 0 arrow, 1 I-beam, 2 crosshair, 3 open hand, 4 closed hand, 5 pointing hand,
     /// 6 left-right, 7 up-down, 8 diagonal ↖↘, 9 diagonal ↗↙, 10 a picture of the app's own (not yet mapped).
     static func cursorCode(_ cursor: NSCursor) -> Int32 {
@@ -161,6 +171,14 @@ nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _
     Int32(withEntry(handle) { entry in
         UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers), clickCount: Int(clickCount))
         return Int64(UpstreamCanvas.cursorCode(NSCursor.current))
+    })
+}
+
+@_cdecl("compositor_canvas_magnify")
+nonisolated public func compositorCanvasMagnify(_ handle: UInt64, _ x: Double, _ y: Double, _ magnification: Double) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        UpstreamCanvases.canvas(handle, entry).magnify(x: x, y: y, magnification: magnification)
+        return 0
     })
 }
 

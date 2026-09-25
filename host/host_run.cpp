@@ -29,6 +29,8 @@
 #include <QMimeData>
 #include <QAction>
 #include <QElapsedTimer>
+#include <QNativeGestureEvent>
+#include <QPointingDevice>
 #include <QClipboard>
 #include <cstdio>
 #include <QCoreApplication>
@@ -458,6 +460,22 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                              name, hover, press, drag, release, settle);
             }
             return 0;
+        }
+        // COMPOSITOR_GRAB_PINCH=<magnification>[,steps]: a trackpad pinch over the canvas centre, as the touchpad sends it.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_PINCH").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_PINCH").split(QLatin1Char(','));
+            if (QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"))) {
+                window.show();
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                const QPointF centre(canvas->width() / 2.0, canvas->height() / 2.0);
+                for (int step = 0; step < std::max(1, v.value(1).toInt()); ++step) {
+                    QNativeGestureEvent pinch(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, centre,
+                                              canvas->mapTo(&window, centre), canvas->mapToGlobal(centre), v.value(0).toDouble(),
+                                              QPointF(), 0);
+                    QCoreApplication::sendEvent(canvas, &pinch);
+                }
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            }
         }
         // COMPOSITOR_GRAB_CLIPBOARD_REPORT=1: what the desktop clipboard holds now (after the menu items above).
         if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_CLIPBOARD_REPORT")) {

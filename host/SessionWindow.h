@@ -345,6 +345,7 @@ private:
     double viewportZoom() const;
     void changeViewport(int op, double a = 0, double b = 0, double c = 0);
     void canvasWheelEvent(QWheelEvent *event);
+    void canvasMagnify(const QPointF &position, double magnification);
 
     // Document tabs: each open document owns its own Swift session handle. m_sessionHandle always mirrors
     // m_documents[m_activeDocumentIndex].handle — the rest of this class keeps addressing m_sessionHandle
