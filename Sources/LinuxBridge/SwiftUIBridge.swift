@@ -175,6 +175,9 @@ struct CompositorStatusBar: View {
     case "HueSaturationSheet": resolved = ViewResolver.resolve(HueSaturationSheet(session: session))
     case "FilterSheet": resolved = ViewResolver.resolve(FilterSheet(session: session))
     case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session))
+    case "SelectionAmountSheet":
+        guard let operation = session.selectionAmountOperation else { return nil }
+        resolved = ViewResolver.resolve(SelectionAmountSheet(session: session, operation: operation).id(operation.rawValue))
     case "Welcome":
         // ContentView's `welcome`: the New Canvas sheet over the canvas while the tab has no document.
         guard session.document == nil else { return nil }

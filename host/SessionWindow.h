@@ -452,6 +452,7 @@ private:
     QByteArray m_appMenusJson;
     bool m_appMenusSyncQueued = false;
     bool m_handlingShellRequests = false;
+    int m_panelPollTick = 0;
     QStringList m_appMenuShape;
     QList<QMenu *> m_appMenus, m_legacyMenus;
     QHash<QString, QAction *> m_appMenuActions;

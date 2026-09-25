@@ -359,7 +359,7 @@ public struct LinearGradient: View, PrimitiveView {
     }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "LinearGradient")
-        node.stringParams["colors"] = colors.map(\.name).joined(separator: ",")
+        node.stringParams["colors"] = colors.map(\.name).joined(separator: "|")   // color tokens can hold commas
         node.stringParams["startPoint"] = startPoint.name
         node.stringParams["endPoint"] = endPoint.name
         return node

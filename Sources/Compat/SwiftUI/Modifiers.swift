@@ -88,7 +88,8 @@ extension View {
     public func contentShape(_ shape: StyleToken) -> some View { modified { $0.modifiers.append(.contentShape(shape.name)) } }
     public func contentShape<S: Shape>(_ shape: S) -> some View { modified { $0.modifiers.append(.contentShape("\(S.self)")) } }
     public func monospacedDigit() -> some View { modified { $0.modifiers.append(.font("monospacedDigit")) } }
-    public func position(x: Double = 0, y: Double = 0) -> some View { self }
+    public func position(x: Double = 0, y: Double = 0) -> some View { modified { $0.modifiers.append(.position(x: x, y: y)) } }
+    public func position(_ point: CGPoint) -> some View { position(x: point.x, y: point.y) }
     public func coordinateSpace(name: some Hashable) -> some View { self }
     public func tint(_ color: Color?) -> some View { modified { $0.modifiers.append(.foregroundStyle(color?.name ?? "accentColor")) } }
     public func clipShape(_ shape: StyleToken) -> some View { modified { $0.modifiers.append(.clipShape(shape.name)) } }
@@ -108,7 +109,13 @@ extension View {
     public func rotationEffect(_ angle: Angle) -> some View { modified { $0.modifiers.append(.rotationEffect(angle.radians)) } }
     public func overlay<V: View>(alignment: Alignment = .center, @ViewBuilder _ content: () -> V) -> some View {
         let overlayNode = ViewResolver.resolveList(content(), path: ViewResolver.nestedPath("overlay")).first ?? RenderNode(kind: "_Empty")
-        return modified { $0.modifiers.append(.overlay(overlayNode, alignment: alignment.name)) }
+        // An "Overlay" node: the view, then what lies over it (sized to the view, at `alignment`).
+        return modified { base in
+            var wrapper = RenderNode(kind: "Overlay")
+            wrapper.stringParams["alignment"] = alignment.name
+            wrapper.children = [base, overlayNode]
+            base = wrapper
+        }
     }
     public func overlay<V: View>(_ overlayView: V, alignment: Alignment = .center) -> some View {
         overlay(alignment: alignment) { overlayView }
@@ -235,6 +242,19 @@ extension View {
         }
     }
     public func gesture<G>(_ gesture: G) -> some View { self }
+    /// A drag: the shell reports the pointer as [x, y, translationX, translationY] in the enclosing GeometryReader's
+    /// space, while it moves ("dragChanged") and when it lets go ("dragEnded").
+    public func gesture(_ gesture: DragGesture) -> some View {
+        func value(_ any: Any) -> DragGesture.Value? {
+            guard let list = any as? [Any], list.count == 4 else { return nil }
+            let n = list.map { ($0 as? Double) ?? ($0 as? Int).map(Double.init) ?? 0 }
+            return DragGesture.Value(location: CGPoint(x: n[0], y: n[1]), translation: CGSize(width: n[2], height: n[3]))
+        }
+        return modified { node in
+            if let changed = gesture.onChangedAction { node.modifiers.append(.sink("dragChanged", { if let v = value($0) { changed(v) } })) }
+            if let ended = gesture.onEndedAction { node.modifiers.append(.sink("dragEnded", { if let v = value($0) { ended(v) } })) }
+        }
+    }
     public func onTapGesture(count: Int = 1, perform action: @escaping () -> Void) -> some View {
         modified { $0.modifiers.append(.sink("onTapGesture", { value in
             // The shell sends the click's modifier keys; they are current while the action runs (CompatInput).

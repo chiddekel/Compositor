@@ -1062,6 +1062,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     connect(m_mainPumpTimer, &QTimer::timeout, this, [this] {
         compositor_pump_main();
         if (m_sessionHandle == 0 || m_painting) return;
+        // Floating panels whose view changes without the session state changing (a histogram computed in a Task).
+        if (!m_floatingPanels.isEmpty() && ++m_panelPollTick % 6 == 0) updateFloatingPanels();
         // Menu items whose upstream action is a Task (Canvas Size…, Save, ...) ask the shell once that task runs.
         if (!m_handlingShellRequests) {
             m_handlingShellRequests = true;

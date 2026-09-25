@@ -93,6 +93,8 @@ public enum RenderModifier {
     case sink(String, (Any) -> Void)
     /// Share of a stack's space: higher priorities are sized first (`.layoutPriority`).
     case layoutPriority(Double)
+    /// `.position(x:y:)`: the view's center in its parent's (a GeometryReader's) space.
+    case position(x: Double, y: Double)
     /// A watched value (`.onChange(of:)`, `.task(id:)`); acted on by ChangeTracker, never sent to the shell.
     case observe(ChangeObserver)
 }
@@ -254,6 +256,23 @@ public enum ViewResolver {
     static func resolveList(_ view: any View, path: String) -> [RenderNode] {
         if let list = view as? any _ViewListProviding {
             return list._viewList.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
+        }
+        if let reader = view as? any _GeometryReading {
+            let key = "\(StateStore.currentScope ?? "")|\(path)"
+            let size = GeometrySizes.sizes[key] ?? .zero
+            var node = RenderNode(kind: "GeometryReader")
+            node.children = resolveList(reader._content(size: size), path: path + ".0")
+            node.stringParams["geometryKey"] = key
+            node.doubleParams["width"] = Double(size.width)
+            node.doubleParams["height"] = Double(size.height)
+            // The shell reports the size it laid the reader out at: [width, height].
+            node.handlers["size"] = { value in
+                guard let pair = value as? [Any], pair.count == 2,
+                      let w = (pair[0] as? Double) ?? (pair[0] as? Int).map(Double.init),
+                      let h = (pair[1] as? Double) ?? (pair[1] as? Int).map(Double.init) else { return }
+                GeometrySizes.sizes[key] = CGSize(width: w, height: h)
+            }
+            return [node]
         }
         if let primitive = view as? any PrimitiveView {
             let path = (primitive as? ModifiedContent)?.identity.map { "\(path)#\($0)" } ?? path

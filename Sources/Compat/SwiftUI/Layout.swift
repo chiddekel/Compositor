@@ -168,13 +168,25 @@ public struct GridRow<Content: View>: View, PrimitiveView {
     }
 }
 
-public struct GeometryReader<Content: View>: View, PrimitiveView {
+/// Views whose content depends on the size they are given (GeometryReader): resolved with the size the shell last
+/// reported for that place in the tree (GeometrySizes), and re-resolved when it reports a new one.
+protocol _GeometryReading {
+    func _content(size: CGSize) -> any View
+}
+
+public struct GeometryReader<Content: View>: View, PrimitiveView, _GeometryReading {
     let content: (GeometryProxy) -> Content
     public init(@ViewBuilder content: @escaping (GeometryProxy) -> Content) { self.content = content }
     public var _childViews: [any View] { [content(GeometryProxy(size: .zero))] }
+    func _content(size: CGSize) -> any View { content(GeometryProxy(size: size)) }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "GeometryReader")
         node.children = children
         return node
     }
+}
+
+/// The sizes the shell reported for GeometryReaders, by place (scope and tree path).
+public enum GeometrySizes {
+    nonisolated(unsafe) static var sizes: [String: CGSize] = [:]
 }

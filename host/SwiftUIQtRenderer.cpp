@@ -16,6 +16,8 @@
 
 #include "SwiftUIQtRenderer.h"
 #include "LucideIcons.h"
+#include <QPointer>
+#include <QStyleOption>
 #include <QSvgRenderer>
 #include "PerfTrace.h"
 #include <QTimer>
@@ -63,7 +65,9 @@ namespace {
 class SwiftUICanvasWidget : public QWidget {
 public:
     SwiftUICanvasWidget(uint64_t handle, QString panel, QString nodeID, QWidget *parent = nullptr)
-        : QWidget(parent), m_handle(handle), m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) {}
+        : QWidget(parent), m_handle(handle), m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);   // a Canvas takes the space it is offered
+    }
 
 protected:
     void paintEvent(QPaintEvent *) override {
@@ -74,9 +78,18 @@ protected:
         const int64_t written = compositor_session_render_swiftui_canvas(
             m_handle, panelUtf8.constData(), nodeUtf8.constData(), static_cast<size_t>(w), static_cast<size_t>(h),
             reinterpret_cast<uint8_t *>(bytes.data()), capacity);
-        if (written != static_cast<int64_t>(capacity)) return;
+        if (written != static_cast<int64_t>(capacity)) {
+            QPainter painter(this);
+            QStyleOption option;
+            option.initFrom(this);
+            style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
+            return;
+        }
         const QImage image(reinterpret_cast<const uchar *>(bytes.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied);
         QPainter painter(this);
+        QStyleOption option;   // its .background first, as a style sheet paints it
+        option.initFrom(this);
+        style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
         painter.drawImage(0, 0, image);
     }
 
@@ -163,6 +176,7 @@ public:
                        QWidget *parent = nullptr)
         : QWidget(parent), m_shapeKind(shapeKind), m_cornerRadius(cornerRadius),
           m_fillColor(fillColor), m_strokeColor(strokeColor), m_strokeWidth(strokeWidth) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);   // a Shape fills what it is offered
         setAttribute(Qt::WA_TransparentForMouseEvents, true);
     }
 
@@ -1012,6 +1026,180 @@ private:
 
 QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &node);
 
+/// SwiftUI's GeometryReader: fills what it is given, tells the view its size (which re-resolves the content for it), and
+/// places children with `.position(x:y:)` by their centre (the rest fill it). A press on a child with a DragGesture is
+/// tracked here, in this view's space, and the content re-resolved as it moves.
+class SwiftUIGeometryWidget : public QWidget {
+public:
+    SwiftUIGeometryWidget(uint64_t handle, QString panel, QString id, QString key, QSizeF resolvedSize, const QJsonArray &children)
+        : m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)), m_key(std::move(key)), m_resolved(resolvedSize) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        build(children);
+    }
+    QSize sizeHint() const override { return QSize(100, 40); }
+    QSize minimumSizeHint() const override { return QSize(10, 10); }
+protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QWidget::resizeEvent(event);
+        place();
+        const QSizeF now = size();
+        if (std::abs(now.width() - m_resolved.width()) < 0.5 && std::abs(now.height() - m_resolved.height()) < 0.5) return;
+        m_resolved = now;
+        const QPointer<SwiftUIGeometryWidget> self(this);
+        QTimer::singleShot(0, this, [self, now] {
+            if (!self) return;
+            dispatch(self->m_handle, self->m_panel, self->m_id, QStringLiteral("size"),
+                     QByteArray("[") + QByteArray::number(now.width()) + "," + QByteArray::number(now.height()) + "]");
+            self->refresh();
+        });
+    }
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        auto *w = qobject_cast<QWidget *>(watched);
+        if (!w || event->type() != QEvent::MouseButtonPress) return QWidget::eventFilter(watched, event);
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() != Qt::LeftButton) return false;
+        m_dragID = w->property("dragNodeID").toString();
+        m_dragStart = mapFrom(w, me->position().toPoint());
+        grabMouse();
+        sendDrag(QStringLiteral("dragChanged"), m_dragStart);
+        return true;
+    }
+    void mouseMoveEvent(QMouseEvent *event) override { if (!m_dragID.isEmpty()) sendDrag(QStringLiteral("dragChanged"), event->position()); }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (m_dragID.isEmpty()) return;
+        releaseMouse();
+        sendDrag(QStringLiteral("dragEnded"), event->position());
+        m_dragID.clear();
+        notifyListeners(m_handle, m_panel);
+    }
+private:
+    void sendDrag(const QString &key, const QPointF &at) {
+        const QByteArray payload = "[" + QByteArray::number(at.x()) + "," + QByteArray::number(at.y()) + ","
+            + QByteArray::number(at.x() - m_dragStart.x()) + "," + QByteArray::number(at.y() - m_dragStart.y()) + "]";
+        const QString id = m_dragID;
+        dispatch(m_handle, m_panel, id, key, payload);
+        refresh();
+    }
+    /// The content as the view now resolves it (after a size report or a drag step), rebuilt in place.
+    void refresh() {
+        const QJsonObject root = QJsonDocument::fromJson(fetchTreeBytes(m_handle, m_panel)).object();
+        std::function<QJsonObject(const QJsonObject &)> find = [&](const QJsonObject &n) -> QJsonObject {
+            if (n.value("stringParams").toObject().value("geometryKey").toString() == m_key) return n;
+            for (const auto &c : n.value("children").toArray()) { const QJsonObject f = find(c.toObject()); if (!f.isEmpty()) return f; }
+            return {};
+        };
+        const QJsonObject node = find(root);
+        if (node.isEmpty()) return;
+        m_id = node.value("id").toString();
+        build(node.value("children").toArray());
+        update();
+    }
+    void build(const QJsonArray &children) {
+        for (QWidget *child : std::as_const(m_children)) { child->hide(); child->deleteLater(); }
+        m_children.clear();
+        for (const auto &value : children) {
+            const QJsonObject child = value.toObject();
+            QWidget *w = buildNode(m_handle, m_panel, child);
+            if (!w) continue;
+            w->setParent(this);
+            for (const auto &m : child.value("modifiers").toArray()) {
+                const QJsonObject mo = m.toObject();
+                if (mo.value("kind").toString() != QLatin1String("position")) continue;
+                w->setProperty("positionX", mo.value("doubleParams").toObject().value("x").toDouble());
+                w->setProperty("positionY", mo.value("doubleParams").toObject().value("y").toDouble());
+                w->setProperty("positioned", true);
+            }
+            // A child (or a view inside it) with a drag gesture: this widget tracks the drag.
+            std::function<QString(const QJsonObject &)> dragNode = [&](const QJsonObject &n) -> QString {
+                for (const auto &k : n.value("handlerKeys").toArray())
+                    if (k.toString() == QLatin1String("dragChanged") || k.toString() == QLatin1String("dragEnded")) return n.value("id").toString();
+                for (const auto &c : n.value("children").toArray()) { const QString id = dragNode(c.toObject()); if (!id.isEmpty()) return id; }
+                return {};
+            };
+            if (const QString id = dragNode(child); !id.isEmpty()) {
+                w->setProperty("dragNodeID", id);
+                w->installEventFilter(this);
+                for (QWidget *inner : w->findChildren<QWidget *>()) { inner->setProperty("dragNodeID", id); inner->installEventFilter(this); }
+            }
+            w->show();
+            m_children << w;
+        }
+        place();
+    }
+    void place() {
+        for (QWidget *w : std::as_const(m_children)) {
+            if (!w->property("positioned").toBool()) { w->setGeometry(rect()); continue; }
+            const QSize s = (w->minimumSize() == w->maximumSize()) ? w->minimumSize() : w->sizeHint();
+            const QPointF c(w->property("positionX").toDouble(), w->property("positionY").toDouble());
+            w->setGeometry(QRect(qRound(c.x() - s.width() / 2.0), qRound(c.y() - s.height() / 2.0), s.width(), s.height()));
+            w->raise();
+        }
+    }
+    uint64_t m_handle;
+    QString m_panel, m_id, m_key, m_dragID;
+    QSizeF m_resolved;
+    QPointF m_dragStart;
+    QList<QWidget *> m_children;
+};
+
+/// Keeps an overlay laid over its base view at the overlay's alignment (SwiftUI's `.overlay`).
+class OverlayPlacer : public QObject {
+public:
+    OverlayPlacer(QWidget *base, QWidget *overlay, QString alignment) : QObject(base), m_base(base), m_overlay(overlay), m_alignment(std::move(alignment)) {
+        base->installEventFilter(this);
+        place();
+    }
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show || event->type() == QEvent::LayoutRequest) place();
+        return false;
+    }
+    void place() {
+        const QSize fixed = m_overlay->minimumSize() == m_overlay->maximumSize() ? m_overlay->minimumSize() : QSize();
+        const bool fills = !fixed.isValid() && (m_overlay->sizePolicy().horizontalPolicy() & QSizePolicy::ExpandFlag);
+        if (fills || m_alignment == QLatin1String("center") && !fixed.isValid() && !qobject_cast<QLabel *>(m_overlay)) {
+            m_overlay->setGeometry(m_base->rect());
+        } else {
+            const QSize s = fixed.isValid() ? fixed : m_overlay->sizeHint().boundedTo(m_base->size());
+            int x = (m_base->width() - s.width()) / 2, y = (m_base->height() - s.height()) / 2;
+            if (m_alignment.contains(QLatin1String("eading"))) x = 0;
+            if (m_alignment.contains(QLatin1String("railing"))) x = m_base->width() - s.width();
+            if (m_alignment.startsWith(QLatin1String("top"))) y = 0;
+            if (m_alignment.startsWith(QLatin1String("bottom"))) y = m_base->height() - s.height();
+            m_overlay->setGeometry(x, y, s.width(), s.height());
+        }
+        m_overlay->raise();
+    }
+private:
+    QWidget *m_base, *m_overlay;
+    QString m_alignment;
+};
+
+/// LinearGradient: the colors spread evenly from `startPoint` to `endPoint` (unit points).
+class SwiftUIGradientWidget : public QWidget {
+public:
+    SwiftUIGradientWidget(QList<QColor> colors, QString start, QString end)
+        : m_colors(std::move(colors)), m_start(std::move(start)), m_end(std::move(end)) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+protected:
+    static QPointF unit(const QString &name) {
+        const double x = name.contains(QLatin1String("eading")) ? 0 : name.contains(QLatin1String("railing")) ? 1 : 0.5;
+        const double y = name.startsWith(QLatin1String("top")) ? 0 : name.startsWith(QLatin1String("bottom")) ? 1 : 0.5;
+        return {x, y};
+    }
+    void paintEvent(QPaintEvent *) override {
+        if (m_colors.isEmpty()) return;
+        QPainter p(this);
+        const QPointF a = unit(m_start), b = unit(m_end);
+        QLinearGradient gradient(QPointF(a.x() * width(), a.y() * height()), QPointF(b.x() * width(), b.y() * height()));
+        for (int i = 0; i < m_colors.size(); ++i) gradient.setColorAt(m_colors.size() == 1 ? 0 : double(i) / (m_colors.size() - 1), m_colors[i]);
+        p.fillRect(rect(), gradient);
+    }
+private:
+    QList<QColor> m_colors;
+    QString m_start, m_end;
+};
+
 /// `VStack`/`HStack` share everything but the layout's orientation.
 QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &node, QBoxLayout::Direction direction) {
     auto *container = new QWidget;
@@ -1074,6 +1262,31 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = buildStack(handle, panel, node, QBoxLayout::TopToBottom);
     } else if (kind == "HStack") {
         widget = buildStack(handle, panel, node, QBoxLayout::LeftToRight);
+    } else if (kind == "Overlay") {
+        QWidget *base = children.size() > 0 ? buildNode(handle, panel, children[0].toObject()) : nullptr;
+        QWidget *over = children.size() > 1 ? buildNode(handle, panel, children[1].toObject()) : nullptr;
+        if (!base) base = new QWidget;
+        if (over) {
+            over->setParent(base);
+            bool interactive = false;
+            std::function<void(const QJsonObject &)> scan = [&](const QJsonObject &n) {
+                if (!n.value("handlerKeys").toArray().isEmpty()) interactive = true;
+                for (const auto &c : n.value("children").toArray()) scan(c.toObject());
+            };
+            scan(children[1].toObject());
+            if (!interactive) over->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+            new OverlayPlacer(base, over, strings.value("alignment").toString());
+            over->show();
+        }
+        widget = base;
+    } else if (kind == "LinearGradient") {
+        QList<QColor> colors;
+        for (const QString &name : strings.value("colors").toString().split(QLatin1Char('|'), Qt::SkipEmptyParts)) colors << parseColorToken(name);
+        widget = new SwiftUIGradientWidget(colors, strings.value("startPoint").toString(), strings.value("endPoint").toString());
+    } else if (kind == "GeometryReader") {
+        const QJsonObject d = node.value("doubleParams").toObject();
+        widget = new SwiftUIGeometryWidget(handle, panel, id, strings.value("geometryKey").toString(),
+                                           QSizeF(d.value("width").toDouble(), d.value("height").toDouble()), children);
     } else if (kind == "ZStack") {
         auto *container = new QWidget;
         bool hasOffset = false;

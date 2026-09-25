@@ -183,8 +183,16 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 QMenu *menu = top->menu();
                 for (int level = 1; menu && level < parts.size(); ++level) {
                     QMenu *next = nullptr;
+                    // A title with a slash in it ("Hue/Saturation…") spans two parts.
+                    QString title = parts[level];
+                    auto titled = [&](const QString &t) {
+                        for (QAction *item : menu->actions())
+                            if (QString(item->text()).replace(QStringLiteral("&&"), QStringLiteral("&")) == t) return true;
+                        return false;
+                    };
+                    while (!titled(title) && level + 1 < parts.size()) title += QLatin1Char('/') + parts[++level];
                     for (QAction *item : menu->actions()) {
-                        if (QString(item->text()).replace(QStringLiteral("&&"), QStringLiteral("&")) != parts[level]) continue;
+                        if (QString(item->text()).replace(QStringLiteral("&&"), QStringLiteral("&")) != title) continue;
                         if (item->menu()) next = item->menu(); else item->trigger();
                         break;
                     }

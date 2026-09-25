@@ -209,7 +209,7 @@ final class UpstreamEditor {
     private var trimAnswer: ((TrimOptions?) -> Void)?
     /// The filter in progress was opened the upstream way ("openFilter"), so its FilterSheet floats beside the canvas;
     /// the shell's own filter dialogs ("filterBegin") drive filterEdit without it.
-    var filterInUpstreamPanel = false
+    var filterInShellDialog = false
     /// The documentless welcome (NewCanvasSheet) asked to open a project; the shell answers with dismissImporter.
     var openProjectRequested = false
     /// A Move-tool handle drag that distorts (Ctrl held, or the layer already distorted): upstream's own TransformDrag.
@@ -567,7 +567,7 @@ final class UpstreamEditor {
             guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
             s.beginFilter(kind)
             guard s.filterEdit != nil else { return fail(-5, "filter could not start") }
-            filterInUpstreamPanel = true
+            filterInShellDialog = false
         // Image > Trim… (ProjectController.trim): upstream's sheet, then its trim, as one undo step.
         case "trim":
             guard s.document != nil else { return fail(-2, "no document") }
@@ -607,7 +607,7 @@ final class UpstreamEditor {
             } catch { return fail(-5, "Couldn’t resize the image: \(error.localizedDescription)") }
         case "filterBegin":
             guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
-            filterInUpstreamPanel = false
+            filterInShellDialog = true
             s.beginFilter(kind)
             guard s.filterEdit != nil else { return fail(-5, "filter could not start") }
             s.updateFilter(filterSettings(command, s.filterSettings), preview: true)

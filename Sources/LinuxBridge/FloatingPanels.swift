@@ -16,7 +16,7 @@ enum FloatingPanels {
     /// after every change.
     @MainActor static func observe(_ editor: UpstreamEditor) {
         let session = editor.session
-        if session.filterEdit == nil { editor.filterInUpstreamPanel = false }
+        if session.filterEdit == nil { editor.filterInShellDialog = false }
         // .onChange(of: session.document?.layers): an effect deleted (or its layer gone) while being edited ends the edit.
         if let editing = session.effectsEditing,
            session.document?.layers.first(where: { $0.id == editing.layerID })?.effects?.contains(editing.kind) != true {
@@ -31,7 +31,12 @@ enum FloatingPanels {
         let session = editor.session
         var panels: [Open] = []
         if let editing = session.effectsEditing { panels.append(Open(panel: "EffectsSheet", title: editing.kind.rawValue)) }
-        if editor.filterInUpstreamPanel, let edit = session.filterEdit { panels.append(Open(panel: "FilterSheet", title: edit.kind.rawValue)) }
+        if session.levels != nil { panels.append(Open(panel: "LevelsSheet", title: "Levels")) }
+        if session.hueSaturation != nil { panels.append(Open(panel: "HueSaturationSheet", title: "Hue/Saturation")) }
+        if let operation = session.selectionAmountOperation {
+            panels.append(Open(panel: "SelectionAmountSheet", title: operation.rawValue + " Selection"))
+        }
+        if !editor.filterInShellDialog, let edit = session.filterEdit { panels.append(Open(panel: "FilterSheet", title: edit.kind.rawValue)) }
         if ShortcutSettings.shared.sheet != nil { panels.append(Open(panel: "KeyboardShortcutsSheet", title: "Keyboard Shortcuts")) }
         return panels
     }
@@ -42,6 +47,9 @@ enum FloatingPanels {
         switch panel {
         case "EffectsSheet": if session.effectsEditing != nil { session.finishEffectsEditing(commit: false) }
         case "FilterSheet": if session.filterEdit != nil { session.cancelFilter() }
+        case "LevelsSheet": if session.levels != nil { session.cancelLevels() }
+        case "HueSaturationSheet": if session.hueSaturation != nil { session.cancelHueSaturation() }
+        case "SelectionAmountSheet": session.selectionAmountOperation = nil
         case "KeyboardShortcutsSheet": ShortcutSettings.shared.close()
         default: break
         }

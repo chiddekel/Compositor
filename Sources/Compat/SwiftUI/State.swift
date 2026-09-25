@@ -101,6 +101,8 @@ public enum StateStore {
     /// View types with no persistent properties, so their resolve skips reflection.
     nonisolated(unsafe) private static var stateless = Set<ObjectIdentifier>()
 
+    /// The scope being resolved (a panel), if any.
+    static var currentScope: String? { scope }
     /// Starts resolving `scope`; returns false (and changes nothing) when a resolve is already running.
     public static func begin(scope: String) -> Bool {
         guard self.scope == nil else { return false }

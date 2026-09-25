@@ -70,6 +70,7 @@ extension RenderModifier {
         case let .font(name): return RenderModifierWire(kind: "font", stringParams: ["name": name])
         case let .foregroundStyle(name): return RenderModifierWire(kind: "foregroundStyle", stringParams: ["name": name])
         case let .background(name): return RenderModifierWire(kind: "background", stringParams: ["name": name])
+        case let .position(x, y): return RenderModifierWire(kind: "position", doubleParams: ["x": x, "y": y])
         case let .border(name, width): return RenderModifierWire(kind: "border", stringParams: ["name": name], doubleParams: ["width": width])
         case let .opacity(v): return RenderModifierWire(kind: "opacity", doubleParams: ["value": v])
         case let .disabled(v): return RenderModifierWire(kind: "disabled", boolParams: ["value": v])
