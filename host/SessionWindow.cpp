@@ -3389,6 +3389,10 @@ void SessionWindow::refreshImage() {
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
     syncCanvasChrome(state);
+    // ContentView's toolbar: Fit, 100% and the zoom buttons need a document.
+    for (const char *name : {"fitCanvas", "actualPixels", "zoomIn", "zoomOut"})
+        if (auto *button = m_headerToolBar ? m_headerToolBar->findChild<QPushButton *>(QLatin1String(name)) : nullptr)
+            button->setEnabled(width > 0 && height > 0);
     if (m_documentTabBar) { m_documentTabBar->updateGeometry(); m_documentTabBar->update(); }
     // Menu items enable as the session changes, so their shortcuts work when they should (AppKit validates on use).
     if (!m_appMenus.isEmpty() && !m_appMenusSyncQueued) {
@@ -5698,7 +5702,8 @@ void SessionWindow::setupHeaderBar() {
             btn->setStyleSheet(
                 "QPushButton { background: rgba(255, 255, 255, 0.08); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; padding: 0px 12px; font-size: 13px; } "
                 "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
-                "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
+                "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); } "
+                "QPushButton:disabled { color: rgba(255, 255, 255, 0.25); background: rgba(255, 255, 255, 0.04); }"
             );
         }
         return btn;
@@ -5712,16 +5717,35 @@ void SessionWindow::setupHeaderBar() {
     connect(btn100, &QPushButton::clicked, this, &SessionWindow::actualPixels);
     m_headerToolBar->addWidget(btn100);
 
-    // Zoom in, then zoom out, as ContentView's toolbar has them.
-    const QIcon plusIcon = renderToolVectorIcon(QStringLiteral("plus.magnifyingglass"), 14, QColor(0xdd, 0xdd, 0xdf));
-    auto *btnZoomIn = makeZoomPill("", "zoomIn", tr("Zoom in (Ctrl++)"), plusIcon);
-    connect(btnZoomIn, &QPushButton::clicked, this, [this] { zoomStep(1); });
-    m_headerToolBar->addWidget(btnZoomIn);
-
-    const QIcon minusIcon = renderToolVectorIcon(QStringLiteral("minus.magnifyingglass"), 14, QColor(0xdd, 0xdd, 0xdf));
-    auto *btnZoomOut = makeZoomPill("", "zoomOut", tr("Zoom out (Ctrl+−)"), minusIcon);
-    connect(btnZoomOut, &QPushButton::clicked, this, [this] { zoomStep(-1); });
-    m_headerToolBar->addWidget(btnZoomOut);
+    // Zoom in, then zoom out, as ContentView's toolbar has them: one toolbar item (an HStack), so one capsule.
+    auto *zoomGroup = new QWidget(m_headerToolBar);
+    zoomGroup->setObjectName("zoomGroup");
+    zoomGroup->setAttribute(Qt::WA_StyledBackground, true);
+    zoomGroup->setFixedHeight(28);
+    zoomGroup->setStyleSheet(QStringLiteral(
+        "QWidget#zoomGroup { background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; } "
+        "QPushButton { background: transparent; border: none; border-radius: 12px; padding: 0px; } "
+        "QPushButton:hover { background: rgba(255, 255, 255, 0.10); } QPushButton:pressed { background: rgba(255, 255, 255, 0.18); } "
+        ""));
+    auto *zoomLayout = new QHBoxLayout(zoomGroup);
+    zoomLayout->setContentsMargins(3, 1, 3, 1);
+    zoomLayout->setSpacing(0);
+    auto makeZoomButton = [&](const char *symbol, const char *name, const QString &tip, int step) {
+        auto *button = new QPushButton(zoomGroup);
+        button->setObjectName(name);
+        button->setToolTip(tip);
+        button->setFixedSize(30, 24);
+        button->setCursor(Qt::PointingHandCursor);
+        QIcon icon = renderToolVectorIcon(QString::fromLatin1(symbol), 15, QColor(0xdd, 0xdd, 0xdf));
+        icon.addPixmap(renderToolVectorIcon(QString::fromLatin1(symbol), 15, QColor(255, 255, 255, 64)).pixmap(QSize(15, 15) * 2), QIcon::Disabled);
+        button->setIcon(icon);
+        button->setIconSize(QSize(15, 15));
+        connect(button, &QPushButton::clicked, this, [this, step] { zoomStep(step); });
+        zoomLayout->addWidget(button);
+    };
+    makeZoomButton("plus.magnifyingglass", "zoomIn", tr("Zoom in (Ctrl++)"), 1);
+    makeZoomButton("minus.magnifyingglass", "zoomOut", tr("Zoom out (Ctrl+−)"), -1);
+    m_headerToolBar->addWidget(zoomGroup);
 }
 
 void SessionWindow::setupOptionsBar() {
