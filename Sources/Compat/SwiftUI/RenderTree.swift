@@ -248,6 +248,8 @@ public enum ViewResolver {
     static func nestedPath(_ tag: String) -> String { currentPath + "/" + tag }
 
     static func resolveList(_ view: any View) -> [RenderNode] { resolveList(view, path: currentPath) }
+    /// Every node a view resolves to (a list of siblings, e.g. an app's `.commands`), not just the first.
+    public static func resolveAll(_ view: any View) -> [RenderNode] { resolveList(view) }
 
     static func resolveList(_ view: any View, path: String) -> [RenderNode] {
         if let list = view as? any _ViewListProviding {

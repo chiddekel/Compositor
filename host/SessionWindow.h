@@ -190,6 +190,10 @@ public:
     void updateFloatingPanels();
     /// ContentView's welcome: upstream's New Canvas sheet over the canvas while the tab has no document.
     void updateWelcome();
+    void installAppMenus();
+    void syncAppMenus();
+    void performAppMenu(const QString &path);
+    void handleShellRequests();
     void positionWelcome();
     /// Upstream's .fileImporter / the welcome's Open project, when the session asks for them.
     void handleSessionFileRequests();
@@ -430,6 +434,11 @@ private:
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
     QWidget *m_welcomeContent = nullptr;
+    QByteArray m_appMenusJson;
+    bool m_appMenusSyncQueued = false;
+    QStringList m_appMenuShape;
+    QList<QMenu *> m_appMenus, m_legacyMenus;
+    QHash<QString, QAction *> m_appMenuActions;
     bool m_handlingFileRequests = false;
     QTabBar *m_documentTabBar = nullptr;
     QLabel *m_statusZoomLabel = nullptr;

@@ -380,6 +380,16 @@ public struct NSScreen {
     /// Live windows, oldest first.
     public var windows: [NSWindow] { NSWindow.allWindows }
     public func activate(ignoringOtherApps: Bool = true) {}
+    /// A responder-chain action by name ("cut:", "undo:", ...); the host's text editing answers these (`actionHandler`).
+    public var actionHandler: ((Selector) -> Bool)?
+    @discardableResult public func sendAction(_ action: Selector, to target: Any?, from sender: Any?) -> Bool {
+        actionHandler?(action) ?? false
+    }
+    /// Hide / Hide Others / Show All: window-manager business on Linux (the host may set these).
+    public var hideHandler: (() -> Void)?
+    public func hide(_ sender: Any?) { hideHandler?() }
+    public func hideOtherApplications(_ sender: Any?) {}
+    public func unhideAllApplications(_ sender: Any?) {}
 }
 
 // MARK: - Controls the model layer instantiates (inert containers)

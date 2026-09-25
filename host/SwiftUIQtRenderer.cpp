@@ -957,7 +957,7 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
             const QColor color = parseColorToken(colorName);
             if (color.isValid()) {
                 const QString rgba = QStringLiteral("rgba(%1, %2, %3, %4)").arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alphaF());
-                widget->setStyleSheet(widget->styleSheet() + QString(" color: %1;").arg(rgba));
+                widget->setStyleSheet(widget->styleSheet() + QString(" * { color: %1; }").arg(rgba));   // a rule, so it mixes with other rules
                 // Symbols take it too, unless one set its own (modifiers apply innermost first, so that one is done).
                 QList<QWidget *> symbols = widget->findChildren<QWidget *>();
                 symbols.prepend(widget);

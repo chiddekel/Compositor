@@ -62,3 +62,10 @@ private final class ProjectWindowDelegate: NSWindowDelegate {
         return false
     }
 }
+
+extension ProjectWindowBridge {
+    /// The Linux delegate's `projects` (ShellProjects) stands for the current tab's controller.
+    @MainActor init(controller projects: ShellProjects) {
+        self.init(controller: (projects.workspace ?? Workspace.shared).current.controller)
+    }
+}

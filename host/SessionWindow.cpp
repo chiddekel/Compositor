@@ -96,6 +96,9 @@ int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t 
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_render_revision(uint64_t handle);
 int32_t compositor_session_viewport(uint64_t handle, double *out);
+int64_t compositor_app_menus(uint8_t *output, size_t capacity);
+int32_t compositor_app_menu_perform(const char *path);
+int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
 int32_t compositor_session_viewport_update(uint64_t handle, int32_t op, double a, double b, double c);
 typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
 void compositor_set_sheet_presenter(void (*presenter)(void *context, const char *panel), void *context);
@@ -943,6 +946,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     setupHeaderBar();
     setupOptionsBar();
     createMenus();
+    installAppMenus();
     refreshLayers();
     updateOptionsBar();
     updateToolRail();
@@ -1101,7 +1105,9 @@ void SessionWindow::applyShortcutSettings() {
         const CanvasChord now{o.value("key").toString(), o.value("modifiers").toInt()};
         const CanvasChord original{o.value("originalKey").toString(), o.value("originalModifiers").toInt()};
         const QString group = o.value("group").toString();
-        if (group == QLatin1String("Menus")) {
+        if (group == QLatin1String("Menus") && !m_appMenuActions.isEmpty()) {
+            continue;   // the menu bar is upstream's own (syncAppMenus): its items carry their configured chords
+        } else if (group == QLatin1String("Menus")) {
             const QString text = menuText.value(o.value("title").toString(), o.value("title").toString());
             // The item that carries this shortcut (a title can appear in two menus: the one with a shortcut of its own).
             QAction *target = nullptr;
@@ -1857,6 +1863,171 @@ void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
     if (m_actDeselect) m_actDeselect->setEnabled(hasSelection);
     if (m_actInverse) m_actInverse->setEnabled(hasSelection);
     if (m_actClearSelection) m_actClearSelection->setEnabled(hasSelection);
+}
+
+/// The menu bar is upstream's (CompositorApp's `.commands`, compositor_app_menus): the shell's own menus stay built,
+/// hidden and without shortcuts, so their actions remain reachable by name (tests, internal triggers).
+void SessionWindow::installAppMenus() {
+    std::function<void(QMenu *)> strip = [&](QMenu *menu) {
+        for (QAction *action : menu->actions()) {
+            action->setShortcuts({});
+            if (action->menu()) strip(action->menu());
+        }
+    };
+    for (QAction *top : menuBar()->actions()) {
+        if (top->menu()) { strip(top->menu()); m_legacyMenus << top->menu(); }
+        top->setVisible(false);
+    }
+    syncAppMenus();
+}
+
+static QKeySequence appMenuSequence(const QString &key, int modifiers) {
+    // SwiftUI EventModifiers: shift 2, control 4, option 8, command 16 — ⌘ is Ctrl here, ⌃ Meta, ⌥ Alt.
+    int code = 0;
+    if (key == QLatin1String("\b") || key == QLatin1String("\x7f")) code = Qt::Key_Backspace;
+    else if (key == QLatin1String("\r")) code = Qt::Key_Return;
+    else if (key == QLatin1String("\x1b")) code = Qt::Key_Escape;
+    else if (key == QLatin1String("\t")) code = Qt::Key_Tab;
+    else if (key == QLatin1String(" ")) code = Qt::Key_Space;
+    else if (key == QString(QChar(0xf700))) code = Qt::Key_Up;
+    else if (key == QString(QChar(0xf701))) code = Qt::Key_Down;
+    else if (key == QString(QChar(0xf702))) code = Qt::Key_Left;
+    else if (key == QString(QChar(0xf703))) code = Qt::Key_Right;
+    else if (!key.isEmpty()) code = key.toUpper().at(0).unicode();
+    if (!code) return {};
+    int mods = 0;
+    if (modifiers & 16) mods |= Qt::CTRL;
+    if (modifiers & 8) mods |= Qt::ALT;
+    if (modifiers & 4) mods |= Qt::META;
+    if (modifiers & 2) mods |= Qt::SHIFT;
+    return QKeySequence(mods | code);
+}
+
+/// Brings the menu bar up to date with upstream's menus: the same items re-titled / re-enabled / re-checked in place, or
+/// rebuilt when the items themselves changed.
+void SessionWindow::syncAppMenus() {
+    const int64_t size = compositor_app_menus(nullptr, 0);
+    if (size <= 0) return;
+    QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
+    if (compositor_app_menus(reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return;
+    if (bytes == m_appMenusJson) return;
+    m_appMenusJson = bytes;
+    const QJsonArray menus = QJsonDocument::fromJson(bytes).array();
+    // The shape: every item's path and kind. Same shape, update in place (an open menu stays open).
+    QStringList shape;
+    std::function<void(const QJsonArray &)> collect = [&](const QJsonArray &items) {
+        for (const QJsonValue &v : items) {
+            const QJsonObject o = v.toObject();
+            shape << (o.value("separator").toBool() ? QStringLiteral("-") : o.value("path").toString() + (o.contains("items") ? ">" : "")
+                      + (o.contains("checked") ? "?" : ""));
+            if (o.contains("items")) collect(o.value("items").toArray());
+        }
+    };
+    collect(menus);
+    auto apply = [](QAction *action, const QJsonObject &o) {
+        action->setText(QString(o.value("title").toString()).replace(QLatin1Char('&'), QStringLiteral("&&")));   // no mnemonics
+        action->setEnabled(o.value("enabled").toBool(true));
+        if (o.contains("checked")) action->setChecked(o.value("checked").toBool());
+        action->setShortcut(o.contains("key") ? appMenuSequence(o.value("key").toString(), o.value("modifiers").toInt()) : QKeySequence());
+    };
+    if (shape == m_appMenuShape) {
+        std::function<void(const QJsonArray &)> update = [&](const QJsonArray &items) {
+            for (const QJsonValue &v : items) {
+                const QJsonObject o = v.toObject();
+                if (QAction *action = m_appMenuActions.value(o.value("path").toString())) apply(action, o);
+                if (o.contains("items")) update(o.value("items").toArray());
+            }
+        };
+        update(menus);
+        return;
+    }
+    m_appMenuShape = shape;
+    for (QMenu *menu : m_appMenus) { menuBar()->removeAction(menu->menuAction()); menu->deleteLater(); }
+    m_appMenus.clear();
+    m_appMenuActions.clear();
+    std::function<void(QMenu *, const QJsonArray &)> fill = [&](QMenu *menu, const QJsonArray &items) {
+        for (const QJsonValue &v : items) {
+            const QJsonObject o = v.toObject();
+            if (o.value("separator").toBool()) { menu->addSeparator(); continue; }
+            const QString path = o.value("path").toString();
+            if (o.contains("items")) {
+                QMenu *sub = menu->addMenu(QString());
+                m_appMenuActions.insert(path, sub->menuAction());
+                apply(sub->menuAction(), o);
+                fill(sub, o.value("items").toArray());
+                continue;
+            }
+            QAction *action = menu->addAction(QString());
+            action->setCheckable(o.contains("checked"));
+            action->setShortcutContext(Qt::WindowShortcut);
+            apply(action, o);
+            m_appMenuActions.insert(path, action);
+            connect(action, &QAction::triggered, this, [this, path] { performAppMenu(path); });
+        }
+    };
+    for (const QJsonValue &v : menus) {
+        const QJsonObject o = v.toObject();
+        auto *menu = new QMenu(o.value("title").toString() == QLatin1String("Compositor") ? QStringLiteral("  Compositor")
+                                                                                           : o.value("title").toString(), menuBar());
+        menu->setObjectName("appMenu." + o.value("title").toString());
+        fill(menu, o.value("items").toArray());
+        // As AppKit validates a menu when it opens: titles, enabled and checked states as of now.
+        connect(menu, &QMenu::aboutToShow, this, [this] { syncAppMenus(); });
+        menuBar()->addMenu(menu);
+        m_appMenus << menu;
+    }
+}
+
+/// Chooses an upstream menu item, then does what it asked of the shell (save, export, a size dialog, ...) and shows
+/// what changed.
+void SessionWindow::performAppMenu(const QString &path) {
+    syncAppMenus();
+    const QByteArray utf8 = path.toUtf8();
+    compositor_app_menu_perform(utf8.constData());
+    handleShellRequests();
+    compositor_pump_main();   // Task { await ... } actions start on the main queue
+    handleSessionFileRequests();
+    syncToolFromSession();
+    syncPaletteFromSession();
+    syncOptionsFromSession();
+    updateOptionsBar();
+    refreshImage();
+    refreshLayers();
+    updateLayersPanel();
+    updateFloatingPanels();
+    applyShortcutSettings();
+    syncAppMenus();
+}
+
+/// Upstream ProjectController calls and system items the menus made (ShellProjects on the Swift side).
+void SessionWindow::handleShellRequests() {
+    const int64_t size = compositor_take_shell_requests(nullptr, 0);
+    if (size <= 2) return;
+    QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
+    if (compositor_take_shell_requests(reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return;
+    auto trigger = [this](const char *name) {
+        for (QAction *action : findChildren<QAction *>())
+            if (action->objectName() == QLatin1String(name)) { action->trigger(); return; }
+    };
+    for (const QJsonValue &v : QJsonDocument::fromJson(bytes).array()) {
+        const QString request = v.toString();
+        if (request == QLatin1String("newCanvas")) newCanvasTab();
+        else if (request == QLatin1String("open")) trigger("file.openProject");
+        else if (request == QLatin1String("save")) trigger("file.save");
+        else if (request == QLatin1String("saveAs")) trigger("file.saveAs");
+        else if (request == QLatin1String("exportPNG")) trigger("file.exportPNG");
+        else if (request == QLatin1String("exportJPEG")) trigger("file.exportJPEG");
+        else if (request == QLatin1String("close")) trigger("file.closeProject");
+        else if (request == QLatin1String("canvasSize")) trigger("canvasSize");
+        else if (request == QLatin1String("imageSize")) trigger("imageSize");
+        else if (request == QLatin1String("trim")) trigger("image.trim");
+        else if (request == QLatin1String("about")) trigger("help.about");
+        else if (request == QLatin1String("checkForUpdates")) trigger("help.updates");
+        else if (request == QLatin1String("quit")) close();
+        else if (request == QLatin1String("minimize")) showMinimized();
+        else if (request == QLatin1String("zoom")) { if (isMaximized()) showNormal(); else showMaximized(); }
+        else if (request == QLatin1String("fullScreen")) { if (isFullScreen()) showNormal(); else showFullScreen(); }
+    }
 }
 
 void SessionWindow::createMenus() {
@@ -2869,6 +3040,11 @@ void SessionWindow::refreshImage() {
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
     if (m_documentTabBar) { m_documentTabBar->updateGeometry(); m_documentTabBar->update(); }
+    // Menu items enable as the session changes, so their shortcuts work when they should (AppKit validates on use).
+    if (!m_appMenus.isEmpty() && !m_appMenusSyncQueued) {
+        m_appMenusSyncQueued = true;
+        QTimer::singleShot(0, this, [this] { m_appMenusSyncQueued = false; syncAppMenus(); });
+    }
     if (width <= 0 || height <= 0) {
         // No document (a new tab, a closed project): nothing to draw but the welcome.
         if (!m_image.isNull() || !m_docSize.isEmpty()) {
@@ -4707,9 +4883,7 @@ void SessionWindow::applyDarkTheme() {
             left: 6px;
         }
         QMenu::indicator:checked {
-            background-color: #007aff;
-            border: 1px solid #007aff;
-            border-radius: 3px;
+            image: url(CHECKMARK);
         }
         QMenu::right-arrow {
             margin: 5px;
@@ -4952,10 +5126,14 @@ void SessionWindow::applyDarkTheme() {
             border-color: #6a6a6e;
         }
     )");
+    // AppKit marks a checked menu item with a plain ✓.
+    const QString styled = QString(qss).replace(QStringLiteral("CHECKMARK"), styleSheetImage(QStringLiteral("menu-check"),
+        "<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'><path fill='none' stroke='white' "
+        "stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M3 7.4 L5.8 10.2 L11 3.8'/></svg>"));
     if (qApp) {
-        qApp->setStyleSheet(qss);
+        qApp->setStyleSheet(styled);
     }
-    setStyleSheet(qss);
+    setStyleSheet(styled);
 }
 
 /// ProjectTabButton (ProjectTabs.swift), drawn: a 28-high capsule — white 12% fill and 22% line when active, 3.5% and

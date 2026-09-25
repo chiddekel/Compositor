@@ -174,6 +174,17 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             QElapsedTimer settle; settle.start();   // let the pump render the effect's preview
             while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         }
+        // COMPOSITOR_GRAB_MENU_ITEM="Menu/Item[;Menu/Item...]": the menu bar's items (upstream's menus), chosen by title.
+        for (const QString &spec : qEnvironmentVariable("COMPOSITOR_GRAB_MENU_ITEM").split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+            const QString menuTitle = spec.section(QLatin1Char('/'), 0, 0), itemTitle = spec.section(QLatin1Char('/'), 1);
+            for (QAction *top : window.menuBar()->actions()) {
+                if (!top->isVisible() || !top->menu() || top->text().trimmed() != menuTitle) continue;
+                emit top->menu()->aboutToShow();
+                for (QAction *item : top->menu()->actions())
+                    if (QString(item->text()).replace(QStringLiteral("&&"), QStringLiteral("&")) == itemTitle) { item->trigger(); break; }
+            }
+            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+        }
         // COMPOSITOR_GRAB_ACTION=<menu action objectName, e.g. filter.Vignette>: triggered as if chosen from the menu.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_ACTION").isEmpty()) {
             for (QAction *action : window.findChildren<QAction *>()) {
@@ -406,7 +417,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         const QString menuName = qEnvironmentVariable("COMPOSITOR_GRAB_MENU");
         if (!menuName.isEmpty() && window.menuBar()) {
             for (auto *act : window.menuBar()->actions()) {
-                if (act->text().contains(menuName, Qt::CaseInsensitive) && act->menu()) {
+                if (act->isVisible() && act->text().contains(menuName, Qt::CaseInsensitive) && act->menu()) {
                     auto *menu = act->menu();
                     menu->show();
                     for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();

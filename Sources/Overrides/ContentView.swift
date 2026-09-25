@@ -16,6 +16,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import Sparkle
 
 /// STAND-IN for the real `Compositor/IO/CompositorApplicationDelegate.swift` (excluded in Package.swift, and
 /// excluded for a real reason: it's `NSObject, NSApplicationDelegate` and imports Sparkle — Qt, not AppKit, owns
@@ -26,9 +27,17 @@ import UniformTypeIdentifiers
 /// app shell yet), so this type exists to let the file compile and resolve correctly today; it becomes live the
 /// day something actually constructs one.
 @MainActor final class CompositorApplicationDelegate {
-    let workspace = ProjectWorkspace()
-    var projects: ProjectController { workspace.current.controller }
+    let workspace: ProjectWorkspace
+    /// The project commands (upstream's ProjectController for the current tab): on Linux the shell performs them.
+    let projects: ShellProjects
     var showEditor: (() -> Void)?
+    /// Compositor > Check for Updates…: the shell's Flatpak check (SPUStandardUpdaterController.checkHandler).
+    let updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+    var session: EditorSession { workspace.current.session }
+    init(workspace: ProjectWorkspace) {
+        self.workspace = workspace
+        projects = ShellProjects(workspace: workspace)
+    }
 }
 
 struct ContentView: View {
