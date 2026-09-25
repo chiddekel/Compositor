@@ -3181,7 +3181,10 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
 bool SessionWindow::routesToUpstreamCanvas() const {
     if (m_spaceHandActive || m_colorPickerOpen) return false;
     switch (m_tool) {
-    case Tool::Move: case Tool::Marquee: case Tool::Lasso: case Tool::Magic: case Tool::Crop: return true;
+    case Tool::Move: case Tool::Marquee: case Tool::Lasso: case Tool::Magic: case Tool::Crop:
+    case Tool::Brush: case Tool::SpotHealing: case Tool::CloneStamp: case Tool::Smear:
+    case Tool::Gradient: case Tool::Eyedropper: case Tool::Zoom: case Tool::Hand:
+        return true;
     default: return false;
     }
 }
@@ -3215,6 +3218,9 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     if (m_canvasWidget && cursor >= 0 && cursor <= 10) m_canvasWidget->setCursor(shapes[cursor]);
     if (kind == 3) { if (m_canvasWidget) m_canvasWidget->update(); return; }
     compositor_pump_main();
+    // Mid-stroke, only the area the brush changed is re-rendered (as EditorCanvas redraws its dirty rect).
+    const bool brush = m_tool == Tool::Brush || m_tool == Tool::SpotHealing || m_tool == Tool::CloneStamp || m_tool == Tool::Smear;
+    if (brush && kind == 1) { scheduleStrokeRefresh(); if (m_canvasWidget) m_canvasWidget->update(); return; }
     refreshImage();
     if (kind == 2 || kind == 0) { refreshLayers(); updateLayersPanel(); updateOptionsBar(); }
     if (m_canvasWidget) m_canvasWidget->update();

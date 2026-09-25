@@ -275,7 +275,7 @@ public final class CGContext: @unchecked Sendable {
     public func addPath(_ path: CGPath) { currentPath.addPath(path) }
 
     public func setLineCap(_ cap: CGLineCap) { state.lineCap = cap }
-    /// Recorded for callers that read it back; dashed strokes are not rasterised yet.
+    /// Dashed strokes are cut into their "on" runs when stroked (see `dashed`).
     public func setLineDash(phase: CGFloat, lengths: [CGFloat]) { state.dashPhase = phase; state.dashLengths = lengths }
 
     /// Shadows are recorded but not rasterised yet.
@@ -492,7 +492,7 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func strokeEllipse(in rect: CGRect) {
-        stroke(rect)
+        stroke(CGPath(ellipseIn: rect))
     }
 
     public func clear(_ rect: CGRect) {

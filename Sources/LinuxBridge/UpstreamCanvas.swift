@@ -88,9 +88,18 @@ import AppKit
         let previous = NSGraphicsContext.current
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
         defer { NSGraphicsContext.current = previous }
-        for subview in view.subviews where subview is TransformOverlay {
-            subview.frame = view.bounds
-            subview.draw(view.bounds)
+        // The canvas's overlay views in their stacking order (TransformOverlay, the brush circle, the sample ring), each
+        // in its own frame; an unflipped one draws y-up.
+        for subview in view.subviews where !subview.isHidden {
+            if subview is TransformOverlay { subview.frame = view.bounds }
+            let frame = subview.frame
+            guard frame.width > 0, frame.height > 0 else { continue }
+            context.saveGState()
+            context.translateBy(x: frame.minX, y: frame.minY)
+            if !subview.isFlipped { context.translateBy(x: 0, y: frame.height); context.scaleBy(x: 1, y: -1) }
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: subview.isFlipped)
+            subview.draw(CGRect(origin: .zero, size: frame.size))
+            context.restoreGState()
         }
         return context.buffer.bytes
     }
