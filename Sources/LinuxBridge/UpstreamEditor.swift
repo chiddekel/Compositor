@@ -190,7 +190,7 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textFinish", "textCancel",
@@ -202,6 +202,10 @@ final class UpstreamEditor {
     private var adjustmentEditing: UUID?
     /// Upstream's Trim sheet while Image > Trim… waits for its answer (resolved as panel "TrimSheet"; its @State lives here).
     private(set) var trimSheet: TrimSheet?
+    /// Upstream's Canvas Size / Image Size sheets while Image > Canvas Size… / Image Size… waits for their answer.
+    private(set) var canvasSizeSheet: CanvasSizeSheet?
+    private(set) var imageSizeSheet: ImageSizeSheet?
+    private var sizeAnswer: ((Any?) -> Void)?
     private var trimAnswer: ((TrimOptions?) -> Void)?
     /// The filter in progress was opened the upstream way ("openFilter"), so its FilterSheet floats beside the canvas;
     /// the shell's own filter dialogs ("filterBegin") drive filterEdit without it.
@@ -210,6 +214,15 @@ final class UpstreamEditor {
     var openProjectRequested = false
     /// A Move-tool handle drag that distorts (Ctrl held, or the layer already distorted): upstream's own TransformDrag.
     private var distortDrag: TransformDrag?
+
+    /// Answers the open Canvas Size / Image Size sheet (nil = Cancel).
+    func finishSizeSheet(_ options: Any?) {
+        let answer = sizeAnswer
+        sizeAnswer = nil
+        canvasSizeSheet = nil
+        imageSizeSheet = nil
+        answer?(options)
+    }
 
     /// Answers the open Trim sheet (nil = Cancel), e.g. when the shell's dialog is closed.
     func finishTrim(_ options: TrimOptions?) {
@@ -225,6 +238,8 @@ final class UpstreamEditor {
         if session.showsRawDevelop { sheets.append("RawDevelopSheet") }
         if session.showsConversionSheet { sheets.append("PSDConversionSheet") }
         if trimSheet != nil { sheets.append("TrimSheet") }
+        if canvasSizeSheet != nil { sheets.append("CanvasSizeSheet") }
+        if imageSizeSheet != nil { sheets.append("ImageSizeSheet") }
         return sheets
     }
     /// The manifest of a project being loaded; its layers' images and masks arrive through `installLayerAsset`.
@@ -565,6 +580,31 @@ final class UpstreamEditor {
                 guard let trimmed = try await ImageTrim.trim(snapshot, options: options) else { break }
                 s.applyDocumentSize(trimmed, actionName: "Trim")
             } catch { return fail(-5, "Couldn’t trim image: \(error.localizedDescription)") }
+        // ProjectController.canvasSize() / imageSize(): upstream's sheet, then its resizer, one undo step.
+        case "canvasSizeSheet":
+            guard let document = s.document else { return fail(-2, "no document") }
+            let options: CanvasSizeOptions? = await withCheckedContinuation { continuation in
+                sizeAnswer = { continuation.resume(returning: $0 as? CanvasSizeOptions) }
+                canvasSizeSheet = CanvasSizeSheet(document: document, foreground: s.foregroundColor, background: s.backgroundColor) { [weak self] in
+                    self?.finishSizeSheet($0)
+                }
+            }
+            guard let options, let snapshot = s.projectSnapshot() else { break }
+            do {
+                let resized = try await CanvasResizer.shared.resize(snapshot, to: options)
+                s.applyDocumentSize(resized, actionName: "Canvas Size")
+            } catch { return fail(-5, "Couldn’t change canvas size: \(error.localizedDescription)") }
+        case "imageSizeSheet":
+            guard let document = s.document else { return fail(-2, "no document") }
+            let options: ImageSizeOptions? = await withCheckedContinuation { continuation in
+                sizeAnswer = { continuation.resume(returning: $0 as? ImageSizeOptions) }
+                imageSizeSheet = ImageSizeSheet(document: document) { [weak self] in self?.finishSizeSheet($0) }
+            }
+            guard let options, let snapshot = s.projectSnapshot() else { break }
+            do {
+                let resized = try await ImageResizer.shared.resize(snapshot, to: options)
+                s.applyImageSize(resized)
+            } catch { return fail(-5, "Couldn’t resize the image: \(error.localizedDescription)") }
         case "filterBegin":
             guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
             filterInUpstreamPanel = false

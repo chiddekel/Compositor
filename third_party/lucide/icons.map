@@ -42,3 +42,16 @@ circle.grid.3x3 grid-3x3
 point.topleft.down.to.point.bottomright.curvepath spline
 square.and.arrow.up share
 square.on.circle custom/square-on-circle
+circle circle
+circle.fill custom/circle-fill
+triangle.fill custom/triangle-fill
+rectangle.inset.filled custom/rectangle-inset-filled
+square.bottomhalf.filled custom/square-bottomhalf-filled
+line.diagonal custom/line-diagonal
+arrow.triangle.2.circlepath refresh-cw
+hand.point.up.left pointer
+scissors scissors
+scope crosshair
+text.aligncenter text-align-center
+text.alignleft text-align-start
+text.alignright text-align-end

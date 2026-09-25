@@ -1062,6 +1062,12 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     connect(m_mainPumpTimer, &QTimer::timeout, this, [this] {
         compositor_pump_main();
         if (m_sessionHandle == 0 || m_painting) return;
+        // Menu items whose upstream action is a Task (Canvas Size…, Save, ...) ask the shell once that task runs.
+        if (!m_handlingShellRequests) {
+            m_handlingShellRequests = true;
+            handleShellRequests();
+            m_handlingShellRequests = false;
+        }
         const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
         if (size <= 0 || size > 4 * 1024 * 1024) return;
         QByteArray bytes(qsizetype(size), Qt::Uninitialized);
@@ -1197,6 +1203,13 @@ void SessionWindow::showSessionAlert() {
     m_showingAlert = false;
 }
 
+/// SwiftUI's Text in a sheet: wraps to the width its column gives it (not its one-line width).
+static void wrapText(QLabel *label) {
+    label->setWordWrap(true);
+    label->setSizePolicy(QSizePolicy::Expanding, label->sizePolicy().verticalPolicy());
+    if (QWidget *parent = label->parentWidget(); parent && parent->layout()) parent->layout()->setAlignment(label, Qt::Alignment());
+}
+
 /// ContentView's `welcome`: while the tab has no document, upstream's New Canvas sheet sits in the middle of the canvas
 /// (a ZStack over EditorCanvas), at most 500 wide.
 void SessionWindow::updateWelcome() {
@@ -1209,7 +1222,7 @@ void SessionWindow::updateWelcome() {
             next->setParent(m_canvasWidget);
             next->setObjectName("welcome");
             for (QLabel *label : next->findChildren<QLabel *>())
-                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) label->setWordWrap(true);
+                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) wrapText(label);
         }
     }
     if (!m_welcomeContent) return;
@@ -1315,7 +1328,7 @@ void SessionWindow::updateFloatingPanelsPass() {
             if (entry.content) { entry.window->layout()->removeWidget(entry.content); retireRenderedPanel(entry.content); }
             // A panel's sentences wrap to its width, as SwiftUI's Text does (as in the modal sheets).
             for (QLabel *label : next->findChildren<QLabel *>())
-                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) label->setWordWrap(true);
+                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) wrapText(label);
             entry.content = next;
             entry.window->layout()->addWidget(next);
             next->show();
@@ -1332,7 +1345,9 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
     const uint64_t handle = m_sessionHandle;
     QDialog dialog(this);
     dialog.setWindowTitle(panel == QLatin1String("PSDConversionSheet") ? tr("Import Photoshop File")
-                          : panel == QLatin1String("TrimSheet") ? tr("Trim") : tr("Develop"));
+                          : panel == QLatin1String("TrimSheet") ? tr("Trim")
+                          : panel == QLatin1String("CanvasSizeSheet") ? tr("Canvas Size")
+                          : panel == QLatin1String("ImageSizeSheet") ? tr("Image Size") : tr("Develop"));
     auto *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(0, 0, 0, 0);
     QWidget *current = nullptr;
@@ -1342,7 +1357,7 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
             if (current) { layout->removeWidget(current); retireRenderedPanel(current); }
             // A sheet's sentences wrap to its width, as SwiftUI's Text does (the bars keep one line).
             for (QLabel *label : next->findChildren<QLabel *>())
-                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) label->setWordWrap(true);
+                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) wrapText(label);
             current = next;
             layout->addWidget(current);
             current->show();
@@ -2069,8 +2084,12 @@ void SessionWindow::handleShellRequests() {
         else if (request == QLatin1String("exportPNG")) trigger("file.exportPNG");
         else if (request == QLatin1String("exportJPEG")) trigger("file.exportJPEG");
         else if (request == QLatin1String("close")) trigger("file.closeProject");
-        else if (request == QLatin1String("canvasSize")) trigger("canvasSize");
-        else if (request == QLatin1String("imageSize")) trigger("imageSize");
+        else if (request == QLatin1String("canvasSize") || request == QLatin1String("imageSize")) {
+            // Upstream's own sheet (CanvasSizeSheet / ImageSizeSheet) and resizer.
+            if (sendCommand({{"action", request == QLatin1String("canvasSize") ? "canvasSizeSheet" : "imageSizeSheet"}})) {
+                refreshImage(); refreshLayers(); updateLayersPanel(); updateStatusTelemetry();
+            }
+        }
         else if (request == QLatin1String("trim")) trigger("image.trim");
         else if (request == QLatin1String("about")) trigger("help.about");
         else if (request == QLatin1String("checkForUpdates")) trigger("help.updates");

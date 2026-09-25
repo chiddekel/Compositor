@@ -296,6 +296,7 @@ nonisolated public func compositorSessionRawDevelopCancel(_ handle: UInt64) {
         if entry.editor.session.showsRawDevelop { entry.editor.session.finishRawDevelop(nil) }
         if entry.editor.session.showsConversionSheet { entry.editor.session.finishConversion(false) }
         if entry.editor.trimSheet != nil { entry.editor.finishTrim(nil) }
+        if entry.editor.canvasSizeSheet != nil || entry.editor.imageSizeSheet != nil { entry.editor.finishSizeSheet(nil) }
         return 0
     }
 }

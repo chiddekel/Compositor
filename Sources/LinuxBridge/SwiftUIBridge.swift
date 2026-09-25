@@ -195,6 +195,12 @@ struct CompositorStatusBar: View {
     case "KeyboardShortcutsSheet":
         guard let sheet = ShortcutSettings.shared.sheet else { return nil }
         resolved = ViewResolver.resolve(sheet)
+    case "CanvasSizeSheet":
+        guard let sheet = entry.editor.canvasSizeSheet else { return nil }
+        resolved = ViewResolver.resolve(sheet)
+    case "ImageSizeSheet":
+        guard let sheet = entry.editor.imageSizeSheet else { return nil }
+        resolved = ViewResolver.resolve(sheet)
     case "TrimSheet":
         guard let sheet = entry.editor.trimSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)

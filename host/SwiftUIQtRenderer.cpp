@@ -1290,6 +1290,20 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             );
         }
 
+        // The Return-key button is the window's default button, which AppKit draws in the accent color.
+        for (const auto &m : node.value("modifiers").toArray()) {
+            const QJsonObject mo = m.toObject();
+            if (mo.value("kind").toString() != QLatin1String("keyboardShortcut")) continue;
+            if (mo.value("stringParams").toObject().value("key").toString() == QLatin1String("\r")
+                && mo.value("doubleParams").toObject().value("modifiers").toDouble() == 0 && !textLabel.isEmpty()) {
+                button->setDefault(true);
+                button->setStyleSheet(QStringLiteral(
+                    "QPushButton { background-color: #0a84ff; color: #ffffff; border: none; border-radius: 5px; padding: 3px 12px; } "
+                    "QPushButton:hover { background-color: #2a93ff; } QPushButton:pressed { background-color: #0a6fd6; } "
+                    "QPushButton:disabled { background-color: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.25); }"));
+                button->setProperty("buttonStyled", true);
+            }
+        }
         QObject::connect(button, &QPushButton::clicked, button, [handle, panel, id] {
             dispatch(handle, panel, id, QStringLiteral("action"));
         });

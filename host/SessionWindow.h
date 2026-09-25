@@ -451,6 +451,7 @@ private:
     QVector<double> m_snapXs, m_snapYs;
     QByteArray m_appMenusJson;
     bool m_appMenusSyncQueued = false;
+    bool m_handlingShellRequests = false;
     QStringList m_appMenuShape;
     QList<QMenu *> m_appMenus, m_legacyMenus;
     QHash<QString, QAction *> m_appMenuActions;
