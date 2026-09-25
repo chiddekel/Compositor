@@ -1,3 +1,4 @@
+import Foundation
 // Minimal value types upstream `Compositor/UI/*.swift` names directly (`.leading`, `.horizontal`, `.callout`,
 // `.secondary`, ...). They carry just enough information (a description string, mostly) for `RenderNode` to record
 // what the Qt renderer should do; they are not a rendering engine of their own.
@@ -198,6 +199,23 @@ extension Shape {
         var node = RenderNode(kind: "Shape")
         node.stringParams["shapeKind"] = shapeKind
         if cornerRadiusValue > 0 { node.doubleParams["cornerRadius"] = cornerRadiusValue }
+        // A shape of the app's own (HueArrow, ...): its outline in a 100×100 box, which the renderer scales to the
+        // view; a bare Path keeps its own coordinates.
+        if !(self is Rectangle || self is Circle || self is RoundedRectangle || self is Capsule) {
+            let absolute = self is Path
+            let path = absolute ? (self as! Path) : path(in: CGRect(x: 0, y: 0, width: 100, height: 100))
+            func n(_ v: CGFloat) -> String { String(format: "%.3f", Double(v)) }
+            node.stringParams["path"] = path.cgPath.segments.map { segment -> String in
+                switch segment {
+                case .move(let p): return "M \(n(p.x)) \(n(p.y))"
+                case .line(let p): return "L \(n(p.x)) \(n(p.y))"
+                case .quad(let c, let p): return "Q \(n(c.x)) \(n(c.y)) \(n(p.x)) \(n(p.y))"
+                case .cubic(let a, let b, let p): return "C \(n(a.x)) \(n(a.y)) \(n(b.x)) \(n(b.y)) \(n(p.x)) \(n(p.y))"
+                case .close: return "Z"
+                }
+            }.joined(separator: " ")
+            if absolute { node.boolParams["pathAbsolute"] = true }
+        }
         return node
     }
 }

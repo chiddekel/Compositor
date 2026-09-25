@@ -45,6 +45,8 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QComboBox>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <vector>
 #include <QIcon>
 #include <QStyleFactory>
@@ -200,6 +202,12 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                     menu = next;
                 }
             }
+            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+        }
+        // COMPOSITOR_GRAB_COMMAND=<JSON object>[;<JSON object>...]: bridge commands sent as the shell would.
+        for (const QString &json : qEnvironmentVariable("COMPOSITOR_GRAB_COMMAND").split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+            window.sendCommand(QJsonDocument::fromJson(json.toUtf8()).object());
+            window.updateFloatingPanels();
             for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
         }
         // COMPOSITOR_GRAB_BLEND_HOVER=<mode>: open the Layers panel's blend menu and hover that mode (menu left open).

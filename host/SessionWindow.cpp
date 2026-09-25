@@ -1587,10 +1587,9 @@ void SessionWindow::syncPaletteFromSession() {
         };
         m_brushColor = colorOf(state.value("foregroundColor"), m_brushColor);
         m_backgroundColor = colorOf(state.value("backgroundColor"), m_backgroundColor);
-        if (!state.value("colorPickerTitle").toString().isEmpty() && !m_presentingColorPicker) {
-            // Deferred: this often runs inside a SwiftUI button's action; the picker is modal.
-            QTimer::singleShot(0, this, [this] { presentSessionColorPicker(); });
-        }
+        // Upstream's ColorPickerSheet floats beside the canvas (FloatingPanels); the canvas samples into it.
+        m_colorPickerOpen = !state.value("colorPickerTitle").toString().isEmpty();
+        if (m_colorPickerOpen) QTimer::singleShot(0, this, [this] { updateFloatingPanels(); });
     }
     const QString swatch("background-color: %1; border: 1.5px solid #ffffff; border-radius: %2px;");
     if (m_fgPaletteButton) m_fgPaletteButton->setStyleSheet(swatch.arg(m_brushColor.name()).arg(ParityMetrics::SwatchCornerRadius));
@@ -3770,6 +3769,15 @@ void SessionWindow::setTool(Tool tool) {
 
 void SessionWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || m_painting) return;
+    if (m_colorPickerOpen) {
+        // EditorCanvas: with the picker up, a click or drag on the canvas samples the color under the pointer.
+        const QPointF at = documentPoint(event->position());
+        sendCommandQuiet({{"action", "sampleColorPicker"}, {"x", at.x()}, {"y", at.y()}});
+        m_painting = true;
+        m_samplingPicker = true;
+        updateFloatingPanels();
+        return;
+    }
     syncBrushFromSession();   // the options bar may have changed them since
     const QPointF point = documentPoint(event->position());
     m_dragStart = point;
@@ -4132,6 +4140,12 @@ void SessionWindow::syncCanvasDrafts() {
 
 void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
     if (!m_painting) return;
+    if (m_samplingPicker) {
+        const QPointF at = documentPoint(event->position());
+        sendCommandQuiet({{"action", "sampleColorPicker"}, {"x", at.x()}, {"y", at.y()}});
+        updateFloatingPanels();
+        return;
+    }
     if (m_guideDragging) {
         const QPointF doc = documentPoint(event->position());
         sendCommandQuiet({{"action", "guideMove"}, {"value", m_guideDragVertical ? doc.x() : doc.y()}});
@@ -4241,6 +4255,7 @@ void SessionWindow::commitLassoSelection() {
 void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || !m_painting) return;
     m_painting = false;
+    if (m_samplingPicker) { m_samplingPicker = false; return; }
     const QPointF point = documentPoint(event->position());
     if (m_guideDragging) {
         m_guideDragging = false;

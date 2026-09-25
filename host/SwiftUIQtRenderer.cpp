@@ -205,7 +205,26 @@ protected:
         p.setBrush(brush);
         p.setPen(pen);
 
-        if (m_shapeKind == "circle") {
+        if (!m_path.isEmpty()) {
+            // The shape's own outline: scaled from its 100×100 box to the view, or as drawn (a bare Path).
+            QPainterPath path;
+            const QStringList t = m_path.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            const double sx = m_pathAbsolute ? 1 : width() / 100.0, sy = m_pathAbsolute ? 1 : height() / 100.0;
+            auto pt = [&](int i) { return QPointF(t.value(i).toDouble() * sx, t.value(i + 1).toDouble() * sy); };
+            for (int i = 0; i < t.size();) {
+                const QString op = t[i];
+                if (op == QLatin1String("M")) { path.moveTo(pt(i + 1)); i += 3; }
+                else if (op == QLatin1String("L")) { path.lineTo(pt(i + 1)); i += 3; }
+                else if (op == QLatin1String("Q")) { path.quadTo(pt(i + 1), pt(i + 3)); i += 5; }
+                else if (op == QLatin1String("C")) { path.cubicTo(pt(i + 1), pt(i + 3), pt(i + 5)); i += 7; }
+                else { path.closeSubpath(); i += 1; }
+            }
+            if (m_mirrorX || m_mirrorY) {
+                p.translate(m_mirrorX ? width() : 0, m_mirrorY ? height() : 0);
+                p.scale(m_mirrorX ? -1 : 1, m_mirrorY ? -1 : 1);
+            }
+            p.drawPath(path);
+        } else if (m_shapeKind == "circle") {
             p.drawEllipse(rect);
         } else if (m_shapeKind == "roundedRectangle") {
             p.drawRoundedRect(rect, m_cornerRadius, m_cornerRadius);
@@ -217,6 +236,9 @@ protected:
         }
     }
 
+public:
+    QString m_path;
+    bool m_pathAbsolute = false, m_mirrorX = false, m_mirrorY = false;
 private:
     QString m_shapeKind;
     double m_cornerRadius;
@@ -1027,6 +1049,111 @@ private:
 
 QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &node);
 
+/// A ZStack: children layered in order, filling it, or placed by `.position` / at the alignment when fixed-size.
+class SwiftUIZStackWidget : public QWidget {
+public:
+    explicit SwiftUIZStackWidget(QString alignment) : m_alignment(std::move(alignment)) {}
+    void add(QWidget *child, const QJsonObject &node) {
+        child->setParent(this);
+        for (const auto &m : node.value("modifiers").toArray()) {
+            const QJsonObject mo = m.toObject();
+            if (mo.value("kind").toString() != QLatin1String("position")) continue;
+            child->setProperty("positionX", mo.value("doubleParams").toObject().value("x").toDouble());
+            child->setProperty("positionY", mo.value("doubleParams").toObject().value("y").toDouble());
+            child->setProperty("positioned", true);
+        }
+        child->show();
+        m_children << child;
+    }
+    QSize sizeHint() const override {
+        QSize hint(0, 0);
+        for (QWidget *w : m_children) if (!w->property("positioned").toBool()) hint = hint.expandedTo(ownSize(w));
+        return hint.isEmpty() ? QSize(20, 20) : hint;
+    }
+protected:
+    static QSize ownSize(QWidget *w) { return w->minimumSize() == w->maximumSize() && !w->minimumSize().isEmpty() ? w->minimumSize() : w->sizeHint(); }
+    void resizeEvent(QResizeEvent *event) override {
+        QWidget::resizeEvent(event);
+        for (QWidget *w : std::as_const(m_children)) {
+            const QSize own = ownSize(w);
+            if (w->property("positioned").toBool()) {
+                const QPointF c(w->property("positionX").toDouble(), w->property("positionY").toDouble());
+                w->setGeometry(QRect(qRound(c.x() - own.width() / 2.0), qRound(c.y() - own.height() / 2.0), own.width(), own.height()));
+            } else if (w->minimumSize() == w->maximumSize() && !w->minimumSize().isEmpty()) {
+                int x = (width() - own.width()) / 2, y = (height() - own.height()) / 2;
+                if (m_alignment.contains(QLatin1String("eading"))) x = 0;
+                if (m_alignment.contains(QLatin1String("railing"))) x = width() - own.width();
+                if (m_alignment.startsWith(QLatin1String("top"))) y = 0;
+                if (m_alignment.startsWith(QLatin1String("bottom"))) y = height() - own.height();
+                w->setGeometry(x + w->property("offsetX").toInt(), y + w->property("offsetY").toInt(), own.width(), own.height());
+            } else {
+                w->setGeometry(rect());
+            }
+        }
+    }
+private:
+    QString m_alignment;
+    QList<QWidget *> m_children;
+};
+
+/// A DragGesture: from the press on its view until the release, wherever the pointer goes, the view is told where it is
+/// in its own space (a GeometryReader's, for views inside one) — by node id, so the panel can rebuild meanwhile.
+class DragTracker : public QObject {
+public:
+    static DragTracker &shared() { static DragTracker *tracker = new DragTracker; return *tracker; }
+    void start(uint64_t handle, QString panel, QString id, QPoint originGlobal, QPointF pressGlobal) {
+        m_handle = handle; m_panel = std::move(panel); m_id = std::move(id);
+        m_origin = originGlobal; m_start = pressGlobal - QPointF(originGlobal);
+        qApp->installEventFilter(this);
+        send(QStringLiteral("dragChanged"), pressGlobal);
+    }
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::MouseMove) {
+            send(QStringLiteral("dragChanged"), static_cast<QMouseEvent *>(event)->globalPosition());
+            return true;
+        }
+        if (event->type() == QEvent::MouseButtonRelease) {
+            qApp->removeEventFilter(this);
+            send(QStringLiteral("dragEnded"), static_cast<QMouseEvent *>(event)->globalPosition());
+            return true;
+        }
+        return false;
+    }
+private:
+    void send(const QString &key, const QPointF &global) {
+        const QPointF at = global - QPointF(m_origin);
+        dispatch(m_handle, m_panel, m_id, key, "[" + QByteArray::number(at.x()) + "," + QByteArray::number(at.y()) + ","
+                 + QByteArray::number(at.x() - m_start.x()) + "," + QByteArray::number(at.y() - m_start.y()) + "]");
+    }
+    uint64_t m_handle = 0;
+    QString m_panel, m_id;
+    QPoint m_origin;
+    QPointF m_start;
+};
+
+class DragPressFilter : public QObject {
+public:
+    DragPressFilter(QWidget *widget, uint64_t handle, QString panel, QString id)
+        : QObject(widget), m_widget(widget), m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)) {
+        widget->installEventFilter(this);
+    }
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() != QEvent::MouseButtonPress || static_cast<QMouseEvent *>(event)->button() != Qt::LeftButton) return false;
+        // The space: the enclosing GeometryReader's, else the view's own.
+        QWidget *space = m_widget;
+        for (QWidget *w = m_widget->parentWidget(); w; w = w->parentWidget())
+            if (w->property("geometryReader").toBool()) { space = w; break; }
+        DragTracker::shared().start(m_handle, m_panel, m_id, space->mapToGlobal(QPoint(0, 0)),
+                                    static_cast<QMouseEvent *>(event)->globalPosition());
+        return true;
+    }
+private:
+    QWidget *m_widget;
+    uint64_t m_handle;
+    QString m_panel, m_id;
+};
+
 /// SwiftUI's GeometryReader: fills what it is given, tells the view its size (which re-resolves the content for it), and
 /// places children with `.position(x:y:)` by their centre (the rest fill it). A press on a child with a DragGesture is
 /// tracked here, in this view's space, and the content re-resolved as it moves.
@@ -1035,6 +1162,7 @@ public:
     SwiftUIGeometryWidget(uint64_t handle, QString panel, QString id, QString key, QSizeF resolvedSize, const QJsonArray &children)
         : m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)), m_key(std::move(key)), m_resolved(resolvedSize) {
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setProperty("geometryReader", true);
         build(children);
     }
     QSize sizeHint() const override { return QSize(100, 40); }
@@ -1053,33 +1181,6 @@ protected:
                      QByteArray("[") + QByteArray::number(now.width()) + "," + QByteArray::number(now.height()) + "]");
             self->refresh();
         });
-    }
-    bool eventFilter(QObject *watched, QEvent *event) override {
-        auto *w = qobject_cast<QWidget *>(watched);
-        if (!w || event->type() != QEvent::MouseButtonPress) return QWidget::eventFilter(watched, event);
-        auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() != Qt::LeftButton) return false;
-        m_dragID = w->property("dragNodeID").toString();
-        m_dragStart = mapFrom(w, me->position().toPoint());
-        grabMouse();
-        sendDrag(QStringLiteral("dragChanged"), m_dragStart);
-        return true;
-    }
-    void mouseMoveEvent(QMouseEvent *event) override { if (!m_dragID.isEmpty()) sendDrag(QStringLiteral("dragChanged"), event->position()); }
-    void mouseReleaseEvent(QMouseEvent *event) override {
-        if (m_dragID.isEmpty()) return;
-        releaseMouse();
-        sendDrag(QStringLiteral("dragEnded"), event->position());
-        m_dragID.clear();
-        notifyListeners(m_handle, m_panel);
-    }
-private:
-    void sendDrag(const QString &key, const QPointF &at) {
-        const QByteArray payload = "[" + QByteArray::number(at.x()) + "," + QByteArray::number(at.y()) + ","
-            + QByteArray::number(at.x() - m_dragStart.x()) + "," + QByteArray::number(at.y() - m_dragStart.y()) + "]";
-        const QString id = m_dragID;
-        dispatch(m_handle, m_panel, id, key, payload);
-        refresh();
     }
     /// The content as the view now resolves it (after a size report or a drag step), rebuilt in place.
     void refresh() {
@@ -1110,18 +1211,6 @@ private:
                 w->setProperty("positionY", mo.value("doubleParams").toObject().value("y").toDouble());
                 w->setProperty("positioned", true);
             }
-            // A child (or a view inside it) with a drag gesture: this widget tracks the drag.
-            std::function<QString(const QJsonObject &)> dragNode = [&](const QJsonObject &n) -> QString {
-                for (const auto &k : n.value("handlerKeys").toArray())
-                    if (k.toString() == QLatin1String("dragChanged") || k.toString() == QLatin1String("dragEnded")) return n.value("id").toString();
-                for (const auto &c : n.value("children").toArray()) { const QString id = dragNode(c.toObject()); if (!id.isEmpty()) return id; }
-                return {};
-            };
-            if (const QString id = dragNode(child); !id.isEmpty()) {
-                w->setProperty("dragNodeID", id);
-                w->installEventFilter(this);
-                for (QWidget *inner : w->findChildren<QWidget *>()) { inner->setProperty("dragNodeID", id); inner->installEventFilter(this); }
-            }
             w->show();
             m_children << w;
         }
@@ -1137,9 +1226,8 @@ private:
         }
     }
     uint64_t m_handle;
-    QString m_panel, m_id, m_key, m_dragID;
+    QString m_panel, m_id, m_key;
     QSizeF m_resolved;
-    QPointF m_dragStart;
     QList<QWidget *> m_children;
 };
 
@@ -1377,12 +1465,12 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             }
             container->setFixedSize(maxW, maxH);
         } else {
-            auto *layout = new QStackedLayout(container);
-            layout->setStackingMode(QStackedLayout::StackAll);
-            layout->setContentsMargins(0, 0, 0, 0);
-            for (auto *child : builtChildren) {
-                layout->addWidget(child);
-            }
+            delete container;
+            // Later children lie over earlier ones; each fills the stack unless it has a size of its own (then it
+            // sits at the stack's alignment) or a `.position` (its centre there).
+            auto *stack = new SwiftUIZStackWidget(strings.value("alignment").toString());
+            for (int i = 0; i < builtChildren.size(); ++i) stack->add(builtChildren[i], children[i].toObject());
+            container = stack;
         }
         widget = container;
     } else if (kind == "Text") {
@@ -1891,7 +1979,12 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 fillColor = parseColorToken(mo.value("stringParams").toObject().value("name").toString());
             }
         }
-        widget = new SwiftUIShapeWidget(shapeKind, cornerRadius, fillColor, strokeColor, strokeWidth);
+        auto *shape = new SwiftUIShapeWidget(shapeKind, cornerRadius, fillColor, strokeColor, strokeWidth);
+        shape->m_path = strings.value("path").toString();
+        shape->m_pathAbsolute = bools.value("pathAbsolute").toBool();
+        shape->m_mirrorX = bools.value("mirrorX").toBool();
+        shape->m_mirrorY = bools.value("mirrorY").toBool();
+        widget = shape;
     } else if (kind == "Image") {
         const QString source = strings.value("source").toString();
         QString systemIcon;
@@ -2032,6 +2125,10 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             for (const auto &k : node.value("handlerKeys").toArray()) keys << k.toString();
             return keys;
         }();
+        if (hKeys.contains(QStringLiteral("dragChanged")) || hKeys.contains(QStringLiteral("dragEnded"))) {
+            new DragPressFilter(widget, handle, panel, id);
+            for (QWidget *inner : widget->findChildren<QWidget *>()) new DragPressFilter(inner, handle, panel, id);
+        }
         if (hKeys.contains(QStringLiteral("swipeBegan"))) new SwipeFilter(widget, handle, panel, id, strings.value("swipeGroup").toString());
         if (hKeys.contains(QStringLiteral("onTapGesture"))) {
             widget->setCursor(Qt::PointingHandCursor);

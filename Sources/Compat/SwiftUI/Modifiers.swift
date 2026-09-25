@@ -103,7 +103,12 @@ extension View {
     }
     public func scaleEffect(_ scale: Double) -> some View { modified { $0.modifiers.append(.scaleEffect(scale)) } }
     public func scaleEffect(x: Double = 1, y: Double = 1, anchor: UnitPoint = .center) -> some View {
-        modified { $0.modifiers.append(.scaleEffect(max(x, y))) }
+        modified {
+            // A negative scale mirrors (a HueArrow pointing the other way); the renderer flips shapes for it.
+            if x < 0 { $0.boolParams["mirrorX"] = true }
+            if y < 0 { $0.boolParams["mirrorY"] = true }
+            $0.modifiers.append(.scaleEffect(max(abs(x), abs(y))))
+        }
     }
     public func rotationEffect(_ radians: Double) -> some View { modified { $0.modifiers.append(.rotationEffect(radians)) } }
     public func rotationEffect(_ angle: Angle) -> some View { modified { $0.modifiers.append(.rotationEffect(angle.radians)) } }

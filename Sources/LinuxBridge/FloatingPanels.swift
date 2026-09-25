@@ -31,6 +31,7 @@ enum FloatingPanels {
         let session = editor.session
         var panels: [Open] = []
         if let editing = session.effectsEditing { panels.append(Open(panel: "EffectsSheet", title: editing.kind.rawValue)) }
+        if let picker = session.colorPicker { panels.append(Open(panel: "ColorPickerSheet", title: picker.target.title)) }
         if session.levels != nil { panels.append(Open(panel: "LevelsSheet", title: "Levels")) }
         if session.hueSaturation != nil { panels.append(Open(panel: "HueSaturationSheet", title: "Hue/Saturation")) }
         if let operation = session.selectionAmountOperation {
@@ -47,6 +48,7 @@ enum FloatingPanels {
         switch panel {
         case "EffectsSheet": if session.effectsEditing != nil { session.finishEffectsEditing(commit: false) }
         case "FilterSheet": if session.filterEdit != nil { session.cancelFilter() }
+        case "ColorPickerSheet": if session.colorPicker != nil { session.closeColorPicker(commit: false) }
         case "LevelsSheet": if session.levels != nil { session.cancelLevels() }
         case "HueSaturationSheet": if session.hueSaturation != nil { session.cancelHueSaturation() }
         case "SelectionAmountSheet": session.selectionAmountOperation = nil

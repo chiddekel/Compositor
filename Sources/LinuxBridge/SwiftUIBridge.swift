@@ -175,6 +175,11 @@ struct CompositorStatusBar: View {
     case "HueSaturationSheet": resolved = ViewResolver.resolve(HueSaturationSheet(session: session))
     case "FilterSheet": resolved = ViewResolver.resolve(FilterSheet(session: session))
     case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session))
+    case "ColorPickerSheet":
+        guard let picker = session.colorPicker else { return nil }
+        resolved = ViewResolver.resolve(ColorPickerSheet(state: picker) { [weak session] commit in
+            session?.closeColorPicker(commit: commit)
+        }.id(ObjectIdentifier(picker).hashValue))
     case "SelectionAmountSheet":
         guard let operation = session.selectionAmountOperation else { return nil }
         resolved = ViewResolver.resolve(SelectionAmountSheet(session: session, operation: operation).id(operation.rawValue))

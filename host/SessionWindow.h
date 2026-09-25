@@ -454,6 +454,7 @@ private:
     bool m_appMenusSyncQueued = false;
     bool m_handlingShellRequests = false;
     int m_panelPollTick = 0;
+    bool m_colorPickerOpen = false, m_samplingPicker = false;
     QStringList m_appMenuShape;
     QList<QMenu *> m_appMenus, m_legacyMenus;
     QHash<QString, QAction *> m_appMenuActions;

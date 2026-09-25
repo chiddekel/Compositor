@@ -190,7 +190,7 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textFinish", "textCancel",
@@ -639,6 +639,10 @@ final class UpstreamEditor {
             pendingJPEG = nil
             do { try await ImageExporter.shared.write(data, to: URL(fileURLWithPath: path)) }
             catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
+        // EditorCanvas.sampleColor while the color picker is open: the canvas under the pointer into the picker.
+        case "sampleColorPicker":
+            guard let p = point(command), s.colorPicker != nil else { return fail(-2, "no picker") }
+            s.sampleIntoColorPicker(at: p)
         case "filterBegin":
             guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
             filterInShellDialog = true
