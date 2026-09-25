@@ -3182,14 +3182,6 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
             p.drawImage(0, 0, QImage(reinterpret_cast<const uchar *>(bytes.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied));
     }
 
-    // A text box being dragged out (upstream drawTextBoxDraft).
-    if (!m_textBoxRect.isNull()) {
-        p.save();
-        p.setPen(QPen(QColor(0, 122, 255), 1));
-        p.setBrush(Qt::NoBrush);
-        p.drawRect(QRectF(documentToCanvasPoint(m_textBoxRect.topLeft()), documentToCanvasPoint(m_textBoxRect.bottomRight())));
-        p.restore();
-    }
 
 }
 
@@ -3200,7 +3192,7 @@ bool SessionWindow::routesToUpstreamCanvas() const {
     switch (m_tool) {
     case Tool::Move: case Tool::Marquee: case Tool::Lasso: case Tool::Magic: case Tool::Crop:
     case Tool::Brush: case Tool::SpotHealing: case Tool::CloneStamp: case Tool::Smear:
-    case Tool::Gradient: case Tool::Eyedropper: case Tool::Zoom: case Tool::Hand: case Tool::Shape:
+    case Tool::Gradient: case Tool::Eyedropper: case Tool::Zoom: case Tool::Hand: case Tool::Shape: case Tool::Type:
         return true;
     default: return false;
     }
@@ -3239,7 +3231,11 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     const bool brush = m_tool == Tool::Brush || m_tool == Tool::SpotHealing || m_tool == Tool::CloneStamp || m_tool == Tool::Smear;
     if (brush && kind == 1) { scheduleStrokeRefresh(); if (m_canvasWidget) m_canvasWidget->update(); return; }
     refreshImage();
-    if (kind == 2 || kind == 0) { refreshLayers(); updateLayersPanel(); updateOptionsBar(); }
+    if (kind == 2 || kind == 0) {
+        syncToolFromSession();    // a double-click on live text switches to the Type tool, as on the Mac
+        syncTextEditor();         // the shell's inline editor follows the session's text draft
+        refreshLayers(); updateLayersPanel(); updateOptionsBar();
+    }
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
@@ -4143,7 +4139,7 @@ bool SessionWindow::sendCommandQuiet(const QJsonObject &command) {
 /// Move tool: double-click live text to edit it without switching to Type first (upstream 1.2.9).
 bool SessionWindow::canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
-    if (event->button() == Qt::LeftButton && routesToUpstreamCanvas() && m_tool != Tool::Move) {
+    if (event->button() == Qt::LeftButton && routesToUpstreamCanvas()) {
         m_upstreamCanvasDrag = true;
         sendUpstreamCanvasMouse(0, event, 2);   // a double press (closes a polygonal lasso)
         return true;

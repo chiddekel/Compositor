@@ -90,7 +90,8 @@ import AppKit
         defer { NSGraphicsContext.current = previous }
         // The canvas's overlay views in their stacking order (TransformOverlay, the brush circle, the sample ring), each
         // in its own frame; an unflipped one draws y-up.
-        for subview in view.subviews where !subview.isHidden {
+        for subview in view.subviews where !subview.isHidden
+            && (subview is TransformOverlay || subview is BrushCursorOverlay || subview is SampleRingOverlay) {
             if subview is TransformOverlay { subview.frame = view.bounds }
             let frame = subview.frame
             guard frame.width > 0, frame.height > 0 else { continue }
@@ -101,6 +102,9 @@ import AppKit
             subview.draw(CGRect(origin: .zero, size: frame.size))
             context.restoreGState()
         }
+        // The Type tool's box being dragged out (CanvasView.draw ends with it).
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        view.drawTextBoxDraft()
         return context.buffer.bytes
     }
 }
