@@ -123,6 +123,16 @@ private struct State: Encodable {
     let showsImporter: Bool
     /// The welcome's Open project was pressed (upstream calls `projects.open()`): the shell shows its project chooser.
     let openProjectRequested: Bool
+    /// Canvas chrome as EditorCanvas / TransformOverlay draw it: rulers, the layout grid, guides (with a drag in
+    /// progress), the lines a snapped move lines up with.
+    let showsRulers: Bool
+    let showsGrid: Bool
+    let showsGuides: Bool
+    let guides: [GuideState]
+    let guideDragging: Bool
+    let canEditGuides: Bool
+    let snapLines: [[Double]]
+    struct GuideState: Encodable { let vertical: Bool; let position: Double }
     /// Upstream's modal sheets that are open (RawDevelopSheet, PSDConversionSheet, TrimSheet): the shell shows each.
     let sheets: [String]
     /// An alert upstream's ContentView would be showing ("Couldn’t paint" / "Couldn’t crop"): `kind` for dismissAlert.
@@ -180,7 +190,7 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "dismissAlert", "dismissImporter", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textFinish", "textCancel",
@@ -375,6 +385,20 @@ final class UpstreamEditor {
         // The alert's OK button (ContentView: session.brushError / cropError = nil).
         case "dismissAlert":
             if command.kind == "crop" { s.cropError = nil } else { s.brushError = nil }
+        // Guides, as CanvasRulerNSView and EditorCanvas drag them: from a ruler (`kind` = horizontal | vertical, `value` =
+        // document position), or grabbing one on the canvas (x, y in view points, the viewport's space).
+        case "guideCreate":
+            guard let axis = command.kind.flatMap(CanvasGuide.Axis.init(rawValue:)), let value = command.value, value.isFinite else { return fail(-1, "invalid guide") }
+            s.beginGuideCreation(axis: axis, at: value)
+            guard s.guideDrag != nil else { return fail(-5, "guides can't be edited now") }
+        case "guideHit":
+            guard let p = point(command), let guide = s.hitGuide(at: p), s.canEditGuides else { return fail(-5, "no guide there") }
+            s.beginGuideMove(guide)
+        case "guideMove":
+            guard let value = command.value, value.isFinite else { return fail(-1, "invalid position") }
+            s.moveGuideDrag(to: value)
+        case "guideFinish": s.finishGuideDrag(delete: command.enabled == true)
+        case "guideCancel": s.cancelGuideDrag()
         // The shell's file chooser for upstream's .fileImporter / the welcome's Open project has closed.
         case "dismissImporter":
             s.showsImporter = false
@@ -844,6 +868,10 @@ final class UpstreamEditor {
             floatingPanels: FloatingPanels.open(in: self),
             showsImporter: s.showsImporter,
             openProjectRequested: openProjectRequested,
+            showsRulers: s.showsRulers, showsGrid: s.showsGrid, showsGuides: s.showsGuides,
+            guides: s.displayedGuides.map { State.GuideState(vertical: $0.axis == .vertical, position: $0.position) },
+            guideDragging: s.guideDrag != nil, canEditGuides: s.canEditGuides,
+            snapLines: [s.snapGuides.xs.map { Double($0) }, s.snapGuides.ys.map { Double($0) }],
             sheets: openSheets,
             alert: s.brushError.map { State.AlertState(kind: "brush", title: "Couldn’t paint", message: $0) }
                 ?? s.cropError.map { State.AlertState(kind: "crop", title: "Couldn’t crop", message: $0) },

@@ -208,6 +208,40 @@ private:
     SessionWindow *m_window;
 };
 
+/// CanvasRuler.thickness.
+static constexpr int kRulerThickness = 18;
+
+/// CanvasRulerCorner: white 0.2 with a 28% diagonal hairline toward the bottom-trailing corner.
+class RulerCornerWidget : public QWidget {
+public:
+    explicit RulerCornerWidget(QWidget *parent) : QWidget(parent) { setFixedSize(kRulerThickness, kRulerThickness); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.fillRect(rect(), QColor::fromRgbF(0.2, 0.2, 0.2));
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(255, 255, 255, 71), 1));
+        p.drawLine(QPointF(5, kRulerThickness - 4), QPointF(kRulerThickness - 4, 5));
+    }
+};
+
+class CanvasRulerWidget : public QWidget {
+public:
+    CanvasRulerWidget(SessionWindow *window, bool vertical, QWidget *parent) : QWidget(parent), m_window(window), m_vertical(vertical) {
+        if (vertical) setFixedWidth(kRulerThickness); else setFixedHeight(kRulerThickness);
+        setCursor(vertical ? Qt::SizeHorCursor : Qt::SizeVerCursor);
+        setAttribute(Qt::WA_OpaquePaintEvent, true);
+    }
+protected:
+    void paintEvent(QPaintEvent *) override { m_window->paintRuler(this, m_vertical); }
+    void mousePressEvent(QMouseEvent *event) override { m_window->rulerMousePress(event, this, m_vertical); }
+    void mouseMoveEvent(QMouseEvent *event) override { m_window->rulerMouseMove(event, this); }
+    void mouseReleaseEvent(QMouseEvent *event) override { m_window->rulerMouseRelease(event, this); }
+private:
+    SessionWindow *m_window;
+    bool m_vertical;
+};
+
 static QIcon makeToolIcon(SessionWindow::Tool tool,
                           SessionWindow::MarqueeMode marqueeMode = SessionWindow::MarqueeMode::Rectangle,
                           SessionWindow::BrushToolMode brushMode = SessionWindow::BrushToolMode::Paint) {
@@ -510,7 +544,24 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     // Central canvas widget:
     m_canvasWidget = new SessionCanvasWidget(this);
-    setCentralWidget(m_canvasWidget);
+    // ContentView's canvas column: the ruler corner and the top ruler over the left ruler and the canvas (rulers only
+    // while View > Show > Rulers is on and there is a document).
+    {
+        auto *column = new QWidget(this);
+        column->setObjectName("canvasColumn");
+        auto *grid = new QGridLayout(column);
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setSpacing(0);
+        m_rulerCorner = new RulerCornerWidget(column);
+        m_rulerH = new CanvasRulerWidget(this, false, column);
+        m_rulerV = new CanvasRulerWidget(this, true, column);
+        grid->addWidget(m_rulerCorner, 0, 0);
+        grid->addWidget(m_rulerH, 0, 1);
+        grid->addWidget(m_rulerV, 1, 0);
+        grid->addWidget(m_canvasWidget, 1, 1);
+        for (QWidget *w : {m_rulerCorner, m_rulerH, m_rulerV}) w->hide();
+        setCentralWidget(column);
+    }
 
     m_toolsBar = addToolBar(tr("Tools"));
     m_toolsBar->setObjectName("toolbar.tools");
@@ -2671,6 +2722,173 @@ bool geometryContains(const SessionWindow::LayerGeometry &g, const QPointF &p) {
 }
 }  // namespace
 
+/// CanvasRulerNSView.draw: white 0.2, ticks (0.62) every tenth of a 1-2-5 major step about 70 points apart, 8 long at
+/// majors, 5 at halves, 3 otherwise, numbered majors (0.78, 8-pt digits) — the left ruler's turned to read downward —
+/// and a 0.08 hairline along the canvas edge.
+void SessionWindow::paintRuler(QWidget *ruler, bool vertical) {
+    QPainter p(ruler);
+    p.fillRect(ruler->rect(), QColor::fromRgbF(0.2, 0.2, 0.2));
+    if (m_image.isNull() || !m_canvasWidget) return;
+    const QRectF doc = canvasTargetRect();
+    if (doc.width() <= 0 || docWidth() <= 0) return;
+    const double scale = doc.width() / docWidth();   // points per document pixel
+    static const double nice[] = {1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 20000, 25000};
+    double step = 50000;
+    for (double n : nice) if (n >= 70 / std::max(scale, 0.0001)) { step = n; break; }
+    const double minor = step / 10;
+    const double dpr = ruler->devicePixelRatioF(), hairline = 1.0 / std::max(dpr, 1.0);
+    // The canvas's origin in ruler coordinates (the ruler runs along the canvas's edge).
+    const QPoint offset = m_canvasWidget->mapTo(ruler->window(), QPoint(0, 0)) - ruler->mapTo(ruler->window(), QPoint(0, 0));
+    const double origin = vertical ? doc.top() + offset.y() : doc.left() + offset.x();
+    const double length = vertical ? ruler->height() : ruler->width();
+    const double start = (0 - origin) / scale, end = (length - origin) / scale;
+    const double first = std::floor(std::min(start, end) / minor) * minor, last = std::ceil(std::max(start, end) / minor) * minor;
+    QFont font = ruler->font();
+    font.setPixelSize(8);
+    font.setFeature(QFont::Tag("tnum"), 1);
+    p.setFont(font);
+    const QColor tick = QColor::fromRgbF(0.62, 0.62, 0.62), labels = QColor::fromRgbF(0.78, 0.78, 0.78);
+    const QFontMetricsF metrics(font);
+    for (double value = first; value <= last + 0.001; value += minor) {
+        const double at = origin + value * scale;
+        const double remainder = std::abs(std::remainder(value, step));
+        const bool major = remainder < 0.001 || std::abs(remainder - step) < 0.001;
+        const bool mid = !major && std::abs(std::remainder(value, step / 2)) < 0.001;
+        const double len = major ? 8 : mid ? 5 : 3;
+        if (vertical) p.fillRect(QRectF(kRulerThickness - len, at - hairline / 2, len, hairline), tick);
+        else p.fillRect(QRectF(at - hairline / 2, kRulerThickness - len, hairline, len), tick);
+        if (!major) continue;
+        const double rounded = std::round(value);
+        const QString text = rounded == 0 ? QStringLiteral("0") : QString::number(qint64(rounded));
+        p.setPen(labels);
+        if (vertical) {
+            p.save();
+            p.translate(1, at + 2);
+            p.rotate(-90);
+            p.drawText(QPointF(-metrics.horizontalAdvance(text), metrics.ascent()), text);
+            p.restore();
+        } else {
+            p.drawText(QPointF(at + 2, metrics.ascent()), text);
+        }
+    }
+    const QColor edge = QColor::fromRgbF(0.08, 0.08, 0.08);
+    if (vertical) p.fillRect(QRectF(kRulerThickness - hairline, 0, hairline, ruler->height()), edge);
+    else p.fillRect(QRectF(0, kRulerThickness - hairline, ruler->width(), hairline), edge);
+}
+
+/// Pressing a ruler starts a new guide there (the top ruler a horizontal one), following the pointer over the canvas;
+/// released back on a ruler, it goes away.
+void SessionWindow::rulerMousePress(QMouseEvent *event, QWidget *ruler, bool vertical) {
+    if (event->button() != Qt::LeftButton || !m_canEditGuides || !m_canvasWidget) return;
+    const QPointF at = m_canvasWidget->mapFrom(ruler, event->position().toPoint());
+    const QPointF doc = documentPoint(at);
+    const bool guideVertical = vertical;   // the left ruler makes vertical guides
+    if (sendCommandQuiet({{"action", "guideCreate"}, {"kind", guideVertical ? "vertical" : "horizontal"},
+                          {"value", guideVertical ? doc.x() : doc.y()}})) {
+        m_guideDragging = true;
+        m_guideDragVertical = guideVertical;
+        syncCanvasChrome(sessionState());
+    }
+}
+
+void SessionWindow::rulerMouseMove(QMouseEvent *event, QWidget *ruler) {
+    if (!m_guideDragging || !m_canvasWidget) return;
+    const QPointF doc = documentPoint(m_canvasWidget->mapFrom(ruler, event->position().toPoint()));
+    sendCommandQuiet({{"action", "guideMove"}, {"value", m_guideDragVertical ? doc.x() : doc.y()}});
+    syncCanvasChrome(sessionState());
+}
+
+void SessionWindow::rulerMouseRelease(QMouseEvent *event, QWidget *ruler) {
+    if (!m_guideDragging || !m_canvasWidget) return;
+    const QPointF at = m_canvasWidget->mapFrom(ruler, event->position().toPoint());
+    // EditorCanvas.isOverRuler: released left of or above the canvas.
+    sendCommandQuiet({{"action", "guideFinish"}, {"enabled", m_showsRulers && (at.x() < 0 || at.y() < 0)}});
+    m_guideDragging = false;
+    syncCanvasChrome(sessionState());
+    refreshImage();
+}
+
+/// The session's canvas chrome: whether the rulers show (and so the canvas's size), the grid, guides and snap lines.
+void SessionWindow::syncCanvasChrome(const QJsonObject &state) {
+    const bool hasDocument = state.value("width").toInt() > 0;
+    const bool rulers = state.value("showsRulers").toBool() && hasDocument;
+    m_showsGrid = state.value("showsGrid").toBool();
+    m_showsGuides = state.value("showsGuides").toBool();
+    m_canEditGuides = state.value("canEditGuides").toBool();
+    m_guides.clear();
+    for (const QJsonValue &v : state.value("guides").toArray())
+        m_guides.append({v.toObject().value("vertical").toBool(), v.toObject().value("position").toDouble()});
+    const QJsonArray snap = state.value("snapLines").toArray();
+    m_snapXs.clear(); m_snapYs.clear();
+    for (const QJsonValue &v : snap.at(0).toArray()) m_snapXs << v.toDouble();
+    for (const QJsonValue &v : snap.at(1).toArray()) m_snapYs << v.toDouble();
+    if (rulers != m_showsRulers && m_rulerCorner) {
+        m_showsRulers = rulers;
+        for (QWidget *w : {m_rulerCorner, m_rulerH, m_rulerV}) w->setVisible(rulers);
+    }
+    if (m_rulerH && m_showsRulers) { m_rulerH->update(); m_rulerV->update(); }
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+/// TransformOverlay's grid (dotted 8-px subdivisions at white 0.55/28% when 4+ points apart, solid 64-px majors at
+/// 0.7/45%), the guides (cyan 90%, a device pixel, across the whole view) and the snap lines (accent).
+void SessionWindow::drawCanvasChrome(QPainter &p, QWidget *canvas) {
+    const QRectF doc = canvasTargetRect();
+    if (doc.isEmpty()) return;
+    const double scale = doc.width() / docWidth(), dpr = canvas->devicePixelRatioF(), hairline = 1.0 / std::max(dpr, 1.0);
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    if (m_showsGrid) {
+        const double step = 8, spacing = 64;
+        auto isMajor = [&](double v) { return std::abs(std::fmod(std::round(v), spacing)) < 0.001; };
+        if (step * scale >= 4) {
+            QPen pen(QColor::fromRgbF(0.55, 0.55, 0.55, 0.28), hairline);
+            pen.setDashPattern({1 / hairline, 2 / hairline});
+            p.setPen(pen);
+            for (double x = 0; x <= docWidth() + 0.001; x += step)
+                if (!isMajor(x)) p.drawLine(QPointF(doc.left() + std::round(x) * scale, doc.top()), QPointF(doc.left() + std::round(x) * scale, doc.bottom()));
+            for (double y = 0; y <= docHeight() + 0.001; y += step)
+                if (!isMajor(y)) p.drawLine(QPointF(doc.left(), doc.top() + std::round(y) * scale), QPointF(doc.right(), doc.top() + std::round(y) * scale));
+        }
+        p.setPen(QPen(QColor::fromRgbF(0.7, 0.7, 0.7, 0.45), hairline));
+        for (double x = 0; x <= docWidth() + 0.001; x += step)
+            if (isMajor(x)) p.drawLine(QPointF(doc.left() + std::round(x) * scale, doc.top()), QPointF(doc.left() + std::round(x) * scale, doc.bottom()));
+        for (double y = 0; y <= docHeight() + 0.001; y += step)
+            if (isMajor(y)) p.drawLine(QPointF(doc.left(), doc.top() + std::round(y) * scale), QPointF(doc.right(), doc.top() + std::round(y) * scale));
+    }
+    if (m_showsGuides && !m_guides.isEmpty()) {
+        p.setPen(QPen(QColor::fromRgbF(0, 1, 1, 0.9), hairline));
+        for (const auto &[vertical, position] : m_guides) {
+            if (vertical) { const double x = doc.left() + position * scale; p.drawLine(QPointF(x, 0), QPointF(x, canvas->height())); }
+            else { const double y = doc.top() + position * scale; p.drawLine(QPointF(0, y), QPointF(canvas->width(), y)); }
+        }
+    }
+    if (!m_snapXs.isEmpty() || !m_snapYs.isEmpty()) {
+        p.setPen(QPen(QColor(0x0a, 0x84, 0xff), 1));
+        for (double x : m_snapXs) p.drawLine(QPointF(doc.left() + x * scale, doc.top()), QPointF(doc.left() + x * scale, doc.bottom()));
+        for (double y : m_snapYs) p.drawLine(QPointF(doc.left(), doc.top() + y * scale), QPointF(doc.right(), doc.top() + y * scale));
+    }
+    p.restore();
+}
+
+/// EditorCanvas.beginGuideDrag: the Move tool grabs a guide under the pointer before anything else.
+bool SessionWindow::beginCanvasGuideDrag(const QPointF &at) {
+    if (!m_showsGuides || !m_canEditGuides || m_guides.isEmpty()) return false;
+    if (!sendCommandQuiet({{"action", "guideHit"}, {"x", at.x()}, {"y", at.y()}})) return false;
+    const QJsonObject state = sessionState();
+    syncCanvasChrome(state);
+    // Which axis: the guide nearest the pointer.
+    const QRectF doc = canvasTargetRect();
+    const double scale = doc.width() / std::max(1, docWidth());
+    double best = 1e9;
+    for (const auto &[vertical, position] : m_guides) {
+        const double d = vertical ? std::abs(doc.left() + position * scale - at.x()) : std::abs(doc.top() + position * scale - at.y());
+        if (d < best) { best = d; m_guideDragVertical = vertical; }
+    }
+    m_guideDragging = true;
+    return true;
+}
+
 /// Where the document sits on the canvas: upstream's CanvasViewport.documentRect (zoom 1 = one image pixel per device
 /// pixel, centered, offset by the pan).
 QRectF SessionWindow::canvasTargetRect() const {
@@ -2833,6 +3051,7 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         p.drawRect(target.adjusted(inset, inset, -inset, -inset));
     }
 
+    drawCanvasChrome(p, canvas);   // grid and guides sit under the handles
     drawTransformControls(p);
     drawCropOverlay(p);
 
@@ -3039,6 +3258,7 @@ void SessionWindow::refreshImage() {
     if (m_strokeRefreshTimer) m_strokeRefreshTimer->stop(); // this full refresh supersedes a pending stroke redraw
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
+    syncCanvasChrome(state);
     if (m_documentTabBar) { m_documentTabBar->updateGeometry(); m_documentTabBar->update(); }
     // Menu items enable as the session changes, so their shortcuts work when they should (AppKit validates on use).
     if (!m_appMenus.isEmpty() && !m_appMenusSyncQueued) {
@@ -3527,6 +3747,7 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
 
     switch (m_tool) {
     case Tool::Move: {
+        if (beginCanvasGuideDrag(event->position())) { m_painting = true; break; }
         m_transformHandle = -1;
         m_transformDraft = LayerGeometry();
         // Auto Select: pick the topmost visible layer under the cursor unless a
@@ -3875,6 +4096,12 @@ void SessionWindow::syncCanvasDrafts() {
 
 void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
     if (!m_painting) return;
+    if (m_guideDragging) {
+        const QPointF doc = documentPoint(event->position());
+        sendCommandQuiet({{"action", "guideMove"}, {"value", m_guideDragVertical ? doc.x() : doc.y()}});
+        syncCanvasChrome(sessionState());
+        return;
+    }
     const QPointF point = documentPoint(event->position());
     if (m_tool == Tool::Hand || m_spaceHandActive) {
         const QPointF delta = event->position() - m_panStart;
@@ -3979,6 +4206,13 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || !m_painting) return;
     m_painting = false;
     const QPointF point = documentPoint(event->position());
+    if (m_guideDragging) {
+        m_guideDragging = false;
+        sendCommandQuiet({{"action", "guideFinish"}, {"enabled", m_showsRulers && (event->position().x() < 0 || event->position().y() < 0)}});
+        syncCanvasChrome(sessionState());
+        refreshImage();
+        return;
+    }
     if (m_tool == Tool::Zoom && !m_spaceHandActive) {
         if (!m_zoomDragMoved)
             changeViewport(2, viewportZoom() * ((event->modifiers() & Qt::AltModifier) ? 0.5 : 2.0), m_zoomDragStart.x(), m_zoomDragStart.y());

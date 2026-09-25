@@ -176,12 +176,20 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         }
         // COMPOSITOR_GRAB_MENU_ITEM="Menu/Item[;Menu/Item...]": the menu bar's items (upstream's menus), chosen by title.
         for (const QString &spec : qEnvironmentVariable("COMPOSITOR_GRAB_MENU_ITEM").split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
-            const QString menuTitle = spec.section(QLatin1Char('/'), 0, 0), itemTitle = spec.section(QLatin1Char('/'), 1);
+            const QStringList parts = spec.split(QLatin1Char('/'));
             for (QAction *top : window.menuBar()->actions()) {
-                if (!top->isVisible() || !top->menu() || top->text().trimmed() != menuTitle) continue;
+                if (!top->isVisible() || !top->menu() || top->text().trimmed() != parts.value(0)) continue;
                 emit top->menu()->aboutToShow();
-                for (QAction *item : top->menu()->actions())
-                    if (QString(item->text()).replace(QStringLiteral("&&"), QStringLiteral("&")) == itemTitle) { item->trigger(); break; }
+                QMenu *menu = top->menu();
+                for (int level = 1; menu && level < parts.size(); ++level) {
+                    QMenu *next = nullptr;
+                    for (QAction *item : menu->actions()) {
+                        if (QString(item->text()).replace(QStringLiteral("&&"), QStringLiteral("&")) != parts[level]) continue;
+                        if (item->menu()) next = item->menu(); else item->trigger();
+                        break;
+                    }
+                    menu = next;
+                }
             }
             for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
         }

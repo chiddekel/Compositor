@@ -243,6 +243,11 @@ public:
     void canvasDropEvent(QDropEvent *event, QWidget *canvas);
     QRectF canvasTargetRect() const;
     QPointF documentToCanvasPoint(const QPointF &docPoint) const;
+    // CanvasRulerNSView: the rulers' drawing and guide drags (vertical = the left ruler).
+    void paintRuler(QWidget *ruler, bool vertical);
+    void rulerMousePress(QMouseEvent *event, QWidget *ruler, bool vertical);
+    void rulerMouseMove(QMouseEvent *event, QWidget *ruler);
+    void rulerMouseRelease(QMouseEvent *event, QWidget *ruler);
 
 private:
     void createMenus();
@@ -434,6 +439,16 @@ private:
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
     QWidget *m_welcomeContent = nullptr;
+    // Canvas chrome from the session (syncCanvasChrome): rulers, layout grid, guides, snap lines.
+    void syncCanvasChrome(const QJsonObject &state);
+    void drawCanvasChrome(QPainter &p, QWidget *canvas);
+    bool beginCanvasGuideDrag(const QPointF &at);
+    QWidget *m_rulerCorner = nullptr, *m_rulerH = nullptr, *m_rulerV = nullptr;
+    bool m_showsRulers = false, m_showsGrid = false, m_showsGuides = false, m_canEditGuides = false;
+    bool m_guideDragging = false;   // a guide drag this shell started (ruler or canvas)
+    bool m_guideDragVertical = false;
+    QVector<QPair<bool, double>> m_guides;   // vertical?, document position
+    QVector<double> m_snapXs, m_snapYs;
     QByteArray m_appMenusJson;
     bool m_appMenusSyncQueued = false;
     QStringList m_appMenuShape;
