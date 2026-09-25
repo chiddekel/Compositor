@@ -594,27 +594,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         QCoreApplication::processEvents();
         return 0;
     }
-    class QuitEventFilter : public QObject {
-    public:
-        explicit QuitEventFilter(QObject *parent = nullptr) : QObject(parent) {}
-    protected:
-        bool eventFilter(QObject *obj, QEvent *event) override {
-            if (event->type() == QEvent::Quit) {
-                fprintf(stderr, ">>> RECEIVED QEvent::Quit on %s (spontaneous=%d)\n",
-                        obj->metaObject()->className(), (int)event->spontaneous());
-            } else if (event->type() == QEvent::Close) {
-                fprintf(stderr, ">>> RECEIVED QEvent::Close on %s (spontaneous=%d)\n",
-                        obj->metaObject()->className(), (int)event->spontaneous());
-            }
-            return QObject::eventFilter(obj, event);
-        }
-    };
-    QuitEventFilter quitFilter(&app);
-    app.installEventFilter(&quitFilter);
-
-    int ret = app.exec();
-    fprintf(stderr, ">>> app.exec() returned %d\n", ret);
-    return ret;
+    return app.exec();
 }
 
 extern "C" int compositor_qt_imageio_selftest(void);
