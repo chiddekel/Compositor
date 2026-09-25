@@ -138,6 +138,11 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     }
     window.show();
     if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
+        // COMPOSITOR_GRAB_SIZE=WxH: the window at that size first (e.g. tall enough to show the whole tool rail).
+        if (const QStringList wh = qEnvironmentVariable("COMPOSITOR_GRAB_SIZE").split(QLatin1Char('x')); wh.size() == 2) {
+            window.resize(wh[0].toInt(), wh[1].toInt());
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+        }
         const QString toolArg = qEnvironmentVariable("COMPOSITOR_GRAB_TOOL");
         if (toolArg == "move") window.setTool(SessionWindow::Tool::Move);
         else if (toolArg == "brush") window.setTool(SessionWindow::Tool::Brush);

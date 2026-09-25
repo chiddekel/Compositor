@@ -908,6 +908,23 @@ static void buildContextMenu(QMenu *menu, const QJsonArray &items, const std::fu
 
 } // namespace
 
+/// `icon` turned by `degrees` about its centre, at 2x.
+static QIcon rotatedIcon(const QIcon &icon, const QSize &size, double degrees) {
+    if (degrees == 0 || icon.isNull()) return icon;
+    const qreal dpr = 2;
+    const QPixmap source = icon.pixmap(size * dpr);
+    QPixmap turned(size * dpr);
+    turned.fill(Qt::transparent);
+    QPainter painter(&turned);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.translate(turned.width() / 2.0, turned.height() / 2.0);
+    painter.rotate(degrees);
+    painter.drawPixmap(QPointF(-source.width() / 2.0, -source.height() / 2.0), source);
+    painter.end();
+    turned.setDevicePixelRatio(dpr);
+    return QIcon(turned);
+}
+
 QIcon renderToolVectorIcon(const QString &symbol, int size, const QColor &color) {
     // SF Symbols by their upstream names, drawn from Lucide (the open stand-in; host/LucideIcons.h), at the device's
     // resolution; a 1.75-unit stroke on the 24-unit grid sits close to SF's regular weight.
@@ -1348,6 +1365,21 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 else if (part == QLatin1String("design:monospaced")) font.setFamilies({QStringLiteral("DejaVu Sans Mono"), QStringLiteral("monospace")});
             }
             widget->setFont(font);
+        } else if (kind == "rotationEffect") {
+            // A symbol image turned (SwiftUI rotates about its centre).
+            if (auto *label = qobject_cast<QLabel *>(widget); label && !label->pixmap().isNull()) {
+                const QPixmap source = label->pixmap();
+                QPixmap turned(source.size());
+                turned.fill(Qt::transparent);
+                QPainter painter(&turned);
+                painter.setRenderHint(QPainter::SmoothPixmapTransform);
+                painter.translate(turned.width() / 2.0, turned.height() / 2.0);
+                painter.rotate(doubles.value("radians").toDouble() * 180.0 / M_PI);
+                painter.drawPixmap(QPointF(-source.width() / 2.0, -source.height() / 2.0), source);
+                painter.end();
+                turned.setDevicePixelRatio(source.devicePixelRatio());
+                label->setPixmap(turned);
+            }
         } else if (kind == "multilineTextAlignment") {
             // Text wraps to the space it is given and lines up at this alignment.
             const QString name = strings.value("name").toString();
@@ -1523,7 +1555,8 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                     const QString symbol = w->property("systemIcon").toString();
                     if (symbol.isEmpty() || w->property("tinted").toBool()) continue;
                     const int size = w->property("iconSize").toInt() > 0 ? w->property("iconSize").toInt() : 16;
-                    if (auto *button = qobject_cast<QAbstractButton *>(w)) button->setIcon(renderToolVectorIcon(symbol, size, color));
+                    if (auto *button = qobject_cast<QAbstractButton *>(w))
+                        button->setIcon(rotatedIcon(renderToolVectorIcon(symbol, size, color), button->iconSize(), w->property("iconRotation").toDouble()));
                     else if (auto *label = qobject_cast<QLabel *>(w)) label->setPixmap(renderToolVectorIcon(symbol, size, color).pixmap(size, size));
                     w->setProperty("tinted", true);
                 }
@@ -2206,6 +2239,9 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                     button->setProperty("systemIcon", systemIcon);
                     isToolButton = true;
                 }
+                for (const auto &m : n.value("modifiers").toArray())
+                    if (m.toObject().value("kind").toString() == QLatin1String("rotationEffect"))
+                        button->setProperty("iconRotation", m.toObject().value("doubleParams").toObject().value("radians").toDouble() * 180.0 / M_PI);
             } else if (childKind == "Canvas") {
                 isToolButton = true;
             } else {
@@ -2344,6 +2380,9 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             );
         }
 
+        // A label symbol turned by .rotationEffect (the palette's swap arrow).
+        if (const double degrees = button->property("iconRotation").toDouble(); degrees != 0)
+            button->setIcon(rotatedIcon(button->icon(), button->iconSize(), degrees));
         // The Return-key button is the window's default button, which AppKit draws in the accent color.
         for (const auto &m : node.value("modifiers").toArray()) {
             const QJsonObject mo = m.toObject();

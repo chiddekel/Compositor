@@ -34,7 +34,7 @@ square.3.layers.3d layers
 chevron.right chevron-right
 chevron.down chevron-down
 slider.horizontal.3 sliders-horizontal
-arrow.left.and.right arrow-left-right
+arrow.left.and.right move-horizontal
 arrow.counterclockwise rotate-ccw
 paintpalette palette
 wind wind
