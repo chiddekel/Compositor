@@ -164,12 +164,20 @@ struct ShortcutDefinition: Identifiable {
         guard let definition = ShortcutDefinition.all.first(where: { !$0.isMenu && $0.original == original }) else { return original }
         return chord(definition)
     }
-    func show() { panel.show(title: "Keyboard Shortcuts", content: KeyboardShortcutsSheet(settings: self)) }
-    func close() { panel.close() }
+    /// The sheet while it is open (its @State — the draft being edited — lives in this instance); the Linux bridge
+    /// shows it as a floating panel (FloatingPanels.swift), as `panel` does on the Mac.
+    private(set) var sheet: KeyboardShortcutsSheet?
+    func show() {
+        if sheet == nil { sheet = KeyboardShortcutsSheet(settings: self) }
+        panel.show(title: "Keyboard Shortcuts", content: sheet!)
+    }
+    func close() { sheet = nil; panel.close() }
     func save(_ values: [String: ShortcutChord]) {
         guard Self.problem(in: values) == nil, let data = try? JSONEncoder().encode(values) else { return }
         overrides = values
         UserDefaults.standard.set(data, forKey: Self.storageKey)
+        // Linux Foundation keeps defaults in memory until told to write them (the Mac writes them for us).
+        UserDefaults.standard.synchronize()
         close()
     }
     static func problem(in values: [String: ShortcutChord]) -> String? {
@@ -229,7 +237,7 @@ extension View {
     }
 }
 
-private struct KeyboardShortcutsSheet: View {
+struct KeyboardShortcutsSheet: View {
     let settings: ShortcutSettings
     @State private var draft: [String: ShortcutChord]
     @State private var search = ""
@@ -284,12 +292,8 @@ private struct KeyboardShortcutsSheet: View {
 }
 
 /// Replacement for the blocked `ShortcutRecorder` (an `NSViewRepresentable` `NSButton` using `#selector`
-/// target-action). Shows the current chord and flips to "Press keys…" on click, matching the real control's
-/// states. **Honest gap, not swept under the rug**: actually capturing the next keystroke to complete the
-/// rebinding isn't wired yet — it needs a key-capturing `NSView` (`keyDown(with:)`, no `#selector` needed, same
-/// pattern as `LayerTableView`), but the Qt renderer doesn't host native (`HostedNativeContent`/`"_Native"`) views
-/// yet either, so that plumbing wouldn't be visually exercisable this pass regardless. `ShortcutSettings.save`/
-/// `.problem` and everything else in this file is real and fully wired.
+/// target-action). Shows the current chord and flips to "Press keys…" on click, matching the real control's states;
+/// while recording, the shell hands it the next key pressed (compatKeyCapture), which completes the rebinding.
 private struct ShortcutRecorder: View {
     let chord: ShortcutChord
     let recording: Bool
@@ -297,12 +301,18 @@ private struct ShortcutRecorder: View {
     let finish: (ShortcutChord?) -> Void
 
     var body: some View {
-        Button {
+        let button = Button {
             start()
         } label: {
             Text(recording ? "Press keys…" : chord.label)
         }
         .buttonStyle(.bordered)
         .accessibilityLabel(recording ? "Press a shortcut" : chord.label)
+        // Recording: the next key pressed becomes the chord (Esc cancels), as the real control's keyDown does.
+        if recording {
+            button.compatKeyCapture { key, modifiers in finish(key.isEmpty ? nil : ShortcutChord(key, modifiers)) }
+        } else {
+            button
+        }
     }
 }

@@ -114,6 +114,26 @@ private struct State: Encodable {
     let textDraft: TextDraftState?
     /// Upstream's RAW Develop sheet is up (the shell's dialog closes when this turns false).
     let rawDevelopOpen: Bool
+    /// Upstream's Photoshop conversion sheet is up (reading the file, or waiting for Import / Cancel).
+    let conversionSheetOpen: Bool
+    /// Upstream's floating panels that should be showing (FloatingPanels.swift), in the order ContentView opens them.
+    let floatingPanels: [FloatingPanels.Open]
+    /// Upstream's `.fileImporter` is up (`session.showsImporter`, e.g. the welcome's Import image): the shell shows its file
+    /// chooser, imports what was picked with upstream's importer, and answers with dismissImporter.
+    let showsImporter: Bool
+    /// The welcome's Open project was pressed (upstream calls `projects.open()`): the shell shows its project chooser.
+    let openProjectRequested: Bool
+    /// Upstream's modal sheets that are open (RawDevelopSheet, PSDConversionSheet, TrimSheet): the shell shows each.
+    let sheets: [String]
+    /// An alert upstream's ContentView would be showing ("Couldn’t paint" / "Couldn’t crop"): `kind` for dismissAlert.
+    let alert: AlertState?
+    /// A pending distortion's corners (document px: top-left, top-right, bottom-right, bottom-left), for the shell's handles.
+    let distortCorners: [[Double]]?
+    /// Every keyboard shortcut upstream defines (ShortcutDefinition.all) with the chord it is set to now (ShortcutSettings:
+    /// the editor's saved choices) and its original: the shell applies them to its menus and canvas keys.
+    let shortcuts: [ShortcutState]
+    struct ShortcutState: Encodable { let title: String; let group: String; let key: String; let modifiers: Int; let originalKey: String; let originalModifiers: Int }
+    struct AlertState: Encodable { let kind: String; let title: String; let message: String }
     struct TextDraftState: Encodable {
         let origin: [Double]
         let size: [Double]?
@@ -160,7 +180,7 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker", "importFiles",
+        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "dismissAlert", "dismissImporter", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textFinish", "textCancel",
@@ -170,6 +190,33 @@ final class UpstreamEditor {
     private var adjustmentOriginal: (id: UUID, value: LayerAdjustment)?
     /// The adjustment layer the shell's dialog is editing.
     private var adjustmentEditing: UUID?
+    /// Upstream's Trim sheet while Image > Trim… waits for its answer (resolved as panel "TrimSheet"; its @State lives here).
+    private(set) var trimSheet: TrimSheet?
+    private var trimAnswer: ((TrimOptions?) -> Void)?
+    /// The filter in progress was opened the upstream way ("openFilter"), so its FilterSheet floats beside the canvas;
+    /// the shell's own filter dialogs ("filterBegin") drive filterEdit without it.
+    var filterInUpstreamPanel = false
+    /// The documentless welcome (NewCanvasSheet) asked to open a project; the shell answers with dismissImporter.
+    var openProjectRequested = false
+    /// A Move-tool handle drag that distorts (Ctrl held, or the layer already distorted): upstream's own TransformDrag.
+    private var distortDrag: TransformDrag?
+
+    /// Answers the open Trim sheet (nil = Cancel), e.g. when the shell's dialog is closed.
+    func finishTrim(_ options: TrimOptions?) {
+        let answer = trimAnswer
+        trimAnswer = nil
+        trimSheet = nil
+        answer?(options)
+    }
+
+    /// Modal upstream sheets open now, by panel name (the shell shows each while it is listed).
+    var openSheets: [String] {
+        var sheets: [String] = []
+        if session.showsRawDevelop { sheets.append("RawDevelopSheet") }
+        if session.showsConversionSheet { sheets.append("PSDConversionSheet") }
+        if trimSheet != nil { sheets.append("TrimSheet") }
+        return sheets
+    }
     /// The manifest of a project being loaded; its layers' images and masks arrive through `installLayerAsset`.
     private var loadingManifest: ProjectManifest?
 
@@ -182,7 +229,7 @@ final class UpstreamEditor {
         let started = Date()
         var pumped = Date.distantPast
         return awaitOnMain({ [self] in await commandAsync(json) }, whileWaiting: { [self] in
-            ImportPrompts.presentPendingSheet(for: session)
+            ImportPrompts.presentPendingSheet(for: self)
             let now = Date()
             guard let pump = ImportPrompts.waitPump, now.timeIntervalSince(started) > 0.15, now.timeIntervalSince(pumped) > 0.016 else { return }
             pumped = now
@@ -323,6 +370,24 @@ final class UpstreamEditor {
                 s.previewTextColor(); s.previewEffectColor(); s.previewGradientMapColor(); s.previewVignetteColor()
             }
         case "closeColorPicker": s.closeColorPicker(commit: command.enabled ?? false)
+        // Edit > Keyboard Shortcuts… (ShortcutSettings.show): upstream's editor, shown as a floating panel.
+        case "showKeyboardShortcuts": ShortcutSettings.shared.show()
+        // The alert's OK button (ContentView: session.brushError / cropError = nil).
+        case "dismissAlert":
+            if command.kind == "crop" { s.cropError = nil } else { s.brushError = nil }
+        // The shell's file chooser for upstream's .fileImporter / the welcome's Open project has closed.
+        case "dismissImporter":
+            s.showsImporter = false
+            openProjectRequested = false
+        // The Layers panel's fx menu (LayersPanel: session.addEffect): `kind` = LayerEffectKind raw value.
+        case "addLayerEffect":
+            guard let name = command.kind, let kind = LayerEffectKind(rawValue: name) else { return fail(-1, "invalid effect") }
+            guard s.activeLayer != nil else { return fail(-2, "no layer") }
+            s.addEffect(kind)
+        // The close button of a floating panel the shell shows for upstream (FloatingPanels.swift): `kind` = panel name.
+        case "closeFloatingPanel":
+            guard let panel = command.kind else { return fail(-1, "panel name required") }
+            FloatingPanels.close(panel, in: self)
         // Upstream's own importer (EditorSession.importImages): PNG/JPEG/TIFF/HEIC through ImageIO, Photoshop PSD and PSB
         // with their layers, masks and editable text, camera RAW. `enabled` = replace the document (the shell's Open
         // Image); otherwise the files come in as layers, as a drop onto the canvas does.
@@ -458,8 +523,27 @@ final class UpstreamEditor {
             settings.sampleAllLayers = (p["sampleAllLayers"] ?? (settings.sampleAllLayers ? 1 : 0)) != 0
             s.wandSettings = settings
             await s.magicWand(at: point, mode: SelectionMode(rawValue: command.kind ?? "New") ?? .replace)
+        // Filter menu, the upstream way (CompositorApp's Filter menu: session.beginFilter): its FilterSheet floats.
+        case "openFilter":
+            guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
+            s.beginFilter(kind)
+            guard s.filterEdit != nil else { return fail(-5, "filter could not start") }
+            filterInUpstreamPanel = true
+        // Image > Trim… (ProjectController.trim): upstream's sheet, then its trim, as one undo step.
+        case "trim":
+            guard s.document != nil else { return fail(-2, "no document") }
+            let options: TrimOptions? = await withCheckedContinuation { continuation in
+                trimAnswer = { continuation.resume(returning: $0) }
+                trimSheet = TrimSheet { [weak self] options in self?.finishTrim(options) }
+            }
+            guard let options, let snapshot = s.projectSnapshot() else { break }
+            do {
+                guard let trimmed = try await ImageTrim.trim(snapshot, options: options) else { break }
+                s.applyDocumentSize(trimmed, actionName: "Trim")
+            } catch { return fail(-5, "Couldn’t trim image: \(error.localizedDescription)") }
         case "filterBegin":
             guard let name = command.kind, let kind = FilterKind(rawValue: name) else { return fail(-1, "unknown filter") }
+            filterInUpstreamPanel = false
             s.beginFilter(kind)
             guard s.filterEdit != nil else { return fail(-5, "filter could not start") }
             s.updateFilter(filterSettings(command, s.filterSettings), preview: true)
@@ -495,6 +579,18 @@ final class UpstreamEditor {
             s.previewTransform(draft)
         case "transformCommit": s.commitTransform()
         case "transformCancel": s.cancelTransform()
+        // Move tool, as EditorCanvas drags: Ctrl-dragging a handle distorts (and once distorted, handles keep distorting);
+        // `value` = handle (0...7 around from top-left, 9 = the body). The edit stays pending until Enter / Apply.
+        case "distortDragBegin":
+            guard let point = point(command), let handle = command.value.map({ Int($0) }), (0...9).contains(handle), handle != 8 else { return fail(-1, "invalid handle") }
+            if s.transformEdit == nil { s.beginTransform(persistent: false) }
+            if handle != 9 { s.beginDistort() }
+            guard let edit = s.transformEdit, let corners = edit.corners else { return fail(-5, "nothing to distort") }
+            distortDrag = TransformDrag(original: edit.draft, start: point, mode: handle == 9 ? .move : .distort(handle), originalCorners: corners)
+        case "distortDragMove":
+            guard let point = point(command), let drag = distortDrag else { return fail(-1, "no distort drag") }
+            if let corners = drag.corners(to: point, shift: command.enabled ?? false) { s.previewCorners(corners) }
+        case "distortDragEnd": distortDrag = nil
         case "distortBegin":
             s.beginTransform()
             s.beginDistort()
@@ -695,6 +791,7 @@ final class UpstreamEditor {
 
     func stateJSON() throws -> Data {
         let s = session
+        FloatingPanels.observe(self)
         let active = s.activeLayer
         let state = State(width: s.document?.width ?? 0, height: s.document?.height ?? 0, resolution: s.document?.resolution ?? 72,
             activeLayerID: s.activeLayerID, modified: s.history.isModified, canUndo: s.history.canUndo, canRedo: s.history.canRedo,
@@ -742,7 +839,20 @@ final class UpstreamEditor {
                     alignment: style.alignment.rawValue, boxSize: style.boxSize.map { [Double($0.width), Double($0.height)] },
                     padding: Double(LayerTextStyle.padding), editingLayer: draft.layerID != nil)
             },
-            rawDevelopOpen: s.showsRawDevelop)
+            rawDevelopOpen: s.showsRawDevelop,
+            conversionSheetOpen: s.showsConversionSheet,
+            floatingPanels: FloatingPanels.open(in: self),
+            showsImporter: s.showsImporter,
+            openProjectRequested: openProjectRequested,
+            sheets: openSheets,
+            alert: s.brushError.map { State.AlertState(kind: "brush", title: "Couldn’t paint", message: $0) }
+                ?? s.cropError.map { State.AlertState(kind: "crop", title: "Couldn’t crop", message: $0) },
+            distortCorners: s.transformEdit?.corners.map { $0.map { [Double($0.x), Double($0.y)] } },
+            shortcuts: ShortcutDefinition.all.map { definition in
+                let chord = ShortcutSettings.shared.chord(definition)
+                return State.ShortcutState(title: definition.title, group: definition.group, key: chord.key, modifiers: chord.modifiers,
+                                           originalKey: definition.original.key, originalModifiers: definition.original.modifiers)
+            })
         return try JSONEncoder().encode(state)
     }
 
@@ -795,6 +905,11 @@ final class UpstreamEditor {
                 // the same value BrushCommit.Input.sourceRect/transform would carry at commit time.
                 images[layer.id] = painted.asset
                 shown = painted.transform
+            } else if let distorted = s.distortPreview(for: layer), let asset = layer.asset {
+                // A pending distortion shows the layer warped into its new shape (EditorCanvas draws distortPreview).
+                images[layer.id] = ImportedImage(image: distorted.image, thumbnail: asset.thumbnail, name: asset.name)
+                if let mask = distorted.mask { masks[layer.id] = ImportedImage(image: mask, thumbnail: asset.thumbnail, name: asset.name) }
+                shown = distorted.transform
             } else if let stroke, stroke.layer.id == layer.id, stroke.isMask, let painted = try? stroke.paintSnapshot() {
                 // Mask strokes are placed in the mask's own pixel grid (maskPlacement), not the layer transform.
                 masks[layer.id] = painted.asset

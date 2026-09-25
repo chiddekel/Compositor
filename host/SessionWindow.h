@@ -24,6 +24,11 @@
 #include <QPointF>
 #include <QJsonObject>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QKeySequence>
+#include <QAction>
+#include <QPointer>
+#include <QDialog>
 #include "interfaces/IPlatformServices.h"
 #include "ParityMetrics.h"
 #include "ParityPalette.h"
@@ -78,6 +83,8 @@ public:
     bool importImage(const QString &path);
     // Upstream's importer (PSD/PSB with layers and text, RAW, HEIC): replace = open as the document, else add layers.
     bool importWithUpstream(const QStringList &paths, bool replace);
+    void newCanvasTab();
+    void refreshTabTitle();
     bool saveProject(const QString &path);
     bool loadProject(const QString &path);
 
@@ -179,6 +186,24 @@ public:
     bool isSpaceHandActive() const { return m_spaceHandActive; }
 
     bool sendCommand(const QJsonObject &command);
+    /// Upstream's floating panels (layer effects, …): shown as non-modal tool windows while the session says so.
+    void updateFloatingPanels();
+    /// ContentView's welcome: upstream's New Canvas sheet over the canvas while the tab has no document.
+    void updateWelcome();
+    void positionWelcome();
+    /// Upstream's .fileImporter / the welcome's Open project, when the session asks for them.
+    void handleSessionFileRequests();
+    void updateFloatingPanelsPass();
+    /// Upstream's alerts ("Couldn’t paint", "Couldn’t crop"): shown when the session raises one.
+    void showSessionAlert();
+    /// A key in upstream's ShortcutChord form: one lowercase key and Command 1 / Option 2 / Control 4 / Shift 8 bits.
+    struct CanvasChord { QString key; int modifiers; bool operator==(const CanvasChord &o) const { return key == o.key && modifiers == o.modifiers; } };
+    /// Upstream's keyboard shortcuts as the Keyboard Shortcuts editor saved them: onto the menus, and canvas keys
+    /// translated back to the ones the shell handles (ShortcutSettings.canvasEvent).
+    void applyShortcutSettings();
+    static CanvasChord chordFromKeyEvent(const QKeyEvent *event);
+    static int qtKeyForChord(const QString &key);
+    static Qt::KeyboardModifiers modifiersForChord(int bits);
     void updateOptionsBar();
     void updateToolRail();
     void updateLayersPanel();
@@ -266,6 +291,7 @@ private:
     QImage fullResolutionImage();
     void presentSwiftUISheet(const QString &panel);
     void pumpWhileBusy();
+
     void endBusy();
     bool sendCommandQuiet(const QJsonObject &command);   // no status-bar error (probing, e.g. "text here?")
     void syncTextEditor();
@@ -291,7 +317,11 @@ private:
     void updateStatusTelemetry();
     void fitCanvas();
     void actualPixels();
-    void zoomBy(double factor);
+    void zoomStep(int step);
+    void syncViewportGeometry();
+    double viewportZoom() const;
+    void changeViewport(int op, double a = 0, double b = 0, double c = 0);
+    void canvasWheelEvent(QWheelEvent *event);
 
     // Document tabs: each open document owns its own Swift session handle. m_sessionHandle always mirrors
     // m_documents[m_activeDocumentIndex].handle — the rest of this class keeps addressing m_sessionHandle
@@ -332,7 +362,6 @@ private:
     QString m_cropRatio = "Free";
     Tool m_preSpaceTool = Tool::Move;
     bool m_spaceHandActive = false;
-    QPointF m_panOffset{0, 0};
     bool m_hasDocument = false;
 
     QPointF m_dragStart;
@@ -368,6 +397,15 @@ private:
     QTimer *m_mainPumpTimer = nullptr;   // drains Swift's main queue under Qt (see constructor)
     int m_commandDepth = 0;   // compositor_session_command calls in progress (the wait pump can nest events inside one)
     bool m_busy = false;      // busy cursor / status shown by pumpWhileBusy
+    bool m_showingAlert = false;
+    QByteArray m_appliedShortcuts;                       // the state's "shortcuts" last applied
+    QHash<QAction *, QList<QKeySequence>> m_defaultShortcuts;   // each remapped menu action's own shortcuts
+    QList<std::pair<CanvasChord, CanvasChord>> m_canvasRemap;  // pressed chord -> the original chord it now stands for
+    QList<CanvasChord> m_canvasBlocked;                  // originals reassigned elsewhere (pressing them does nothing)
+    bool m_translatingKey = false;
+    struct FloatingPanelWindow { QPointer<QDialog> window; QWidget *content = nullptr; QString title; };
+    QHash<QString, FloatingPanelWindow> m_floatingPanels;   // panel name -> its window (updateFloatingPanels)
+    bool m_updatingFloatingPanels = false, m_floatingPanelsDirty = false;
     QByteArray m_pumpedState;
     QTimer *m_strokeRefreshTimer = nullptr;
     QElapsedTimer m_strokeFrameClock;            // when the last stroke frame started (frame pacing)
@@ -391,12 +429,16 @@ private:
     QWidget *m_swiftUICurrentLayersPanel = nullptr;
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
+    QWidget *m_welcomeContent = nullptr;
+    bool m_handlingFileRequests = false;
     QTabBar *m_documentTabBar = nullptr;
     QLabel *m_statusZoomLabel = nullptr;
     QLabel *m_statusDimsLabel = nullptr;
     QLabel *m_statusProfileLabel = nullptr;
     QLabel *m_statusHintsLabel = nullptr;
-    double m_zoomLevel = 0.0;
+    QPointF m_zoomDragStart;
+    double m_zoomDragZoom = 1.0;
+    bool m_zoomDragMoved = false;
     PlatformServices m_platform;
 
     // Dynamic menu action pointers for macOS parity
@@ -458,6 +500,12 @@ private:
     QCheckBox *m_showControlsCheck = nullptr;
     int m_transformHandle = -1;  // -1 none, 0-7 resize (TL,T,TR,R,BR,B,BL,L), 8 rotate, 9 move body
     LayerGeometry m_transformStart;
+    /// A pending distortion's corners (document px, TL TR BR BL), from the session; empty when not distorting.
+    QVector<QPointF> m_distortCorners;
+    bool m_distortDrag = false;   // the Move tool's current drag distorts (upstream TransformDrag, in the bridge)
+    void syncDistortFromSession();
+    /// Handle `i` (0...7 from top-left, clockwise) of the pending distortion: corners, then edge midpoints.
+    QPointF distortHandlePoint(int i) const;
     LayerGeometry m_transformDraft;
     // Selection tools: combine mode (New/Add/Subtract) and lasso style.
     QString m_selectionMode = "New";

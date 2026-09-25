@@ -254,6 +254,9 @@ modules:
             /app/share/icons/hicolor/${s}x${s}/apps/com.wonderassembly.Compositor.png
         done
       # (g) Install desktop entry + AppStream metainfo.
+      # UI font: Inter (OFL), the stand-in for macOS's SF Pro (MACOS_UI_PARITY_RULES.md §4.2).
+      - install -Dm644 -t /app/share/compositor/fonts third_party/fonts/inter/Inter-*.ttf
+      - install -Dm644 third_party/fonts/inter/LICENSE.txt /app/share/compositor/fonts/Inter-LICENSE.txt
       - install -Dm644 flatpak/com.wonderassembly.Compositor.desktop /app/share/applications/com.wonderassembly.Compositor.desktop
       - install -Dm644 flatpak/com.wonderassembly.Compositor.metainfo.xml /app/share/metainfo/com.wonderassembly.Compositor.metainfo.xml
     sources:

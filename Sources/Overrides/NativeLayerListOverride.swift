@@ -11,10 +11,8 @@
 // /`selectLayers`, `toggleLayerVisibility`. A generic `List`/`ForEach` reimplementation on top of those is a real
 // backend swap (native `NSTableView` drag-and-drop → Qt/SwiftUI-compat list interaction), the same category as the
 // existing Metal→Vulkan override: view, select, multi-select, show/hide, and thumbnails (via the already-wired
-// `CanvasThumbnail.swift`) are all preserved. Reorder is the one capability NOT wired yet in this pass: `.onMove`
-// on `ForEach` (see `ViewBuilder.swift`) is a documented no-op placeholder until the Qt renderer grows list
-// drag-and-drop, and `EditorSession.reorderLayers(from:to:)` already has the exact `(IndexSet, Int)` shape it
-// needs — the data-side is ready, only the interaction isn't connected yet.
+// `CanvasThumbnail.swift`) are all preserved. Drag-and-drop goes through the compat-only
+// `compatListDrop` (the Qt renderer drags the rows) into the same placement the real list's drop performs.
 
 import SwiftUI
 
@@ -29,96 +27,208 @@ struct NativeLayerList: View {
         List(session.layerRows, id: \.layer.id) { entry in
             row(for: entry.layer.id)
         }
+        // Drag to reorder, into a folder, or (Alt) duplicate — what the real list's NSTableView drop does.
+        .compatListDrop(folders: session.layerRows.map { $0.layer.isGroup == true }) { source, row, fraction, copying in
+            drop(from: source, on: row, at: fraction, copying: copying)
+        }
         .accessibilityIdentifier("layersList")
     }
 
+    /// NativeLayerList's `validateDrop` + `acceptDrop` + `place`, from list rows: the middle of a folder row drops into
+    /// it, otherwise above the nearer edge's row; the selection travels together when the dragged row is part of it.
+    private func drop(from source: Int, on row: Int, at fraction: Double, copying: Bool) {
+        let rows = session.layerRows
+        guard session.canEditLayers, rows.indices.contains(source) else { return }
+        let intoFolder = rows.indices.contains(row) && rows[row].layer.isGroup == true && (0.25...0.75).contains(fraction)
+        let target = intoFolder ? row : min(rows.count, max(0, fraction < 0.5 ? row : row + 1))
+        // The dragged layers, as the list shows them, leaving out anything inside a dragged folder.
+        let pressed = rows[source].layer.id
+        let dragged: Set<UUID> = session.selectedLayerIDs.contains(pressed) ? session.selectedLayerIDs : [pressed]
+        let carried = dragged.reduce(into: Set<UUID>()) { $0.formUnion(session.descendantIDs(of: $1)) }
+        let ids = rows.map(\.layer.id).filter { dragged.contains($0) && !carried.contains($0) }
+        guard !ids.isEmpty else { return }
+        let parent: UUID?, above: UUID?, atBottom: Bool
+        if intoFolder {
+            parent = rows[target].layer.id; above = nil; atBottom = false
+        } else if target >= rows.count {
+            parent = nil; above = nil; atBottom = true
+        } else {
+            parent = rows[target].layer.parentID; above = rows[target].layer.id; atBottom = false
+        }
+        guard ids.allSatisfy({ session.canPlaceLayer($0, in: parent) }), !(above.map(ids.contains) ?? false) || copying else { return }
+        let order = intoFolder ? Array(ids.reversed()) : ids
+        session.beginEdit(copying ? (ids.count > 1 ? "Duplicate Layers" : "Duplicate Layer")
+                                  : (ids.count > 1 ? "Move Layers" : "Move Layer"))
+        var placed = false
+        for id in order {
+            let done = copying ? session.duplicateLayer(id, in: parent, above: above, atBottom: atBottom)
+                               : session.placeLayer(id, in: parent, above: above, atBottom: atBottom)
+            placed = done || placed
+        }
+        if placed, !copying { session.selectLayers(Set(ids), primary: ids.first) }
+        session.endEdit()
+    }
+
+    /// LayerCell's layout (NativeLayerList.swift), constraint for constraint: a 52-point row with the eye 8 in and
+    /// 20 wide, folders and clipping masks stepping in by 24, a 36-point thumbnail slot, the mask slot (30) behind its
+    /// link, the name (13 pt) 9 from the top with the size (10 pt, secondary) 3 below, a 6% hairline along the bottom;
+    /// a row hidden by its folder at 35%. Rows are 2 apart (the table's intercell spacing).
     private func row(for id: UUID) -> some View {
         let byID = Dictionary(uniqueKeysWithValues: (session.document?.layers ?? []).map { ($0.id, $0) })
         guard let layer = byID[id] else { return AnyView(EmptyView()) }
+        let entry = session.layerRows.first { $0.layer.id == id }
         let isSelected = session.selectedLayerIDs.contains(layer.id)
+        let indent = Double(min(entry?.depth ?? 0, 8)) * 24 + (layer.maskSourceID == nil ? 0 : 24)
+        let linkable = layer.mask != nil && layer.adjustment == nil && !layer.isGroup
+        let name = (layer.maskSourceID == nil ? "" : "↳ ") + layer.name
+        let details = layer.maskSourceID.map { source in
+            "Clipped to \(session.document?.layers.first(where: { $0.id == source })?.name ?? "Missing source")"
+        } ?? (layer.liveText != nil ? "Text · Double-click to edit" : layer.adjustment != nil ? "Adjustment · Double-click to edit"
+              : layer.isGroup ? "Folder" : "\(Int(layer.size.width.rounded())) × \(Int(layer.size.height.rounded())) px")
         return AnyView(
-            HStack(spacing: 8) {
-                Spacer().frame(width: Double(depths[id] ?? 0) * 14)
-                Button {
-                    session.toggleLayerVisibility(layer.id)
-                } label: {
-                    Image(systemName: layer.isVisible ? "eye" : "eye.slash")
+            VStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 0) {
+                    Button {
+                        session.toggleLayerVisibility(layer.id)
+                    } label: {
+                        Image(systemName: layer.isVisible ? "eye" : "eye.slash")
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 20, height: 51)
+                    .accessibilityLabel("\(layer.isVisible ? "Hide" : "Show") \(layer.name)")
+                    .padding(.leading, 8)
+                    Spacer().frame(width: indent)
+                    Group {
+                        if layer.isGroup {
+                            Button { session.toggleGroupExpansion(layer.id) } label: {
+                                Image(systemName: session.collapsedGroupIDs.contains(layer.id) ? "chevron.right" : "chevron.down")
+                            }.buttonStyle(.plain)
+                        } else { Spacer() }
+                    }.frame(width: 14, height: 51)
+                    HStack {
+                        thumbnailView(for: layer, active: session.activeLayerID == layer.id && session.selectedLayerIDs.count == 1)
+                    }.frame(width: 36, height: 51)
+                    if let mask = layer.mask {
+                        let canvas = session.document?.size ?? layer.size
+                        let maskSize = CanvasThumbnail.fittedSize(canvas: canvas, box: 30)
+                        Group {
+                            if linkable, mask.isLinked {
+                                Image(systemName: "link").font(.system(size: 10)).foregroundStyle(.secondary)
+                            } else { Spacer() }
+                        }.frame(width: linkable ? 13 : 5, height: 51)
+                        HStack {
+                            Image(nsImage: LayerThumbnails.mask(mask, transform: layer.maskTransform, layerID: layer.id, canvas: canvas))
+                                .frame(width: maskSize.width, height: maskSize.height)
+                                .border(session.activeLayerID == layer.id && session.isMaskSelected ? Color.accentColor : Color.clear, width: 2)
+                        }.frame(width: 30, height: 51)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(name).font(.system(size: 13)).lineLimit(1)
+                        Text(details).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .padding(.leading, 5).padding(.top, 9).padding(.trailing, 8)
+                    Spacer()
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(layer.isVisible ? "Hide layer" : "Show layer")
-                
-                thumbnailView(for: layer)
-                    .fixedSize()
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(layer.name)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(layer.isVisible ? .primary : .secondary)
-                    subtitleView(for: layer)
-                }
-                Spacer()
+                .frame(height: 51)
+                Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
             }
-            .frame(height: 40)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .frame(height: 52)
+            .background(isSelected ? Color(red: 0, green: 0.345, blue: 0.816) : Color.clear)
+            .opacity(entry?.visible == false ? 0.35 : 1)
+            .padding(.bottom, 2)
             .contentShape(Rectangle())
-            .background(isSelected ? Color.accentColor.opacity(0.35) : Color.clear)
-            .cornerRadius(4)
             .onTapGesture {
-                if session.selectedLayerIDs.contains(layer.id), session.selectedLayerIDs.count > 1 {
-                    session.selectLayers(session.selectedLayerIDs, primary: layer.id)
-                } else {
-                    session.selectLayer(layer.id)
-                }
+                click(layer.id, modifiers: CompatInput.clickModifiers)
             }
+            .contextMenu { contextMenu(for: layer.id) }
         )
     }
 
+    /// NSTableView's selection, then tableViewSelectionDidChange: Command (Ctrl) toggles a row, Shift extends from the
+    /// active row, a plain click selects just the row — keeping a multi-selection when it lands inside it.
+    private func click(_ id: UUID, modifiers: Int) {
+        let rows = session.layerRows.map(\.layer.id)
+        if modifiers & 1 != 0 {
+            var ids = session.selectedLayerIDs
+            if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+            let primary = ids.contains(id) ? id : (session.activeLayerID.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first)
+            session.selectLayers(ids, primary: primary)
+        } else if modifiers & 8 != 0, let anchor = session.activeLayerID, let from = rows.firstIndex(of: anchor),
+                  let to = rows.firstIndex(of: id) {
+            session.selectLayers(Set(rows[min(from, to)...max(from, to)]), primary: id)
+        } else if session.selectedLayerIDs.contains(id), session.selectedLayerIDs.count > 1 {
+            session.selectLayers(session.selectedLayerIDs, primary: id)
+        } else {
+            session.selectLayer(id)
+        }
+    }
+
+    /// The real list's right-click menu (NativeLayerList.contextMenu(for:) and validateMenuItem), item for item.
+    @ViewBuilder private func contextMenu(for id: UUID) -> some View {
+        let active = session.activeLayer
+        let prepare = { if session.selectedLayerIDs.isEmpty { session.selectLayer(id) } }
+        Button("Duplicate Layer") { prepare(); session.duplicateActiveLayer() }
+            .disabled(!(session.canEditLayers && active != nil))
+        Button("Rename…") { prepare(); if session.canEditLayers, let id = session.activeLayerID { session.renamingLayerID = id } }
+            .disabled(!(session.canEditLayers && active != nil && session.selectedLayerIDs.count == 1))
+        Button(session.isMaskSelected && active?.mask != nil ? "Delete Mask"
+               : session.selectedLayerIDs.count > 1 ? "Delete Selected Layers" : "Delete Layer") { prepare(); session.deleteLayerOrMask() }
+            .disabled(!(session.canEditLayers && active != nil))
+        Divider()
+        Button(active?.maskSourceID != nil ? "Release Clipping Mask" : "Create Clipping Mask") {
+            prepare(); if let id = session.activeLayerID { session.toggleClippingMask(id) }
+        }.disabled(!(session.activeLayerID.map { session.canToggleClippingMask($0) } ?? false))
+        Button("Group Selected Layers") { prepare(); session.groupSelectedLayers() }
+            .disabled(!(session.canEditLayers && session.document != nil && (session.document?.layers.count ?? 0) < 10_000
+                        && !session.selectedLayerIDs.isEmpty))
+        Button("Move Out of Folder") { prepare(); session.moveActiveLayerOutOfGroup() }
+            .disabled(!(session.canEditLayers && active?.parentID != nil))
+        Button(session.mergeTitle) { prepare(); session.mergeLayers() }
+            .disabled(!session.canMergeLayers)
+        Divider()
+        Menu("Add Mask") {
+            Button("Reveal All (White)") { prepare(); addMask(revealing: true) }
+            Button("Hide All (Black)") { prepare(); addMask(revealing: false) }
+        }.disabled(!(session.canEditMask && active?.mask == nil))
+        Button(active?.mask?.isEnabled == false ? "Enable Mask" : "Disable Mask") {
+            prepare(); if let id = session.activeLayerID { session.selectLayerTarget(id, mask: false); session.toggleLayerMask() }
+        }.disabled(!(session.canEditMask && active?.mask != nil))
+        Button("Delete Mask") {
+            prepare(); if let id = session.activeLayerID { session.selectLayerTarget(id, mask: false); session.deleteLayerMask() }
+        }.disabled(!(session.canEditMask && active?.mask != nil))
+        Button(active?.mask?.isLinked == false ? "Link Mask" : "Unlink Mask") {
+            prepare(); if let id = session.activeLayerID { session.toggleMaskLink(id) }
+        }.disabled(!(session.canEditLayers && active?.mask != nil && active?.isGroup == false && active?.adjustment == nil))
+        Divider()
+        Button(active?.isVisible == false ? "Show Layer" : "Hide Layer") {
+            prepare(); if let id = session.activeLayerID { session.toggleLayerVisibility(id) }
+        }.disabled(!(session.canEditLayers && active != nil))
+    }
+
+    private func addMask(revealing: Bool) {
+        guard let id = session.activeLayerID else { return }
+        session.selectLayerTarget(id, mask: false)
+        session.addMask(revealing: revealing)
+    }
+
+    /// The thumbnail slot's picture: canvas-framed pixels, or upstream's square icons for folders, adjustments and live
+    /// text; the target being edited has a 2-point accent border.
     @ViewBuilder
-    private func thumbnailView(for layer: ImageLayer) -> some View {
-        if layer.isGroup {
-            ZStack {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color(white: 0.18))
-                Image(systemName: "folder")
-            }
-            .frame(width: 32, height: 32)
-            .fixedSize()
-        } else if let adj = layer.adjustment {
-            ZStack {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color(white: 0.18))
-                Image(systemName: adj.kind.symbol)
-            }
-            .frame(width: 32, height: 32)
-            .fixedSize()
-        } else if layer.liveText != nil {
-            // Editable text shows the text symbol, as upstream's table does.
-            ZStack {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color(white: 0.18))
-                Image(systemName: "textformat")
-            }
-            .frame(width: 32, height: 32)
-            .fixedSize()
+    private func thumbnailView(for layer: ImageLayer, active: Bool) -> some View {
+        let border = active && !session.isMaskSelected ? Color.accentColor : Color.clear
+        if layer.isGroup || layer.adjustment != nil || layer.liveText != nil {
+            Image(systemName: layer.isGroup ? "folder" : layer.adjustment?.kind.symbol ?? "textformat")
+                .font(.system(size: 22))
+                .frame(width: 36, height: 36)
+                .border(border, width: 2)
         } else {
             // Upstream's own canvas-framed thumbnails (CanvasThumbnail), cached like its table's ThumbnailKey so an
             // unchanged layer keeps the same picture — and the panel isn't rebuilt for it.
             let canvas = session.document?.size ?? layer.size
             let size = CanvasThumbnail.fittedSize(canvas: canvas, box: 36)
-            HStack(spacing: 4) {
-                Image(nsImage: LayerThumbnails.layer(layer, canvas: canvas))
-                    .frame(width: size.width, height: size.height)
-                if let mask = layer.mask {
-                    let maskSize = CanvasThumbnail.fittedSize(canvas: canvas, box: 30)
-                    Image(systemName: "link")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                    Image(nsImage: LayerThumbnails.mask(mask, transform: layer.maskTransform, layerID: layer.id, canvas: canvas))
-                        .frame(width: maskSize.width, height: maskSize.height)
-                }
-            }
-            .fixedSize()
+            Image(nsImage: LayerThumbnails.layer(layer, canvas: canvas))
+                .frame(width: size.width, height: size.height)
+                .border(border, width: 2)
         }
     }
 

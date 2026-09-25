@@ -1,3 +1,4 @@
+#include <QFontDatabase>
 // Qt image plugins as the ImageIO compat backend. Registered into the Swift core at startup so
 // CGImageSource / CGImageDestination (used by upstream's importer, exporter and project store) decode and encode
 // every format Qt supports (PNG, JPEG, TIFF, WebP, BMP, GIF, ...), not just the portable PNG codec.
@@ -387,6 +388,31 @@ typedef int32_t (*CompositorTextLayoutFn)(const char *, const char *, double, do
 typedef int32_t (*CompositorTextRenderFn)(const char *, const char *, double, double, double, double, int32_t, double,
                                           double, double, double, double, uint8_t **, int32_t *, int32_t *);
 extern "C" __attribute__((weak)) void compositor_text_register(CompositorTextLayoutFn layout, CompositorTextRenderFn render);
+
+// Every installed face, named the way fontFor reads names back ("Family" for the regular face, "Family-Style"
+// otherwise), newline-separated: what the compat NSFontManager.availableFonts lists (upstream's font menu). Returns
+// the byte count (copied when `out` has room), -1 without a Qt GUI application.
+extern "C" int64_t compositor_qt_font_names(char *out, size_t capacity) {
+    if (!QGuiApplication::instance()) return -1;
+    QStringList names;
+    for (const QString &family : QFontDatabase::families()) {
+        if (QFontDatabase::isPrivateFamily(family)) continue;
+        for (const QString &style : QFontDatabase::styles(family)) {
+            const bool regular = style.compare(QLatin1String("Regular"), Qt::CaseInsensitive) == 0
+                || style.compare(QLatin1String("Normal"), Qt::CaseInsensitive) == 0
+                || style.compare(QLatin1String("Book"), Qt::CaseInsensitive) == 0
+                || style.compare(QLatin1String("Roman"), Qt::CaseInsensitive) == 0;
+            QString compact = style;
+            compact.remove(QLatin1Char(' '));
+            names << (regular ? family : family + QLatin1Char('-') + compact);
+        }
+    }
+    names.removeDuplicates();
+    names.sort(Qt::CaseInsensitive);
+    const QByteArray bytes = names.join(QLatin1Char('\n')).toUtf8();
+    if (out && capacity >= size_t(bytes.size())) memcpy(out, bytes.constData(), size_t(bytes.size()));
+    return bytes.size();
+}
 
 extern "C" int compositor_qt_text_functions(CompositorTextLayoutFn *layout, CompositorTextRenderFn *render) {
     if (!layout || !render) return 0;

@@ -11,6 +11,9 @@
 
 #include <functional>
 
+/// Writes `svg` once to a runtime file and returns its path, for `image: url(...)` in style sheets.
+QString styleSheetImage(const QString &name, const QByteArray &svg);
+
 /// Parses a color token string (e.g. "accentColor", "rgb:r,g,b,a", hex, etc.)
 QColor parseColorToken(const QString &name);
 

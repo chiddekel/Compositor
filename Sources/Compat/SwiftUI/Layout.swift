@@ -79,6 +79,7 @@ public struct List<Data: RandomAccessCollection, ID: Hashable, Content: View>: V
         var node = RenderNode(kind: "ScrollView")
         node.boolParams["vertical"] = true
         var stack = RenderNode(kind: "VStack")
+        stack.doubleParams["spacing"] = 0   // rows sit edge to edge; a list's own spacing is its rows' business
         stack.children = children + [RenderNode(kind: "Spacer")]
         node.children = [stack]
         return node

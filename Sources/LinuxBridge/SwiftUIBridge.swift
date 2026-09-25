@@ -130,6 +130,32 @@ struct CompositorStatusBar: View {
 /// Resolves the named panel against `entry`'s session into a wire-ready tree, and refreshes `entry`'s action-handler
 /// registry for it so a later Qt-side interaction can dispatch back to the right closure by node id.
 @MainActor private func resolvePanel(_ panel: String, entry: Entry) -> RenderNodeWire? {
+    let scope = "\(ObjectIdentifier(entry).hashValue)|\(panel)"
+    // .onAppear / .onChange actions run after a resolve and usually change the @State it was built from (a field
+    // seeding its text on appear); SwiftUI would render again, so resolve again until the tree settles.
+    var wire: RenderNodeWire?
+    for _ in 0..<3 {
+        guard StateStore.begin(scope: scope) else { return nil }
+        let node = resolvePanelTree(panel, entry: entry)
+        StateStore.end()
+        guard var node else {
+            StateStore.discard(scope: scope)
+            ChangeTracker.discard(scope: scope)
+            return nil
+        }
+        node.assignIDs()
+        // .onChange / .task(id:) observers, compared with this panel's previous resolve (SwiftUI semantics).
+        ChangeTracker.process(scope: scope, root: node)
+        var handlers: [String: [String: (Any) -> Void]] = [:]
+        node.collectHandlers(into: &handlers)
+        entry.actionHandlers[panel] = handlers
+        wire = node.wire()
+        if ChangeTracker.lastActionCount == 0 { break }
+    }
+    return wire
+}
+
+@MainActor private func resolvePanelTree(_ panel: String, entry: Entry) -> RenderNode? {
     let session = entry.editor.session
     let resolved: RenderNode
     switch panel {
@@ -149,6 +175,13 @@ struct CompositorStatusBar: View {
     case "HueSaturationSheet": resolved = ViewResolver.resolve(HueSaturationSheet(session: session))
     case "FilterSheet": resolved = ViewResolver.resolve(FilterSheet(session: session))
     case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session))
+    case "Welcome":
+        // ContentView's `welcome`: the New Canvas sheet over the canvas while the tab has no document.
+        guard session.document == nil else { return nil }
+        let editor = entry.editor
+        resolved = ViewResolver.resolve(NewCanvasSheet(session: session,
+            onCreate: { session.createNewProject(width: $0, height: $1) },
+            onOpen: { editor.openProjectRequested = true }))
     case "RawDevelopSheet":
         // One sheet per develop request, kept while it is open: its sliders and preview live in its @State.
         guard let develop = session.rawDevelop else { entry.rawDevelopSheet = nil; return nil }
@@ -156,20 +189,26 @@ struct CompositorStatusBar: View {
             entry.rawDevelopSheet = (develop.url, RawDevelopSheet(session: session, url: develop.url, settings: develop.settings))
         }
         resolved = ViewResolver.resolve(entry.rawDevelopSheet!.view)
+    case "EffectsSheet":
+        guard let editing = session.effectsEditing else { return nil }
+        resolved = ViewResolver.resolve(EffectsSheet(session: session, kind: editing.kind))
+    case "KeyboardShortcutsSheet":
+        guard let sheet = ShortcutSettings.shared.sheet else { return nil }
+        resolved = ViewResolver.resolve(sheet)
+    case "TrimSheet":
+        guard let sheet = entry.editor.trimSheet else { return nil }
+        resolved = ViewResolver.resolve(sheet)
+    case "PSDConversionSheet":
+        // Upstream's Photoshop conversion sheet: "Reading…" while the file parses, then the list and Import / Cancel.
+        guard let request = session.conversionRequest else { return nil }
+        resolved = ViewResolver.resolve(PSDConversionSheet(request: request, finish: session.finishConversion))
     case "CurvesControls":
         var settings = CurvesSettings()
         let binding = Binding<CurvesSettings>(get: { settings }, set: { settings = $0 })
         resolved = ViewResolver.resolve(CurvesControls(settings: binding))
     default: return nil
     }
-    var node = resolved
-    node.assignIDs()
-    // .onChange / .task(id:) observers, compared with this panel's previous resolve (SwiftUI semantics).
-    ChangeTracker.process(scope: "\(ObjectIdentifier(entry).hashValue)|\(panel)", root: node)
-    var handlers: [String: [String: (Any) -> Void]] = [:]
-    node.collectHandlers(into: &handlers)
-    entry.actionHandlers[panel] = handlers
-    return node.wire()
+    return resolved
 }
 
 
@@ -199,6 +238,10 @@ nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: U
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(wire) else { return -5 }
+        // COMPOSITOR_DUMP_TREE=<panel>: that panel's resolved tree on stderr, for renderer debugging.
+        if ProcessInfo.processInfo.environment["COMPOSITOR_DUMP_TREE"] == panelName, output != nil {
+            FileHandle.standardError.write(data + Data("\n".utf8))
+        }
         if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
         return Int64(data.count)
     }

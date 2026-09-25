@@ -1,3 +1,4 @@
+import Foundation
 // View modifiers. Each one wraps its content in `ModifiedContent`, a `PrimitiveView` whose `_makeNode` just tags
 // the already-resolved child node with a `RenderModifier` — so adding a modifier here is a small, mechanical
 // addition that every panel using it picks up automatically, with no Qt-side per-panel code.
@@ -15,6 +16,8 @@ import UniformTypeIdentifiers
 public struct ModifiedContent: View, PrimitiveView {
     let content: any View
     let apply: (inout RenderNode) -> Void
+    /// `.id(_:)`: part of the content's identity, so a new id is a new view (fresh `@State`, `.onAppear` again).
+    var identity: String? = nil
     public var _childViews: [any View] { [content] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = children.first ?? RenderNode(kind: "_Empty")
@@ -61,9 +64,15 @@ extension View {
     public func sheet<Item: Identifiable, V: View>(item: Binding<Item?>, onDismiss: (() -> Void)? = nil,
                                                     @ViewBuilder content: (Item) -> V) -> some View { self }
     public func background<S: Shape>(_ style: ShapeStyle, in shape: S) -> some View {
-        modified { $0.modifiers.append(.background(style.name)) }
+        // The fill takes the shape's corners (a capsule or circle rounds by half its height; the renderer caps it).
+        let radius = shape.shapeKind == "capsule" || shape.shapeKind == "circle" ? 1000 : shape.cornerRadiusValue
+        return modified {
+            if radius > 0 { $0.modifiers.append(.cornerRadius(radius)) }
+            $0.modifiers.append(.background(style.name))
+        }
     }
     public func opacity(_ value: Double) -> some View { modified { $0.modifiers.append(.opacity(value)) } }
+    public func border(_ style: ShapeStyle, width: Double = 1) -> some View { modified { $0.modifiers.append(.border(style.name, width)) } }
     public func disabled(_ value: Bool) -> some View { modified { $0.modifiers.append(.disabled(value)) } }
     public func fixedSize(horizontal: Bool = true, vertical: Bool = true) -> some View {
         modified { $0.modifiers.append(.fixedSize(horizontal: horizontal, vertical: vertical)) }
@@ -98,7 +107,7 @@ extension View {
     public func rotationEffect(_ radians: Double) -> some View { modified { $0.modifiers.append(.rotationEffect(radians)) } }
     public func rotationEffect(_ angle: Angle) -> some View { modified { $0.modifiers.append(.rotationEffect(angle.radians)) } }
     public func overlay<V: View>(alignment: Alignment = .center, @ViewBuilder _ content: () -> V) -> some View {
-        let overlayNode = ViewResolver.resolve(content())
+        let overlayNode = ViewResolver.resolveList(content(), path: ViewResolver.nestedPath("overlay")).first ?? RenderNode(kind: "_Empty")
         return modified { $0.modifiers.append(.overlay(overlayNode, alignment: alignment.name)) }
     }
     public func overlay<V: View>(_ overlayView: V, alignment: Alignment = .center) -> some View {
@@ -122,13 +131,17 @@ extension View {
     public func buttonBorderShape(_ shape: StyleToken) -> some View { self }
     public func pickerStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.pickerStyle(style.name)) } }
     public func menuStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.menuStyle(style.name)) } }
-    public func onDisappear(perform action: @escaping () -> Void = {}) -> some View { self }
+    public func onDisappear(perform action: @escaping () -> Void = {}) -> some View {
+        modified { $0.modifiers.append(.onDisappear(action)) }
+    }
     public func task<ID: Equatable>(id: ID, priority: TaskPriority = .userInitiated, _ action: @escaping () async -> Void) -> some View {
         nonisolated(unsafe) let work = action
         return modified { $0.modifiers.append(.observe(ChangeObserver(value: id, equals: { ($0 as? ID) == id }, initial: true,
                                                                      changed: nil, task: { await work() }))) }
     }
-    public func id<ID: Hashable>(_ id: ID) -> some View { modified { $0.modifiers.append(.identifier("\(id)")) } }
+    public func id<ID: Hashable>(_ id: ID) -> some View {
+        ModifiedContent(content: self, apply: { $0.modifiers.append(.identifier("\(id)")) }, identity: "\(id)")
+    }
     public func tag<V: Hashable>(_ tag: V) -> some View {
         let str: String
         if let raw = (tag as? any RawRepresentable)?.rawValue {
@@ -150,6 +163,39 @@ extension View {
     public func onSubmit(_ action: @escaping () -> Void) -> some View { modified { $0.modifiers.append(.onSubmit(action)) } }
     public func onExitCommand(perform action: @escaping () -> Void) -> some View {
         modified { $0.modifiers.append(.onExitCommand(action)) }
+    }
+    /// Compat-only (no SwiftUI counterpart — AppKit's NSTableView drag-and-drop stands in for it on the Mac): lets the
+    /// Qt shell drag this List's rows. `folders` marks the rows a drop can land *into*; `perform` gets the dragged row,
+    /// the row under the drop, where in that row it landed (0 top ... 1 bottom) and whether Option/Alt copies.
+    public func compatListDrop(folders: [Bool],
+                               perform action: @escaping (_ source: Int, _ row: Int, _ fraction: Double, _ copying: Bool) -> Void) -> some View {
+        modified {
+            $0.stringParams["listFolders"] = folders.map { $0 ? "1" : "0" }.joined()
+            $0.modifiers.append(.sink("listDrop", { value in
+                // JSON numbers arrive as Int / Double / Bool on Linux (NSNumber on the Mac): read either.
+                func number(_ v: Any) -> Double? {
+                    if let d = v as? Double { return d }
+                    if let i = v as? Int { return Double(i) }
+                    if let b = v as? Bool { return b ? 1 : 0 }
+                    return (v as? NSNumber)?.doubleValue
+                }
+                guard let values = value as? [Any], values.count == 4, let source = number(values[0]), let row = number(values[1]),
+                      let fraction = number(values[2]), let copying = number(values[3]) else { return }
+                action(Int(source), Int(row), fraction, copying != 0)
+            }))
+        }
+    }
+    /// Compat-only (AppKit's `keyDown(with:)` on a recording control stands in for it on the Mac): while this view is
+    /// shown, the Qt shell hands it the next key pressed — `key` in ShortcutChord's form ("a", "\r", "\u{f702}", …, or ""
+    /// for Esc, meaning cancel) and `modifiers` as Command 1 / Option 2 / Control 4 / Shift 8 (Ctrl, Alt, Meta, Shift).
+    public func compatKeyCapture(perform action: @escaping (_ key: String, _ modifiers: Int) -> Void) -> some View {
+        modified {
+            $0.modifiers.append(.sink("keyCapture", { value in
+                guard let values = value as? [Any], values.count == 2, let key = values[0] as? String else { return }
+                let modifiers = (values[1] as? Int) ?? Int((values[1] as? Double) ?? 0)
+                action(key, modifiers)
+            }))
+        }
     }
     public func focused(_ condition: FocusState<Bool>) -> some View {
         modified { $0.modifiers.append(.sink("focused", { newValue in
@@ -190,7 +236,12 @@ extension View {
     }
     public func gesture<G>(_ gesture: G) -> some View { self }
     public func onTapGesture(count: Int = 1, perform action: @escaping () -> Void) -> some View {
-        modified { $0.modifiers.append(.sink("onTapGesture", { _ in action() })) }
+        modified { $0.modifiers.append(.sink("onTapGesture", { value in
+            // The shell sends the click's modifier keys; they are current while the action runs (CompatInput).
+            CompatInput.clickModifiers = (value as? Int) ?? Int((value as? Double) ?? 0)
+            action()
+            CompatInput.clickModifiers = 0
+        })) }
     }
     /// Structurally real (stores the subscription intent), but inert: firing it needs a live run loop tied to Qt's
     /// event loop, which this compat layer doesn't wire up yet. See `Combine.swift`.
@@ -209,7 +260,50 @@ extension View {
     public func popover<V: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> V) -> some View { self }
     /// Right/control-click menu — inert, same honesty as `.onReceive`/`.onDrop`: the Qt renderer doesn't wire up a
     /// context-menu gesture yet, so `content`'s actions are never reachable this way.
-    public func contextMenu<M: View>(@ViewBuilder menuItems: () -> M) -> some View { self }
+    /// A right-click menu, as SwiftUI shows one: the items (Buttons, Dividers, nested Menus) are resolved here into a
+    /// menu description the Qt shell turns into a QMenu ("contextMenu": JSON items with titles, enabled state and
+    /// submenus); picking one sends back its index, which runs that Button's action.
+    public func contextMenu<M: View>(@ViewBuilder menuItems: () -> M) -> some View {
+        var actions: [() -> Void] = []
+        func title(_ node: RenderNode) -> String {
+            if node.kind == "Text" { return node.stringParams["text"] ?? "" }
+            for child in node.children { let t = title(child); if !t.isEmpty { return t } }
+            return ""
+        }
+        func disabled(_ node: RenderNode) -> Bool {
+            node.modifiers.contains { if case .disabled(true) = $0 { return true }; return false }
+        }
+        func items(_ nodes: [RenderNode], inheritedDisabled: Bool) -> [[String: Any]] {
+            var result: [[String: Any]] = []
+            for node in nodes {
+                let off = inheritedDisabled || disabled(node)
+                switch node.kind {
+                case "Button":
+                    if let action = node.handlers["action"] {
+                        result.append(["title": title(node), "enabled": !off, "index": actions.count])
+                        actions.append({ action(()) })
+                    }
+                case "Divider": result.append(["separator": true])
+                case "Menu":
+                    // First child: the label; the rest: the submenu's items.
+                    let label = node.children.first.map(title) ?? ""
+                    result.append(["title": label, "enabled": !off,
+                                   "items": items(Array(node.children.dropFirst()), inheritedDisabled: off)])
+                default: result += items(node.children, inheritedDisabled: off)
+                }
+            }
+            return result
+        }
+        let described = items(ViewResolver.resolveList(menuItems()), inheritedDisabled: false)
+        let json = (try? JSONSerialization.data(withJSONObject: described)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return modified {
+            $0.stringParams["contextMenu"] = json
+            $0.modifiers.append(.sink("contextMenu", { value in
+                let index = (value as? Int) ?? Int((value as? Double) ?? -1)
+                if actions.indices.contains(index) { actions[index]() }
+            }))
+        }
+    }
     public func simultaneousGesture<G>(_ gesture: G) -> some View { self }
     public func clipped() -> some View { self }
     /// Share of an `HStack`/`VStack`'s space: children with a higher priority are sized first (used by `HostedLayout`).
@@ -343,3 +437,10 @@ public struct PointerStyle: Sendable {
     public static let verticalResize = PointerStyle()
 }
 
+
+
+/// Compat-only: the modifier keys of the click being handled (a tap's action runs while it is set), as bits Command 1 /
+/// Option 2 / Control 4 / Shift 8 — Linux's Ctrl / Alt / Meta / Shift. What AppKit code reads from `NSEvent.modifierFlags`.
+public enum CompatInput {
+    nonisolated(unsafe) public static var clickModifiers: Int = 0
+}

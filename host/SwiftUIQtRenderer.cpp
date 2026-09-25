@@ -1,3 +1,13 @@
+#include <QKeyEvent>
+#include <QHash>
+#include <QFile>
+#include <QDir>
+#include <QStandardPaths>
+#include <QMouseEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QDrag>
+#include <QPixmap>
 // SwiftUIQtRenderer — see SwiftUIQtRenderer.h. Fetches the resolved tree via compositor_session_render_tree
 // (same size-query convention as compositor_session_state, see SessionWindow::sessionState) and walks it once,
 // mapping each `RenderNode` kind to the matching Qt widget. Interactive widgets (Button, Toggle) wire their Qt
@@ -75,13 +85,36 @@ private:
 
 } // namespace
 
+/// A small SVG for a style sheet's `image: url(...)`: Qt style sheets take files, not data: URLs, so each image is
+/// written once to a per-user runtime directory and referenced by path.
+QString styleSheetImage(const QString &name, const QByteArray &svg) {
+    static QHash<QString, QString> written;
+    if (auto it = written.constFind(name); it != written.constEnd()) return *it;
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation).isEmpty()
+        ? QDir::tempPath() + QStringLiteral("/compositor-ui") : QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + QStringLiteral("/compositor-ui");
+    QDir().mkpath(dir);
+    const QString path = dir + QLatin1Char('/') + name + QStringLiteral(".svg");
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(svg);
+    written.insert(name, path);
+    return path;
+}
+
 QColor parseColorToken(const QString &name) {
+    // `Color.x.opacity(a)` arrives as "x+opacity:a" (compat StyleToken): the base color with its alpha scaled.
+    if (const int plus = name.lastIndexOf(QLatin1String("+opacity:")); plus > 0) {
+        QColor base = parseColorToken(name.left(plus));
+        if (base.isValid()) base.setAlphaF(qBound(0.0, base.alphaF() * name.mid(plus + 9).toDouble(), 1.0));
+        return base;
+    }
     if (name.isEmpty() || name == "clear") return Qt::transparent;
     if (name == "black") return QColor(0, 0, 0);
     if (name == "white") return QColor(255, 255, 255);
-    if (name == "primary") return QColor(245, 245, 247);
-    if (name == "secondary") return QColor(142, 142, 147);
-    if (name == "tertiary") return QColor(90, 90, 96);
+    // AppKit's dark-aqua label colors (labelColor, secondaryLabelColor, ...): white at falling opacities.
+    if (name == "primary") return QColor(255, 255, 255, 217);
+    if (name == "secondary") return QColor(255, 255, 255, 140);
+    if (name == "tertiary") return QColor(255, 255, 255, 64);
+    if (name == "quaternary") return QColor(255, 255, 255, 26);
     if (name == "accentColor" || name == "accent" || name == "blue") return QColor(0, 122, 255);
     if (name == "red") return QColor(255, 59, 48);
     if (name == "green") return QColor(52, 199, 89);
@@ -215,24 +248,214 @@ QByteArray jsonFragment(const QJsonValue &value) {
     return array.mid(1, array.size() - 2); // strip the wrapping '[' ']'
 }
 
+/// Drag-and-drop for a List whose view asked for it (`compatListDrop`): press a row and drag to move it; the drop
+/// lands above the nearer row edge, or into a folder row's middle (highlighted), Alt copies. The List's own handler
+/// ("listDrop": [source row, row under the drop, fraction within it, copying]) decides what the drop does.
+class ListDragController : public QObject {
+public:
+    ListDragController(QWidget *content, QList<QWidget *> rows, QString folders, uint64_t handle, QString panel, QString nodeID)
+        : QObject(content), m_content(content), m_rows(std::move(rows)), m_folders(std::move(folders)), m_handle(handle),
+          m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) {
+        content->setAcceptDrops(true);
+        content->installEventFilter(this);
+        for (int i = 0; i < m_rows.size(); ++i) watch(m_rows[i], i);
+        m_indicator = new QFrame(content);
+        m_indicator->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_indicator->hide();
+    }
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            auto *e = static_cast<QMouseEvent *>(event);
+            if (e->button() == Qt::LeftButton && obj->property("listRow").isValid()) {
+                m_pressRow = obj->property("listRow").toInt();
+                m_pressPos = e->globalPosition().toPoint();
+            }
+            break;
+        }
+        case QEvent::MouseMove: {
+            auto *e = static_cast<QMouseEvent *>(event);
+            if (m_pressRow < 0 || !(e->buttons() & Qt::LeftButton)) break;
+            if ((e->globalPosition().toPoint() - m_pressPos).manhattanLength() < QApplication::startDragDistance()) break;
+            const int source = m_pressRow;
+            m_pressRow = -1;
+            auto *drag = new QDrag(m_content);
+            auto *mime = new QMimeData;
+            mime->setData("application/x-compositor-list-row", QByteArray::number(source));
+            drag->setMimeData(mime);
+            if (source < m_rows.size()) {
+                const QPixmap snapshot = m_rows[source]->grab();
+                drag->setPixmap(snapshot);
+                drag->setHotSpot(m_rows[source]->mapFromGlobal(e->globalPosition().toPoint()));
+            }
+            drag->exec(Qt::MoveAction | Qt::CopyAction, Qt::MoveAction);
+            m_indicator->hide();
+            return true;
+        }
+        case QEvent::MouseButtonRelease:
+            m_pressRow = -1;
+            break;
+        case QEvent::DragEnter:
+        case QEvent::DragMove: {
+            if (obj != m_content) break;
+            auto *e = static_cast<QDropEvent *>(event);
+            if (!e->mimeData()->hasFormat("application/x-compositor-list-row")) break;
+            e->setDropAction((e->modifiers() & Qt::AltModifier) ? Qt::CopyAction : Qt::MoveAction);
+            e->accept();
+            showIndicator(e->position().toPoint());
+            return true;
+        }
+        case QEvent::DragLeave:
+            if (obj == m_content) m_indicator->hide();
+            break;
+        case QEvent::Drop: {
+            if (obj != m_content) break;
+            auto *e = static_cast<QDropEvent *>(event);
+            if (!e->mimeData()->hasFormat("application/x-compositor-list-row")) break;
+            const int source = e->mimeData()->data("application/x-compositor-list-row").toInt();
+            const auto [row, fraction] = locate(e->position().toPoint());
+            const bool copying = e->modifiers() & Qt::AltModifier;
+            e->setDropAction(copying ? Qt::CopyAction : Qt::MoveAction);
+            e->accept();
+            m_indicator->hide();
+            const QByteArray payload = QJsonDocument(QJsonArray{source, row, fraction, copying}).toJson(QJsonDocument::Compact);
+            // After this event returns: the handler rebuilds the panel, which deletes these rows.
+            const uint64_t handle = m_handle; const QString panel = m_panel, node = m_nodeID;
+            QTimer::singleShot(0, [handle, panel, node, payload] { dispatch(handle, panel, node, QStringLiteral("listDrop"), payload); });
+            return true;
+        }
+        default: break;
+        }
+        return QObject::eventFilter(obj, event);
+    }
+private:
+    void watch(QWidget *widget, int row) {
+        widget->setProperty("listRow", row);
+        widget->installEventFilter(this);
+        for (QWidget *child : widget->findChildren<QWidget *>()) { child->setProperty("listRow", row); child->installEventFilter(this); }
+    }
+    /// The row under `pos` (content coordinates) and where in it (0 top ... 1 bottom); past the last row: rows.size().
+    std::pair<int, double> locate(const QPoint &pos) const {
+        for (int i = 0; i < m_rows.size(); ++i) {
+            const QRect r = m_rows[i]->geometry();
+            if (pos.y() < r.bottom() + 1) return {i, r.height() > 0 ? std::clamp(double(pos.y() - r.top()) / r.height(), 0.0, 1.0) : 0.5};
+        }
+        return {int(m_rows.size()), 0.0};
+    }
+    void showIndicator(const QPoint &pos) {
+        const auto [row, fraction] = locate(pos);
+        const bool folder = row < m_rows.size() && row < m_folders.size() && m_folders[row] == QLatin1Char('1');
+        if (folder && fraction >= 0.25 && fraction <= 0.75) {   // into the folder: its row outlined
+            m_indicator->setStyleSheet("background: rgba(0, 122, 255, 0.18); border: 2px solid #007aff; border-radius: 5px;");
+            m_indicator->setGeometry(m_rows[row]->geometry());
+        } else {                                                // between rows: a line at the nearer edge
+            const int y = row >= m_rows.size() ? (m_rows.isEmpty() ? 0 : m_rows.last()->geometry().bottom() + 1)
+                        : (fraction < 0.5 ? m_rows[row]->geometry().top() : m_rows[row]->geometry().bottom() + 1);
+            m_indicator->setStyleSheet("background: #007aff; border: none; border-radius: 1px;");
+            m_indicator->setGeometry(4, y - 1, m_content->width() - 8, 2);
+        }
+        m_indicator->raise();
+        m_indicator->show();
+    }
+    QWidget *m_content;
+    QList<QWidget *> m_rows;
+    QString m_folders;
+    uint64_t m_handle;
+    QString m_panel, m_nodeID;
+    QFrame *m_indicator = nullptr;
+    int m_pressRow = -1;
+    QPoint m_pressPos;
+};
+
+/// A view that records a key (compatKeyCapture, e.g. a shortcut being rebound): while it exists, the next key pressed
+/// anywhere in the app goes to it — as ShortcutChord takes keys ("a", "\r", "\u{f702}"…; "" for Esc = cancel) and
+/// modifiers (Ctrl 1, Alt 2, Meta 4, Shift 8: Linux's Command / Option / Control / Shift) — instead of its usual target.
+class KeyCaptureFilter : public QObject {
+public:
+    KeyCaptureFilter(QWidget *owner, uint64_t handle, QString panel, QString nodeID)
+        : QObject(owner), m_handle(handle), m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) { qApp->installEventFilter(this); }
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (m_done || event->type() != QEvent::KeyPress) return false;
+        auto *e = static_cast<QKeyEvent *>(event);
+        const int k = e->key();
+        if (k == Qt::Key_Control || k == Qt::Key_Shift || k == Qt::Key_Alt || k == Qt::Key_Meta || k == Qt::Key_AltGr || e->isAutoRepeat()) return true;
+        QString key;
+        switch (k) {
+        case Qt::Key_Escape: key = QString(); break;
+        case Qt::Key_Backspace: case Qt::Key_Delete: key = QStringLiteral("\x7f"); break;
+        case Qt::Key_Return: case Qt::Key_Enter: key = QStringLiteral("\r"); break;
+        case Qt::Key_Tab: case Qt::Key_Backtab: key = QStringLiteral("\t"); break;
+        case Qt::Key_Space: key = QStringLiteral(" "); break;
+        case Qt::Key_Left: key = QString(QChar(0xf702)); break;
+        case Qt::Key_Right: key = QString(QChar(0xf703)); break;
+        case Qt::Key_Down: key = QString(QChar(0xf701)); break;
+        case Qt::Key_Up: key = QString(QChar(0xf700)); break;
+        default: {
+            // The unshifted character, as ShortcutChord stores it ("{" -> "[", "+" -> "=", "_" -> "-").
+            QString typed = (k >= 0x20 && k < 0x7f) ? QString(QChar(k)).toLower() : e->text().toLower();
+            static const QHash<QString, QString> unshift{{"{", "["}, {"}", "]"}, {"+", "="}, {"_", "-"}};
+            key = unshift.value(typed, typed);
+            if (key.isEmpty()) return true;   // a key with no character (F-keys, …): keep waiting
+        }
+        }
+        const Qt::KeyboardModifiers m = e->modifiers();
+        const int modifiers = (m & Qt::ControlModifier ? 1 : 0) | (m & Qt::AltModifier ? 2 : 0) | (m & Qt::MetaModifier ? 4 : 0)
+                            | (m & Qt::ShiftModifier ? 8 : 0);
+        m_done = true;
+        const QByteArray payload = QJsonDocument(QJsonArray{key, modifiers}).toJson(QJsonDocument::Compact);
+        const uint64_t handle = m_handle; const QString panel = m_panel, node = m_nodeID;
+        QTimer::singleShot(0, [handle, panel, node, payload] { dispatch(handle, panel, node, QStringLiteral("keyCapture"), payload); });
+        return true;
+    }
+private:
+    uint64_t m_handle;
+    QString m_panel, m_nodeID;
+    bool m_done = false;
+};
+
 class TapGestureFilter : public QObject {
 public:
-    TapGestureFilter(QObject *parent, std::function<void()> onTap)
+    /// `onTap` gets the click's modifier keys as ShortcutChord bits (Ctrl 1, Alt 2, Meta 4, Shift 8).
+    TapGestureFilter(QObject *parent, std::function<void(int)> onTap)
         : QObject(parent), m_onTap(std::move(onTap)) {}
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override {
         if (event->type() == QEvent::MouseButtonRelease) {
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
-                if (m_onTap) m_onTap();
+                const Qt::KeyboardModifiers m = me->modifiers();
+                const int bits = (m & Qt::ControlModifier ? 1 : 0) | (m & Qt::AltModifier ? 2 : 0) | (m & Qt::MetaModifier ? 4 : 0)
+                               | (m & Qt::ShiftModifier ? 8 : 0);
+                if (m_onTap) m_onTap(bits);
                 return true;
             }
         }
         return QObject::eventFilter(obj, event);
     }
 private:
-    std::function<void()> m_onTap;
+    std::function<void(int)> m_onTap;
 };
+
+/// SwiftUI's `.contextMenu`: the view's items (compat resolves them into "contextMenu" JSON) as a QMenu on right-click;
+/// the chosen item's index goes back to the view, which runs that item's action.
+static void buildContextMenu(QMenu *menu, const QJsonArray &items, const std::function<void(int)> &choose) {
+    for (const QJsonValue &value : items) {
+        const QJsonObject item = value.toObject();
+        if (item.value("separator").toBool()) { menu->addSeparator(); continue; }
+        if (item.contains("items")) {
+            QMenu *sub = menu->addMenu(item.value("title").toString());
+            sub->setEnabled(item.value("enabled").toBool(true));
+            buildContextMenu(sub, item.value("items").toArray(), choose);
+            continue;
+        }
+        QAction *action = menu->addAction(item.value("title").toString());
+        action->setEnabled(item.value("enabled").toBool(true));
+        const int index = item.value("index").toInt(-1);
+        QObject::connect(action, &QAction::triggered, menu, [choose, index] { choose(index); });
+    }
+}
 
 } // namespace
 
@@ -439,6 +662,27 @@ QIcon renderToolVectorIcon(const QString &symbol, int size, const QColor &color)
         p.setPen(QPen(color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.drawRoundedRect(QRectF(4, 7, 7, 6), 3, 3);
         p.drawRoundedRect(QRectF(9, 7, 7, 6), 3, 3);
+    } else if (symbol == "chevron.down" || symbol == "chevron.right" || symbol == "chevron.left" || symbol == "chevron.up") {
+        p.setPen(QPen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPolygonF v;
+        if (symbol == "chevron.down") v << QPointF(5, 7.5) << QPointF(10, 12.5) << QPointF(15, 7.5);
+        else if (symbol == "chevron.up") v << QPointF(5, 12.5) << QPointF(10, 7.5) << QPointF(15, 12.5);
+        else if (symbol == "chevron.right") v << QPointF(7.5, 5) << QPointF(12.5, 10) << QPointF(7.5, 15);
+        else v << QPointF(12.5, 5) << QPointF(7.5, 10) << QPointF(12.5, 15);
+        p.drawPolyline(v);
+    } else if (symbol == "text.alignleft" || symbol == "text.aligncenter" || symbol == "text.alignright") {
+        // Four lines of text, long and short alternating, flush to the alignment's edge.
+        p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap));
+        const double widths[4] = {14, 9, 14, 9};
+        for (int i = 0; i < 4; ++i) {
+            const double w = widths[i], y = 5 + i * 3.4;
+            const double x = symbol == "text.alignleft" ? 3 : symbol == "text.alignright" ? 17 - w : 10 - w / 2;
+            p.drawLine(QPointF(x, y), QPointF(x + w, y));
+        }
+    } else if (symbol == "triangle.fill") {
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawPolygon(QPolygonF({QPointF(10, 4), QPointF(17, 16), QPointF(3, 16)}));
     } else if (symbol == "eye") {
         p.setPen(QPen(color, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         QPainterPath e;
@@ -501,6 +745,18 @@ QIcon renderToolVectorIcon(const QString &symbol, int size, const QColor &color)
 
 namespace {
 
+/// AppKit's disabled controls in dark aqua: tertiary text, faded chrome.
+const QString &disabledStyleSheet() {
+    static const QString qss = QStringLiteral(
+        "QPushButton:disabled { color: rgba(255, 255, 255, 0.25); background-color: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.06); } "
+        "QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: rgba(255, 255, 255, 0.25); "
+        "background-color: rgba(255, 255, 255, 0.03); border-color: rgba(255, 255, 255, 0.08); } "
+        "QCheckBox:disabled, QLabel:disabled { color: rgba(255, 255, 255, 0.25); } "
+        "QCheckBox::indicator:disabled { background-color: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.10); } "
+        "QCheckBox::indicator:checked:disabled { background-color: rgba(0, 122, 255, 0.35); border-color: rgba(0, 122, 255, 0.35); }");
+    return qss;
+}
+
 /// Applies the modifiers this first pass understands (the highest-frequency ones, per the plan); an unrecognised
 /// modifier kind is silently skipped rather than failing the whole render — additive coverage, not all-or-nothing.
 void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
@@ -513,20 +769,147 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
         if (kind == "frame") {
             if (doubles.contains("width")) widget->setFixedWidth(static_cast<int>(doubles.value("width").toDouble()));
             if (doubles.contains("height")) widget->setFixedHeight(static_cast<int>(doubles.value("height").toDouble()));
-        } else if (kind == "padding") {
-            if (auto *layout = widget->layout()) {
-                layout->setContentsMargins(static_cast<int>(doubles.value("leading").toDouble()),
-                                            static_cast<int>(doubles.value("top").toDouble()),
-                                            static_cast<int>(doubles.value("trailing").toDouble()),
-                                            static_cast<int>(doubles.value("bottom").toDouble()));
+            // minWidth / minHeight hold as minimums; maxWidth / maxHeight .infinity (sent as flags: JSON has no
+            // infinity) let the view grow to fill its row / column, as SwiftUI does.
+            if (doubles.contains("minWidth")) widget->setMinimumWidth(static_cast<int>(doubles.value("minWidth").toDouble()));
+            if (doubles.contains("minHeight")) widget->setMinimumHeight(static_cast<int>(doubles.value("minHeight").toDouble()));
+            if (doubles.contains("maxWidth")) widget->setMaximumWidth(static_cast<int>(doubles.value("maxWidth").toDouble()));
+            if (doubles.contains("maxHeight")) widget->setMaximumHeight(static_cast<int>(doubles.value("maxHeight").toDouble()));
+            QSizePolicy policy = widget->sizePolicy();
+            const bool growsH = bools.value("maxWidthInfinity").toBool(), growsV = bools.value("maxHeightInfinity").toBool();
+            if (growsH) policy.setHorizontalPolicy(QSizePolicy::Expanding);
+            if (growsV) policy.setVerticalPolicy(QSizePolicy::Expanding);
+            widget->setSizePolicy(policy);
+            // The content sits in the frame at the frame's alignment (center by default), not stretched to fill it.
+            const QString alignment = strings.value("alignment").toString();
+            Qt::Alignment h = Qt::AlignHCenter, v = Qt::AlignVCenter;
+            if (alignment.contains(QLatin1String("eading"))) h = Qt::AlignLeft;
+            else if (alignment.contains(QLatin1String("railing"))) h = Qt::AlignRight;
+            if (alignment.startsWith(QLatin1String("top"))) v = Qt::AlignTop;
+            else if (alignment.startsWith(QLatin1String("bottom"))) v = Qt::AlignBottom;
+            if (auto *label = qobject_cast<QLabel *>(widget)) {
+                label->setAlignment(h | v);
+            } else if (QLayout *layout = widget->layout(); layout && (growsH || growsV)) {
+                // Only along an axis nothing inside stretches in (a Spacer, a flexible field): then the stack keeps
+                // its own size there and is placed.
+                const Qt::Orientations expanding = layout->expandingDirections();
+                Qt::Alignment placed;
+                if (growsH && !(expanding & Qt::Horizontal)) placed |= h;
+                if (growsV && !(expanding & Qt::Vertical)) placed |= v;
+                if (placed) layout->setAlignment(placed);
             }
+        } else if (kind == "padding") {
+            // Paddings nest (.padding(.horizontal, 8).padding(.vertical, 4) pads both), so each adds to what is there.
+            const QMargins add(static_cast<int>(doubles.value("leading").toDouble()), static_cast<int>(doubles.value("top").toDouble()),
+                               static_cast<int>(doubles.value("trailing").toDouble()), static_cast<int>(doubles.value("bottom").toDouble()));
+            if (auto *layout = widget->layout()) layout->setContentsMargins(layout->contentsMargins() + add);
+            else widget->setContentsMargins(widget->contentsMargins() + add);
         } else if (kind == "font") {
-            const QString name = strings.value("name").toString();
+            // Compat font tokens: "<base>[+weight:<w>][+bold][+monospacedDigit][+design:<d>]", base a text style or
+            // "system:<size>". Set with setFont, so it reaches every child that has no font of its own (SwiftUI's
+            // environment font).
+            const QStringList parts = strings.value("name").toString().split(QLatin1Char('+'));
             QFont font = widget->font();
-            if (name.contains(QStringLiteral("bold"), Qt::CaseInsensitive)) font.setBold(true);
+            static const QHash<QString, std::pair<int, QFont::Weight>> styles{
+                {"largeTitle", {26, QFont::Normal}}, {"title", {22, QFont::Normal}}, {"title2", {17, QFont::Normal}},
+                {"title3", {15, QFont::Normal}}, {"headline", {13, QFont::Bold}}, {"subheadline", {11, QFont::Normal}},
+                {"body", {13, QFont::Normal}}, {"callout", {12, QFont::Normal}}, {"footnote", {10, QFont::Normal}},
+                {"caption", {10, QFont::Normal}}, {"caption2", {10, QFont::Normal}}};
+            static const QHash<QString, QFont::Weight> weights{
+                {"ultraLight", QFont::ExtraLight}, {"thin", QFont::Thin}, {"light", QFont::Light}, {"regular", QFont::Normal},
+                {"medium", QFont::Medium}, {"semibold", QFont::DemiBold}, {"bold", QFont::Bold}, {"heavy", QFont::ExtraBold},
+                {"black", QFont::Black}};
+            const QString base = parts.value(0);
+            if (base.startsWith(QLatin1String("system:"))) {
+                font.setPixelSize(qMax(1, qRound(base.mid(7).toDouble())));
+                font.setWeight(QFont::Normal);
+            } else if (auto it = styles.constFind(base); it != styles.constEnd()) {
+                font.setPixelSize(it->first);
+                font.setWeight(it->second);
+            }
+            for (const QString &part : parts.mid(1)) {
+                if (part.startsWith(QLatin1String("weight:"))) font.setWeight(weights.value(part.mid(7), QFont::Normal));
+                else if (part == QLatin1String("bold")) font.setWeight(QFont::Bold);
+                else if (part == QLatin1String("monospacedDigit")) font.setFeature(QFont::Tag("tnum"), 1);
+                else if (part == QLatin1String("design:monospaced")) font.setFamilies({QStringLiteral("DejaVu Sans Mono"), QStringLiteral("monospace")});
+            }
             widget->setFont(font);
+        } else if (kind == "multilineTextAlignment") {
+            // Text wraps to the space it is given and lines up at this alignment.
+            const QString name = strings.value("name").toString();
+            const Qt::Alignment h = name == QLatin1String("center") ? Qt::AlignHCenter
+                                  : name == QLatin1String("trailing") ? Qt::AlignRight : Qt::AlignLeft;
+            QList<QLabel *> labels = widget->findChildren<QLabel *>();
+            if (auto *self = qobject_cast<QLabel *>(widget)) labels.prepend(self);
+            for (QLabel *label : labels) {
+                if (label->pixmap().isNull()) {
+                    label->setAlignment(h | Qt::AlignVCenter);
+                    label->setWordWrap(true);
+                    // It takes the width it is offered and wraps only past it, as SwiftUI's Text does.
+                    label->setSizePolicy(QSizePolicy::Expanding, label->sizePolicy().verticalPolicy());
+                }
+            }
+        } else if (kind == "textFieldStyle") {
+            // .plain: the bare text, no bezel (upstream draws its own background around it); .roundedBorder: the bezel.
+            if (strings.value("name").toString() == QLatin1String("plain")) {
+                QList<QLineEdit *> fields = widget->findChildren<QLineEdit *>();
+                if (auto *self = qobject_cast<QLineEdit *>(widget)) fields.prepend(self);
+                for (QLineEdit *field : fields) {
+                    if (field->property("fieldStyled").toBool()) continue;
+                    field->setProperty("fieldStyled", true);
+                    field->setFrame(false);
+                    field->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; border: none; padding: 0px; } "
+                                                        "QLineEdit:disabled { color: rgba(255, 255, 255, 0.25); }"));
+                }
+            }
+        } else if (kind == "buttonStyle") {
+            // Text buttons below take the style (the innermost .buttonStyle wins); icon buttons keep their own look.
+            const QString name = strings.value("name").toString();
+            QString qss;
+            if (name == QLatin1String("borderedProminent"))
+                qss = QStringLiteral("QPushButton { background-color: #0a84ff; color: #ffffff; border: none; border-radius: 5px; padding: 3px 10px; } "
+                                     "QPushButton:hover { background-color: #2a93ff; } QPushButton:pressed { background-color: #0a6fd6; } "
+                                     "QPushButton:disabled { background-color: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.25); }");
+            else if (name == QLatin1String("plain") || name == QLatin1String("borderless"))
+                qss = QStringLiteral("QPushButton { background: transparent; border: none; padding: 0px; } "
+                                     "QPushButton:disabled { color: rgba(255, 255, 255, 0.25); }");
+            if (!qss.isEmpty()) {
+                QList<QPushButton *> buttons = widget->findChildren<QPushButton *>();
+                if (auto *self = qobject_cast<QPushButton *>(widget)) buttons.prepend(self);
+                for (QPushButton *button : buttons) {
+                    if (button->property("buttonStyled").toBool() || button->text().isEmpty() || button->isCheckable()) continue;
+                    button->setProperty("buttonStyled", true);
+                    button->setStyleSheet(qss);
+                }
+            }
+        } else if (kind == "controlSize") {
+            // AppKit control sizes carry their own text size: small 11, mini 9 (regular keeps the environment's).
+            const QString size = strings.value("name").toString();
+            if (size == QLatin1String("small") || size == QLatin1String("mini")) {
+                QFont font = widget->font();
+                font.setPixelSize(size == QLatin1String("small") ? 11 : 9);
+                widget->setFont(font);
+            }
         } else if (kind == "disabled") {
-            widget->setDisabled(bools.value("value").toBool());
+            const bool disabled = bools.value("value").toBool();
+            widget->setDisabled(disabled);
+            // A widget's own style sheet beats inherited rules, so the controls built with one (buttons, fields,
+            // checkboxes) carry AppKit's disabled look themselves.
+            if (disabled) {
+                QList<QWidget *> styled = widget->findChildren<QWidget *>();
+                styled.prepend(widget);
+                for (QWidget *w : styled)
+                    if (!w->styleSheet().isEmpty() && !w->property("disabledStyled").toBool()) {
+                        // Plain (bezel-less) buttons only dim; they grow no chrome when disabled.
+                        if (qobject_cast<QPushButton *>(w) && w->styleSheet().contains(QLatin1String("transparent"))) {
+                            w->setStyleSheet(w->styleSheet() + QStringLiteral(" QPushButton:disabled { color: rgba(255, 255, 255, 0.25); }"));
+                            w->setProperty("disabledStyled", true);
+                            continue;
+                        }
+                        w->setStyleSheet(w->styleSheet() + QLatin1Char(' ') + disabledStyleSheet());
+                        w->setProperty("disabledStyled", true);
+                    }
+            }
         } else if (kind == "offset") {
             const int ox = static_cast<int>(doubles.value("x").toDouble());
             const int oy = static_cast<int>(doubles.value("y").toDouble());
@@ -547,19 +930,45 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
             if (color.isValid() && color.alpha() > 0) {
                 widget->setAttribute(Qt::WA_StyledBackground, true);
                 const int r = widget->property("cornerRadius").toInt();
-                QString bg = QString("background-color: %1;").arg(color.name(QColor::HexArgb));
+                // Scoped to this widget: an unscoped rule would paint every child (a row's labels, its spacer) too.
+                const QString tag = QString::number(quintptr(widget), 16);
+                widget->setProperty("swiftuiBackground", tag);
+                QString bg = QString("QWidget[swiftuiBackground=\"%1\"] { background-color: %2;").arg(tag, color.name(QColor::HexArgb));
                 if (r > 0) bg += QString(" border-radius: %1px;").arg(r);
+                bg += QLatin1String(" }");
                 widget->setStyleSheet(widget->styleSheet() + " " + bg);
             }
+        } else if (kind == "border") {
+            const QColor color = parseColorToken(strings.value("name").toString());
+            if (color.isValid() && color.alpha() > 0) {
+                const QString tag = QString::number(quintptr(widget), 16);
+                widget->setAttribute(Qt::WA_StyledBackground, true);
+                widget->setProperty("swiftuiBorder", tag);
+                widget->setStyleSheet(widget->styleSheet() + QStringLiteral(" QWidget[swiftuiBorder=\"%1\"] { border: %2px solid %3; }")
+                                      .arg(tag).arg(qRound(doubles.value("width").toDouble())).arg(color.name(QColor::HexArgb)));
+            }
         } else if (kind == "cornerRadius") {
-            const int r = static_cast<int>(doubles.value("radius").toDouble());
+            // Rounds this view's own background (see "background"); a capsule's huge radius is its half height, which a
+            // style sheet can't express, so it is capped at a control's.
+            const int r = qMin(11, static_cast<int>(doubles.value("radius").toDouble()));
             widget->setProperty("cornerRadius", r);
-            widget->setStyleSheet(widget->styleSheet() + QString(" border-radius: %1px;").arg(r));
         } else if (kind == "foregroundStyle") {
             const QString colorName = strings.value("name").toString();
             const QColor color = parseColorToken(colorName);
             if (color.isValid()) {
-                widget->setStyleSheet(widget->styleSheet() + QString(" color: %1;").arg(color.name(QColor::HexArgb)));
+                const QString rgba = QStringLiteral("rgba(%1, %2, %3, %4)").arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alphaF());
+                widget->setStyleSheet(widget->styleSheet() + QString(" color: %1;").arg(rgba));
+                // Symbols take it too, unless one set its own (modifiers apply innermost first, so that one is done).
+                QList<QWidget *> symbols = widget->findChildren<QWidget *>();
+                symbols.prepend(widget);
+                for (QWidget *w : symbols) {
+                    const QString symbol = w->property("systemIcon").toString();
+                    if (symbol.isEmpty() || w->property("tinted").toBool()) continue;
+                    const int size = w->property("iconSize").toInt() > 0 ? w->property("iconSize").toInt() : 16;
+                    if (auto *button = qobject_cast<QAbstractButton *>(w)) button->setIcon(renderToolVectorIcon(symbol, size, color));
+                    else if (auto *label = qobject_cast<QLabel *>(w)) label->setPixmap(renderToolVectorIcon(symbol, size, color).pixmap(size, size));
+                    w->setProperty("tinted", true);
+                }
             }
         }
     }
@@ -592,11 +1001,8 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
     auto *layout = new QBoxLayout(direction, container);
     layout->setContentsMargins(0, 0, 0, 0);
     const QJsonObject doubles = node.value("doubleParams").toObject();
-    if (doubles.contains("spacing")) {
-        layout->setSpacing(static_cast<int>(doubles.value("spacing").toDouble()));
-    } else {
-        layout->setSpacing(0);
-    }
+    // No spacing given: SwiftUI's default between two views, 8 points.
+    layout->setSpacing(doubles.contains("spacing") ? static_cast<int>(doubles.value("spacing").toDouble()) : 8);
     for (const auto &childValue : node.value("children").toArray()) {
         const QJsonObject childObj = childValue.toObject();
         if (QWidget *child = buildNode(handle, panel, childObj)) {
@@ -605,7 +1011,35 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
             if (childKind == "ScrollView" || childKind == "Spacer" || childKind == "Canvas") {
                 stretch = 1;
             }
-            layout->addWidget(child, stretch);
+            const bool horizontal = direction == QBoxLayout::LeftToRight;
+            // SwiftUI's Spacer grows along its stack only; growing across it too would make the whole row (a header
+            // with a Spacer in it) take a share of its column's height.
+            if (childKind == "Spacer")
+                child->setSizePolicy(horizontal ? QSizePolicy::Expanding : QSizePolicy::Preferred,
+                                     horizontal ? QSizePolicy::Preferred : QSizePolicy::Expanding);
+            // A Divider in an HStack is a vertical line.
+            if (childKind == "Divider" && horizontal) {
+                if (auto *line = qobject_cast<QFrame *>(child)) {
+                    line->setFrameShape(QFrame::VLine);
+                    line->setStyleSheet("background-color: #141416; max-width: 1px; border: none;");
+                    line->setFixedWidth(1);
+                    line->setMaximumHeight(QWIDGETSIZE_MAX);
+                }
+            }
+            // A VStack places each child at its own width, at the stack's alignment (center by default); only the
+            // flexible ones (fields, sliders, rows with a Spacer, maxWidth: .infinity) span it.
+            Qt::Alignment placed;
+            if (!horizontal) {
+                // Wrapping text takes the stack's width too (then wraps only when it has to).
+                auto *label = qobject_cast<QLabel *>(child);
+                const bool flexible = (child->sizePolicy().horizontalPolicy() & QSizePolicy::ExpandFlag)
+                    || (child->layout() && (child->layout()->expandingDirections() & Qt::Horizontal))
+                    || (label && label->wordWrap());
+                const QString alignment = node.value("stringParams").toObject().value("alignment").toString();
+                if (!flexible) placed = alignment == QLatin1String("leading") ? Qt::AlignLeft
+                                      : alignment == QLatin1String("trailing") ? Qt::AlignRight : Qt::AlignHCenter;
+            }
+            layout->addWidget(child, stretch, placed);
         }
     }
     return container;
@@ -664,8 +1098,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }
         widget = container;
     } else if (kind == "Text") {
+        // No color of its own: it takes its container's foregroundStyle (SwiftUI's environment), else the primary label color.
         auto *label = new QLabel(strings.value("text").toString());
-        label->setStyleSheet("color: #f5f5f7;");
         widget = label;
     } else if (kind == "Button") {
         auto *button = new QPushButton;
@@ -758,6 +1192,32 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             const QColor swatch = labelFill.isEmpty() ? QColor(Qt::black) : parseColorToken(labelFill);
             button->setStyleSheet(QString("QPushButton { background-color: %1; border: 1.5px solid #ffffff; border-radius: 6px; } "
                                           "QPushButton:hover { border: 1.5px solid #007aff; }").arg(swatch.name()));
+        } else if (!labelFill.isEmpty() && textLabel.isEmpty() && systemIcon.isEmpty()) {
+            // A color swatch button (a filled shape as the label, e.g. an effect's color): drawn as upstream draws it —
+            // the fill in a rounded rect with a white inner and a black outer line — at the label's frame size.
+            const QSize size = labelFrame.isValid() ? labelFrame : QSize(36, 18);
+            const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+            QPixmap pixmap(size * dpr);
+            pixmap.setDevicePixelRatio(dpr);
+            pixmap.fill(Qt::transparent);
+            {
+                QPainter painter(&pixmap);
+                painter.setRenderHint(QPainter::Antialiasing);
+                const QRectF outer = QRectF(QPointF(0, 0), QSizeF(size)).adjusted(0.5, 0.5, -0.5, -0.5);
+                painter.setPen(QPen(Qt::black, 1));
+                painter.setBrush(parseColorToken(labelFill));
+                painter.drawRoundedRect(outer, 3, 3);
+                painter.setPen(QPen(Qt::white, 1));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRoundedRect(outer.adjusted(1, 1, -1, -1), 2, 2);
+            }
+            button->setIcon(QIcon(pixmap));
+            button->setIconSize(size);
+            button->setFixedSize(size);
+            button->setText(QString());
+            button->setFlat(true);
+            button->setCursor(Qt::PointingHandCursor);
+            button->setStyleSheet("QPushButton { border: none; padding: 0; background: transparent; }");
         } else if (isToolButton && !systemIcon.isEmpty() && labelFrame.isValid() && labelFrame.width() < 30 && labelFrame.height() < 30) {
             // A small icon button sized by its label (the palette's swap/reset arrows): exactly that size, plain.
             const int iconSize = qMax(8, qMin(labelFrame.width(), labelFrame.height()));
@@ -768,10 +1228,19 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             button->setFixedSize(labelFrame);
             button->setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; margin: 0px; } "
                                   "QPushButton:hover { background-color: rgba(255, 255, 255, 0.10); border-radius: 3px; }");
+        } else if (!systemIcon.isEmpty() && !textLabel.isEmpty() && panel != QLatin1String("ToolRail")) {
+            // An icon and a title in one plain button (e.g. Camera Raw's disclosure headers: chevron + section name).
+            button->setIcon(renderToolVectorIcon(systemIcon, 12, QColor(0xf5, 0xf5, 0xf7)));
+            button->setIconSize(QSize(12, 12));
+            button->setText(textLabel);
+            button->setCursor(Qt::PointingHandCursor);
+            button->setStyleSheet("QPushButton { background: transparent; border: none; color: #f5f5f7; font-size: 13px; "
+                                  "font-weight: 600; padding: 0px; margin: 0px; text-align: left; }");
         } else if (isToolButton && !systemIcon.isEmpty()) {
             const bool isToolRail = (panel == QLatin1String("ToolRail"));
             const int iconSize = isToolRail ? 20 : 16;
-            QIcon icon = renderToolVectorIcon(systemIcon, iconSize, QColor(0xf5, 0xf5, 0xf7));
+            button->setProperty("iconSize", iconSize);
+            QIcon icon = renderToolVectorIcon(systemIcon, iconSize, parseColorToken(QStringLiteral("primary")));
             button->setIcon(icon);
             button->setIconSize(QSize(iconSize, iconSize));
             button->setText(QString());
@@ -798,7 +1267,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         } else {
             button->setText(textLabel);
             button->setStyleSheet(
-                "QPushButton { background-color: #2a2a2d; color: #ffffff; border: 1px solid #38383c; border-radius: 4px; padding: 4px 10px; font-size: 11px; font-weight: 500; } "
+                "QPushButton { background-color: #2a2a2d; color: #ffffff; border: 1px solid #38383c; border-radius: 4px; padding: 4px 10px; } "
                 "QPushButton:hover { background-color: #35353a; color: #ffffff; border-color: #55555c; } "
                 "QPushButton:pressed { background-color: #1f1f22; }"
             );
@@ -806,6 +1275,40 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 
         QObject::connect(button, &QPushButton::clicked, button, [handle, panel, id] {
             dispatch(handle, panel, id, QStringLiteral("action"));
+        });
+        widget = button;
+    } else if (kind == "Toggle" && [&] {
+                   for (const auto &m : node.value("modifiers").toArray())
+                       if (m.toObject().value("kind").toString() == QLatin1String("toggleStyle")
+                           && m.toObject().value("stringParams").toObject().value("name").toString() == QLatin1String("button")) return true;
+                   return false;
+               }()) {
+        // .toggleStyle(.button): a push button that stays pressed while on (AppKit's pushOnPushOff bezel).
+        auto *button = new QPushButton;
+        button->setCheckable(true);
+        button->setChecked(bools.value("isOn").toBool());
+        QString symbol, title;
+        std::function<void(const QJsonObject &)> find = [&](const QJsonObject &n) {
+            const QString k = n.value("kind").toString();
+            const QJsonObject st = n.value("stringParams").toObject();
+            if (k == "Image" && st.value("source").toString().startsWith(QLatin1String("system:")) && symbol.isEmpty()) symbol = st.value("source").toString().mid(7);
+            else if (k == "Text" && title.isEmpty()) title = st.value("text").toString();
+            for (const auto &c : n.value("children").toArray()) find(c.toObject());
+        };
+        for (const auto &child : children) find(child.toObject());
+        if (!symbol.isEmpty()) {
+            button->setIcon(renderToolVectorIcon(symbol, 14, QColor(0xf5, 0xf5, 0xf7)));
+            button->setIconSize(QSize(14, 14));
+            button->setFixedSize(30, 22);
+        } else {
+            button->setText(title);
+        }
+        button->setStyleSheet(
+            "QPushButton { background-color: #2a2a2d; color: #ffffff; border: 1px solid #38383c; border-radius: 5px; padding: 0px 6px; } "
+            "QPushButton:hover { background-color: #35353a; } "
+            "QPushButton:checked { background-color: #5a5a5f; border-color: #6a6a70; }");
+        QObject::connect(button, &QPushButton::toggled, button, [handle, panel, id](bool checked) {
+            dispatch(handle, panel, id, QStringLiteral("isOn"), checked ? "true" : "false");
         });
         widget = button;
     } else if (kind == "Toggle") {
@@ -816,9 +1319,9 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }
         checkBox->setChecked(bools.value("isOn").toBool());
         checkBox->setStyleSheet(
-            "QCheckBox { color: #f5f5f7; font-size: 11px; spacing: 6px; } "
+            "QCheckBox { color: #f5f5f7; spacing: 6px; } "
             "QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #4a4a50; border-radius: 3px; background-color: #28282b; } "
-            "QCheckBox::indicator:checked { background-color: #007aff; border-color: #007aff; image: url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'><path fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M3.2 7.2 L5.6 9.8 L10.8 4.2'/></svg>\"); }"
+            "QCheckBox::indicator:checked { background-color: #007aff; border-color: #007aff; image: url(" + styleSheetImage(QStringLiteral("checkbox-tick"), "<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'><path fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M3.2 7.2 L5.6 9.8 L10.8 4.2'/></svg>") + "); }"
         );
         QObject::connect(checkBox, &QCheckBox::toggled, checkBox, [handle, panel, id](bool checked) {
             dispatch(handle, panel, id, QStringLiteral("isOn"), checked ? "true" : "false");
@@ -826,8 +1329,9 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = checkBox;
     } else if (kind == "TextField") {
         auto *field = new QLineEdit;
+        field->setPlaceholderText(strings.value("placeholder").toString());
         QObject::connect(field, &QLineEdit::editingFinished, field, [handle, panel] { notifyListeners(handle, panel); });
-        field->setStyleSheet("QLineEdit { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 2px 4px; font-size: 11px; } QLineEdit:focus { border-color: #007aff; }");
+        field->setStyleSheet("QLineEdit { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 2px 4px; } QLineEdit:focus { border-color: #007aff; }");
         const QStringList handlerKeys = [&] {
             QStringList keys;
             for (const auto &k : node.value("handlerKeys").toArray()) keys << k.toString();
@@ -899,6 +1403,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         QVector<ItemData> items;
         for (int i = 1; i < children.size(); ++i) {
             const QJsonObject item = children[i].toObject();
+            // A Divider between items is the menu's separator line.
+            if (item.value("kind").toString() == QLatin1String("Divider")) { items.push_back({QString(), QStringLiteral("\u0001separator")}); continue; }
             QString itemText = item.value("stringParams").toObject().value("text").toString();
             QString itemTag = itemText;
             for (const auto &mv : item.value("modifiers").toArray()) {
@@ -928,13 +1434,15 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                                     it.text.compare(selection, Qt::CaseInsensitive) == 0);
 
                 if (isSel) {
+                    // NSSegmentedControl in dark aqua: the chosen segment is a lighter raised gray, not the accent.
                     btn->setStyleSheet(
-                        "QPushButton { background-color: #007aff; color: #ffffff; font-size: 11px; font-weight: 600; border: none; padding: 2px 10px; border-radius: 5px; } "
-                        "QPushButton:hover { background-color: #1a87ff; }"
+                        "QPushButton { background-color: rgba(255, 255, 255, 0.24); color: #ffffff; border: none; padding: 2px 10px; border-radius: 5px; } "
+                        "QPushButton:disabled { color: rgba(255, 255, 255, 0.25); background-color: rgba(255, 255, 255, 0.08); }"
                     );
                 } else {
                     btn->setStyleSheet(
-                        "QPushButton { background-color: transparent; color: #d0d0d5; font-size: 11px; font-weight: 500; border: none; padding: 2px 10px; border-radius: 5px; } "
+                        "QPushButton { background-color: transparent; color: rgba(255, 255, 255, 0.85); border: none; padding: 2px 10px; border-radius: 5px; } "
+                        "QPushButton:disabled { color: rgba(255, 255, 255, 0.25); } "
                         "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); color: #ffffff; } "
                         "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.16); }"
                     );
@@ -949,10 +1457,16 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             widget = segContainer;
         } else {
             auto *combo = new QComboBox;
-            combo->setStyleSheet("QComboBox { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 3px 8px; min-height: 18px; font-size: 11px; } QComboBox QAbstractItemView { background-color: #242427; color: #ffffff; selection-background-color: #007aff; }");
+            // macOS pop-up button: the up/down chevron at the right edge says it opens a menu.
+            combo->setStyleSheet("QComboBox { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 3px 22px 3px 8px; min-height: 18px; } "
+                                 "QComboBox::drop-down { border: none; width: 18px; subcontrol-origin: padding; subcontrol-position: center right; } "
+                                 "QComboBox::down-arrow { width: 8px; height: 11px; image: url(" + styleSheetImage(QStringLiteral("popup-chevrons"),
+                                     "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='11' viewBox='0 0 8 11'><path fill='none' stroke='#d8d8dc' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1.5 4 L4 1.5 L6.5 4 M1.5 7 L4 9.5 L6.5 7'/></svg>") + "); } "
+                                 "QComboBox QAbstractItemView { background-color: #242427; color: #ffffff; selection-background-color: #007aff; }");
             QStringList tags;
             int selIdx = -1;
             for (int i = 0; i < items.size(); ++i) {
+                if (items[i].tag == QStringLiteral("\u0001separator")) { combo->insertSeparator(combo->count()); tags << QString(); continue; }
                 combo->addItem(items[i].text);
                 tags << items[i].tag;
                 if (items[i].tag.compare(selection, Qt::CaseInsensitive) == 0 ||
@@ -962,7 +1476,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             }
             if (selIdx >= 0) combo->setCurrentIndex(selIdx);
             QObject::connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), combo, [handle, panel, id, tags](int idx) {
-                if (idx >= 0 && idx < tags.size()) {
+                if (idx >= 0 && idx < tags.size() && !tags[idx].isEmpty()) {
                     dispatch(handle, panel, id, QStringLiteral("selection"), jsonFragment(tags[idx]));
                 }
             });
@@ -1092,13 +1606,19 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 }
             }
         } else if (!systemIcon.isEmpty()) {
-            QColor iconColor(0x8e, 0x8e, 0x93);
+            QColor iconColor = parseColorToken(QStringLiteral("primary"));
             int iconSize = 16;
+            label->setProperty("systemIcon", systemIcon);
             for (const auto &m : node.value("modifiers").toArray()) {
                 const QJsonObject mo = m.toObject();
                 const QString mkind = mo.value("kind").toString();
-                if (mkind == "foregroundStyle") {
+                if (mkind == "font") {
+                    // A symbol takes its size from the font (.font(.system(size: 25))).
+                    const QString font = mo.value("stringParams").toObject().value("name").toString().section(QLatin1Char('+'), 0, 0);
+                    if (font.startsWith(QLatin1String("system:"))) iconSize = qMax(8, qRound(font.mid(7).toDouble()));
+                } else if (mkind == "foregroundStyle") {
                     iconColor = parseColorToken(mo.value("stringParams").toObject().value("name").toString());
+                    label->setProperty("tinted", true);
                 } else if (mkind == "frame") {
                     const QJsonObject doubles = mo.value("doubleParams").toObject();
                     if (doubles.contains("width")) iconSize = static_cast<int>(doubles.value("width").toDouble());
@@ -1107,6 +1627,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             }
             label->setPixmap(renderToolVectorIcon(systemIcon, iconSize, iconColor).pixmap(iconSize, iconSize));
             label->setFixedSize(iconSize, iconSize);
+            label->setProperty("iconSize", iconSize);
         }
         if (fitted) { delete label; widget = fitted; } else
         widget = label;
@@ -1122,12 +1643,24 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             if (QWidget *content = buildNode(handle, panel, children.first().toObject())) {
                 content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
                 scrollArea->setWidget(content);
+                // A List whose view handles drops (compatListDrop): its rows are the stack's items, minus the trailing
+                // Spacer every List ends with.
+                bool dropping = false;
+                for (const auto &k : node.value("handlerKeys").toArray()) dropping = dropping || k.toString() == QLatin1String("listDrop");
+                if (dropping && content->layout()) {
+                    QList<QWidget *> rows;
+                    for (int i = 0; i < content->layout()->count(); ++i)
+                        if (QWidget *item = content->layout()->itemAt(i)->widget()) rows << item;
+                    if (!rows.isEmpty()) rows.removeLast();
+                    new ListDragController(content, rows, strings.value("listFolders").toString(), handle, panel, id);
+                }
             }
         }
         widget = scrollArea;
     } else if (kind == "Spacer") {
         auto *spacer = new QWidget;
-        spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);   // narrowed to its stack's axis there
+        spacer->setMinimumSize(0, 0);
         widget = spacer;
     } else if (kind == "Divider") {
         auto *line = new QFrame;
@@ -1175,10 +1708,26 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }();
         if (hKeys.contains(QStringLiteral("onTapGesture"))) {
             widget->setCursor(Qt::PointingHandCursor);
-            widget->installEventFilter(new TapGestureFilter(widget, [handle, panel, id] {
-                dispatch(handle, panel, id, QStringLiteral("onTapGesture"));
+            widget->installEventFilter(new TapGestureFilter(widget, [handle, panel, id](int modifiers) {
+                dispatch(handle, panel, id, QStringLiteral("onTapGesture"), QByteArray::number(modifiers));
             }));
         }
+        if (hKeys.contains(QStringLiteral("contextMenu")) && strings.contains("contextMenu")) {
+            const QJsonArray items = QJsonDocument::fromJson(strings.value("contextMenu").toString().toUtf8()).array();
+            widget->setContextMenuPolicy(Qt::CustomContextMenu);
+            QObject::connect(widget, &QWidget::customContextMenuRequested, widget, [widget, items, handle, panel, id](const QPoint &at) {
+                QMenu menu;
+                // Picked after the menu closes: the action rebuilds the panel, which deletes this widget.
+                int chosen = -1;
+                buildContextMenu(&menu, items, [&chosen](int index) { chosen = index; });
+                menu.exec(widget->mapToGlobal(at));
+                if (chosen >= 0) {
+                    const uint64_t h = handle; const QString p = panel, n = id; const QByteArray payload = QByteArray::number(chosen);
+                    QTimer::singleShot(0, [h, p, n, payload] { dispatch(h, p, n, QStringLiteral("contextMenu"), payload); });
+                }
+            });
+        }
+        if (hKeys.contains(QStringLiteral("keyCapture"))) new KeyCaptureFilter(widget, handle, panel, id);
     }
 
     return widget;

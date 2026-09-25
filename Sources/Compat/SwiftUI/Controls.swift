@@ -198,6 +198,10 @@ public struct TextField<Label: View>: View, PrimitiveView {
     }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "TextField")
+        // What macOS shows in an empty field: the prompt, else the title.
+        if let placeholder = prompt?.content ?? (label as? Text)?.content, !placeholder.isEmpty {
+            node.stringParams["placeholder"] = placeholder
+        }
         if let text {
             node.stringParams["text"] = text.wrappedValue
             node.handlers["text"] = { newValue in if let string = newValue as? String { text.wrappedValue = string } }

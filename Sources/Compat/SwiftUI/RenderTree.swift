@@ -57,6 +57,8 @@ public enum RenderModifier {
     case font(String)
     case foregroundStyle(String)
     case background(String)
+    /// `.border(_:width:)`: a line of this color and width just inside the view's edge.
+    case border(String, Double)
     case opacity(Double)
     case disabled(Bool)
     case fixedSize(horizontal: Bool, vertical: Bool)
@@ -83,6 +85,7 @@ public enum RenderModifier {
     case keyboardShortcut(key: String, modifiers: Int)
     case tag(String)
     case onAppear(() -> Void)
+    case onDisappear(() -> Void)
     case onSubmit(() -> Void)
     case onExitCommand(() -> Void)
     /// `.onChange`/`.focused` etc. read/write through a boxed value the Qt side polls or pushes into; keyed by an
@@ -114,16 +117,34 @@ public final class ChangeObserver {
 /// restarts `.task`s — after the walk, so actions never run mid-resolve. Places that disappear have their tasks
 /// cancelled, as SwiftUI does when a view goes away.
 @MainActor public enum ChangeTracker {
-    private struct Entry { var value: Any; var task: Task<Void, Never>? }
+    private struct Entry { var value: Any; var task: Task<Void, Never>?; var disappear: (() -> Void)? = nil }
     private static var entries: [String: Entry] = [:]
 
     public static func process(scope: String, root: RenderNode) {
         var seen = Set<String>()
         var actions: [() -> Void] = []
-        func visit(_ node: RenderNode) {
+        // A place is its position plus the `.id`s above it: a view given a new id is a new view, so its observers and
+        // .onAppear start over.
+        func visit(_ node: RenderNode, identity: String) {
+            var identity = identity
+            for modifier in node.modifiers { if case .identifier(let id) = modifier { identity += "#" + id } }
+            let place = identity.isEmpty ? node.id : "\(node.id)\(identity)"
             for (index, modifier) in node.modifiers.enumerated() {
+                // .onAppear / .onDisappear: once when the place first shows up, once when it goes away.
+                if case .onAppear(let action) = modifier {
+                    let key = "\(scope)|\(place)|\(index)|appear"
+                    seen.insert(key)
+                    if entries[key] == nil { entries[key] = Entry(value: (), task: nil); actions.append(action) }
+                    continue
+                }
+                if case .onDisappear(let action) = modifier {
+                    let key = "\(scope)|\(place)|\(index)|disappear"
+                    seen.insert(key)
+                    entries[key] = Entry(value: (), task: nil, disappear: action)
+                    continue
+                }
                 guard case .observe(let observer) = modifier else { continue }
-                let key = "\(scope)|\(node.id)|\(index)"
+                let key = "\(scope)|\(place)|\(index)"
                 seen.insert(key)
                 if var entry = entries[key] {
                     guard !observer.equals(entry.value) else { continue }
@@ -142,20 +163,27 @@ public final class ChangeObserver {
                     entries[key] = entry
                 }
             }
-            for child in node.children { visit(child) }
+            for child in node.children { visit(child, identity: identity) }
         }
-        visit(root)
+        visit(root, identity: "")
         for (key, entry) in entries where key.hasPrefix(scope + "|") && !seen.contains(key) {
             entry.task?.cancel()
+            if let disappear = entry.disappear { actions.insert(disappear, at: 0) }
             entries.removeValue(forKey: key)
         }
         for action in actions { action() }
+        lastActionCount = actions.count
     }
+
+    /// How many actions (`.onChange`, `.onAppear`, ...) the last `process` ran — they may have changed state the tree
+    /// was built from, so the caller resolves again.
+    public private(set) static var lastActionCount = 0
 
     /// Cancels and forgets everything under `scope` (a panel that is closed for good).
     public static func discard(scope: String) {
         for (key, entry) in entries where key.hasPrefix(scope + "|") {
             entry.task?.cancel()
+            entry.disappear?()
             entries.removeValue(forKey: key)
         }
     }
@@ -212,14 +240,29 @@ public enum ViewResolver {
         return firstNativeView(in: view.body)
     }
 
-    static func resolveList(_ view: any View) -> [RenderNode] {
+    /// Where in the tree the view being resolved sits: its composite views' types and child indices, plus `.id`s. A
+    /// view keeps its `@State` for as long as it keeps its path (StateStore).
+    nonisolated(unsafe) private static var currentPath = ""
+
+    /// A view resolved while another's `body` is being built (an `.overlay`'s content) gets a path under that view.
+    static func nestedPath(_ tag: String) -> String { currentPath + "/" + tag }
+
+    static func resolveList(_ view: any View) -> [RenderNode] { resolveList(view, path: currentPath) }
+
+    static func resolveList(_ view: any View, path: String) -> [RenderNode] {
         if let list = view as? any _ViewListProviding {
-            return list._viewList.flatMap(resolveList)
+            return list._viewList.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
         }
         if let primitive = view as? any PrimitiveView {
-            let children = primitive._childViews.flatMap(resolveList)
+            let path = (primitive as? ModifiedContent)?.identity.map { "\(path)#\($0)" } ?? path
+            let children = primitive._childViews.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
             return [primitive._makeNode(children: children)]
         }
-        return resolveList(view.body)
+        let path = path + "/" + String(describing: Swift.type(of: view))
+        StateStore.link(view, path: path)
+        let saved = currentPath
+        currentPath = path
+        defer { currentPath = saved }
+        return resolveList(view.body, path: path)
     }
 }

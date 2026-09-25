@@ -19,6 +19,16 @@
 // blocking event loop; the Flatpak app calls app.exec() here.
 
 #include <QApplication>
+#include <QDialog>
+#include <QContextMenuEvent>
+#include <QTimer>
+#include <QLabel>
+#include <QPushButton>
+#include <algorithm>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QAction>
+#include <QElapsedTimer>
 #include <QCoreApplication>
 #include <QProcessEnvironment>
 #include <QTemporaryDir>
@@ -30,12 +40,16 @@
 #include "ColorPickerDialog.h"
 #include "SwiftUIQtRenderer.h"
 #include <cmath>
+#include <clocale>
 #include <QDockWidget>
 #include <QMenuBar>
 #include <QMenu>
 #include <vector>
 #include <QIcon>
 #include <QStyleFactory>
+#include <QFontDatabase>
+#include <QDir>
+#include <QCoreApplication>
 #include "SessionWindow.h"
 
 #if defined(COMPOSITOR_SKIA_BRIDGE)
@@ -47,7 +61,29 @@ extern "C" int compositor_raw_install(void);
 
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
+    // QApplication adopts the environment's C locale; printf-style formatting (upstream's String(format:)) must stay
+    // POSIX, as it is on macOS ("128.33", not "128,33"). Locale-aware formatting goes through Foundation's Locale.
+    setlocale(LC_NUMERIC, "C");
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+    // macOS draws its UI in the system font (SF Pro) at 13 pt; Inter is its open stand-in (MACOS_UI_PARITY_RULES.md
+    // §4.2), shipped with the app, with Noto Sans as the fallback.
+    {
+        QString family;
+        for (const QString &path : {QCoreApplication::applicationDirPath() + QStringLiteral("/../share/compositor/fonts"),
+                                    QDir::currentPath() + QStringLiteral("/third_party/fonts/inter")}) {
+            const QDir dir(path);
+            for (const QString &file : dir.entryList({QStringLiteral("Inter-*.ttf")}, QDir::Files)) {
+                const int id = QFontDatabase::addApplicationFont(dir.filePath(file));
+                if (id >= 0 && family.isEmpty() && !QFontDatabase::applicationFontFamilies(id).isEmpty())
+                    family = QFontDatabase::applicationFontFamilies(id).first();
+            }
+            if (!family.isEmpty()) break;
+        }
+        QFont ui(family.isEmpty() ? QStringLiteral("Noto Sans") : family);
+        ui.setPixelSize(13);
+        ui.setHintingPreference(QFont::PreferNoHinting);   // CoreText doesn't hint either
+        app.setFont(ui);
+    }
     // Qt image plugins become the ImageIO compat backend (JPEG/TIFF/WebP/... beyond the portable PNG codec).
     compositor_qt_imageio_install();
     compositor_raw_install();   // camera RAW via LibRaw (a no-op when built without it)
@@ -130,6 +166,121 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                                                                {"smoothing", b[2].toDouble()}}}});
             }
         }
+        // COMPOSITOR_GRAB_EFFECT="Drop Shadow" (a LayerEffectKind): added to the active layer as the Layers panel's fx menu
+        // does, which opens its floating panel.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT").isEmpty()) {
+            window.sendCommand({{"version", 1}, {"action", "addLayerEffect"}, {"kind", qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT")}});
+            window.updateFloatingPanels();
+            QElapsedTimer settle; settle.start();   // let the pump render the effect's preview
+            while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        // COMPOSITOR_GRAB_ACTION=<menu action objectName, e.g. filter.Vignette>: triggered as if chosen from the menu.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_ACTION").isEmpty()) {
+            for (QAction *action : window.findChildren<QAction *>()) {
+                if (action->objectName() != qEnvironmentVariable("COMPOSITOR_GRAB_ACTION")) continue;
+                action->trigger();
+                QElapsedTimer settle; settle.start();
+                while (settle.elapsed() < 600) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                break;
+            }
+        }
+        // COMPOSITOR_GRAB_LAYER_DROP="source,row,fraction": a drag of the Layers list's row `source` dropped on row `row`
+        // at `fraction` of its height (0 top, 0.5 middle — into a folder, 1 bottom), as the list's drop handler gets it.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_DROP").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_DROP").split(',');
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            QWidget *content = nullptr;
+            for (QWidget *w : window.findChildren<QWidget *>())
+                if (w->acceptDrops() && w->property("listRow").isNull() && !w->findChildren<QWidget *>().isEmpty()
+                    && std::any_of(w->children().cbegin(), w->children().cend(), [](QObject *c) { return c->property("listRow").isValid(); })) { content = w; break; }
+            if (content && v.size() == 3) {
+                QWidget *target = nullptr;
+                for (QObject *c : content->children())
+                    if (auto *w = qobject_cast<QWidget *>(c); w && w->property("listRow").toInt() == v[1].toInt() && w->property("listRow").isValid()) { target = w; break; }
+                if (target) {
+                    const QRect r = target->geometry();
+                    const QPoint at(r.center().x(), r.top() + int(r.height() * v[2].toDouble()));
+                    auto *mime = new QMimeData;
+                    mime->setData("application/x-compositor-list-row", v[0].toUtf8());
+                    QDragEnterEvent enter(at, Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(content, &enter);
+                    QDragMoveEvent move(at, Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(content, &move);
+                    QDropEvent drop(at, Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(content, &drop);
+                    QElapsedTimer settle; settle.start();
+                    while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                }
+            }
+        }
+        // COMPOSITOR_GRAB_REBIND="<shortcut title>,<key>": through the Keyboard Shortcuts editor as a user would — click
+        // the shortcut's recorder, press the key, Save — then press the key on the canvas; prints the tool it selected.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_REBIND").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_REBIND").split(',');
+            auto settle = [](int ms) { QElapsedTimer t; t.start(); while (t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20); };
+            for (QAction *action : window.findChildren<QAction *>()) if (action->objectName() == "edit.shortcuts") action->trigger();
+            settle(400);
+            QDialog *editor = window.findChild<QDialog *>("floatingPanel.KeyboardShortcutsSheet");
+            QPushButton *recorder = nullptr;
+            if (editor && v.size() == 2) {
+                for (QLabel *label : editor->findChildren<QLabel *>()) {
+                    if (label->text() != v[0] || !label->parentWidget()) continue;
+                    for (QPushButton *button : label->parentWidget()->findChildren<QPushButton *>()) { recorder = button; break; }
+                    break;
+                }
+            }
+            fprintf(stderr, "REBIND editor=%d recorder=%s\n", editor != nullptr, recorder ? qPrintable(recorder->text()) : "none");
+            if (recorder) {
+                recorder->setFocus(Qt::MouseFocusReason);   // as a real click does: the button takes focus from the search field
+                recorder->click();
+                settle(400);
+                const QChar c = v[1].isEmpty() ? QChar('k') : v[1][0];
+                QKeyEvent press(QEvent::KeyPress, int(c.toUpper().unicode()), Qt::NoModifier, QString(c));
+                QCoreApplication::sendEvent(editor, &press);
+                settle(400);
+                editor = window.findChild<QDialog *>("floatingPanel.KeyboardShortcutsSheet");
+                for (QPushButton *button : editor ? editor->findChildren<QPushButton *>() : QList<QPushButton *>())
+                    if (button->text() == QLatin1String("Save")) { fprintf(stderr, "REBIND save enabled=%d\n", button->isEnabled()); button->click(); break; }
+                settle(400);
+                window.setTool(SessionWindow::Tool::Move);
+                window.activateWindow();
+                QKeyEvent key(QEvent::KeyPress, int(c.toUpper().unicode()), Qt::NoModifier, QString(c));
+                QCoreApplication::sendEvent(&window, &key);
+                settle(300);
+                fprintf(stderr, "REBIND tool after '%s': %s\n", qPrintable(QString(c)), qPrintable(window.sessionState().value("tool").toString()));
+            }
+        }
+        // COMPOSITOR_GRAB_LAYER_MENU=<row>: right-click that Layers-list row and capture its context menu as <path>.menu.png;
+        // COMPOSITOR_GRAB_LAYER_CLICK="<row>,ctrl|shift": then click another row with that modifier (multi-select).
+        auto layerRow = [&](int row) -> QWidget * {
+            for (QWidget *w : window.findChildren<QWidget *>())
+                if (w->property("listRow").isValid() && w->property("listRow").toInt() == row && w->parentWidget()
+                    && !w->parentWidget()->property("listRow").isValid()) return w;
+            return nullptr;
+        };
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_MENU").isEmpty()) {
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            if (QWidget *row = layerRow(qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_MENU").toInt())) {
+                QTimer::singleShot(300, [] {
+                    if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                        menu->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".menu.png");
+                        menu->close();
+                    }
+                });
+                QContextMenuEvent context(QContextMenuEvent::Mouse, QPoint(20, 10), row->mapToGlobal(QPoint(20, 10)));
+                QCoreApplication::sendEvent(row, &context);
+            }
+        }
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_CLICK").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_CLICK").split(',');
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            if (QWidget *row = layerRow(v.value(0).toInt())) {
+                const Qt::KeyboardModifiers mods = v.value(1) == "shift" ? Qt::ShiftModifier : Qt::ControlModifier;
+                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(60, 10), row->mapToGlobal(QPointF(60, 10)), Qt::LeftButton, Qt::NoButton, mods);
+                QCoreApplication::sendEvent(row, &release);
+                QElapsedTimer t; t.start(); while (t.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            }
+        }
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_STROKE").isEmpty()) {
             window.setTool(SessionWindow::Tool::Brush);
             window.paintStroke(200, 200, 600, 450);
@@ -150,7 +301,12 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 const QPointF from = window.documentToCanvasPoint(QPointF(v[0].toDouble(), v[1].toDouble()));
                 const QPointF to = window.documentToCanvasPoint(QPointF(v[2].toDouble(), v[3].toDouble()));
                 auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButtons buttons) {
-                    QMouseEvent e(type, at, canvas->mapToGlobal(at), Qt::LeftButton, buttons, Qt::NoModifier);
+                    // COMPOSITOR_GRAB_DRAG_MODIFIERS=ctrl|shift|ctrl+shift held through the drag (e.g. Ctrl distorts).
+                    const QString mods = qEnvironmentVariable("COMPOSITOR_GRAB_DRAG_MODIFIERS");
+                    Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+                    if (mods.contains(QLatin1String("ctrl"))) modifiers |= Qt::ControlModifier;
+                    if (mods.contains(QLatin1String("shift"))) modifiers |= Qt::ShiftModifier;
+                    QMouseEvent e(type, at, canvas->mapToGlobal(at), Qt::LeftButton, buttons, modifiers);
                     QCoreApplication::sendEvent(canvas, &e);
                 };
                 send(QEvent::MouseButtonPress, from, Qt::LeftButton);
@@ -200,6 +356,10 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             QCoreApplication::processEvents();
         }
         window.grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH"));
+        // Upstream's floating panels (tool windows) beside it: <path>.<panel>.png.
+        for (QDialog *panel : window.findChildren<QDialog *>())
+            if (panel->isVisible() && panel->objectName().startsWith(QLatin1String("floatingPanel.")))
+                panel->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + "." + panel->objectName().mid(14) + ".png");
         // COMPOSITOR_GRAB_SWIFTUI_TREE=<panel name, e.g. NavigationToolHeader> renders that panel standalone
         // through the generic SwiftUI-compat -> Qt renderer (SwiftUIQtRenderer.cpp) and captures it as
         // <path>.swiftui.png — the screenshot-diff proof point for the "Generic SwiftUI→Qt compat runtime" plan.

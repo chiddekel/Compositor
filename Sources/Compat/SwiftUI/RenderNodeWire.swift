@@ -37,9 +37,16 @@ extension RenderNode {
                 keys.insert(key)
             }
         }
-        return RenderNodeWire(id: id, kind: kind, stringParams: stringParams, doubleParams: doubleParams, boolParams: boolParams,
+        // JSON has no infinity or NaN: a single one (e.g. `.frame(maxWidth: .infinity)`) would fail the whole panel's
+        // encoding, so non-finite values never reach the wire (frames say "expand" with a flag instead, below).
+        return RenderNodeWire(id: id, kind: kind, stringParams: stringParams, doubleParams: doubleParams.filter { $0.value.isFinite },
+                              boolParams: boolParams,
                               handlerKeys: keys.sorted(),   // sorted: a set's order changes between runs, and the shell compares trees byte for byte
-                              modifiers: modifiers.compactMap { $0.wire() },
+                              modifiers: modifiers.compactMap { $0.wire() }.map { modifier in
+                                  var finite = modifier
+                                  finite.doubleParams = modifier.doubleParams.filter { $0.value.isFinite }
+                                  return finite
+                              },
                               children: children.map { $0.wire() })
     }
 }
@@ -53,14 +60,17 @@ extension RenderModifier {
             if let height { d["height"] = height }
             if let minWidth { d["minWidth"] = minWidth }
             if let minHeight { d["minHeight"] = minHeight }
-            if let maxWidth { d["maxWidth"] = maxWidth }
-            if let maxHeight { d["maxHeight"] = maxHeight }
-            return RenderModifierWire(kind: "frame", stringParams: ["alignment": alignment], doubleParams: d)
+            var b: [String: Bool] = [:]
+            if let maxWidth { if maxWidth.isFinite { d["maxWidth"] = maxWidth } else if maxWidth > 0 { b["maxWidthInfinity"] = true } }
+            if let maxHeight { if maxHeight.isFinite { d["maxHeight"] = maxHeight } else if maxHeight > 0 { b["maxHeightInfinity"] = true } }
+            return RenderModifierWire(kind: "frame", stringParams: ["alignment": alignment], doubleParams: d.filter { $0.value.isFinite },
+                                      boolParams: b)
         case let .padding(top, leading, bottom, trailing):
             return RenderModifierWire(kind: "padding", doubleParams: ["top": top, "leading": leading, "bottom": bottom, "trailing": trailing])
         case let .font(name): return RenderModifierWire(kind: "font", stringParams: ["name": name])
         case let .foregroundStyle(name): return RenderModifierWire(kind: "foregroundStyle", stringParams: ["name": name])
         case let .background(name): return RenderModifierWire(kind: "background", stringParams: ["name": name])
+        case let .border(name, width): return RenderModifierWire(kind: "border", stringParams: ["name": name], doubleParams: ["width": width])
         case let .opacity(v): return RenderModifierWire(kind: "opacity", doubleParams: ["value": v])
         case let .disabled(v): return RenderModifierWire(kind: "disabled", boolParams: ["value": v])
         case let .fixedSize(h, v): return RenderModifierWire(kind: "fixedSize", boolParams: ["horizontal": h, "vertical": v])
@@ -87,7 +97,7 @@ extension RenderModifier {
             return RenderModifierWire(kind: "keyboardShortcut", stringParams: ["key": key], doubleParams: ["modifiers": Double(modifiers)])
         case let .tag(text): return RenderModifierWire(kind: "tag", stringParams: ["text": text])
         case let .layoutPriority(value): return RenderModifierWire(kind: "layoutPriority", doubleParams: ["value": value])
-        case .overlay, .onAppear, .onSubmit, .onExitCommand, .sink, .observe: return nil
+        case .overlay, .onAppear, .onDisappear, .onSubmit, .onExitCommand, .sink, .observe: return nil
         }
     }
 }

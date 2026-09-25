@@ -85,9 +85,15 @@ struct TypeControls: View {
     }
 }
 
+/// Upstream's font menu (an NSPopUpButton filled from NSFontManager.availableFonts plus the current face, sorted), as a
+/// Picker: the same list and choice, without AppKit's target-action.
 private struct TypeFontPicker: View {
     @Binding var fontName: String
     var body: some View {
-        TextField("Font", text: $fontName)
+        let names = Array(Set(NSFontManager.shared.availableFonts + [fontName])).sorted()
+        Picker("Font", selection: $fontName) {
+            ForEach(names, id: \.self) { Text($0).tag($0) }
+        }
+        .labelsHidden()
     }
 }

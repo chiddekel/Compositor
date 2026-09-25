@@ -300,3 +300,10 @@ extension String {
         (self as NSString).draw(at: point, withAttributes: attrs)
     }
 }
+
+/// AppKit's font manager, as far as upstream uses it: the installed faces for its font menu (TypeControls).
+public final class NSFontManager: @unchecked Sendable {
+    public static let shared = NSFontManager()
+    /// Every installed face by the name `NSFont(name:size:)` takes — sorted, as AppKit lists them.
+    public var availableFonts: [String] { TextBackend.fontNames }
+}

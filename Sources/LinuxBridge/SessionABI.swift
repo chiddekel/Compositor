@@ -244,6 +244,43 @@ nonisolated public func compositorSessionRenderRevision(_ handle: UInt64) -> Int
     }
 }
 
+/// The canvas viewport (upstream `CanvasViewport`, the one source of truth for zoom and pan, as EditorCanvas uses it):
+/// `out` = zoom, pan x, pan y, backing scale, view width, view height (points). Returns 0, or -2 without a document.
+@_cdecl("compositor_session_viewport")
+nonisolated public func compositorSessionViewport(_ handle: UInt64, _ out: UnsafeMutablePointer<Double>?) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        let session = entry.editor.session
+        let v = session.viewport
+        if let out {
+            out[0] = Double(v.zoom); out[1] = Double(v.pan.width); out[2] = Double(v.pan.height)
+            out[3] = Double(v.backingScale); out[4] = Double(v.viewSize.width); out[5] = Double(v.viewSize.height)
+        }
+        return session.document == nil ? -2 : 0
+    })
+}
+
+/// Changes the viewport as EditorCanvas / ContentView do. `op`: 0 resize (a = width, b = height, c = backing scale;
+/// EditorCanvas.syncGeometry), 1 fit (session.fit), 2 zoom to a (anchored at b, c in view points, or the center when
+/// both are NaN; session.zoom), 3 keyboard zoom by step a (session.zoomKeyboard), 4 pan by a, b (viewport.translate).
+@_cdecl("compositor_session_viewport_update")
+nonisolated public func compositorSessionViewportUpdate(_ handle: UInt64, _ op: Int32, _ a: Double, _ b: Double, _ c: Double) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        let session = entry.editor.session
+        switch op {
+        case 0:
+            let size = CGSize(width: a, height: b)
+            guard session.viewport.viewSize != size || session.viewport.backingScale != CGFloat(c) else { return 0 }
+            session.viewport.resize(to: size, backingScale: CGFloat(c), documentSize: session.document?.size)
+        case 1: session.fit()
+        case 2: session.zoom(to: CGFloat(a), anchor: b.isNaN || c.isNaN ? nil : CGPoint(x: b, y: c))
+        case 3: session.zoomKeyboard(by: Int(a))
+        case 4: session.viewport.translate(by: CGSize(width: a, height: b))
+        default: return -1
+        }
+        return 0
+    })
+}
+
 /// Runs whatever is waiting on the main actor/queue (upstream async work started from a panel: previews, `Task {}` in
 /// button actions), without blocking. The shell calls it from a timer; nothing else drains that queue under Qt.
 @_cdecl("compositor_pump_main")
@@ -255,7 +292,10 @@ nonisolated public func compositorPumpMain() {
 @_cdecl("compositor_session_raw_develop_cancel")
 nonisolated public func compositorSessionRawDevelopCancel(_ handle: UInt64) {
     _ = withEntry(handle) { entry in
+        // Closing the shell's dialog answers Cancel for whichever upstream sheet it was showing.
         if entry.editor.session.showsRawDevelop { entry.editor.session.finishRawDevelop(nil) }
+        if entry.editor.session.showsConversionSheet { entry.editor.session.finishConversion(false) }
+        if entry.editor.trimSheet != nil { entry.editor.finishTrim(nil) }
         return 0
     }
 }

@@ -54,12 +54,18 @@ int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capaci
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
 /* Moves whenever the next compositor_session_render would differ from the last (cheap: no pixels touched). */
 int64_t compositor_session_render_revision(uint64_t handle);
+/* Upstream CanvasViewport: out[6] = zoom, pan x, pan y, backing scale, view width, view height. -2 without a document. */
+int32_t compositor_session_viewport(uint64_t handle, double *out);
+/* op 0 resize(a=w, b=h, c=scale), 1 fit, 2 zoom to a at (b, c) or center when NaN, 3 keyboard zoom step a, 4 pan (a, b). */
+int32_t compositor_session_viewport_update(uint64_t handle, int32_t op, double a, double b, double c);
 /* Photoshop import: called with a JSON array of {"layer","message"} conversions to confirm; return non-zero to import. */
 typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
 void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 /* Called about every frame while a long command (RAW develop, large Photoshop import) waits on background work, so the
    shell can repaint and show progress. User input must not be processed from it. */
 void compositor_set_wait_pump(void (*pump)(void *context), void *context);
+/* Writes upstream's preferences (UserDefaults) to disk; Linux Foundation keeps them in memory until asked. */
+void compositor_flush_preferences(void);
 /* Mid-stroke partial render: the document area the brush changed since the last call, as premultiplied RGBA8 of
  * that area's size; rect receives x, y, width, height (document pixels). Returns the byte count (0: nothing changed)
  * or -3 when no region is tracked (not in a brush stroke) — then render the whole document instead. */

@@ -95,12 +95,15 @@ void compositor_session_close(uint64_t handle);
 int32_t compositor_session_command(uint64_t handle, const uint8_t *json, size_t count);
 int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_render_revision(uint64_t handle);
+int32_t compositor_session_viewport(uint64_t handle, double *out);
+int32_t compositor_session_viewport_update(uint64_t handle, int32_t op, double a, double b, double c);
 typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
 void compositor_set_sheet_presenter(void (*presenter)(void *context, const char *panel), void *context);
 void compositor_pump_main(void);
 void compositor_session_raw_develop_cancel(uint64_t handle);
 void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 void compositor_set_wait_pump(void (*pump)(void *context), void *context);
+void compositor_flush_preferences(void);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
 int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
@@ -169,6 +172,11 @@ protected:
     void paintEvent(QPaintEvent *event) override {
         m_window->canvasPaintEvent(event, this);
     }
+    void resizeEvent(QResizeEvent *event) override {
+        QWidget::resizeEvent(event);
+        m_window->syncViewportGeometry();
+        m_window->positionWelcome();
+    }
     void mousePressEvent(QMouseEvent *event) override {
         m_window->canvasMousePressEvent(event, this);
     }
@@ -191,16 +199,7 @@ protected:
         m_window->canvasDropEvent(event, this);
     }
     void wheelEvent(QWheelEvent *event) override {
-        if (event->modifiers() & Qt::ControlModifier) {
-            if (event->angleDelta().y() > 0) {
-                m_window->zoomBy(1.25);
-            } else if (event->angleDelta().y() < 0) {
-                m_window->zoomBy(1.0 / 1.25);
-            }
-            event->accept();
-        } else {
-            QWidget::wheelEvent(event);
-        }
+        m_window->canvasWheelEvent(event);
     }
 private:
     SessionWindow *m_window;
@@ -363,8 +362,6 @@ void SessionWindow::createNewDocument(int width, int height) {
     compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
     m_image = renderToQImage(m_sessionHandle, width, height);
     m_hasDocument = true;
-    m_zoomLevel = 0.0;
-    m_panOffset = QPointF(0, 0);
     refreshImage();
     refreshLayers();
 }
@@ -385,16 +382,11 @@ void SessionWindow::addDocumentTab(uint64_t handle, const QString &title, const 
 void SessionWindow::switchToDocumentTab(int index) {
     PERF_SCOPE("switchToDocumentTab");
     if (index < 0 || index >= static_cast<int>(m_documents.size())) return;
-    if (m_activeDocumentIndex >= 0 && m_activeDocumentIndex < static_cast<int>(m_documents.size())) {
-        m_documents[m_activeDocumentIndex].zoomLevel = m_zoomLevel;
-        m_documents[m_activeDocumentIndex].panOffset = m_panOffset;
-    }
     m_activeDocumentIndex = index;
     const DocumentTab &doc = m_documents[index];
     m_sessionHandle = doc.handle;
-    m_zoomLevel = doc.zoomLevel;
-    m_panOffset = doc.panOffset;
     m_hasDocument = true;
+    syncViewportGeometry();
     refreshImage();
     refreshLayers();
     updateOptionsBar();
@@ -620,7 +612,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         initDemoDocument();
         setBrushColor(QColor(255, 0, 0));
     } else {
-        createNewDocument(1024, 768);
+        // Upstream starts with an empty tab: the New Canvas sheet in the canvas (ContentView's welcome), no document.
         setBrushColor(QColor(0, 0, 0));
     }
 
@@ -979,13 +971,25 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
             updateLayersPanel();
             refreshLayers();
             refreshImage();
+            updateFloatingPanels();   // the fx menu opens the effect's panel
+        } else if (panel == "Welcome") {
+            handleSessionFileRequests();
+            refreshImage();
+            refreshLayers();
+            updateLayersPanel();
+            updateToolRail();
+        } else if (m_floatingPanels.contains(panel)) {
+            refreshImage();           // effect changes preview on the canvas
+            refreshLayers();
+            updateFloatingPanels();
         }
     });
 
     m_autosaveTimer = new QTimer(this);
     m_autosaveTimer->setObjectName("autosaveTimer");
     m_autosaveTimer->setInterval(60000);
-    connect(m_autosaveTimer, &QTimer::timeout, this, [this] { performAutosave(); });
+    connect(m_autosaveTimer, &QTimer::timeout, this, [this] { performAutosave(); compositor_flush_preferences(); });
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [] { compositor_flush_preferences(); });
     m_autosaveTimer->start();
 
     // Upstream sheets that open mid-command (RAW Develop during an import) are shown by the shell.
@@ -1011,8 +1015,257 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         const bool first = m_pumpedState.isEmpty();
         m_pumpedState = bytes;
         if (!first) { refreshImage(); updateToolRail(); }
+        updateFloatingPanels();
+        showSessionAlert();
+        applyShortcutSettings();
+        const bool wasDistorting = !m_distortCorners.isEmpty();
+        syncDistortFromSession();
+        if (wasDistorting != !m_distortCorners.isEmpty() && m_canvasWidget) m_canvasWidget->update();
     });
     m_mainPumpTimer->start();
+}
+
+// ShortcutChord's form (see Sources/Overrides/KeyboardShortcuts.swift): one lowercase key ("\x7f" Delete, "\r", "\x1b",
+// "\t", " ", U+F700-F703 arrows) and modifier bits Command 1 / Option 2 / Control 4 / Shift 8 — Ctrl / Alt / Meta / Shift.
+SessionWindow::CanvasChord SessionWindow::chordFromKeyEvent(const QKeyEvent *event) {
+    const int k = event->key();
+    QString key;
+    switch (k) {
+    case Qt::Key_Backspace: case Qt::Key_Delete: key = QStringLiteral("\x7f"); break;
+    case Qt::Key_Return: case Qt::Key_Enter: key = QStringLiteral("\r"); break;
+    case Qt::Key_Escape: key = QStringLiteral("\x1b"); break;
+    case Qt::Key_Tab: case Qt::Key_Backtab: key = QStringLiteral("\t"); break;
+    case Qt::Key_Space: key = QStringLiteral(" "); break;
+    case Qt::Key_Left: key = QString(QChar(0xf702)); break;
+    case Qt::Key_Right: key = QString(QChar(0xf703)); break;
+    case Qt::Key_Down: key = QString(QChar(0xf701)); break;
+    case Qt::Key_Up: key = QString(QChar(0xf700)); break;
+    default: {
+        const QString typed = (k >= 0x20 && k < 0x7f) ? QString(QChar(k)).toLower() : event->text().toLower();
+        static const QHash<QString, QString> unshift{{"{", "["}, {"}", "]"}, {"+", "="}, {"_", "-"}};
+        key = unshift.value(typed, typed);
+    }
+    }
+    const Qt::KeyboardModifiers m = event->modifiers();
+    return {key, (m & Qt::ControlModifier ? 1 : 0) | (m & Qt::AltModifier ? 2 : 0) | (m & Qt::MetaModifier ? 4 : 0) | (m & Qt::ShiftModifier ? 8 : 0)};
+}
+
+int SessionWindow::qtKeyForChord(const QString &key) {
+    static const QHash<QString, int> special{{"\x7f", Qt::Key_Backspace}, {"\r", Qt::Key_Return}, {"\x1b", Qt::Key_Escape},
+        {"\t", Qt::Key_Tab}, {" ", Qt::Key_Space}, {QString(QChar(0xf702)), Qt::Key_Left}, {QString(QChar(0xf703)), Qt::Key_Right},
+        {QString(QChar(0xf701)), Qt::Key_Down}, {QString(QChar(0xf700)), Qt::Key_Up}};
+    if (auto it = special.constFind(key); it != special.constEnd()) return *it;
+    return key.isEmpty() ? 0 : int(key.toUpper()[0].unicode());
+}
+
+Qt::KeyboardModifiers SessionWindow::modifiersForChord(int bits) {
+    Qt::KeyboardModifiers m;
+    if (bits & 1) m |= Qt::ControlModifier;
+    if (bits & 2) m |= Qt::AltModifier;
+    if (bits & 4) m |= Qt::MetaModifier;
+    if (bits & 8) m |= Qt::ShiftModifier;
+    return m;
+}
+
+void SessionWindow::applyShortcutSettings() {
+    if (m_sessionHandle == 0) return;
+    const QJsonArray shortcuts = sessionState().value("shortcuts").toArray();
+    const QByteArray applied = QJsonDocument(shortcuts).toJson(QJsonDocument::Compact);
+    if (applied == m_appliedShortcuts) return;
+    m_appliedShortcuts = applied;
+    // Upstream's menu titles for the shell's menu items.
+    static const QHash<QString, QString> menuText{
+        {"New Canvas", "New Canvas…"}, {"Open Project", "Open Project…"}, {"Save As", "Save As…"}, {"Export PNG", "Export PNG…"},
+        {"Export JPEG", "Export JPEG…"}, {"Fill with Foreground", "Fill with Foreground Color"},
+        {"Fill with Background", "Fill with Background Color"}, {"Content-Aware Fill", "Content-Aware Fill…"},
+        {"Select All", "All"}, {"Inverse Selection", "Inverse"}, {"Select Subject", "Subject"}, {"Curves", "Curves…"},
+        {"Levels", "Levels…"}, {"Hue/Saturation", "Hue/Saturation…"}, {"Invert Pixels / Mask", "Invert"},
+        {"Canvas Size", "Canvas Size…"}, {"Image Size", "Image Size…"}, {"Transform Layer / Selection", "Transform Layer"},
+        {"Duplicate / Layer via Copy", "Duplicate Layer"}, {"Toggle Clipping Mask", "Create Clipping Mask"},
+        {"Group Layers", "Group Selected Layers"}, {"Merge Layers", "Merge Down"}, {"Show Grid", "Grid"},
+        {"Show Guides", "Guides"}, {"Show Rulers", "Rulers"}};
+    auto sequence = [](const QString &key, int bits) {
+        static const QHash<QString, QString> names{{"\x7f", "Backspace"}, {"\r", "Return"}, {"\x1b", "Esc"}, {"\t", "Tab"},
+            {" ", "Space"}, {QString(QChar(0xf702)), "Left"}, {QString(QChar(0xf703)), "Right"}, {QString(QChar(0xf701)), "Down"},
+            {QString(QChar(0xf700)), "Up"}};
+        QString text = (bits & 1 ? "Ctrl+" : "") + QString(bits & 2 ? "Alt+" : "") + QString(bits & 4 ? "Meta+" : "")
+                     + QString(bits & 8 ? "Shift+" : "") + names.value(key, key.toUpper());
+        return QKeySequence::fromString(text, QKeySequence::PortableText);
+    };
+    const QList<QAction *> actions = findChildren<QAction *>();
+    m_canvasRemap.clear();
+    m_canvasBlocked.clear();
+    QList<CanvasChord> assignedCanvas;
+    for (const QJsonValue &value : shortcuts) {
+        const QJsonObject o = value.toObject();
+        const CanvasChord now{o.value("key").toString(), o.value("modifiers").toInt()};
+        const CanvasChord original{o.value("originalKey").toString(), o.value("originalModifiers").toInt()};
+        const QString group = o.value("group").toString();
+        if (group == QLatin1String("Menus")) {
+            const QString text = menuText.value(o.value("title").toString(), o.value("title").toString());
+            // The item that carries this shortcut (a title can appear in two menus: the one with a shortcut of its own).
+            QAction *target = nullptr;
+            for (QAction *action : actions) {
+                if (action->text() != text) continue;
+                if (!target || (!action->shortcuts().isEmpty() && target->shortcuts().isEmpty())) target = action;
+            }
+            if (!target) continue;
+            if (!m_defaultShortcuts.contains(target)) m_defaultShortcuts.insert(target, target->shortcuts());
+            if (now == original) target->setShortcuts(m_defaultShortcuts.value(target));   // back to its own default
+            else target->setShortcut(sequence(now.key, now.modifiers));
+        } else if (group == QLatin1String("Canvas & Layers")) {
+            assignedCanvas << now;
+            if (!(now == original)) m_canvasRemap.append({now, original});
+        }
+    }
+    // An original chord reassigned to something else, and not now used by another shortcut, does nothing.
+    for (const auto &[now, original] : m_canvasRemap)
+        if (!assignedCanvas.contains(original)) m_canvasBlocked << original;
+}
+
+/// Upstream's alerts ("Couldn’t paint", "Couldn’t crop"): shown when the session raises one, OK clears it.
+void SessionWindow::showSessionAlert() {
+    if (m_showingAlert || m_sessionHandle == 0) return;
+    const QJsonObject alert = sessionState().value("alert").toObject();
+    if (alert.isEmpty()) return;
+    m_showingAlert = true;
+    statusBar()->clearMessage();
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setText(alert.value("title").toString());
+    box.setInformativeText(alert.value("message").toString());
+    box.addButton(tr("OK"), QMessageBox::AcceptRole);
+    if (!qEnvironmentVariableIsSet("COMPOSITOR_AUTO_CONFIRM_IMPORT")) box.exec();
+    sendCommandQuiet({{"action", "dismissAlert"}, {"kind", alert.value("kind").toString()}});
+    m_showingAlert = false;
+}
+
+/// ContentView's `welcome`: while the tab has no document, upstream's New Canvas sheet sits in the middle of the canvas
+/// (a ZStack over EditorCanvas), at most 500 wide.
+void SessionWindow::updateWelcome() {
+    if (!m_canvasWidget || m_sessionHandle == 0) return;
+    QWidget *next = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("Welcome"), m_welcomeContent);
+    if (next != m_welcomeContent) {
+        if (m_welcomeContent) retireRenderedPanel(m_welcomeContent);
+        m_welcomeContent = next;
+        if (next) {
+            next->setParent(m_canvasWidget);
+            next->setObjectName("welcome");
+            for (QLabel *label : next->findChildren<QLabel *>())
+                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) label->setWordWrap(true);
+        }
+    }
+    if (!m_welcomeContent) return;
+    positionWelcome();
+    m_welcomeContent->show();
+    m_welcomeContent->raise();
+}
+
+void SessionWindow::positionWelcome() {
+    if (!m_welcomeContent || !m_canvasWidget) return;
+    const int width = qMin(500, m_canvasWidget->width());
+    const int height = qMin(m_welcomeContent->heightForWidth(width) > 0 ? m_welcomeContent->heightForWidth(width)
+                                                                        : m_welcomeContent->sizeHint().height(),
+                            m_canvasWidget->height());
+    m_welcomeContent->setGeometry((m_canvasWidget->width() - width) / 2, (m_canvasWidget->height() - height) / 2, width, height);
+}
+
+/// Upstream's `.fileImporter(isPresented: $session.showsImporter)` (the welcome's Import image, File > Import) and the
+/// welcome's Open project (`projects.open()`), answered with the shell's choosers.
+void SessionWindow::handleSessionFileRequests() {
+    if (m_sessionHandle == 0 || m_handlingFileRequests) return;
+    const QJsonObject state = sessionState();
+    const bool importer = state.value("showsImporter").toBool(), openProject = state.value("openProjectRequested").toBool();
+    if (!importer && !openProject) return;
+    m_handlingFileRequests = true;
+    sendCommandQuiet({{"action", "dismissImporter"}});
+    if (openProject) {
+        for (QAction *action : findChildren<QAction *>())
+            if (action->objectName() == QLatin1String("file.openProject")) { action->trigger(); break; }
+    } else {
+        const QStringList paths = m_platform.files->chooseImagesToImport();
+        if (!paths.isEmpty()) importWithUpstream(paths, false);
+    }
+    m_handlingFileRequests = false;
+    refreshImage();
+    refreshLayers();
+}
+
+/// The floating panels the session wants (state "floatingPanels": panel + title), as upstream's ContentView shows them
+/// in NSPanels: non-modal tool windows beside the canvas, re-rendered as the session changes. Closing one runs the
+/// panel's cancel (closeFloatingPanel); one the session no longer lists closes.
+void SessionWindow::updateFloatingPanels() {
+    if (m_sessionHandle == 0) return;
+    // Not re-entrant: closing or rebuilding a panel moves focus, and a field losing it notifies the listeners, which
+    // land here again. A nested call only asks for another pass once this one is done.
+    if (m_updatingFloatingPanels) { m_floatingPanelsDirty = true; return; }
+    m_updatingFloatingPanels = true;
+    do {
+        m_floatingPanelsDirty = false;
+        updateFloatingPanelsPass();
+    } while (m_floatingPanelsDirty);
+    m_updatingFloatingPanels = false;
+}
+
+void SessionWindow::updateFloatingPanelsPass() {
+    QHash<QString, QString> wanted;
+    for (const QJsonValue &v : sessionState().value("floatingPanels").toArray()) {
+        const QJsonObject o = v.toObject();
+        wanted.insert(o.value("panel").toString(), o.value("title").toString());
+    }
+    // Closed ones leave the table first; their windows go after, when nothing refers to the table's entries.
+    QList<QPointer<QDialog>> closing;
+    for (auto it = m_floatingPanels.begin(); it != m_floatingPanels.end();) {
+        if (wanted.contains(it.key()) && it->window) { ++it; continue; }
+        if (it->window) closing << it->window;
+        it = m_floatingPanels.erase(it);
+    }
+    for (const QPointer<QDialog> &window : closing) {
+        if (!window) continue;
+        window->setProperty("closingFromSession", true);
+        window->close();
+        window->deleteLater();
+    }
+    for (auto it = wanted.cbegin(); it != wanted.cend(); ++it) {
+        const QString panel = it.key();
+        if (!m_floatingPanels.contains(panel)) m_floatingPanels.insert(panel, FloatingPanelWindow());
+        FloatingPanelWindow entry = m_floatingPanels.value(panel);
+        if (!entry.window) {
+            auto *window = new QDialog(this, Qt::Tool);
+            window->setObjectName("floatingPanel." + panel);
+            window->setAttribute(Qt::WA_DeleteOnClose, false);
+            window->setModal(false);
+            auto *layout = new QVBoxLayout(window);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSizeConstraint(QLayout::SetFixedSize);   // sized by the upstream view, as NSPanel fits its content
+            // The window's close button is the panel's: upstream's onClose (e.g. cancel the effect edit).
+            connect(window, &QDialog::finished, this, [this, panel, window] {
+                if (window->property("closingFromSession").toBool()) return;
+                sendCommandQuiet({{"action", "closeFloatingPanel"}, {"kind", panel}});
+                refreshImage();
+                refreshLayers();
+                updateFloatingPanels();
+            });
+            entry.window = window;
+            entry.content = nullptr;
+            // Beside the canvas's top-right, left of the Layers panel (upstream's automatic placement).
+            const QPoint anchor = mapToGlobal(QPoint(width() - 340 - 280, 120));
+            window->move(anchor);
+        }
+        if (entry.title != it.value()) { entry.title = it.value(); entry.window->setWindowTitle(it.value()); }
+        QWidget *next = swiftUIRenderPanelIfChanged(m_sessionHandle, panel, entry.content);
+        if (next && next != entry.content) {
+            if (entry.content) { entry.window->layout()->removeWidget(entry.content); retireRenderedPanel(entry.content); }
+            // A panel's sentences wrap to its width, as SwiftUI's Text does (as in the modal sheets).
+            for (QLabel *label : next->findChildren<QLabel *>())
+                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) label->setWordWrap(true);
+            entry.content = next;
+            entry.window->layout()->addWidget(next);
+            next->show();
+        }
+        if (!entry.window->isVisible()) entry.window->show();
+        m_floatingPanels.insert(panel, entry);
+    }
 }
 
 /// Shows an upstream SwiftUI sheet panel (RAW Develop) modally, the way the macOS app shows it as a sheet: rendered
@@ -1021,7 +1274,8 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
     if (m_sessionHandle == 0) return;
     const uint64_t handle = m_sessionHandle;
     QDialog dialog(this);
-    dialog.setWindowTitle(tr("Develop"));
+    dialog.setWindowTitle(panel == QLatin1String("PSDConversionSheet") ? tr("Import Photoshop File")
+                          : panel == QLatin1String("TrimSheet") ? tr("Trim") : tr("Develop"));
     auto *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(0, 0, 0, 0);
     QWidget *current = nullptr;
@@ -1029,12 +1283,15 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
         QWidget *next = swiftUIRenderPanelIfChanged(handle, panel, current);
         if (next && next != current) {
             if (current) { layout->removeWidget(current); retireRenderedPanel(current); }
+            // A sheet's sentences wrap to its width, as SwiftUI's Text does (the bars keep one line).
+            for (QLabel *label : next->findChildren<QLabel *>())
+                if (label->text().size() > 40 && label->text().contains(QLatin1Char(' '))) label->setWordWrap(true);
             current = next;
             layout->addWidget(current);
             current->show();
         }
     };
-    auto isOpen = [&] { return sessionState().value("rawDevelopOpen").toBool(false); };
+    auto isOpen = [&] { return sessionState().value("sheets").toArray().contains(panel); };
     render();
     if (!current) { compositor_session_raw_develop_cancel(handle); return; }
     QTimer tick;
@@ -1045,15 +1302,27 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
         render();
     });
     tick.start();
-    // Headless runs: let the preview develop, keep a picture of the sheet, then press its own Import button.
-    if (qEnvironmentVariableIsSet("COMPOSITOR_AUTO_CONFIRM_IMPORT")) {
-        QTimer::singleShot(2500, &dialog, [&] {
+    // Headless runs: let the preview develop (or the file be read), keep a picture of the sheet, then press its own
+    // Import button once it is enabled.
+    QTimer confirm;
+    // COMPOSITOR_AUTO_CONFIRM=<button title> presses another sheet's confirm button (e.g. Trim's).
+    const QString confirmTitle = qEnvironmentVariableIsSet("COMPOSITOR_AUTO_CONFIRM") ? qEnvironmentVariable("COMPOSITOR_AUTO_CONFIRM")
+                                                                                    : QStringLiteral("Import");
+    if (qEnvironmentVariableIsSet("COMPOSITOR_AUTO_CONFIRM_IMPORT") || qEnvironmentVariableIsSet("COMPOSITOR_AUTO_CONFIRM")) {
+        confirm.setInterval(250);
+        QObject::connect(&confirm, &QTimer::timeout, &dialog, [&, started = QDateTime::currentMSecsSinceEpoch()] {
+            if (QDateTime::currentMSecsSinceEpoch() - started < 2500) return;
             render();
-            if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty())
-                dialog.grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".sheet.png");
-            for (QPushButton *button : dialog.findChildren<QPushButton *>())
-                if (button->text() == QLatin1String("Import")) { button->click(); break; }
+            for (QPushButton *button : dialog.findChildren<QPushButton *>()) {
+                if (button->text() != confirmTitle || !button->isEnabled()) continue;
+                if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty())
+                    dialog.grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".sheet.png");
+                confirm.stop();
+                button->click();
+                break;
+            }
         });
+        confirm.start();
     }
     if (dialog.exec() != QDialog::Accepted && isOpen()) compositor_session_raw_develop_cancel(handle);
     tick.stop();
@@ -1061,6 +1330,15 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
 }
 
 SessionWindow::~SessionWindow() {
+    // Floating panels first, while this window's members still exist: a panel losing focus as it goes (its search
+    // field) notifies the listeners, which look the panel up here.
+    const auto panels = m_floatingPanels;
+    m_floatingPanels.clear();
+    for (const FloatingPanelWindow &entry : panels) {
+        if (!entry.window) continue;
+        entry.window->setProperty("closingFromSession", true);
+        delete entry.window.data();
+    }
     for (const DocumentTab &doc : m_documents) {
         if (doc.handle != 0) compositor_session_close(doc.handle);
     }
@@ -1290,6 +1568,23 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         QMainWindow::keyPressEvent(event);
         return;
     }
+    // Canvas shortcuts the Keyboard Shortcuts editor reassigned: the new chord stands in for the original (handled
+    // below as before), and an original now assigned elsewhere does nothing — ShortcutSettings.canvasEvent.
+    if (!m_translatingKey && (!m_canvasRemap.isEmpty() || !m_canvasBlocked.isEmpty())) {
+        const CanvasChord input = chordFromKeyEvent(event);
+        for (const auto &[from, to] : m_canvasRemap) {
+            if (!(from == input)) continue;
+            QKeyEvent translated(QEvent::KeyPress, qtKeyForChord(to.key), modifiersForChord(to.modifiers),
+                                 to.key.size() == 1 && to.key[0].isPrint() ? (to.modifiers & 8 ? to.key.toUpper() : to.key) : QString(),
+                                 event->isAutoRepeat());
+            m_translatingKey = true;
+            keyPressEvent(&translated);
+            m_translatingKey = false;
+            event->setAccepted(translated.isAccepted());
+            return;
+        }
+        if (m_canvasBlocked.contains(input)) { event->accept(); return; }
+    }
 
     // A pending gradient: Enter applies it, Esc drops it (upstream EditorCanvas keyDown). Esc also drops a shape drag.
     if (m_gradientLine.size() == 4 && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Escape)) {
@@ -1417,11 +1712,25 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
                 event->accept();
                 return;
             }
+            if (!m_distortCorners.isEmpty()) {   // ... and Escape puts the layer back
+                sendCommand({{"action", "transformCancel"}});
+                syncDistortFromSession();
+                refreshImage(); refreshLayers(); updateOptionsBar();
+                event->accept();
+                return;
+            }
             break;
         case Qt::Key_Return:
         case Qt::Key_Enter:
             if (m_hasPendingCrop) {
                 applyCrop();
+                event->accept();
+                return;
+            }
+            if (!m_distortCorners.isEmpty()) {   // a pending distortion: Enter applies it
+                sendCommand({{"action", "transformCommit"}});
+                syncDistortFromSession();
+                refreshImage(); refreshLayers(); updateOptionsBar();
                 event->accept();
                 return;
             }
@@ -1567,23 +1876,8 @@ void SessionWindow::createMenus() {
 
     // --- File ---
     auto *file = menuBar()->addMenu(tr("File"));
-    file->addAction(tr("New Canvas…"), QKeySequence::New, this, [this] {
-        const QJsonObject state = sessionState();
-        if (state.value("busy").toBool()) return;
-        SizeDialog dialog(state, false, this, m_platform.colors);
-        if (dialog.exec() == QDialog::Accepted) {
-            // Opens as its own workspace tab rather than replacing the current document (see addDocumentTab).
-            const uint64_t handle = compositor_workspace_add_tab();
-            QJsonObject payload = dialog.command();
-            payload.insert("version", 1);
-            const QByteArray bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-            if (compositor_session_command(handle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size()) == 0) {
-                addDocumentTab(handle, workspaceTabTitle(handle));
-            } else {
-                compositor_workspace_close_tab(handle);
-            }
-        }
-    })->setObjectName("file.new");
+    // Upstream's New Canvas… (projects.newCanvas → workspace.newCanvas): a new empty tab showing the New Canvas sheet.
+    file->addAction(tr("New Canvas…"), QKeySequence::New, this, [this] { newCanvasTab();     })->setObjectName("file.new");
 
     file->addAction(tr("Open Project…"), QKeySequence::Open, this, [this] {
         const QString path = m_platform.files->chooseProjectToOpen();
@@ -1592,39 +1886,11 @@ void SessionWindow::createMenus() {
         }
     })->setObjectName("file.openProject");
 
+    // Upstream's Import Images… sets session.showsImporter; its .fileImporter imports the picked files as layers (or,
+    // into an empty tab, as a document the size of the first).
     file->addAction(tr("Import Images…"), this, [this] {
-        const QString path = m_platform.files->chooseImageToOpen();
-        if (!path.isEmpty() && needsUpstreamImporter(path)) {   // PSD/PSB/RAW/HEIC: upstream's importer, as layers
-            importWithUpstream({path}, false);
-            return;
-        }
-        if (!path.isEmpty()) {
-            QImageReader reader(path);
-            const QImage decoded = reader.read();
-            if (!decoded.isNull()) {
-                const QImage rgba = decoded.convertToFormat(QImage::Format_RGBA8888);
-                std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
-                for (int y = 0; y < rgba.height(); ++y) {
-                    const uint8_t *src = rgba.constScanLine(y);
-                    uint8_t *dst = premul.data() + y * rgba.width() * 4;
-                    for (int x = 0; x < rgba.width(); ++x) {
-                        const uint8_t a = src[x * 4 + 3];
-                        dst[x * 4] = static_cast<uint8_t>((src[x * 4] * a + 127) / 255);
-                        dst[x * 4 + 1] = static_cast<uint8_t>((src[x * 4 + 1] * a + 127) / 255);
-                        dst[x * 4 + 2] = static_cast<uint8_t>((src[x * 4 + 2] * a + 127) / 255);
-                        dst[x * 4 + 3] = a;
-                    }
-                }
-                std::string name = QFileInfo(path).fileName().toStdString();
-                if (name.empty()) name = "Imported Layer";
-                if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
-                                                   rgba.width(), rgba.height(),
-                                                   reinterpret_cast<const uint8_t *>(name.data()), name.size(), 0) == 0) {
-                    refreshImage();
-                    refreshLayers();
-                }
-            }
-        }
+        const QStringList paths = m_platform.files->chooseImagesToImport();
+        if (!paths.isEmpty()) importWithUpstream(paths, false);
     })->setObjectName("file.importImages");
 
     file->addSeparator();
@@ -1746,36 +2012,9 @@ void SessionWindow::createMenus() {
 
     edit->addSeparator();
 
+    // Upstream's shortcut editor (ShortcutSettings.show): search, click a shortcut and press its new keys, Save.
     edit->addAction(tr("Keyboard Shortcuts…"), this, [this] {
-        QMessageBox::information(this, tr("Keyboard Shortcuts"),
-            tr("<b>Tools:</b><br>"
-               "V - Move<br>"
-               "M - Rect / Ellipse Marquee<br>"
-               "L - Lasso<br>"
-               "W - Magic Wand<br>"
-               "C - Crop<br>"
-               "B - Brush<br>"
-               "E - Eraser<br>"
-               "J - Spot Healing<br>"
-               "S - Clone Stamp<br>"
-               "R - Smear / Blur<br>"
-               "G - Gradient<br>"
-               "U - Shape<br>"
-               "T - Type<br>"
-               "I - Eyedropper<br>"
-               "H - Hand<br>"
-               "Z - Zoom<br><br>"
-               "<b>Color & Brush:</b><br>"
-               "X - Swap Colors<br>"
-               "D - Default Black/White<br>"
-               "[ / ] - Decrease / Increase Brush Size<br><br>"
-               "<b>Menus:</b><br>"
-               "Ctrl+Z / Ctrl+Shift+Z - Undo / Redo<br>"
-               "Ctrl+T - Transform<br>"
-               "Ctrl+J - Duplicate Layer<br>"
-               "Ctrl+E - Merge Down / Layers<br>"
-               "Ctrl+A / Ctrl+D - Select All / Deselect<br>"
-               "Ctrl+Shift+I - Invert Selection"));
+        if (sendCommand({{"action", "showKeyboardShortcuts"}})) updateFloatingPanels();
     })->setObjectName("edit.shortcuts");
 
     edit->addSeparator();
@@ -1814,8 +2053,8 @@ void SessionWindow::createMenus() {
     auto *view = menuBar()->addMenu(tr("View"));
     view->addAction(tr("Fit Canvas"), QKeySequence(Qt::CTRL | Qt::Key_0), this, &SessionWindow::fitCanvas)->setObjectName("view.fitCanvas");
     view->addAction(tr("Actual Pixels"), QKeySequence(Qt::CTRL | Qt::Key_1), this, &SessionWindow::actualPixels)->setObjectName("view.actualPixels");
-    view->addAction(tr("Zoom In"), QKeySequence::ZoomIn, this, [this] { zoomBy(1.25); })->setObjectName("view.zoomIn");
-    view->addAction(tr("Zoom Out"), QKeySequence::ZoomOut, this, [this] { zoomBy(1.0 / 1.25); })->setObjectName("view.zoomOut");
+    view->addAction(tr("Zoom In"), QKeySequence::ZoomIn, this, [this] { zoomStep(1); })->setObjectName("view.zoomIn");
+    view->addAction(tr("Zoom Out"), QKeySequence::ZoomOut, this, [this] { zoomStep(-1); })->setObjectName("view.zoomOut");
 
     view->addSeparator();
 
@@ -1989,6 +2228,10 @@ void SessionWindow::createMenus() {
 
     image->addAction(tr("Canvas Size…"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_C), this, [this] { showSizeDialog(false); })->setObjectName("canvasSize");
     image->addAction(tr("Image Size…"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_I), this, [this] { showSizeDialog(true); })->setObjectName("imageSize");
+    // Upstream's Trim… (its TrimSheet, then its trim: one undo step).
+    image->addAction(tr("Trim…"), this, [this] {
+        if (sendCommand({{"action", "trim"}})) { refreshImage(); refreshLayers(); updateLayersPanel(); updateStatusTelemetry(); }
+    })->setObjectName("image.trim");
 
     image->addSeparator();
 
@@ -2001,8 +2244,16 @@ void SessionWindow::createMenus() {
 
     // --- Filter ---
     auto *filter = menuBar()->addMenu(tr("Filter"));
-    for (const QString &kind : {QString("Gaussian Blur"), QString("Motion Blur"), QString("Add Noise"), QString("Lens Correction")}) {
-        auto *action = filter->addAction(kind + "…", this, [this, kind] { showFilterDialog(kind); });
+    // Upstream's Filter menu, in its order (FilterKind.allCases minus the Image menu's adjustments). The first four
+    // keep the shell's dialogs; the rest open upstream's FilterSheet as a floating panel, as on the Mac.
+    for (const QString &kind : {QString("Gaussian Blur"), QString("Motion Blur"), QString("Add Noise"), QString("Vignette"),
+                                QString("Bloom / Glow"), QString("Tonal Contrast"), QString("Lens Correction"),
+                                QString("Camera Raw Filter")}) {
+        const bool shellDialog = kind == "Gaussian Blur" || kind == "Motion Blur" || kind == "Add Noise" || kind == "Lens Correction";
+        auto *action = filter->addAction(kind + "…", this, [this, kind, shellDialog] {
+            if (shellDialog) { showFilterDialog(kind); return; }
+            if (sendCommand({{"action", "openFilter"}, {"kind", kind}})) { refreshImage(); updateFloatingPanels(); }
+        });
         action->setObjectName("filter." + kind);
     }
     filter->addAction(tr("Remove Background…"), this, [this] {
@@ -2249,28 +2500,57 @@ bool geometryContains(const SessionWindow::LayerGeometry &g, const QPointF &p) {
 }
 }  // namespace
 
+/// Where the document sits on the canvas: upstream's CanvasViewport.documentRect (zoom 1 = one image pixel per device
+/// pixel, centered, offset by the pan).
 QRectF SessionWindow::canvasTargetRect() const {
-    if (m_image.isNull()) return QRectF();
+    if (m_image.isNull() || m_sessionHandle == 0) return QRectF();
+    double v[6] = {};
+    if (compositor_session_viewport(m_sessionHandle, v) != 0) return QRectF();
     const QSize canvasSize = m_canvasWidget ? m_canvasWidget->size() : size();
-    const int pad = 24;
-    const int maxW = std::max(10, canvasSize.width() - pad * 2);
-    const int maxH = std::max(10, canvasSize.height() - pad * 2);
-    double scale = 1.0;
-    if (m_zoomLevel > 0.0) {
-        scale = m_zoomLevel;
-    } else {
-        scale = std::min(static_cast<double>(maxW) / docWidth(),
-                         static_cast<double>(maxH) / docHeight());
-        if (docWidth() <= 128 && docHeight() <= 128) {
-            int intScale = std::max(1, static_cast<int>(scale));
-            scale = intScale;
-        }
-    }
-    const double displayW = docWidth() * scale;
-    const double displayH = docHeight() * scale;
-    return QRectF((canvasSize.width() - displayW) / 2.0 + m_panOffset.x(),
-                  (canvasSize.height() - displayH) / 2.0 + m_panOffset.y(),
+    const double pointsPerPixel = v[0] / std::max(1.0, v[3]);
+    const double displayW = docWidth() * pointsPerPixel, displayH = docHeight() * pointsPerPixel;
+    return QRectF(canvasSize.width() / 2.0 - displayW / 2.0 + v[1], canvasSize.height() / 2.0 - displayH / 2.0 + v[2],
                   displayW, displayH);
+}
+
+/// EditorCanvas.syncGeometry: the viewport learns the canvas's size and backing scale (and refits while following fit).
+void SessionWindow::syncViewportGeometry() {
+    if (m_sessionHandle == 0 || !m_canvasWidget) return;
+    compositor_session_viewport_update(m_sessionHandle, 0, m_canvasWidget->width(), m_canvasWidget->height(),
+                                       m_canvasWidget->devicePixelRatioF());
+}
+
+double SessionWindow::viewportZoom() const {
+    double v[6] = {};
+    if (m_sessionHandle == 0 || compositor_session_viewport(m_sessionHandle, v) != 0) return 1.0;
+    return v[0];
+}
+
+/// EditorCanvas.scrollWheel: Ctrl (⌘) or Alt zooms about the pointer, otherwise the wheel pans.
+void SessionWindow::canvasWheelEvent(QWheelEvent *event) {
+    event->accept();
+    if (m_sessionHandle == 0 || m_image.isNull() || m_painting) return;
+    // Precise (touchpad) deltas are points already; a wheel notch is 120 eighths of a degree, taken as AppKit's line.
+    const bool precise = !event->pixelDelta().isNull();
+    const QPointF delta = precise ? QPointF(event->pixelDelta()) : QPointF(event->angleDelta()) / 120.0;
+    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) {
+        // Alt turns a vertical wheel into a horizontal one under some platforms; take whichever axis moved.
+        const double dy = delta.y() != 0 ? delta.y() : delta.x();
+        changeViewport(2, viewportZoom() * std::exp(dy * (precise ? 0.015 : 0.15)), event->position().x(), event->position().y());
+    } else {
+        const double multiplier = precise ? 1.0 : 12.0 * 3;
+        changeViewport(4, delta.x() * multiplier, delta.y() * multiplier);
+    }
+}
+
+/// A viewport change (upstream session.fit / zoom / zoomKeyboard / viewport.translate), then the canvas, rulers and
+/// status catch up; a zoomed-in huge document gets a sharper composite.
+void SessionWindow::changeViewport(int op, double a, double b, double c) {
+    if (m_sessionHandle == 0) return;
+    syncViewportGeometry();
+    compositor_session_viewport_update(m_sessionHandle, op, a, b, c);
+    updateStatusTelemetry();
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 QPointF SessionWindow::documentToCanvasPoint(const QPointF &docPoint) const {
@@ -2298,40 +2578,89 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     }
     Q_UNUSED(event);
     QPainter p(canvas);
-    // Dark professional neutral workspace background
-    p.fillRect(canvas->rect(), QColor(0x24, 0x25, 0x28));
+    // EditorCanvas.draw: the surround, then the document with its shadow, dark checkerboard and hairline.
+    p.fillRect(canvas->rect(), QColor::fromRgbF(0.105, 0.105, 0.105));
 
     if (m_image.isNull()) return;
 
     const QRectF target = canvasTargetRect();
     const QRect targetI = target.toRect();
 
-    // Subtle drop shadow around document canvas
-    p.fillRect(targetI.adjusted(2, 2, 4, 4), QColor(0, 0, 0, 90));
-
-    // Transparent checkerboard pattern
-    static QPixmap checker;
-    if (checker.isNull()) {
-        QImage chk(16, 16, QImage::Format_RGB32);
-        QPainter cp(&chk);
-        cp.fillRect(0, 0, 8, 8, QColor(0xee, 0xee, 0xee));
-        cp.fillRect(8, 8, 8, 8, QColor(0xee, 0xee, 0xee));
-        cp.fillRect(8, 0, 8, 8, QColor(0xcc, 0xcc, 0xcc));
-        cp.fillRect(0, 8, 8, 8, QColor(0xcc, 0xcc, 0xcc));
-        checker = QPixmap::fromImage(chk);
+    // Shadow: offset (0, 3), blur 14, black at 35% (a cached blurred rounded rect, nine-sliced to the canvas size).
+    {
+        static QPixmap shadowTile;
+        const int blur = 14, core = 8;
+        if (shadowTile.isNull()) {
+            QImage tile(QSize(core + blur * 4, core + blur * 4), QImage::Format_ARGB32_Premultiplied);
+            tile.fill(Qt::transparent);
+            QImage solid = tile;
+            { QPainter sp(&solid); sp.fillRect(QRect(blur * 2, blur * 2, core, core), QColor(0, 0, 0, 89)); }
+            // Three box blurs approximate the Gaussian Core Graphics uses.
+            const int radius = blur / 3;
+            for (int pass = 0; pass < 3; ++pass) {
+                for (int axis = 0; axis < 2; ++axis) {
+                    QImage out = solid;
+                    for (int y = 0; y < solid.height(); ++y)
+                        for (int x = 0; x < solid.width(); ++x) {
+                            int sum = 0, n = 0;
+                            for (int k = -radius; k <= radius; ++k) {
+                                const int xx = axis ? x : x + k, yy = axis ? y + k : y;
+                                if (xx < 0 || yy < 0 || xx >= solid.width() || yy >= solid.height()) { ++n; continue; }
+                                sum += qAlpha(solid.pixel(xx, yy)); ++n;
+                            }
+                            out.setPixel(x, y, qRgba(0, 0, 0, sum / n));
+                        }
+                    solid = out;
+                }
+            }
+            shadowTile = QPixmap::fromImage(solid);
+        }
+        const QRect shadowRect = targetI.translated(0, 3);
+        const int m = blur * 2, c = core / 2, t = shadowTile.width();
+        const int e = m + c;   // slice size: from the tile edge to the middle of the solid core
+        auto slice = [&](const QRect &dst, const QRect &src) { if (dst.width() > 0 && dst.height() > 0) p.drawPixmap(dst, shadowTile, src); };
+        const QRect r = shadowRect.adjusted(-m + c, -m + c, m - c, m - c);   // area the blurred edges cover
+        slice(QRect(r.left(), r.top(), e, e), QRect(0, 0, e, e));
+        slice(QRect(r.right() - e + 1, r.top(), e, e), QRect(t - e, 0, e, e));
+        slice(QRect(r.left(), r.bottom() - e + 1, e, e), QRect(0, t - e, e, e));
+        slice(QRect(r.right() - e + 1, r.bottom() - e + 1, e, e), QRect(t - e, t - e, e, e));
+        slice(QRect(r.left() + e, r.top(), r.width() - 2 * e, e), QRect(e - 1, 0, 2, e));
+        slice(QRect(r.left() + e, r.bottom() - e + 1, r.width() - 2 * e, e), QRect(e - 1, t - e, 2, e));
+        slice(QRect(r.left(), r.top() + e, e, r.height() - 2 * e), QRect(0, e - 1, e, 2));
+        slice(QRect(r.right() - e + 1, r.top() + e, e, r.height() - 2 * e), QRect(t - e, e - 1, e, 2));
     }
-    p.drawTiledPixmap(targetI, checker);
 
-    if (target.width() >= m_image.width()) {
-        p.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    } else {
-        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    // Transparency: 10-point tiles of white 0.30 and 0.35, anchored at the canvas's corner.
+    p.fillRect(target, QColor::fromRgbF(0.30, 0.30, 0.30));
+    {
+        const QRectF visible = target.intersected(QRectF(canvas->rect()));
+        const double tile = 10;
+        const int minX = int(std::floor((visible.left() - target.left()) / tile)), maxX = int(std::ceil((visible.right() - target.left()) / tile));
+        const int minY = int(std::floor((visible.top() - target.top()) / tile)), maxY = int(std::ceil((visible.bottom() - target.top()) / tile));
+        p.save();
+        p.setClipRect(target);
+        const QColor light = QColor::fromRgbF(0.35, 0.35, 0.35);
+        for (int row = minY; row < maxY; ++row)
+            for (int column = minX; column < maxX; ++column)
+                if (((row + column) & 1) == 0)
+                    p.fillRect(QRectF(target.left() + column * tile, target.top() + row * tile, tile, tile), light);
+        p.restore();
     }
+
+    // From 200% (two screen pixels per document pixel) the pixels are hard-edged (EditorCanvas.crispZoom).
+    p.setRenderHint(QPainter::SmoothPixmapTransform, viewportZoom() < 2.0);
     p.drawImage(target, m_image);
 
-    // Canvas border outline
-    p.setPen(QPen(QColor(0x10, 0x10, 0x10), 1));
-    p.drawRect(targetI.adjusted(0, 0, -1, -1));
+    // Hairline: white at 13%, one device pixel.
+    {
+        QPen hairline(QColor(255, 255, 255, 33));
+        hairline.setWidthF(1.0 / canvas->devicePixelRatioF());
+        hairline.setCosmetic(false);
+        p.setPen(hairline);
+        p.setBrush(Qt::NoBrush);
+        const double inset = 0.5 / canvas->devicePixelRatioF();
+        p.drawRect(target.adjusted(inset, inset, -inset, -inset));
+    }
 
     drawTransformControls(p);
     drawCropOverlay(p);
@@ -2539,7 +2868,23 @@ void SessionWindow::refreshImage() {
     if (m_strokeRefreshTimer) m_strokeRefreshTimer->stop(); // this full refresh supersedes a pending stroke redraw
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
-    if (width <= 0 || height <= 0 || qint64(width) * height > 200000000) return;   // upstream DocumentLimits.maxSurfacePixels
+    if (m_documentTabBar) { m_documentTabBar->updateGeometry(); m_documentTabBar->update(); }
+    if (width <= 0 || height <= 0) {
+        // No document (a new tab, a closed project): nothing to draw but the welcome.
+        if (!m_image.isNull() || !m_docSize.isEmpty()) {
+            m_image = QImage();
+            m_docSize = QSize();
+            m_shownRenderRevision = -1;
+            if (m_canvasWidget) m_canvasWidget->update();
+        }
+        updateWelcome();
+        updateStatusTelemetry();
+        updateOptionsBar();
+        return;
+    }
+    if (qint64(width) * height > 200000000) return;   // upstream DocumentLimits.maxSurfacePixels
+    syncViewportGeometry();
+    if (m_welcomeContent) updateWelcome();
     // Same composite as the one on screen (a brush setting, a tool, a menu changed nothing visible): no render, no
     // conversion — only the chrome below is brought up to date.
     const int64_t revision = compositor_session_render_revision(m_sessionHandle);
@@ -3027,7 +3372,16 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         if (m_activeGeometry.valid) {
             m_transformHandle = handle >= 0 ? handle : (geometryContains(m_activeGeometry, point) ? 9 : -1);
         }
-        if (m_transformHandle >= 0) {
+        // Ctrl-dragging a handle distorts, as in Photoshop; once distorted, handles (and the body) keep distorting.
+        syncDistortFromSession();
+        const bool distorted = m_distortCorners.size() == 4;
+        m_distortDrag = m_transformHandle >= 0 && m_transformHandle != 8
+            && ((m_transformHandle < 8 && (event->modifiers() & Qt::ControlModifier)) || distorted);
+        if (m_distortDrag) {
+            m_distortDrag = sendCommand({{"action", "distortDragBegin"}, {"value", m_transformHandle}, {"x", point.x()}, {"y", point.y()}});
+            if (!m_distortDrag) m_transformHandle = -1;
+            syncDistortFromSession();
+        } else if (m_transformHandle >= 0) {
             m_transformStart = m_activeGeometry;
             sendCommand({{"action", "transformBegin"}});
         }
@@ -3182,11 +3536,11 @@ void SessionWindow::mousePressEvent(QMouseEvent *event) {
         break;
     }
     case Tool::Zoom: {
-        if (event->modifiers() & Qt::AltModifier) {
-            zoomBy(0.8);
-        } else {
-            zoomBy(1.25);
-        }
+        // EditorCanvas: a click zooms 2x (Alt: out) about the point; a drag zooms smoothly from it.
+        m_painting = true;
+        m_zoomDragStart = event->position();
+        m_zoomDragZoom = viewportZoom();
+        m_zoomDragMoved = false;
         break;
     }
     case Tool::Hand: {
@@ -3349,8 +3703,14 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
     if (m_tool == Tool::Hand || m_spaceHandActive) {
         const QPointF delta = event->position() - m_panStart;
         m_panStart = event->position();
-        m_panOffset += delta;
-        if (m_canvasWidget) m_canvasWidget->update();
+        changeViewport(4, delta.x(), delta.y());
+        return;
+    }
+    if (m_tool == Tool::Zoom) {
+        // Right zooms in, left out: doubling for every 100 points dragged.
+        const double dx = event->position().x() - m_zoomDragStart.x();
+        if (std::abs(dx) >= 3) m_zoomDragMoved = true;
+        if (m_zoomDragMoved) changeViewport(2, m_zoomDragZoom * std::pow(2.0, dx / 100.0), m_zoomDragStart.x(), m_zoomDragStart.y());
         return;
     }
     if (m_tool == Tool::Crop && m_hasPendingCrop) {
@@ -3408,7 +3768,13 @@ void SessionWindow::mouseMoveEvent(QMouseEvent *event) {
         return;
     }
     if (m_tool == Tool::Move) {
-        if (m_transformHandle >= 0) {
+        if (m_distortDrag) {
+            if (sendCommandQuiet({{"action", "distortDragMove"}, {"x", point.x()}, {"y", point.y()},
+                                  {"enabled", bool(event->modifiers() & Qt::ShiftModifier)}})) {
+                syncDistortFromSession();
+                refreshImage();
+            }
+        } else if (m_transformHandle >= 0) {
             m_transformDraft = draggedGeometry(point, event->modifiers());
             previewGeometry(m_transformDraft);
         }
@@ -3437,6 +3803,11 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton || !m_painting) return;
     m_painting = false;
     const QPointF point = documentPoint(event->position());
+    if (m_tool == Tool::Zoom && !m_spaceHandActive) {
+        if (!m_zoomDragMoved)
+            changeViewport(2, viewportZoom() * ((event->modifiers() & Qt::AltModifier) ? 0.5 : 2.0), m_zoomDragStart.x(), m_zoomDragStart.y());
+        return;
+    }
 
     if (m_tool == Tool::Gradient && m_gradientHandle != 0) {
         m_gradientHandle = 0;
@@ -3465,6 +3836,16 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     }
     switch (m_tool) {
     case Tool::Move: {
+        if (m_distortDrag) {
+            // The distortion stays pending (Enter / Apply commits it, Escape cancels), as on the Mac.
+            sendCommandQuiet({{"action", "distortDragEnd"}});
+            m_distortDrag = false;
+            m_transformHandle = -1;
+            syncDistortFromSession();
+            refreshImage();
+            updateOptionsBar();
+            break;
+        }
         if (m_transformHandle >= 0) {
             if (m_transformDraft.valid) sendCommand({{"action", "transformCommit"}});
             else sendCommand({{"action", "transformCancel"}});
@@ -3562,7 +3943,8 @@ void SessionWindow::dragEnterEvent(QDragEnterEvent *event) {
 void SessionWindow::dropEvent(QDropEvent *event) {
     if (event->mimeData()->hasUrls()) {
         for (const QUrl &url : event->mimeData()->urls()) {
-            if (url.isLocalFile() && importImage(url.toLocalFile())) {
+            // ImageFileDrop.importProviders: dropped files come in as layers (an empty tab takes the first's size).
+            if (url.isLocalFile() && importWithUpstream({url.toLocalFile()}, false)) {
                 event->acceptProposedAction();
                 return;
             }
@@ -3668,47 +4050,44 @@ bool SessionWindow::importWithUpstream(const QStringList &paths, bool replace) {
     const bool ok = sendCommand({{"action", "importFiles"}, {"paths", list}, {"enabled", replace}});
     refreshImage();
     refreshLayers();
+    // Upstream's "Import couldn’t finish" alert, with its reasons (a cancelled import has nothing to report).
+    const QString error = ok ? QString() : sessionState().value("error").toString();
+    if (!error.isEmpty() && error != QLatin1String("nothing could be imported")) {
+        statusBar()->clearMessage();
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Warning);
+        box.setText(tr("Import couldn’t finish"));
+        box.setInformativeText(error);
+        box.addButton(tr("OK"), QMessageBox::AcceptRole);
+        box.exec();
+    }
     return ok;
 }
 
+/// Opening an image file (the command line, the desktop): upstream's workspace.receive — into this tab when it is
+/// empty, else a new one — through the session's own importer, so the document takes the image's size.
 bool SessionWindow::importImage(const QString &path) {
     if (m_sessionHandle == 0) return false;
-    if (needsUpstreamImporter(path)) return importWithUpstream({path}, true);
+    if (sessionState().value("width").toInt() > 0) newCanvasTab();
+    const bool ok = importWithUpstream({path}, false);
+    refreshTabTitle();
+    return ok;
+}
 
-    QImageReader reader(path);
-    reader.setAutoTransform(true); // Handle EXIF orientation
-    QImage image = reader.read();
-    if (image.isNull()) return false;
+/// workspace.newCanvas(): a new, empty tab (the New Canvas sheet shows in it until a document is made).
+void SessionWindow::newCanvasTab() {
+    if (sessionState().value("busy").toBool()) return;
+    sendCommandQuiet({{"action", "transformCommit"}});   // upstream commits a pending transform before switching
+    const uint64_t handle = compositor_workspace_add_tab();
+    addDocumentTab(handle, workspaceTabTitle(handle));
+}
 
-    // Convert to RGBA8888 (straight alpha) then premultiply for the core
-    QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
-    if (rgba.isNull()) return false;
-
-    // Premultiply alpha (core expects premultiplied RGBA)
-    for (int y = 0; y < rgba.height(); ++y) {
-        uint8_t *scan = rgba.scanLine(y);
-        for (int x = 0; x < rgba.width(); ++x) {
-            uint8_t a = scan[x * 4 + 3];
-            if (a != 255) {
-                scan[x * 4] = (scan[x * 4] * a + 127) / 255;
-                scan[x * 4 + 1] = (scan[x * 4 + 1] * a + 127) / 255;
-                scan[x * 4 + 2] = (scan[x * 4 + 2] * a + 127) / 255;
-            }
-        }
-    }
-
-    QByteArray nameBytes = QFileInfo(path).baseName().toUtf8();
-    int32_t rc = compositor_session_import_rgba(m_sessionHandle,
-                                                rgba.constBits(), rgba.sizeInBytes(),
-                                                rgba.width(), rgba.height(),
-                                                reinterpret_cast<const uint8_t *>(nameBytes.constData()), nameBytes.size(),
-                                                1); // replacing = true
-    if (rc != 0) return false;
-
-    // Update displayed image
-    m_image = renderToQImage(m_sessionHandle, rgba.width(), rgba.height());
-    update();
-    return true;
+void SessionWindow::refreshTabTitle() {
+    if (m_activeDocumentIndex < 0 || m_activeDocumentIndex >= static_cast<int>(m_documents.size())) return;
+    DocumentTab &doc = m_documents[m_activeDocumentIndex];
+    doc.title = workspaceTabTitle(doc.handle);
+    if (m_documentTabBar) m_documentTabBar->setTabText(m_activeDocumentIndex, doc.title);
+    setWindowTitle(doc.title.isEmpty() ? tr("Compositor") : tr("%1 — Compositor").arg(doc.title));
 }
 
 // IO milestone: Save project as .compositor package
@@ -4047,6 +4426,13 @@ int SessionWindow::hitTestTransformHandle(const QPointF &canvasPoint) const {
     if (!m_activeGeometry.valid) return -1;
     const LayerGeometry &g = m_activeGeometry;
     const double reach = 8.0;
+    if (m_distortCorners.size() == 4) {   // distorted: handles sit on the warped shape, and there is no rotate handle
+        for (int i = 0; i < 8; ++i)
+            if (QLineF(canvasPoint, documentToCanvasPoint(distortHandlePoint(i))).length() <= reach) return i;
+        return QPolygonF(QVector<QPointF>{documentToCanvasPoint(m_distortCorners[0]), documentToCanvasPoint(m_distortCorners[1]),
+                                          documentToCanvasPoint(m_distortCorners[2]), documentToCanvasPoint(m_distortCorners[3])})
+                   .containsPoint(canvasPoint, Qt::OddEvenFill) ? 9 : -1;
+    }
     const QPointF top = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0)));
     const QPointF center = documentToCanvasPoint(geometryPoint(g, QPointF(0.5, 0.5)));
     QPointF outward = top - center;
@@ -4059,8 +4445,41 @@ int SessionWindow::hitTestTransformHandle(const QPointF &canvasPoint) const {
     return -1;
 }
 
+QPointF SessionWindow::distortHandlePoint(int i) const {
+    if (m_distortCorners.size() != 4) return QPointF();
+    const QPointF a = m_distortCorners[(i / 2) % 4];
+    return i % 2 == 0 ? a : (a + m_distortCorners[(i / 2 + 1) % 4]) / 2.0;
+}
+
+void SessionWindow::syncDistortFromSession() {
+    m_distortCorners.clear();
+    for (const QJsonValue &v : sessionState().value("distortCorners").toArray()) {
+        const QJsonArray xy = v.toArray();
+        if (xy.size() == 2) m_distortCorners.push_back(QPointF(xy[0].toDouble(), xy[1].toDouble()));
+    }
+    if (m_distortCorners.size() != 4) m_distortCorners.clear();
+}
+
 void SessionWindow::drawTransformControls(QPainter &p) const {
     if (m_tool != Tool::Move || !m_activeGeometry.valid || !m_showControlsCheck || !m_showControlsCheck->isChecked()) return;
+    if (m_distortCorners.size() == 4) {
+        // A pending distortion: its outline and handles follow the warped corners (EditorCanvas draws the same).
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPolygonF outline;
+        for (const QPointF &corner : m_distortCorners) outline << documentToCanvasPoint(corner);
+        p.setPen(QPen(QColor(0xf2, 0xf2, 0xf5), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawPolygon(outline);
+        p.setBrush(QColor(0xff, 0xff, 0xff));
+        p.setPen(QPen(QColor(0x50, 0x50, 0x58), 1));
+        for (int i = 0; i < 8; ++i) {
+            const QPointF c = documentToCanvasPoint(distortHandlePoint(i));
+            p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8));
+        }
+        p.restore();
+        return;
+    }
     const LayerGeometry &g = (m_transformHandle >= 0 && m_transformDraft.valid) ? m_transformDraft : m_activeGeometry;
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -4239,8 +4658,6 @@ void SessionWindow::applyDarkTheme() {
         }
         QWidget {
             color: #f5f5f7;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            font-size: 12px;
         }
         QMenuBar {
             background-color: #1e1e20;
@@ -4505,6 +4922,35 @@ void SessionWindow::applyDarkTheme() {
         QPushButton:pressed {
             background-color: #1f1f22;
         }
+        /* AppKit's disabled look (dark aqua): labels and control text drop to tertiary, control chrome fades. */
+        QWidget:disabled, QLabel:disabled, QCheckBox:disabled {
+            color: rgba(255, 255, 255, 0.25);
+        }
+        QPushButton:disabled {
+            color: rgba(255, 255, 255, 0.25);
+            background-color: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.06);
+        }
+        QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled, QComboBox:disabled {
+            color: rgba(255, 255, 255, 0.25);
+            background-color: rgba(255, 255, 255, 0.03);
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+        QCheckBox::indicator:disabled {
+            background-color: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.10);
+        }
+        QCheckBox::indicator:checked:disabled {
+            background-color: rgba(0, 122, 255, 0.35);
+            border-color: rgba(0, 122, 255, 0.35);
+        }
+        QSlider::sub-page:horizontal:disabled {
+            background: rgba(255, 255, 255, 0.18);
+        }
+        QSlider::handle:horizontal:disabled {
+            background: #8a8a8e;
+            border-color: #6a6a6e;
+        }
     )");
     if (qApp) {
         qApp->setStyleSheet(qss);
@@ -4512,12 +4958,80 @@ void SessionWindow::applyDarkTheme() {
     setStyleSheet(qss);
 }
 
+/// ProjectTabButton (ProjectTabs.swift), drawn: a 28-high capsule — white 12% fill and 22% line when active, 3.5% and
+/// 8% otherwise — holding the title (12 pt, semibold when active, medium otherwise; 35...155 wide) 11 in from the left
+/// and 8 before the close slot, then the 9-pt × (secondary) in a 16-wide slot 5 from the end. Tabs sit 6 apart.
+class ProjectTabBar : public QTabBar {
+public:
+    using QTabBar::QTabBar;
+    /// Whether tab `index` has unsaved changes (a 5-pt dot before its title, 5 from it).
+    std::function<bool(int)> isModified;
+protected:
+    static QFont titleFont(const QFont &base, bool active) {
+        QFont font = base;
+        font.setPixelSize(12);
+        font.setWeight(active ? QFont::DemiBold : QFont::Medium);
+        return font;
+    }
+    int labelWidth(int index) const {
+        const QFontMetricsF metrics(titleFont(font(), index == currentIndex()));
+        const int dot = isModified && isModified(index) ? 10 : 0;
+        return qBound(35, int(std::ceil(metrics.horizontalAdvance(tabText(index)))) + dot, 155);
+    }
+    QSize tabSizeHint(int index) const override { return QSize(labelWidth(index) + 40 + 6, 34); }
+    QSize minimumTabSizeHint(int index) const override { return tabSizeHint(index); }
+    QRect pillRect(int index) const { return tabRect(index).adjusted(0, 3, -6, -3); }
+    QRect closeRect(int index) const { const QRect pill = pillRect(index); return QRect(pill.right() - 5 - 16 + 1, pill.top(), 16, 28); }
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < count(); ++i) {
+            const bool active = i == currentIndex();
+            const QRectF pill = QRectF(pillRect(i)).adjusted(0.5, 0.5, -0.5, -0.5);
+            p.setPen(QPen(QColor(255, 255, 255, active ? 56 : 20), 1));
+            p.setBrush(QColor(255, 255, 255, active ? 31 : 9));
+            p.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+            p.setFont(titleFont(font(), active));
+            p.setPen(QColor(255, 255, 255, 217));
+            QRect text(pillRect(i).left() + 11, pillRect(i).top(), labelWidth(i), 28);
+            if (isModified && isModified(i)) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(255, 255, 255, 217));
+                p.drawEllipse(QRectF(text.left(), text.center().y() - 2.0, 5, 5));
+                text.setLeft(text.left() + 10);
+                p.setPen(QColor(255, 255, 255, 217));
+            }
+            p.drawText(text, Qt::AlignLeft | Qt::AlignVCenter,
+                       QFontMetrics(p.font()).elidedText(tabText(i), Qt::ElideRight, text.width()));
+            const QPointF c = QRectF(closeRect(i)).center();
+            p.setPen(QPen(QColor(255, 255, 255, m_hoverClose == i ? 217 : 140), 1.5, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(c + QPointF(-3, -3), c + QPointF(3, 3));
+            p.drawLine(c + QPointF(3, -3), c + QPointF(-3, 3));
+        }
+    }
+    void mousePressEvent(QMouseEvent *event) override {
+        for (int i = 0; i < count(); ++i)
+            if (closeRect(i).contains(event->position().toPoint())) { emit tabCloseRequested(i); return; }
+        QTabBar::mousePressEvent(event);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        int hover = -1;
+        for (int i = 0; i < count(); ++i) if (closeRect(i).contains(event->position().toPoint())) hover = i;
+        if (hover != m_hoverClose) { m_hoverClose = hover; update(); }
+        QTabBar::mouseMoveEvent(event);
+    }
+    void leaveEvent(QEvent *event) override { m_hoverClose = -1; update(); QTabBar::leaveEvent(event); }
+private:
+    int m_hoverClose = -1;
+};
+
 void SessionWindow::setupHeaderBar() {
     m_headerToolBar = addToolBar(tr("Header"));
     m_headerToolBar->setObjectName("toolbar.header");
     m_headerToolBar->setMovable(false);
-    m_headerToolBar->setFixedHeight(38);
-    m_headerToolBar->setStyleSheet("QToolBar { background: #1e1e20; border-bottom: 1px solid #141416; spacing: 8px; padding: 2px 10px; }");
+    // The unified title bar + toolbar of the Mac window: 52 high, the tab strip's 34 centred in it.
+    m_headerToolBar->setFixedHeight(52);
+    m_headerToolBar->setStyleSheet("QToolBar { background: #1e1e20; border-bottom: 1px solid #141416; spacing: 8px; padding: 0px 10px; }");
     // The window has no native title bar (Qt::FramelessWindowHint, see the constructor) — dragging the header
     // bar's own empty background is the only way left to move the window. See eventFilter().
     m_headerToolBar->installEventFilter(this);
@@ -4525,7 +5039,7 @@ void SessionWindow::setupHeaderBar() {
     // macOS Traffic Light dots
     auto *trafficContainer = new QWidget(m_headerToolBar);
     auto *trafficLayout = new QHBoxLayout(trafficContainer);
-    trafficLayout->setContentsMargins(2, 0, 8, 0);
+    trafficLayout->setContentsMargins(4, 0, 8, 0);   // AppKit's buttons: 12 wide, centres 20 apart from x = 20
     trafficLayout->setSpacing(8);
 
     auto makeDot = [this, trafficContainer](const QString &colorHex, const QString &tooltip, auto clickAction) {
@@ -4562,27 +5076,23 @@ void SessionWindow::setupHeaderBar() {
         "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
         "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
     );
-    connect(btnNew, &QPushButton::clicked, this, [this] {
-        createNewDocument(1024, 768);
-    });
+    connect(btnNew, &QPushButton::clicked, this, [this] { newCanvasTab(); });
     m_headerToolBar->addWidget(btnNew);
 
     // Document Tabs: sleek macOS pills
-    m_documentTabBar = new QTabBar(m_headerToolBar);
+    m_documentTabBar = new ProjectTabBar(m_headerToolBar);
+    m_documentTabBar->setMouseTracking(true);
+    static_cast<ProjectTabBar *>(m_documentTabBar)->isModified = [this](int index) {
+        return index >= 0 && index < static_cast<int>(m_documents.size()) && isDocumentModified(m_documents[index].handle);
+    };
     m_documentTabBar->setObjectName("header.documentTabs");
     m_documentTabBar->setDrawBase(false);
     m_documentTabBar->setExpanding(false);
-    m_documentTabBar->setTabsClosable(true);
+    m_documentTabBar->setUsesScrollButtons(false);
     // No tabs yet: the document created before this window's UI existed is registered as tab 0 once the whole
     // constructor finishes (see the addDocumentTab call after updateStatusTelemetry()).
     connect(m_documentTabBar, &QTabBar::currentChanged, this, &SessionWindow::switchToDocumentTab);
     connect(m_documentTabBar, &QTabBar::tabCloseRequested, this, &SessionWindow::closeDocumentTab);
-    m_documentTabBar->setStyleSheet(
-        "QTabBar { background: transparent; } "
-        "QTabBar::tab { background: rgba(255, 255, 255, 0.08); color: #9a9a9f; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 3px 12px; margin-right: 6px; font-size: 11px; font-weight: 500; } "
-        "QTabBar::tab:selected { background: rgba(255, 255, 255, 0.18); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.22); } "
-        "QTabBar::tab:hover:!selected { background: rgba(255, 255, 255, 0.12); color: #dddddf; } "
-    );
     m_headerToolBar->addWidget(m_documentTabBar);
 
     auto *spacer = new QWidget(m_headerToolBar);
@@ -4597,21 +5107,21 @@ void SessionWindow::setupHeaderBar() {
         auto *btn = new QPushButton(m_headerToolBar);
         btn->setObjectName(objName);
         btn->setToolTip(tooltip);
-        btn->setFixedHeight(22);
+        btn->setFixedHeight(28);
         btn->setCursor(Qt::PointingHandCursor);
         if (!icon.isNull()) {
             btn->setIcon(icon);
             btn->setIconSize(QSize(14, 14));
             btn->setFixedWidth(28);
             btn->setStyleSheet(
-                "QPushButton { background: rgba(255, 255, 255, 0.08); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 2px; } "
+                "QPushButton { background: rgba(255, 255, 255, 0.08); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; padding: 2px; } "
                 "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
                 "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
             );
         } else {
             btn->setText(text);
             btn->setStyleSheet(
-                "QPushButton { background: rgba(255, 255, 255, 0.08); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 2px 10px; font-size: 11px; font-weight: 500; } "
+                "QPushButton { background: rgba(255, 255, 255, 0.08); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; padding: 0px 12px; font-size: 13px; } "
                 "QPushButton:hover { background: rgba(255, 255, 255, 0.16); color: #ffffff; } "
                 "QPushButton:pressed { background: rgba(255, 255, 255, 0.22); }"
             );
@@ -4627,15 +5137,16 @@ void SessionWindow::setupHeaderBar() {
     connect(btn100, &QPushButton::clicked, this, &SessionWindow::actualPixels);
     m_headerToolBar->addWidget(btn100);
 
-    const QIcon minusIcon = renderToolVectorIcon(QStringLiteral("minus.magnifyingglass"), 14, QColor(0xdd, 0xdd, 0xdf));
-    auto *btnZoomOut = makeZoomPill("", "zoomOut", tr("Zoom out (Ctrl+−)"), minusIcon);
-    connect(btnZoomOut, &QPushButton::clicked, this, [this] { zoomBy(1.0 / 1.25); });
-    m_headerToolBar->addWidget(btnZoomOut);
-
+    // Zoom in, then zoom out, as ContentView's toolbar has them.
     const QIcon plusIcon = renderToolVectorIcon(QStringLiteral("plus.magnifyingglass"), 14, QColor(0xdd, 0xdd, 0xdf));
     auto *btnZoomIn = makeZoomPill("", "zoomIn", tr("Zoom in (Ctrl++)"), plusIcon);
-    connect(btnZoomIn, &QPushButton::clicked, this, [this] { zoomBy(1.25); });
+    connect(btnZoomIn, &QPushButton::clicked, this, [this] { zoomStep(1); });
     m_headerToolBar->addWidget(btnZoomIn);
+
+    const QIcon minusIcon = renderToolVectorIcon(QStringLiteral("minus.magnifyingglass"), 14, QColor(0xdd, 0xdd, 0xdf));
+    auto *btnZoomOut = makeZoomPill("", "zoomOut", tr("Zoom out (Ctrl+−)"), minusIcon);
+    connect(btnZoomOut, &QPushButton::clicked, this, [this] { zoomStep(-1); });
+    m_headerToolBar->addWidget(btnZoomOut);
 }
 
 void SessionWindow::setupOptionsBar() {
@@ -5447,12 +5958,12 @@ void SessionWindow::setupOptionsBar() {
 
     auto *btnZoomInTool = new QPushButton(tr("(+) Zoom In"), pageZoom);
     btnZoomInTool->setStyleSheet(btnStyle);
-    connect(btnZoomInTool, &QPushButton::clicked, this, [this] { zoomBy(1.25); });
+    connect(btnZoomInTool, &QPushButton::clicked, this, [this] { zoomStep(1); });
     layoutZoom->addWidget(btnZoomInTool);
 
     auto *btnZoomOutTool = new QPushButton(tr("(-) Zoom Out"), pageZoom);
     btnZoomOutTool->setStyleSheet(btnStyle);
-    connect(btnZoomOutTool, &QPushButton::clicked, this, [this] { zoomBy(0.8); });
+    connect(btnZoomOutTool, &QPushButton::clicked, this, [this] { zoomStep(-1); });
     layoutZoom->addWidget(btnZoomOutTool);
 
     auto *btnZoomFit = new QPushButton(tr("Fit on Screen"), pageZoom);
@@ -5704,12 +6215,7 @@ void SessionWindow::updateStatusTelemetry() {
     }
 
     // Same rect the canvas draws into, so the readout always matches what is on screen.
-    double effectiveZoom = 1.0;
-    if (!m_image.isNull() && m_canvasWidget) {
-        effectiveZoom = canvasTargetRect().width() / docWidth();
-    } else if (m_zoomLevel > 0.0) {
-        effectiveZoom = m_zoomLevel;
-    }
+    const double effectiveZoom = viewportZoom();
     m_statusZoomLabel->setText(QString("%1%").arg(effectiveZoom * 100.0, 0, 'f', 1));
 
     if (!m_image.isNull()) {
@@ -5815,32 +6321,9 @@ void SessionWindow::updateStatusTelemetry() {
     }
 }
 
-void SessionWindow::fitCanvas() {
-    m_zoomLevel = 0.0;
-    m_panOffset = QPointF(0, 0);
-    updateStatusTelemetry();
-    if (m_canvasWidget) m_canvasWidget->update();
-}
+void SessionWindow::fitCanvas() { changeViewport(1); }
 
-void SessionWindow::actualPixels() {
-    m_zoomLevel = 1.0;
-    m_panOffset = QPointF(0, 0);
-    updateStatusTelemetry();
-    if (m_canvasWidget) m_canvasWidget->update();
-}
+void SessionWindow::actualPixels() { changeViewport(2, 1.0, qQNaN(), qQNaN()); }
 
-void SessionWindow::zoomBy(double factor) {
-    double current = m_zoomLevel;
-    if (current <= 0.0 && !m_image.isNull()) {
-        const QSize canvasSize = m_canvasWidget ? m_canvasWidget->size() : size();
-        const int pad = 24;
-        const int maxW = std::max(10, canvasSize.width() - pad * 2);
-        const int maxH = std::max(10, canvasSize.height() - pad * 2);
-        current = std::min(static_cast<double>(maxW) / docWidth(),
-                           static_cast<double>(maxH) / docHeight());
-    }
-    if (current <= 0.0) current = 1.0;
-    m_zoomLevel = std::clamp(current * factor, 0.05, 32.0);
-    updateStatusTelemetry();
-    if (m_canvasWidget) m_canvasWidget->update();
-}
+/// session.zoomKeyboard: the next of upstream's stable zoom levels, about the center.
+void SessionWindow::zoomStep(int step) { changeViewport(3, step); }

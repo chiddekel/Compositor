@@ -2,10 +2,10 @@ import Foundation
 
 /// The questions upstream's importer asks through SwiftUI sheets, answered by the Qt shell instead.
 ///
-/// `EditorSession` exposes a hook for each (`confirmConversions`, `confirmRawDevelop` — what upstream's own tests use to
-/// run without a sheet). The Photoshop one ("these layers will be converted — import anyway?") goes to a callback the
-/// shell registers and shows as a dialog. RAW files develop with the camera's own settings: upstream's Develop sheet
-/// (exposure, white balance, ... with a live preview) has no Qt counterpart yet.
+/// With a sheet presenter registered by the shell, upstream's own sheets are shown — `RawDevelopSheet` for camera RAW,
+/// `PSDConversionSheet` for Photoshop files — rendered from the session while the import waits (UpstreamEditor.command).
+/// Without one, `EditorSession`'s test hooks answer instead (`confirmConversions` through the shell's plain prompt,
+/// `confirmRawDevelop` with the camera's own settings).
 enum ImportPrompts {
     /// Shell callback: a JSON array of {"layer","message"} and its length; returns non-zero to go ahead.
     typealias ConversionPrompt = @convention(c) (UnsafePointer<UInt8>?, Int) -> Int32
@@ -22,15 +22,17 @@ enum ImportPrompts {
     nonisolated(unsafe) static var waitPumpContext: UnsafeMutableRawPointer?
 
     /// Called while a command waits: puts up the sheet upstream asked for, if the shell can show it.
-    @MainActor static func presentPendingSheet(for session: EditorSession) {
-        guard !presenting, let sheetPresenter, session.showsRawDevelop else { return }
+    @MainActor static func presentPendingSheet(for editor: UpstreamEditor) {
+        guard !presenting, let sheetPresenter, let panel = editor.openSheets.first else { return }
         presenting = true
         defer { presenting = false }
-        sheetPresenter(sheetPresenterContext, "RawDevelopSheet")
+        sheetPresenter(sheetPresenterContext, panel)
     }
 
     @MainActor static func install(on session: EditorSession) {
-        if session.confirmConversions == nil {
+        // Photoshop: upstream's own conversion sheet (PSDConversionSheet) when the shell can present it — the session
+        // then shows it while the file is read, as on the Mac. Only without a presenter, the shell's plain prompt.
+        if sheetPresenter == nil, session.confirmConversions == nil {
             session.confirmConversions = { conversions in
                 guard let prompt = conversionPrompt else { return true }
                 let rows = conversions.map { ["layer": $0.layerName, "message": $0.message] }
@@ -65,4 +67,11 @@ nonisolated public func compositorSetWaitPump(_ pump: (@convention(c) (UnsafeMut
                                               _ context: UnsafeMutableRawPointer?) {
     ImportPrompts.waitPump = pump
     ImportPrompts.waitPumpContext = context
+}
+
+/// Writes upstream's preferences (UserDefaults: @AppStorage values, saved keyboard shortcuts, …) to disk. The Mac does
+/// this by itself; Linux Foundation keeps them in memory until asked, so the shell asks periodically and on quit.
+@_cdecl("compositor_flush_preferences")
+nonisolated public func compositorFlushPreferences() {
+    UserDefaults.standard.synchronize()
 }

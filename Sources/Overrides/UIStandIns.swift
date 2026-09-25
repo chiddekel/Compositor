@@ -13,6 +13,8 @@ import SwiftUI
 // `ShortcutSettings`/`configuredNativeShortcut`/`configuredKeyboardShortcut` are real now
 // (Sources/Overrides/KeyboardShortcuts.swift, a faithful override of Compositor/UI/KeyboardShortcuts.swift).
 
+/// STAND-IN for the `NSPopUpButton` in UI/BlendModePicker.swift (an `NSViewRepresentable` with an `NSMenuDelegate`):
+/// the same modes, grouped as Photoshop groups them with a line between, spanning its row as the pop-up does.
 struct BlendModePicker: View {
     let session: EditorSession
     var body: some View {
@@ -20,10 +22,16 @@ struct BlendModePicker: View {
             get: { session.activeLayer?.blendMode ?? .normal },
             set: { session.setLayerBlendMode($0); session.refreshCanvasPreview?() }
         )) {
-            ForEach(LayerBlendMode.allCases, id: \.self) { mode in
-                Text(mode.rawValue).tag(mode)
+            ForEach(Array(LayerBlendMode.groups.enumerated()), id: \.offset) { index, group in
+                if index > 0 { Divider() }
+                ForEach(group, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
             }
         }
+        .frame(maxWidth: .infinity)
+        .disabled(!session.canEditAppearance)
+        .accessibilityLabel("Blend mode")
     }
 }
 

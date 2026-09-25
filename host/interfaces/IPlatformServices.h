@@ -19,6 +19,7 @@
 #include <QColor>
 #include <QImage>
 #include <QString>
+#include <QStringList>
 #include <functional>
 #include <memory>
 
@@ -26,6 +27,11 @@ class IFileDialogService {
 public:
     virtual ~IFileDialogService() = default;
     virtual QString chooseImageToOpen() = 0;
+    /// Several images at once (upstream's importer allows multiple selection).
+    virtual QStringList chooseImagesToImport() {
+        const QString path = chooseImageToOpen();
+        return path.isEmpty() ? QStringList() : QStringList{path};
+    }
     virtual QString chooseProjectToOpen() = 0;
     virtual QString chooseProjectSavePath() = 0;
     /// `formatName` is "PNG", "JPEG", ...; `filter` a Qt-style name-filter string.

@@ -32,6 +32,25 @@ public enum TextBackend {
         return false
     }()
 
+    /// The installed faces as the Qt text engine names them ("Family", "Family-Style"), for font menus
+    /// (NSFontManager.availableFonts). Empty when the engine isn't there (then the menu falls back to the font files).
+    static let fontNames: [String] = {
+        #if canImport(Glibc)
+        typealias NamesFn = @convention(c) (UnsafeMutablePointer<CChar>?, Int) -> Int64
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_font_names") else { continue }
+            let names = unsafeBitCast(sym, to: NamesFn.self)
+            let size = names(nil, 0)
+            guard size > 0 else { return [] }
+            var buffer = [CChar](repeating: 0, count: Int(size) + 1)
+            guard names(&buffer, Int(size)) == size else { return [] }
+            return String(cString: buffer).split(separator: "\n").map(String.init)
+        }
+        #endif
+        return []
+    }()
+
     public struct Layout { public let width: CGFloat; public let height: CGFloat; public let baseline: CGFloat }
 
     /// Size and first baseline of `text`, lines `lineHeight` apart (0: 1.2 em), wrapping at `maxWidth` (0: never).
