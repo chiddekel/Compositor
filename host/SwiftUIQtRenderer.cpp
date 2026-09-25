@@ -1465,6 +1465,12 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
         } else if (kind == "controlSize") {
             // AppKit control sizes carry their own text size: small 11, mini 9 (regular keeps the environment's).
             const QString size = strings.value("name").toString();
+            // Large: AppKit's large push buttons stand 28 points high.
+            if (size == QLatin1String("large")) {
+                QList<QPushButton *> buttons = widget->findChildren<QPushButton *>();
+                if (auto *self = qobject_cast<QPushButton *>(widget)) buttons.prepend(self);
+                for (QPushButton *button : buttons) button->setMinimumHeight(28);
+            }
             if (size == QLatin1String("small") || size == QLatin1String("mini")) {
                 QFont font = widget->font();
                 font.setPixelSize(size == QLatin1String("small") ? 11 : 9);
@@ -2046,6 +2052,9 @@ QWidget *buildGrid(uint64_t handle, const QString &panel, const QJsonObject &nod
                                    : alignment.contains(QLatin1String("railing")) ? Qt::AlignRight : Qt::AlignHCenter;
     const Qt::Alignment vertical = alignment.startsWith(QLatin1String("top")) ? Qt::AlignTop
                                  : alignment.startsWith(QLatin1String("bottom")) ? Qt::AlignBottom : Qt::AlignVCenter;
+    // SwiftUI sizes a grid's columns to their cells; spare width lies beside them (at the grid's alignment), not in
+    // them — empty stretch columns take it.
+    const int first = horizontal == Qt::AlignLeft ? 0 : 1;
     QList<QJsonObject> rows;
     flattenViewLists(node.value("children").toArray(), rows);
     int columns = 1;
@@ -2058,7 +2067,7 @@ QWidget *buildGrid(uint64_t handle, const QString &panel, const QJsonObject &nod
     int r = 0;
     for (const QJsonObject &row : rows) {
         if (row.value("kind").toString() != QLatin1String("GridRow")) {
-            if (QWidget *child = buildNode(handle, panel, row)) layout->addWidget(child, r++, 0, 1, columns, vertical | horizontal);
+            if (QWidget *child = buildNode(handle, panel, row)) layout->addWidget(child, r++, first, 1, columns, vertical | horizontal);
             continue;
         }
         const QString rowAlignment = row.value("stringParams").toObject().value("alignment").toString();
@@ -2071,10 +2080,12 @@ QWidget *buildGrid(uint64_t handle, const QString &panel, const QJsonObject &nod
             QWidget *child = buildNode(handle, panel, cell);
             if (!child) { ++c; continue; }
             const bool flexible = child->sizePolicy().horizontalPolicy() & QSizePolicy::ExpandFlag;
-            layout->addWidget(child, r, c++, 1, 1, flexible ? rowVertical : (rowVertical | horizontal));
+            layout->addWidget(child, r, first + c++, 1, 1, flexible ? rowVertical : (rowVertical | horizontal));
         }
         ++r;
     }
+    if (first == 1) layout->setColumnStretch(0, 1);
+    if (horizontal != Qt::AlignRight) layout->setColumnStretch(first + columns, 1);
     return container;
 }
 
@@ -2279,8 +2290,14 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         // (the palette's 12x12 swap/reset arrows) instead of the rail's standard 36x36.
         QSize labelFrame;
 
+        // A label framed `maxWidth: .infinity` makes the button as wide as it is offered (the color picker's OK).
+        bool labelFillsWidth = false;
         std::function<void(const QJsonObject &)> extractLabel = [&](const QJsonObject &n) {
             const QString childKind = n.value("kind").toString();
+            for (const auto &m : n.value("modifiers").toArray())
+                if (m.toObject().value("kind").toString() == QLatin1String("frame")
+                    && m.toObject().value("boolParams").toObject().value("maxWidthInfinity").toBool())
+                    labelFillsWidth = true;
             if (!labelFrame.isValid()) {
                 for (const auto &m : n.value("modifiers").toArray()) {
                     const QJsonObject mo = m.toObject();
@@ -2479,6 +2496,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 button->setProperty("buttonStyled", true);
             }
         }
+        if (labelFillsWidth) button->setSizePolicy(QSizePolicy::Expanding, button->sizePolicy().verticalPolicy());
         QObject::connect(button, &QPushButton::clicked, button, [handle, panel, id] {
             dispatch(handle, panel, id, QStringLiteral("action"));
         });
