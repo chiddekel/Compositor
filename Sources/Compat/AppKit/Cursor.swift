@@ -27,6 +27,7 @@ public final class NSCursor: @unchecked Sendable, Equatable {
     public let hotSpot: CGPoint
 
     public init(shape: Shape) { self.shape = shape; image = NSImage(size: CGSize(width: 16, height: 16)); hotSpot = .zero }
+    init(shape: Shape, image: NSImage, hotSpot: CGPoint) { self.shape = shape; self.image = image; self.hotSpot = hotSpot }
     public init(image: NSImage, hotSpot: CGPoint) {
         shape = .custom(hotSpot: hotSpot); self.image = image; self.hotSpot = hotSpot
     }
@@ -38,7 +39,24 @@ public final class NSCursor: @unchecked Sendable, Equatable {
 
     public static let arrow = NSCursor(shape: .arrow)
     public static let iBeam = NSCursor(shape: .iBeam)
-    public static let crosshair = NSCursor(shape: .crosshair)
+    /// The Mac's crosshair: thin black arms with a white edge, 24 points, the hot spot in the middle (so a selection
+    /// cursor built on it has something to show).
+    public static let crosshair: NSCursor = {
+        let image = NSImage(size: CGSize(width: 24, height: 24), flipped: true) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            for (color, width) in [(CGColor(red: 1, green: 1, blue: 1, alpha: 1), 3.0), (CGColor(red: 0, green: 0, blue: 0, alpha: 1), 1.0)] {
+                context.setStrokeColor(color)
+                context.setLineWidth(width)
+                // On pixel centres, so a 1-pixel arm stays one pixel wide.
+                for (a, b) in [((12.5, 2.0), (12.5, 9.0)), ((12.5, 16.0), (12.5, 23.0)), ((2.0, 12.5), (9.0, 12.5)), ((16.0, 12.5), (23.0, 12.5))] {
+                    context.move(to: CGPoint(x: a.0, y: a.1)); context.addLine(to: CGPoint(x: b.0, y: b.1))
+                }
+                context.strokePath()
+            }
+            return true
+        }
+        return NSCursor(shape: .crosshair, image: image, hotSpot: CGPoint(x: 12, y: 12))
+    }()
     public static let openHand = NSCursor(shape: .openHand)
     public static let closedHand = NSCursor(shape: .closedHand)
     public static let pointingHand = NSCursor(shape: .pointingHand)

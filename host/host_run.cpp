@@ -210,6 +210,22 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             window.updateFloatingPanels();
             for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
         }
+        // COMPOSITOR_GRAB_CURSOR="x,y" (document pixels): hover the canvas there and save its cursor as <path>.cursor.png.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_CURSOR").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_CURSOR").split(QLatin1Char(','));
+            if (QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas")); canvas && v.size() == 2) {
+                window.show();
+                for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                const QPointF at = window.documentToCanvasPoint(QPointF(v[0].toDouble(), v[1].toDouble()));
+                QMouseEvent move(QEvent::MouseMove, at, canvas->mapToGlobal(at), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(canvas, &move);
+                const QCursor cursor = canvas->cursor();
+                QPixmap picture = cursor.pixmap();
+                if (picture.isNull()) { picture = QPixmap(24, 24); picture.fill(Qt::magenta); }
+                picture.save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".cursor.png");
+                qInfo("cursor shape %d hot %d,%d", int(cursor.shape()), cursor.hotSpot().x(), cursor.hotSpot().y());
+            }
+        }
         // COMPOSITOR_GRAB_BLEND_HOVER=<mode>: open the Layers panel's blend menu and hover that mode (menu left open).
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_BLEND_HOVER").isEmpty()) {
             for (QComboBox *combo : window.findChildren<QComboBox *>()) {

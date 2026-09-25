@@ -89,14 +89,21 @@ public func NSRectFill(_ rect: CGRect) { rect.fill() }
 
 extension NSImage {
     public func draw(in rect: CGRect) {
-        guard let cg = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
-        NSGraphicsContext.current?.cgContext.draw(cg, in: rect)
+        draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
     }
     public func draw(in rect: CGRect, from source: CGRect, operation: NSCompositingOperation, fraction: CGFloat) {
-        guard let cg = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        // A symbol is drawn at twice its size in points, so it stays sharp in a 2x cursor or bitmap.
+        guard let cg = symbolImage(pixels: CGSize(width: rect.width * 2, height: rect.height * 2))
+                ?? cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         NSGraphicsContext.current?.cgContext.draw(cg, in: rect, opacity: Double(fraction))
     }
-    public func withSymbolConfiguration(_ configuration: SymbolConfiguration) -> NSImage? { self }
+    public func withSymbolConfiguration(_ configuration: SymbolConfiguration) -> NSImage? {
+        guard symbolName != nil else { return self }
+        let copy = NSImage(size: size)
+        copy.symbolName = symbolName
+        copy.symbolColor = configuration.paletteColors.first ?? symbolColor
+        return copy
+    }
 }
 public enum NSCompositingOperation: UInt { case clear, copy, sourceOver = 2 }
 

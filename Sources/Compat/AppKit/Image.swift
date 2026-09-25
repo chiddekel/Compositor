@@ -6,6 +6,11 @@ import ImageIO
 open class NSImage: @unchecked Sendable {
     public var size: CGSize
     private var bitmap: CGImage?
+    /// An SF Symbol this image stands for, and the color a symbol configuration gave it: drawn through the host's icons.
+    public internal(set) var symbolName: String?
+    public internal(set) var symbolColor: NSColor?
+    /// The host draws SF Symbols (the shell's Lucide icons): name, pixel width and height, straight RGBA color.
+    nonisolated(unsafe) public static var symbolRenderer: ((String, Int, Int, (Double, Double, Double, Double)) -> CGImage?)?
 
     public final class SymbolConfiguration {
         public var pointSize: CGFloat = 0
@@ -43,6 +48,14 @@ open class NSImage: @unchecked Sendable {
     /// (the Qt shell draws its own icons and cursors).
     public convenience init?(systemSymbolName: String, accessibilityDescription: String?) {
         self.init(size: CGSize(width: 16, height: 16))
+        symbolName = systemSymbolName
+    }
+    /// A symbol rasterized for `pixels` (the host's rendering), in its configured color (black otherwise).
+    func symbolImage(pixels: CGSize) -> CGImage? {
+        guard let symbolName, let renderer = NSImage.symbolRenderer else { return nil }
+        let color = symbolColor ?? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+        return renderer(symbolName, max(1, Int(pixels.width.rounded())), max(1, Int(pixels.height.rounded())),
+                        (Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent), Double(color.alphaComponent)))
     }
     /// Reads an image the pasteboard holds as PNG/TIFF data (needs the ImageIO codec backend).
     public convenience init?(pasteboard: NSPasteboard) {

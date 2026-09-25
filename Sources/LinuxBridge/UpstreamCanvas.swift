@@ -143,3 +143,40 @@ nonisolated public func compositorCanvasOverlay(_ handle: UInt64, _ width: Int32
         return Int64(bytes.count)
     }
 }
+
+/// The shell's SF Symbol renderer: (name, width, height, r, g, b, a, output) → 0 when it drew the symbol into `output`
+/// (width × height premultiplied RGBA8).
+public typealias SymbolRenderFunction = @convention(c) (UnsafePointer<CChar>?, Int32, Int32, Double, Double, Double, Double,
+                                                        UnsafeMutablePointer<UInt8>?) -> Int32
+
+@_cdecl("compositor_set_symbol_renderer")
+nonisolated public func compositorSetSymbolRenderer(_ render: SymbolRenderFunction?) {
+    guard let render else { NSImage.symbolRenderer = nil; return }
+    NSImage.symbolRenderer = { name, width, height, color in
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let status = name.withCString { symbol in
+            bytes.withUnsafeMutableBufferPointer { render(symbol, Int32(width), Int32(height), color.0, color.1, color.2, color.3, $0.baseAddress) }
+        }
+        guard status == 0 else { return nil }
+        return CGImage(PortableImage(PixelBuffer(width: width, height: height, bytes: bytes)))
+    }
+}
+
+/// The current cursor's picture (a custom cursor: upstream draws it), premultiplied RGBA8, with its size and hot spot.
+/// Returns the byte count (call with a nil output to size it), -1 when the cursor has no picture.
+@_cdecl("compositor_canvas_cursor_image")
+nonisolated public func compositorCanvasCursorImage(_ width: UnsafeMutablePointer<Int32>?, _ height: UnsafeMutablePointer<Int32>?,
+                                                    _ hotX: UnsafeMutablePointer<Double>?, _ hotY: UnsafeMutablePointer<Double>?,
+                                                    _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    onMain {
+        let cursor = NSCursor.current
+        guard let image = cursor.image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return -1 }
+        let raster = image.portableImage
+        guard raster.kind == .rgba else { return -1 }
+        width?.pointee = Int32(raster.width); height?.pointee = Int32(raster.height)
+        hotX?.pointee = Double(cursor.hotSpot.x); hotY?.pointee = Double(cursor.hotSpot.y)
+        let bytes = raster.bytes
+        if let output, capacity >= bytes.count { bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: bytes.count) } }
+        return Int64(bytes.count)
+    }
+}

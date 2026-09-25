@@ -458,6 +458,7 @@ private:
     int m_panelPollTick = 0;
     bool m_colorPickerOpen = false, m_samplingPicker = false;
     bool m_upstreamCanvasDrag = false;
+    QByteArray m_cursorPicture;
     QStringList m_appMenuShape;
     QList<QMenu *> m_appMenus, m_legacyMenus;
     QHash<QString, QAction *> m_appMenuActions;

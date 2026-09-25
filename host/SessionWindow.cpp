@@ -12,6 +12,8 @@ static bool needsUpstreamImporter(const QString &path);
 #include "QtPlatformServices.h"
 #include "EditorDialogs.h"
 #include "SwiftUIQtRenderer.h"
+#include "LucideIcons.h"
+#include <QSvgRenderer>
 
 #include <QPainter>
 #include <QDialog>
@@ -97,6 +99,9 @@ int64_t compositor_session_render(uint64_t handle, uint8_t *output, size_t capac
 int64_t compositor_session_render_revision(uint64_t handle);
 int32_t compositor_session_viewport(uint64_t handle, double *out);
 int32_t compositor_canvas_resize(uint64_t handle, double width, double height, double scale);
+typedef int32_t (*compositor_symbol_renderer)(const char *name, int32_t width, int32_t height, double r, double g, double b, double a, uint8_t *output);
+void compositor_set_symbol_renderer(compositor_symbol_renderer render);
+int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
 int32_t compositor_canvas_key(uint64_t handle, int32_t keyCode, const char *characters, int32_t modifiers, int32_t isRepeat);
 int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double y, int32_t modifiers, int32_t clickCount);
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
@@ -1056,6 +1061,23 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     connect(m_autosaveTimer, &QTimer::timeout, this, [this] { performAutosave(); compositor_flush_preferences(); });
     connect(qApp, &QCoreApplication::aboutToQuit, this, [] { compositor_flush_preferences(); });
     m_autosaveTimer->start();
+
+    // SF Symbols upstream draws (cursor pictures, icons in bitmaps) come from the shell's Lucide set.
+    compositor_set_symbol_renderer([](const char *name, int32_t width, int32_t height, double r, double g, double b, double a,
+                                      uint8_t *output) -> int32_t {
+        const QByteArray svg = lucideIconSVG(QString::fromUtf8(name));
+        if (svg.isEmpty() || !output || width <= 0 || height <= 0) return -1;
+        QImage image(width, height, QImage::Format_RGBA8888_Premultiplied);
+        image.fill(Qt::transparent);
+        QByteArray tinted = svg;
+        tinted.replace("currentColor", QColor::fromRgbF(r, g, b).name(QColor::HexRgb).toLatin1());
+        QPainter painter(&image);
+        painter.setOpacity(a);
+        QSvgRenderer(tinted).render(&painter, QRectF(0, 0, width, height));
+        painter.end();
+        for (int y = 0; y < height; ++y) std::memcpy(output + size_t(y) * width * 4, image.constScanLine(y), size_t(width) * 4);
+        return 0;
+    });
 
     // Upstream sheets that open mid-command (RAW Develop during an import) are shown by the shell.
     compositor_set_sheet_presenter([](void *context, const char *panel) {
@@ -3173,6 +3195,23 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
         Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
         Qt::SizeBDiagCursor, Qt::CrossCursor};
+    if (m_canvasWidget && cursor == 10) {
+        // A cursor of upstream's own (a selection tool's, the eyedropper, the zoom magnifier): its picture.
+        int32_t w = 0, h = 0;
+        double hx = 0, hy = 0;
+        const int64_t size = compositor_canvas_cursor_image(&w, &h, &hx, &hy, nullptr, 0);
+        if (size > 0 && size == int64_t(w) * h * 4) {
+            QByteArray bytes(qsizetype(size), Qt::Uninitialized);
+            compositor_canvas_cursor_image(&w, &h, &hx, &hy, reinterpret_cast<uint8_t *>(bytes.data()), bytes.size());
+            if (bytes != m_cursorPicture) {
+                m_cursorPicture = bytes;
+                const QImage image(reinterpret_cast<const uchar *>(m_cursorPicture.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied);
+                m_canvasWidget->setCursor(QCursor(QPixmap::fromImage(image.copy()), qRound(hx), qRound(hy)));
+            }
+            return;
+        }
+    }
+    m_cursorPicture.clear();
     if (m_canvasWidget && cursor >= 0 && cursor <= 10) m_canvasWidget->setCursor(shapes[cursor]);
     if (kind == 3) { if (m_canvasWidget) m_canvasWidget->update(); return; }
     compositor_pump_main();
