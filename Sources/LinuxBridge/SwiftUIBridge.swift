@@ -5,128 +5,6 @@
 import Foundation
 import SwiftUI
 
-struct CompositorToolHeaders: View {
-    @Bindable var session: EditorSession
-
-    var body: some View {
-        Group {
-            if session.tool == .move {
-                TransformInspector(session: session).id(session.activeLayerID)
-                Divider()
-            }
-            if session.tool.isBrushTool {
-                BrushControls(session: session)
-                Divider()
-            }
-            if session.tool.isSelectionTool {
-                LassoControls(session: session)
-                Divider()
-            }
-            if session.tool == .gradient {
-                GradientControls(session: session)
-                Divider()
-            }
-            if session.tool == .type {
-                TypeControls(session: session)
-                Divider()
-            }
-            if session.tool == .shape {
-                ShapeControls(session: session)
-                Divider()
-            }
-            if session.tool == .eyedropper {
-                HStack(spacing: 16) {
-                    Text("Eyedropper").font(ToolHeaderStyle.titleFont)
-                    Toggle("Sample Ring", isOn: $session.showsSampleRing).toggleStyle(.checkbox)
-                    Spacer()
-                }.padding(.horizontal, 18).toolHeaderBar()
-                Divider()
-            }
-            if session.tool == .hand || session.tool == .zoom {
-                NavigationToolHeader(session: session)
-                Divider()
-            }
-            if session.tool == .crop {
-                CropControls(session: session)
-                Divider()
-            }
-            if session.tool == .idle {
-                HStack(spacing: 16) {
-                    Text("Select a tool").font(ToolHeaderStyle.titleFont)
-                    Spacer()
-                }.padding(.horizontal, 18).toolHeaderBar()
-                Divider()
-            }
-        }
-    }
-}
-
-struct CompositorToolRail: View {
-    @Bindable var session: EditorSession
-
-    var body: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 10) {
-                ForEach(NavigationTool.allCases.filter { $0 != .idle }, id: \.self) { tool in
-                    Button { session.selectTool(tool) } label: {
-                        Group {
-                            if tool == .gradient { GradientToolIcon().frame(width: 18, height: 18) }
-                            else if tool == .cloneStamp { CloneStampToolIcon().frame(width: 18, height: 18) }
-                            else if tool == .lasso, session.lassoKind == .polygonal { PolygonalLassoToolIcon().frame(width: 18, height: 18) }
-                            else if tool == .wand, session.wandMode == .object { ObjectSelectionToolIcon().frame(width: 18, height: 18) }
-                            else { Image(systemName: tool == .marquee && session.marqueeKind == .ellipse ? "circle.dashed" : session.symbol(for: tool)).font(.system(size: 17)) }
-                        }
-                        .frame(width: 36, height: 36)
-                        .background(session.tool == tool ? Color.white.opacity(0.12) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 7))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 7)
-                                .strokeBorder(session.tool == tool ? Color.white.opacity(0.14) : .clear)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain).help(tool.label).accessibilityLabel(tool.label)
-                    .foregroundStyle(.primary)
-                    .accessibilityAddTraits(session.tool == tool ? .isSelected : [])
-                }
-                ColorPaletteControls(session: session).padding(.top, 8)
-            }
-            .padding(.top, 16).padding(.bottom, 12)
-        }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-        .frame(width: 56)
-    }
-}
-
-struct CompositorStatusBar: View {
-    @Bindable var session: EditorSession
-
-    var body: some View {
-        HStack(spacing: 16) {
-            if let document = session.document {
-                Text(session.viewport.zoom, format: .percent.precision(.fractionLength(0...1)))
-                    .frame(width: 62, alignment: .leading).accessibilityIdentifier("zoomStatus")
-                Text("\(document.width) × \(document.height) px").accessibilityIdentifier("canvasDimensions")
-                Text("sRGB · Transparent")
-            } else { Text("Ready when you are") }
-            Spacer()
-            if session.showsBusy {
-                ProgressView().controlSize(.mini)
-                Text("Working…")
-            } else if session.isImporting {
-                ProgressView().controlSize(.mini)
-                Text("Importing images…")
-            } else {
-                Text(session.tool == .marquee ? (session.marqueeKind == .ellipse ? "Drag an ellipse · Shift add · Option subtract · Shift again mid-drag circle · Drag inside to move · Delete clears · ⌘D deselect" : "Drag a rectangle · Shift add · Option subtract · Shift again mid-drag square · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect") : session.tool == .wand ? (session.wandMode == .object ? "Click an object to select its outline · Tab for Wand · Shift add · Option subtract · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect" : "Click to select similar colors · Tab for Object · Shift add · Option subtract · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect") : session.tool == .lasso ? (session.lassoKind == .freehand ? "Drag to select · Drag inside to move · Shift add · Option subtract · Delete clears · ⌥⌫/⌘⌫ fill · ⌘D deselect" : "Click corners · Click start, double-click or Enter to close · Delete removes corner · Escape cancel") : session.tool == .brush ? (session.brushMode == .erase ? "Drag to erase" : "Drag to paint") + " · [ ] size · Shift-[ ] hardness · 1–0 opacity · Escape cancel · Space to pan" : session.tool == .blur ? (session.blurMode == .blur ? "Drag to soften" : session.blurMode == .smudge ? "Drag to smudge" : "Drag to push pixels") + " · [ ] size · Shift-[ ] hardness · 1–0 strength · Space to pan" : session.tool == .cloneStamp ? "Option-click to set the source · Drag to clone · [ ] size · Shift-[ ] hardness · 1–0 opacity · Space to pan" : session.tool == .spotHealing ? "Drag over blemishes to heal · [ ] size · Shift-[ ] hardness · Escape cancel · Space to pan" : session.tool == .type ? "Drag a text box · Click text to edit · Drag box handles to resize · ⌘Return finish · Escape cancel" : session.tool == .shape ? "Drag to draw a shape on a new layer · Shift \(session.shapeKind == .line ? "45°" : session.shapeKind == .rectangle ? "square" : "circle") · Option from center · Shift-U or Tab for the next shape · Escape cancel · Space to pan" : session.tool == .gradient ? "Drag to draw · Drag ends to adjust · Shift 45° · 1–0 opacity · Enter apply · Escape cancel" : session.tool == .crop ? "Drag to crop · Enter apply · Escape cancel · Space to pan" : session.tool == .move ? "Drag to move · Handles to resize · Circle to rotate · 1–0 layer opacity · Space to pan" : session.tool == .hand ? "Drag to pan · Pinch to zoom" : session.tool == .idle ? "No tool selected · Press a tool's key to pick one · Space to pan" : "Click to zoom in · Option-click to zoom out · Drag right or left to zoom smoothly · Space to pan")
-            }
-        }
-        .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-        .padding(.horizontal, 18).frame(height: 30)
-        .accessibilityElement(children: .contain)
-    }
-}
-
 /// Resolves the named panel against `entry`'s session into a wire-ready tree, and refreshes `entry`'s action-handler
 /// registry for it so a later Qt-side interaction can dispatch back to the right closure by node id.
 @MainActor private func resolvePanel(_ panel: String, entry: Entry) -> RenderNodeWire? {
@@ -177,9 +55,10 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
     let session = entry.editor.session
     let resolved: RenderNode
     switch panel {
-    case "ToolHeaders": resolved = ViewResolver.resolve(CompositorToolHeaders(session: session))
-    case "ToolRail": resolved = ViewResolver.resolve(CompositorToolRail(session: session))
-    case "StatusBar": resolved = ViewResolver.resolve(CompositorStatusBar(session: session))
+    // ContentView's own pieces (Sources/Overrides/ContentView.swift), not copies of them.
+    case "ToolHeaders": resolved = ViewResolver.resolve(ContentView(session: session).toolHeaders)
+    case "ToolRail": resolved = ViewResolver.resolve(ContentView(session: session).toolRail)
+    case "StatusBar": resolved = ViewResolver.resolve(ContentView(session: session).statusBar)
     case "NavigationToolHeader": resolved = ViewResolver.resolve(NavigationToolHeader(session: session))
     case "TransformInspector": resolved = ViewResolver.resolve(TransformInspector(session: session))
     case "BrushControls": resolved = ViewResolver.resolve(BrushControls(session: session))

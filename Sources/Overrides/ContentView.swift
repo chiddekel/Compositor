@@ -12,6 +12,8 @@
 // ("the type checker times out (Xcode 26.1)", "the chain outgrew the type checker once more"). Every other line,
 // including every comment, is unchanged. Diff this against Compositor/ContentView.swift on each `git pull` from
 // upstream to catch drift — that's the whole maintenance cost of this exception.
+// Second (Linux-only) change: `toolHeaders`, `toolRail` and `statusBar` are internal rather than private, so the Qt
+// shell renders these very views (SwiftUIBridge) instead of copies of them.
 // Refreshed 2026-09-23 against upstream 75c4219 (stepped keyboard zoom, camera-raw docked filter panel).
 
 import SwiftUI
@@ -61,7 +63,7 @@ struct ContentView: View {
         return workspace.canReceiveDrag(into: workspace.current.id)
     }
     // Extracted from `body`: as one expression the type checker times out (Xcode 26.1).
-    @ViewBuilder private var toolHeaders: some View {
+    @ViewBuilder var toolHeaders: some View {   // Linux: internal, so the Qt shell renders it (SwiftUIBridge)
         Group {
             if session.tool == .move {
                 TransformInspector(session: session).id(session.activeLayerID)
@@ -317,7 +319,7 @@ struct ContentView: View {
         if let applicationDelegate { Task { await applicationDelegate.projects.newCanvas() } }
         else { session.clearProject() }
     }
-    private var toolRail: some View {
+    var toolRail: some View {   // Linux: internal, see toolHeaders
         // Scrolls when the window is too short for every tool, rather than pushing the bars above and below away.
         IndicatorlessScrollView {
         VStack(spacing: 10) {
@@ -356,7 +358,7 @@ struct ContentView: View {
             onCreate: { session.createNewProject(width: $0, height: $1) },
             onOpen: { Task { await applicationDelegate?.projects.open() } })
     }
-    private var statusBar: some View {
+    var statusBar: some View {   // Linux: internal, see toolHeaders
         HStack(spacing: 16) {
             if let document = session.document {
                 Text(session.viewport.zoom, format: .percent.precision(.fractionLength(0...1)))
