@@ -3189,21 +3189,6 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         p.drawRect(QRectF(documentToCanvasPoint(m_textBoxRect.topLeft()), documentToCanvasPoint(m_textBoxRect.bottomRight())));
         p.restore();
     }
-    // The shape being dragged, outlined until release fills it on a new layer.
-    if (!m_shapeRect.isNull()) {
-        p.save();
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
-        p.setBrush(Qt::NoBrush);
-        if (m_shapeKind == QLatin1String("Line") && m_shapeLine.size() == 4) {
-            p.drawLine(documentToCanvasPoint(QPointF(m_shapeLine[0], m_shapeLine[1])),
-                       documentToCanvasPoint(QPointF(m_shapeLine[2], m_shapeLine[3])));
-        } else {
-            const QRectF box(documentToCanvasPoint(m_shapeRect.topLeft()), documentToCanvasPoint(m_shapeRect.bottomRight()));
-            if (m_shapeKind == QLatin1String("Ellipse")) p.drawEllipse(box); else p.drawRect(box);
-        }
-        p.restore();
-    }
 
 }
 
@@ -3214,7 +3199,7 @@ bool SessionWindow::routesToUpstreamCanvas() const {
     switch (m_tool) {
     case Tool::Move: case Tool::Marquee: case Tool::Lasso: case Tool::Magic: case Tool::Crop:
     case Tool::Brush: case Tool::SpotHealing: case Tool::CloneStamp: case Tool::Smear:
-    case Tool::Gradient: case Tool::Eyedropper: case Tool::Zoom: case Tool::Hand:
+    case Tool::Gradient: case Tool::Eyedropper: case Tool::Zoom: case Tool::Hand: case Tool::Shape:
         return true;
     default: return false;
     }

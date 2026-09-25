@@ -1031,8 +1031,54 @@ final class UpstreamEditor {
                     shape: record.shape, effects: record.effects, text: record.text)
             }
         }
+        // The shape being dragged out, in the color it will be made in, just above the active layer — where its layer
+        // will go (EditorCanvas.drawShapeDraft, drawn inside the layer stack for the same reason).
+        if let draft = shapeDraftLayer() {
+            images[draft.record.id] = draft.asset
+            let above = manifest.layers.firstIndex { $0.id == s.activeLayerID }.map { $0 + 1 } ?? manifest.layers.count
+            manifest.layers.insert(draft.record, at: above)
+        }
         snapshot = ProjectSnapshot(manifest: manifest, images: images, masks: masks)
         return snapshot
+    }
+
+    /// The Shape tool's draft as a layer the size of what it covers (document pixels), filled — or, for a line,
+    /// stroked round-capped at the line width — with the foreground color.
+    private func shapeDraftLayer() -> (record: ProjectLayerRecord, asset: ImportedImage)? {
+        let s = session
+        guard let draft = s.shapeDraft,
+              draft.kind == .line ? (draft.rect.width > 0 || draft.rect.height > 0) : !draft.rect.isEmpty else { return nil }
+        let color = s.foregroundColor.nsColor.cgColor
+        var bounds = draft.rect
+        let ends = s.shapeLineEnds
+        if draft.kind == .line {
+            guard ends != nil else { return nil }
+            let half = max(1, CGFloat(s.shapeLineWidth)) / 2 + 1
+            bounds = bounds.insetBy(dx: -half, dy: -half)
+        }
+        bounds = bounds.integral
+        let width = Int(bounds.width), height = Int(bounds.height)
+        guard width > 0, height > 0, width * height <= DocumentLimits.maxSurfacePixels else { return nil }
+        let context = CGContext(width: width, height: height)
+        context.translateBy(x: -bounds.minX, y: -bounds.minY)
+        if draft.kind == .line, let ends {
+            context.setStrokeColor(color)
+            context.setLineWidth(max(1, CGFloat(s.shapeLineWidth)))
+            context.setLineCap(.round)
+            context.move(to: ends.start)
+            context.addLine(to: ends.end)
+            context.strokePath()
+        } else {
+            context.setFillColor(color)
+            context.addPath(draft.kind.path(in: draft.rect, cornerRadius: draft.cornerRadius))
+            context.fillPath()
+        }
+        guard let image = context.makeImage() else { return nil }
+        let id = UUID()
+        let parent = s.activeLayer?.parentID
+        let record = ProjectLayerRecord(id: id, name: "Shape", isVisible: true,
+            transform: LayerTransform(origin: bounds.origin, size: bounds.size), imageFile: "\(id.uuidString).png", parentID: parent)
+        return (record, ImportedImage(image: image, thumbnail: image, name: "Shape"))
     }
 
     /// Lets upstream's background work (a filter preview being prepared on a task) finish before a frame is read, by
@@ -1110,6 +1156,10 @@ final class UpstreamEditor {
         let brushRevision: Int
         let layers: [Layer]
         let editingTextLayer: UUID?
+        /// The Shape tool's draft and the color it previews in (it is part of the composite, as on the Mac).
+        let shapeDraft: ShapeDraft?
+        let shapeColor: PaletteColor
+        let shapeLineWidth: Double
     }
 
     func renderKey() -> RenderKey {
@@ -1128,7 +1178,8 @@ final class UpstreamEditor {
                 maskPlacement: s.displayedMaskPlacement(for: layer), preview: preview.map { ObjectIdentifier($0) })
         }
         return RenderKey(documentID: document?.id, size: document?.size, brushRevision: s.brushRevision, layers: layers,
-                         editingTextLayer: s.textDraft?.layerID)
+                         editingTextLayer: s.textDraft?.layerID, shapeDraft: s.shapeDraft, shapeColor: s.foregroundColor,
+                         shapeLineWidth: Double(s.shapeLineWidth))
     }
 
     /// The composite as premultiplied RGBA8 (document size), from upstream's own exporter.
