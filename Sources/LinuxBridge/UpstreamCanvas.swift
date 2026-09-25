@@ -21,7 +21,7 @@ import AppKit
         view.frame = CGRect(origin: .zero, size: size)
         view.layout()
     }
-    /// A pointer event: `kind` 0 press, 1 drag, 2 release, 3 move (no button), 4 double press; `modifiers` in
+    /// A pointer event (returns the cursor code, see cursorCode): `kind` 0 press, 1 drag, 2 release, 3 move (no button), 4 double press; `modifiers` in
     /// ShortcutChord bits as the shell sends them (Ctrl 1 → ⌘, Alt 2 → ⌥, Meta 4 → ⌃, Shift 8).
     func mouse(kind: Int, x: Double, y: Double, modifiers: Int, clickCount: Int) {
         var flags: NSEvent.ModifierFlags = []
@@ -40,6 +40,33 @@ import AppKit
         case .leftMouseDragged: view.mouseDragged(with: event)
         case .leftMouseUp: view.mouseUp(with: event)
         default: view.mouseMoved(with: event)
+        }
+        // Hovering: the cursor rects decide (as AppKit does); pressing and dragging: whatever the view set.
+        if type == .mouseMoved || type == .leftMouseUp, let cursor = view.cursorForPoint(view.convert(event.locationInWindow, from: nil)) {
+            NSCursor.current = cursor
+        }
+    }
+
+    /// The cursor as a code the shell maps: 0 arrow, 1 I-beam, 2 crosshair, 3 open hand, 4 closed hand, 5 pointing hand,
+    /// 6 left-right, 7 up-down, 8 diagonal ↖↘, 9 diagonal ↗↙, 10 a picture of the app's own (not yet mapped).
+    static func cursorCode(_ cursor: NSCursor) -> Int32 {
+        switch cursor.shape {
+        case .arrow: return 0
+        case .iBeam: return 1
+        case .crosshair: return 2
+        case .openHand: return 3
+        case .closedHand: return 4
+        case .pointingHand: return 5
+        case .resizeLeftRight: return 6
+        case .resizeUpDown: return 7
+        case .frameResize(let position, _):
+            switch position.rawValue {
+            case 0, 2: return 7
+            case 1, 3: return 6
+            case 4, 7: return 8
+            default: return 9
+            }
+        case .custom: return 10
         }
     }
     /// A key press for the canvas: `keyCode` a Mac virtual key code, `characters` what it types.
@@ -91,7 +118,7 @@ nonisolated public func compositorCanvasResize(_ handle: UInt64, _ width: Double
 nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _ x: Double, _ y: Double, _ modifiers: Int32, _ clickCount: Int32) -> Int32 {
     Int32(withEntry(handle) { entry in
         UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers), clickCount: Int(clickCount))
-        return 0
+        return Int64(UpstreamCanvas.cursorCode(NSCursor.current))
     })
 }
 

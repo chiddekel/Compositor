@@ -164,8 +164,16 @@ public final class NSTrackingArea {
     open func updateTrackingAreas() {}
     open func addTrackingArea(_ area: NSTrackingArea) { trackingAreas.append(area) }
     open func removeTrackingArea(_ area: NSTrackingArea) { trackingAreas.removeAll { $0 === area } }
-    open func addCursorRect(_ rect: CGRect, cursor: NSCursor) {}
+    /// Cursor rects as `resetCursorRects` adds them (AppKit's cursor-rect machinery, asked by the host on hover).
+    public private(set) var cursorRects: [(rect: CGRect, cursor: NSCursor)] = []
+    open func addCursorRect(_ rect: CGRect, cursor: NSCursor) { cursorRects.append((rect, cursor)) }
     open func resetCursorRects() {}
+    /// The cursor the view's cursor rects give `point` (its own coordinates), the last-added rect winning.
+    public func cursorForPoint(_ point: CGPoint) -> NSCursor? {
+        cursorRects = []
+        resetCursorRects()
+        return cursorRects.last(where: { $0.rect.contains(point) })?.cursor
+    }
     open func discardCursorRects() {}
     open func hitTest(_ point: CGPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }

@@ -3167,7 +3167,13 @@ bool SessionWindow::routesToUpstreamCanvas() const {
 /// A pointer event for the hosted CanvasView, then the shell catches up with what it changed.
 void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount) {
     syncViewportGeometry();
-    compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(), chordBits(event->modifiers()), clickCount);
+    const int cursor = compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
+                                               chordBits(event->modifiers()), clickCount);
+    // Upstream's cursor for what is under the pointer (a custom picture — a selection tool's — shows as a crosshair).
+    static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
+        Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
+        Qt::SizeBDiagCursor, Qt::CrossCursor};
+    if (m_canvasWidget && cursor >= 0 && cursor <= 10) m_canvasWidget->setCursor(shapes[cursor]);
     if (kind == 3) { if (m_canvasWidget) m_canvasWidget->update(); return; }
     compositor_pump_main();
     refreshImage();
