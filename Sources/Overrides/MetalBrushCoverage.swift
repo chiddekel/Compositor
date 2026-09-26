@@ -2,8 +2,8 @@
 //
 // Same public surface as upstream's Metal type — `MetalBrushCoverage.shared`, `Tile`, `tile(width:height:)`,
 // `render(_:settled:tail:mapping:settings:canvas:)` — so upstream's BrushStroke compiles unmodified, implemented by the
-// portable backend chain: Vulkan compute when a device is available, otherwise the C CPU kernel (see
-// `AdaptiveBrushCoverage`). Tiles keep their density and preview as plain arrays instead of MTLBuffers.
+// portable backend chain: the C CPU kernel for inexpensive tips, Vulkan compute for wider soft tips when available
+// (see `AdaptiveBrushCoverage`). Tiles keep their density and preview as plain arrays instead of MTLBuffers.
 // Contract test: Tests/CompositorCoreTests/OverrideSignatureTests.swift.
 
 import Foundation
@@ -12,9 +12,10 @@ import CoreGraphics
 final class MetalBrushCoverage {
     static let shared: MetalBrushCoverage? = MetalBrushCoverage()
 
-    private let backend: BrushCoverageComputing
+    private lazy var backend: BrushCoverageComputing = BrushCoverageBackends.automatic()
+    private let cpu: BrushCoverageComputing = BrushCoverageBackends.cpu()
 
-    private init() { backend = BrushCoverageBackends.automatic() }
+    private init() {}
 
     /// Stroke-local tile storage: accumulated density and the 8-bit preview that is copied into the coverage context.
     final class Tile {
@@ -36,6 +37,9 @@ final class MetalBrushCoverage {
     func render(_ tiles: [(Tile, CGRect, CGContext)], settled: [SIMD4<Float>], tail: [SIMD4<Float>],
                 mapping: CGAffineTransform, settings: BrushSettings, canvas: CGSize) throws {
         guard !tiles.isEmpty else { return }
+        // For hard tips and small soft tips, a Vulkan submission and fence per tile costs more than
+        // the CPU kernel. Keep expensive wide soft-tip integration on the accelerated backend.
+        let computer = settings.hardness >= 1 || settings.diameter <= 64 ? cpu : backend
         let scale = Float(max(0.001, min(hypot(mapping.a, mapping.b), hypot(mapping.c, mapping.d))))
         let spacing = Float(max(0.25, settings.diameter * BrushStroke.spacingFraction(settings.hardness)))
         // Compute every tile first; only publish once all succeeded, so a failure leaves nothing half-written.
@@ -47,8 +51,8 @@ final class MetalBrushCoverage {
         }
         // A wide dab touches several tiles: on the CPU kernel they are computed side by side, one per core.
         var computed = [Result<BrushCoverageResult, Error>?](repeating: nil, count: requests.count)
-        if backend.isThreadSafe, requests.count > 1 {
-            let backend = self.backend
+        if computer.isThreadSafe, requests.count > 1 {
+            let backend = computer
             computed.withUnsafeMutableBufferPointer { out in
                 nonisolated(unsafe) let out = out
                 DispatchQueue.concurrentPerform(iterations: requests.count) { i in
@@ -56,7 +60,7 @@ final class MetalBrushCoverage {
                 }
             }
         } else {
-            for i in requests.indices { computed[i] = Result { try backend.render(requests[i]) } }
+            for i in requests.indices { computed[i] = Result { try computer.render(requests[i]) } }
         }
         var results: [(Tile, BrushCoverageResult, CGContext, Int)] = []
         for (index, (tile, rect, context)) in tiles.enumerated() {

@@ -45,6 +45,18 @@ extern "C" int compositor_brush_cpu(const CompositorBrushUniforms *uniforms,
     const float *permanent, size_t pixels, float *next, uint8_t *preview) {
     if (!validBrush(uniforms,segments,count,permanent,pixels,next,preview)) return -1;
     const auto &u = *uniforms;
+    // Most pointer updates cover only a small part of a tile. Outside this support, only the old
+    // permanent coverage contributes; rebuilding it also removes the previous provisional tail.
+    float minX = std::numeric_limits<float>::infinity(), minY = minX;
+    float maxX = -minX, maxY = -minY;
+    const float reach = u.radius + (u.hardness >= 1 ? u.antialias_width * 0.5f : 0);
+    for (size_t j=0;j<count;++j) {
+        const auto &s = segments[j];
+        minX = std::min(minX,std::min(s.x0,s.x1)-reach);
+        minY = std::min(minY,std::min(s.y0,s.y1)-reach);
+        maxX = std::max(maxX,std::max(s.x0,s.x1)+reach);
+        maxY = std::max(maxY,std::max(s.y0,s.y1)+reach);
+    }
     for (uint32_t y=0;y<u.height;++y) for (uint32_t x=0;x<u.width;++x) {
         const size_t i = size_t(y)*u.width+x;
         const float px = u.origin_x+(float(x)+0.5f)*u.a+(float(y)+0.5f)*u.c;
@@ -52,7 +64,10 @@ extern "C" int compositor_brush_cpu(const CompositorBrushUniforms *uniforms,
         next[i] = permanent[i]; preview[i] = 0;
         if (px<0 || py<0 || px>=u.canvas_width || py>=u.canvas_height) continue;
         float value;
-        if (u.hardness >= 1) {
+        if (px<minX || px>maxX || py<minY || py>maxY) {
+            value = u.hardness >= 1 ? permanent[i]
+                : permanent[i] == 0 ? 0 : 1-std::exp(-permanent[i]);
+        } else if (u.hardness >= 1) {
             float settled = std::numeric_limits<float>::infinity(), tail = settled;
             for (uint32_t j=0;j<u.settled_count;++j) settled = std::min(settled,distanceSquared(px,py,segments[j]));
             for (uint32_t j=u.settled_count;j<count;++j) tail = std::min(tail,distanceSquared(px,py,segments[j]));
