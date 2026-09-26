@@ -426,11 +426,18 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 {"lasso", SessionWindow::Tool::Lasso}, {"brush", SessionWindow::Tool::Brush},
                 {"hand", SessionWindow::Tool::Hand}, {"gradient", SessionWindow::Tool::Gradient}};
             const int steps = 60;
+            // COMPOSITOR_BENCH_TOOLS=brush,move: only those.
+            const QStringList only = qEnvironmentVariable("COMPOSITOR_BENCH_TOOLS").split(QLatin1Char(','), Qt::SkipEmptyParts);
             for (const auto &[name, tool] : tools) {
-                window.sendCommand({{"version", 1}, {"action", "new"}, {"width", bw}, {"height", bh}});
+                if (!only.isEmpty() && !only.contains(QLatin1String(name))) continue;
+                window.sendCommand({{"version", 1}, {"action", "new"}, {"width", bw}, {"height", bh}, {"emptyLayer", true}});
                 QElapsedTimer settleNew; settleNew.start();   // the main pump picks up the new document
                 while (settleNew.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
                 window.setTool(tool);
+                // COMPOSITOR_BENCH_DIAMETER: the brush size the painting tools use.
+                if (qEnvironmentVariableIsSet("COMPOSITOR_BENCH_DIAMETER"))
+                    window.sendCommand({{"version", 1}, {"action", "setBrushSettings"},
+                                        {"parameters", QJsonObject{{"diameter", qEnvironmentVariable("COMPOSITOR_BENCH_DIAMETER").toDouble()}}}});
                 for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
                 QElapsedTimer t; t.start();
                 for (int i = 0; i < steps; ++i) {
@@ -443,8 +450,14 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 flush();
                 const double press = t.nsecsElapsed() / 1e6;
                 t.restart();
+                // COMPOSITOR_BENCH_EVENTS=N: N pointer moves arrive per frame (a 1000 Hz mouse at 60 fps is ~16); the
+                // figure is then milliseconds per frame.
+                const int perFrame = std::max(1, qEnvironmentVariable("COMPOSITOR_BENCH_EVENTS").toInt());
                 for (int i = 1; i <= steps; ++i) {
-                    send(QEvent::MouseMove, doc(0.3 + 0.3 * i / steps, 0.3 + 0.2 * i / steps), Qt::NoButton, Qt::LeftButton);
+                    for (int k = 0; k < perFrame; ++k) {
+                        const double f = (i - 1 + (k + 1.0) / perFrame) / steps;
+                        send(QEvent::MouseMove, doc(0.3 + 0.3 * f, 0.3 + 0.2 * f), Qt::NoButton, Qt::LeftButton);
+                    }
                     flush();
                 }
                 const double drag = t.nsecsElapsed() / 1e6 / steps;

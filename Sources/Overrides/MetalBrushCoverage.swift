@@ -39,14 +39,28 @@ final class MetalBrushCoverage {
         let scale = Float(max(0.001, min(hypot(mapping.a, mapping.b), hypot(mapping.c, mapping.d))))
         let spacing = Float(max(0.25, settings.diameter * BrushStroke.spacingFraction(settings.hardness)))
         // Compute every tile first; only publish once all succeeded, so a failure leaves nothing half-written.
-        var results: [(Tile, BrushCoverageResult, CGContext, Int)] = []
-        for (tile, rect, context) in tiles {
-            let origin = rect.origin.applying(mapping)
-            let request = BrushCoverageRequest(
-                width: Int(rect.width), height: Int(rect.height), origin: origin, mapping: mapping, canvas: canvas,
+        let requests = tiles.map { (tile, rect, _) in
+            BrushCoverageRequest(
+                width: Int(rect.width), height: Int(rect.height), origin: rect.origin.applying(mapping), mapping: mapping, canvas: canvas,
                 radius: Float(settings.diameter / 2), hardness: Float(settings.hardness), antialiasWidth: scale,
                 spacing: spacing, settled: settled, tail: tail, permanent: tile.permanent)
-            results.append((tile, try backend.render(request), context, Int(rect.width * rect.height)))
+        }
+        // A wide dab touches several tiles: on the CPU kernel they are computed side by side, one per core.
+        var computed = [Result<BrushCoverageResult, Error>?](repeating: nil, count: requests.count)
+        if backend.isThreadSafe, requests.count > 1 {
+            let backend = self.backend
+            computed.withUnsafeMutableBufferPointer { out in
+                nonisolated(unsafe) let out = out
+                DispatchQueue.concurrentPerform(iterations: requests.count) { i in
+                    out[i] = Result { try backend.render(requests[i]) }
+                }
+            }
+        } else {
+            for i in requests.indices { computed[i] = Result { try backend.render(requests[i]) } }
+        }
+        var results: [(Tile, BrushCoverageResult, CGContext, Int)] = []
+        for (index, (tile, rect, context)) in tiles.enumerated() {
+            results.append((tile, try computed[index]!.get(), context, Int(rect.width * rect.height)))
         }
         for (tile, result, context, count) in results {
             tile.permanent = result.permanent

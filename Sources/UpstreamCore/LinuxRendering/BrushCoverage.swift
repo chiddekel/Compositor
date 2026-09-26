@@ -27,6 +27,11 @@ enum BrushCoverageFailure: Error { case invalidInput, unavailable }
 /// not mutate input or publish partial output. The stroke owns tile state.
 protocol BrushCoverageComputing: AnyObject {
     func render(_ request: BrushCoverageRequest) throws -> BrushCoverageResult
+    /// Tiles may be computed concurrently (the CPU kernel); a GPU queue is fed one tile at a time.
+    var isThreadSafe: Bool { get }
+}
+extension BrushCoverageComputing {
+    var isThreadSafe: Bool { false }
 }
 
 /// One instance per stroke: once acceleration fails, that stroke stays on CPU.
@@ -35,6 +40,7 @@ final class AdaptiveBrushCoverage: BrushCoverageComputing {
     private var accelerator: BrushCoverageComputing?
     private let cpu: BrushCoverageComputing
     private(set) var fellBack = false
+    var isThreadSafe: Bool { accelerator == nil }
 
     init(accelerator: BrushCoverageComputing?, cpu: BrushCoverageComputing = CPUBrushCoverage()) {
         self.accelerator = accelerator
@@ -53,7 +59,10 @@ final class AdaptiveBrushCoverage: BrushCoverageComputing {
 
 enum BrushCoverageBackends {
     static func cpu() -> BrushCoverageComputing { CPUBrushCoverage() }
+    /// The GPU when there is one; COMPOSITOR_BRUSH_BACKEND=cpu (Settings' acceleration switch) keeps brushes on the
+    /// native kernel, run tile-parallel across the cores.
     static func automatic() -> BrushCoverageComputing {
-        AdaptiveBrushCoverage(accelerator: VulkanBrushCoverage.shared)
+        if ProcessInfo.processInfo.environment["COMPOSITOR_BRUSH_BACKEND"] == "cpu" { return AdaptiveBrushCoverage(accelerator: nil) }
+        return AdaptiveBrushCoverage(accelerator: VulkanBrushCoverage.shared)
     }
 }

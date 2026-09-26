@@ -240,7 +240,9 @@ nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: U
     return withEntry(handle) { entry in
         guard entry.editor.session.brushStroke != nil else { return -3 }
         guard let dirty = entry.strokeDirty else { return 0 }
-        guard let made = try? entry.editor.renderRegionRGBA(dirty, scale: CGFloat(entry.strokeScale)) else { return -5 }
+        // At full resolution: shrinking the region through the high-quality downsampler every frame costs more than
+        // the stroke; the shell scales the patch into its display image (the committed stroke re-renders properly).
+        guard let made = try? entry.editor.renderRegionRGBA(dirty, scale: 1) else { return -5 }
         guard capacity >= made.bytes.count else { return -1 }
         made.bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: $0.count) }
         rect[0] = Int32(made.rect.minX); rect[1] = Int32(made.rect.minY)

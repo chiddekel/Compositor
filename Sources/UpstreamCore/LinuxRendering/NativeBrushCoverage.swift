@@ -37,6 +37,7 @@ private func nativeCoverage(_ request: BrushCoverageRequest, context: OpaquePoin
 }
 
 final class CPUBrushCoverage: BrushCoverageComputing {
+    var isThreadSafe: Bool { true }
     func render(_ request: BrushCoverageRequest) throws -> BrushCoverageResult { try nativeCoverage(request) }
 }
 

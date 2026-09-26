@@ -994,7 +994,11 @@ final class UpstreamEditor {
     /// previews standing in for the layer they preview, and an in-progress brush stroke's touched tiles composited
     /// in (all the way upstream's own canvas draws them: `EditorCanvas.swift` calls this same `BrushStroke.paintSnapshot()`
     /// for its live paint, we just call it from here instead of an NSView draw pass).
-    func displayedSnapshot() -> ProjectSnapshot? {
+    ///
+    /// `strokeRegion` (document coordinates): only that part of the document will be drawn (a mid-stroke frame), so
+    /// the stroke's layer is built for that region alone — the way EditorCanvas draws just the touched tiles — rather
+    /// than the whole painted layer, its bounds scan and its thumbnail, every frame.
+    func displayedSnapshot(strokeRegion: CGRect? = nil) -> ProjectSnapshot? {
         let s = session
         guard var snapshot = s.projectSnapshot(), let document = s.document else { return nil }
         var images = snapshot.images
@@ -1009,6 +1013,10 @@ final class UpstreamEditor {
                 ?? s.hueSaturation?.previewImage(for: layer.id)
             if let preview, let asset = layer.asset {
                 images[layer.id] = ImportedImage(image: preview, thumbnail: asset.thumbnail, name: asset.name)
+            } else if let stroke, stroke.layer.id == layer.id, !stroke.isMask, let strokeRegion,
+                      let painted = Self.paintRegion(of: stroke, in: strokeRegion) {
+                images[layer.id] = painted.asset
+                shown = painted.transform
             } else if let stroke, stroke.layer.id == layer.id, !stroke.isMask, let painted = try? stroke.paintSnapshot() {
                 // A stroke can grow the layer's painted bounds beyond its committed transform (a brush dab
                 // outside the current edges); paintSnapshot() reports the new transform for exactly that,
@@ -1105,9 +1113,20 @@ final class UpstreamEditor {
     /// `region` of the document at `scale` (display resolution: a 150 MP document fitted to a window is composited at a
     /// fraction of its pixels). Every placement is scaled with the canvas; the exporter then draws the layer images
     /// scaled, touching only output pixels. Returns the scaled bytes and the document rect they cover.
+    /// The stroke's layer as painted so far, inside `region` (document coordinates) only: its original pixels with the
+    /// stroke's tiles over them, cropped to the layer pixels that region covers (plus a pixel of margin for filtering).
+    static func paintRegion(of stroke: BrushStroke, in region: CGRect) -> (asset: ImportedImage, transform: LayerTransform)? {
+        let bounds = CGRect(x: 0, y: 0, width: stroke.width, height: stroke.height)
+        let crop = region.applying(stroke.pixelToDocument.inverted()).integral.insetBy(dx: -2, dy: -2).intersection(bounds)
+        guard !crop.isNull, !crop.isEmpty else { return nil }
+        let raster = RasterSnapshot.replacing(source: stroke.layer.asset, sourceRect: stroke.sourceRect, patches: stroke.patches, crop: crop)
+        guard let image = try? raster.makeImage() else { return nil }
+        return (ImportedImage(image: image, thumbnail: image, name: stroke.layer.name, raster: raster), stroke.transform(for: crop))
+    }
+
     func renderRegionRGBA(_ region: CGRect, scale: CGFloat = 1) throws -> (bytes: [UInt8], rect: CGRect, width: Int, height: Int) {
         settle()
-        guard let snapshot = displayedSnapshot() else { throw ExportError.render }
+        guard let snapshot = displayedSnapshot(strokeRegion: region) else { throw ExportError.render }
         let canvas = CGRect(x: 0, y: 0, width: snapshot.manifest.width, height: snapshot.manifest.height)
         let rect = region.integral.intersection(canvas)
         guard !rect.isNull, rect.width >= 1, rect.height >= 1 else { throw ExportError.render }

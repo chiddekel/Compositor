@@ -3209,9 +3209,10 @@ bool SessionWindow::routesToUpstreamCanvas() const {
 /// A pointer event for the hosted CanvasView, then the shell catches up with what it changed.
 void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount) {
     PERF_SCOPE(kind == 3 ? "canvasMouse:hover" : kind == 1 ? "canvasMouse:drag" : "canvasMouse:press/release");
-    syncViewportGeometry();
-    const int cursor = compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
-                                               chordBits(event->modifiers()), clickCount);
+    { PERF_SCOPE("canvasMouse:syncViewport"); syncViewportGeometry(); }
+    const int cursor = [&] { PERF_SCOPE("canvasMouse:upstream");
+        return compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
+                                       chordBits(event->modifiers()), clickCount); }();
     // Upstream's cursor for what is under the pointer (a custom picture — a selection tool's — shows as a crosshair).
     static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
         Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
@@ -3239,11 +3240,12 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
             m_canvasWidget->setCursor(shapes[cursor]);
     }
     if (kind == 3) { updateInvalidOverlay(); return; }
-    invalidateOverlay();
-    compositor_pump_main();
-    // Mid-stroke, only the area the brush changed is re-rendered (as EditorCanvas redraws its dirty rect).
+    { PERF_SCOPE("canvasMouse:pump"); compositor_pump_main(); }
+    // Mid-stroke, only the area the brush changed is re-rendered and repainted (as EditorCanvas redraws its dirty
+    // rect), and of the overlay only what moved (the brush circle): no whole-canvas repaint per pointer event.
     const bool brush = m_tool == Tool::Brush || m_tool == Tool::SpotHealing || m_tool == Tool::CloneStamp || m_tool == Tool::Smear;
-    if (brush && kind == 1) { scheduleStrokeRefresh(); if (m_canvasWidget) m_canvasWidget->update(); return; }
+    if (brush && kind == 1) { scheduleStrokeRefresh(); updateInvalidOverlay(); return; }
+    invalidateOverlay();
     refreshImage();
     if (kind == 2 || kind == 0) {
         syncToolFromSession();    // a double-click on live text switches to the Type tool, as on the Mac
@@ -3265,9 +3267,23 @@ void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
+/// Drag moves are coalesced as AppKit coalesces mouse-dragged events: the moves that arrive in one pass of the event
+/// loop reach upstream's canvas as one (the latest), so a 1000 Hz mouse doesn't make the brush redo its work sixteen
+/// times a frame. A press or release first delivers the pending move, so the stroke's ends are exact.
+void SessionWindow::flushPendingDrag() {
+    if (!m_pendingDrag) return;
+    std::unique_ptr<QMouseEvent> event = std::move(m_pendingDrag);
+    if (m_upstreamCanvasDrag) sendUpstreamCanvasMouse(1, event.get(), 1);
+}
+
 void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
-    if (m_upstreamCanvasDrag) { sendUpstreamCanvasMouse(1, event, 1); return; }
+    if (m_upstreamCanvasDrag) {
+        const bool scheduled = m_pendingDrag != nullptr;
+        m_pendingDrag.reset(static_cast<QMouseEvent *>(event->clone()));
+        if (!scheduled) QTimer::singleShot(0, this, [this] { flushPendingDrag(); });
+        return;
+    }
     if (!m_painting && routesToUpstreamCanvas()) { sendUpstreamCanvasMouse(3, event, 0); return; }
     m_currentPoint = documentPoint(event->position());
     mouseMoveEvent(event);
@@ -3284,6 +3300,7 @@ bool SessionWindow::isBrushStrokeActive() const {
 void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
     if (m_upstreamCanvasDrag && event->button() == Qt::LeftButton) {
+        flushPendingDrag();
         m_upstreamCanvasDrag = false;
         sendUpstreamCanvasMouse(2, event, 1);
         return;
@@ -3483,7 +3500,9 @@ void SessionWindow::refreshPanels() {
     m_panelThrottleClock.start();
     updateStatusTelemetry();
     updateOptionsBar();
-    queueLayersRefresh();
+    // The Layers panel (thumbnails, sizes) catches up when the drag ends, as the Mac's list does: rebuilding it mid-
+    // stroke costs a frame every few.
+    if (!m_upstreamCanvasDrag) queueLayersRefresh();
 }
 
 /// The panels upstream's observation marked changed since they were last fetched, re-rendered now.
@@ -3527,18 +3546,23 @@ void SessionWindow::scheduleStrokeRefresh() {
             // Brush strokes: re-render and repaint only the area the stroke changed (upstream's EditorCanvas redraws
             // just BrushStroke.dirtyDocumentRect). -3 = no region tracked (e.g. a Liquify warp): whole document below.
             std::vector<uint8_t> &region = m_strokeRegionBuffer;
-            region.resize(static_cast<size_t>(m_image.width()) * m_image.height() * 4 + 16);
+            // The patch comes at full resolution: room for the whole document at worst (grown once, then reused).
+            region.resize(std::max(region.size(), static_cast<size_t>(docWidth()) * docHeight() * 4 + 16));
             // Document rect (x, y, w, h) and the pixel size of the patch, which is at the display scale.
             int32_t rect[6] = {0, 0, 0, 0, 0, 0};
-            const int64_t n = compositor_session_render_dirty(m_sessionHandle, rect, region.data(), region.size());
+            PERF_SCOPE("stroke:frame");
+            const int64_t n = [&] { PERF_SCOPE("stroke:renderDirty"); return compositor_session_render_dirty(m_sessionHandle, rect, region.data(), region.size()); }();
             if (n == 0) return;
             if (n > 0 && n == int64_t(rect[4]) * rect[5] * 4 && m_image.format() == QImage::Format_RGBA8888) {
                 const QImage patch = QImage(region.data(), rect[4], rect[5], rect[4] * 4, QImage::Format_RGBA8888_Premultiplied)
                     .convertToFormat(QImage::Format_RGBA8888);
                 {
+                    // The patch is at full resolution; the display image may be smaller (a big document).
                     QPainter painter(&m_image);
                     painter.setCompositionMode(QPainter::CompositionMode_Source);
-                    painter.drawImage(QPointF(rect[0] * m_displayScale, rect[1] * m_displayScale), patch);
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform, m_displayScale < 1.0);
+                    painter.drawImage(QRectF(rect[0] * m_displayScale, rect[1] * m_displayScale,
+                                             rect[4] * m_displayScale, rect[5] * m_displayScale), patch);
                 }
                 if (m_canvasWidget) {
                     const QRectF target = canvasTargetRect();
