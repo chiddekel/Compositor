@@ -127,6 +127,8 @@ private struct State: Encodable {
     /// progress), the lines a snapped move lines up with.
     let showsRulers: Bool
     let showsGrid: Bool
+    /// View > Pixel Grid (800% and above): EditorCanvas.drawPixelGrid.
+    let showsPixelGrid: Bool
     let showsGuides: Bool
     let guides: [GuideState]
     let guideDragging: Bool
@@ -946,7 +948,7 @@ final class UpstreamEditor {
             floatingPanels: FloatingPanels.open(in: self),
             showsImporter: s.showsImporter,
             openProjectRequested: openProjectRequested,
-            showsRulers: s.showsRulers, showsGrid: s.showsGrid, showsGuides: s.showsGuides,
+            showsRulers: s.showsRulers, showsGrid: s.showsGrid, showsPixelGrid: s.showsPixelGrid, showsGuides: s.showsGuides,
             guides: s.displayedGuides.map { State.GuideState(vertical: $0.axis == .vertical, position: $0.position) },
             guideDragging: s.guideDrag != nil, canEditGuides: s.canEditGuides,
             snapLines: [s.snapGuides.xs.map { Double($0) }, s.snapGuides.ys.map { Double($0) }],

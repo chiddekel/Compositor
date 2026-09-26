@@ -80,7 +80,7 @@ Canvas Size, Image Size, Trim, Flip Canvas H/V, Crop — ✅ (CanvasSizeTests, I
 ## 7. View menu and canvas
 
 Fit, Actual Pixels, Zoom In/Out, rulers, grid, guides (add/drag/clear), snapping (guides, layers, document bounds),
-transform controls, marching ants, pixel grid, checkerboard — ✅. Rulers are drawn by the Qt shell to upstream's
+transform controls, marching ants, pixel grid (800% and above, View toggle), checkerboard — ✅. Rulers are drawn by the Qt shell to upstream's
 metrics (GuideTests excluded).
 
 ## 8. Application

@@ -462,6 +462,7 @@ private:
     void syncCanvasChrome(const QJsonObject &state);
     QWidget *m_rulerCorner = nullptr, *m_rulerH = nullptr, *m_rulerV = nullptr;
     bool m_showsRulers = false, m_showsGrid = false, m_showsGuides = false, m_canEditGuides = false;
+    bool m_showsPixelGrid = true;   // View > Pixel Grid (800% and above)
     bool m_guideDragging = false;   // a guide drag this shell started (ruler or canvas)
     bool m_guideDragVertical = false;
     QVector<QPair<bool, double>> m_guides;   // vertical?, document position

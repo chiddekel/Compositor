@@ -2960,6 +2960,7 @@ void SessionWindow::syncCanvasChrome(const QJsonObject &state) {
     const bool hasDocument = state.value("width").toInt() > 0;
     const bool rulers = state.value("showsRulers").toBool() && hasDocument;
     m_showsGrid = state.value("showsGrid").toBool();
+    m_showsPixelGrid = state.value("showsPixelGrid").toBool();
     m_showsGuides = state.value("showsGuides").toBool();
     m_canEditGuides = state.value("canEditGuides").toBool();
     m_guides.clear();
@@ -3169,6 +3170,31 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     // From 200% (two screen pixels per document pixel) the pixels are hard-edged (EditorCanvas.crispZoom).
     p.setRenderHint(QPainter::SmoothPixmapTransform, viewportZoom() < 2.0);
     { PERF_SCOPE("canvas:image"); p.drawImage(target, m_image); }
+
+    // EditorCanvas.drawPixelGrid: from 800% (View > Pixel Grid), a device-pixel line on every document pixel boundary
+    // in view, white 0.55 at 45%.
+    if (m_showsPixelGrid && viewportZoom() >= 8.0 && docWidth() > 0 && docHeight() > 0) {
+        const QRectF area = target.intersected(QRectF(event ? QRectF(event->rect()) : QRectF(canvas->rect())));
+        if (!area.isEmpty()) {
+            const double step = target.width() / docWidth(), hairline = 1.0 / canvas->devicePixelRatioF();
+            const QColor line = QColor::fromRgbF(0.55, 0.55, 0.55, 0.45);
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, false);
+            const int firstColumn = int(std::ceil((area.left() - target.left()) / step));
+            const int lastColumn = int(std::floor((area.right() - target.left()) / step));
+            for (int column = firstColumn; column <= lastColumn; ++column) {
+                const double x = target.left() + column * step;
+                p.fillRect(QRectF(x - hairline / 2, area.top(), hairline, area.height()), line);
+            }
+            const int firstRow = int(std::ceil((area.top() - target.top()) / step));
+            const int lastRow = int(std::floor((area.bottom() - target.top()) / step));
+            for (int row = firstRow; row <= lastRow; ++row) {
+                const double y = target.top() + row * step;
+                p.fillRect(QRectF(area.left(), y - hairline / 2, area.width(), hairline), line);
+            }
+            p.restore();
+        }
+    }
 
     // Hairline: white at 13%, one device pixel.
     {
