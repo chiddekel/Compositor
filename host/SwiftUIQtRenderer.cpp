@@ -599,8 +599,9 @@ protected:
                 if (m_pressRow != row) {
                     m_pressRow = row;
                     m_pressPos = e->globalPosition().toPoint();
-                    m_pressMaskSource = e->modifiers().testFlag(Qt::AltModifier) && !e->modifiers().testFlag(Qt::ControlModifier)
-                        ? obj->property("listMaskDragSource").toString() : QString();
+                    const bool alt = e->modifiers().testFlag(Qt::AltModifier) && !e->modifiers().testFlag(Qt::ControlModifier);
+                    m_pressMaskSource = alt ? obj->property("listMaskDragSource").toString() : QString();
+                    m_pressEffectSource = alt ? obj->property("listEffectDragSource").toString() : QString();
                 }
             }
             break;
@@ -609,6 +610,19 @@ protected:
             auto *e = static_cast<QMouseEvent *>(event);
             if (m_pressRow < 0 || !(e->buttons() & Qt::LeftButton)) break;
             if ((e->globalPosition().toPoint() - m_pressPos).manhattanLength() < QApplication::startDragDistance()) break;
+            if (!m_pressEffectSource.isEmpty()) {
+                const QString source = m_pressEffectSource;
+                m_pressRow = -1;
+                m_pressEffectSource.clear();
+                m_pressMaskSource.clear();
+                auto *drag = new QDrag(m_content);
+                auto *mime = new QMimeData;
+                mime->setData("com.compositor.layer-effect", source.toUtf8());
+                drag->setMimeData(mime);
+                drag->exec(Qt::CopyAction, Qt::CopyAction);
+                m_indicator->hide();
+                return true;
+            }
             if (!m_pressMaskSource.isEmpty()) {
                 const QString source = m_pressMaskSource;
                 m_pressRow = -1;
@@ -642,11 +656,20 @@ protected:
         case QEvent::MouseButtonRelease:
             m_pressRow = -1;
             m_pressMaskSource.clear();
+            m_pressEffectSource.clear();
             break;
         case QEvent::DragEnter:
         case QEvent::DragMove: {
             if (obj != m_content) break;
             auto *e = static_cast<QDropEvent *>(event);
+            if (e->mimeData()->hasFormat("com.compositor.layer-effect")) {
+                // Upstream decides whether the effect can go there (canCopyEffect); a row is always a candidate.
+                if (locate(e->position().toPoint()).first >= m_rows.size()) { m_indicator->hide(); break; }
+                e->setDropAction(Qt::CopyAction);
+                e->accept();
+                showMaskIndicator(e->position().toPoint());
+                return true;
+            }
             if (e->mimeData()->hasFormat("com.compositor.layer-mask")) {
                 if (!canCopyMaskAt(e->mimeData()->data("com.compositor.layer-mask"), e->position().toPoint())) break;
                 e->setDropAction(Qt::CopyAction);
@@ -666,6 +689,18 @@ protected:
         case QEvent::Drop: {
             if (obj != m_content) break;
             auto *e = static_cast<QDropEvent *>(event);
+            if (e->mimeData()->hasFormat("com.compositor.layer-effect")) {
+                const int row = locate(e->position().toPoint()).first;
+                if (row >= m_rows.size()) break;
+                const QByteArray payload = QJsonDocument(QJsonArray{QString::fromUtf8(e->mimeData()->data("com.compositor.layer-effect")), row})
+                    .toJson(QJsonDocument::Compact);
+                e->setDropAction(Qt::CopyAction);
+                e->accept();
+                m_indicator->hide();
+                const uint64_t handle = m_handle; const QString panel = m_panel, node = m_nodeID;
+                QTimer::singleShot(0, [handle, panel, node, payload] { dispatch(handle, panel, node, QStringLiteral("listEffectDrop"), payload); });
+                return true;
+            }
             if (e->mimeData()->hasFormat("com.compositor.layer-mask")) {
                 const QByteArray source = e->mimeData()->data("com.compositor.layer-mask");
                 const QPoint position = e->position().toPoint();
@@ -713,6 +748,11 @@ private:
         if (widget->objectName().startsWith(QStringLiteral("layerMaskThumb:")))
             maskSource = widget->objectName().mid(QStringLiteral("layerMaskThumb:").size());
         if (!maskSource.isEmpty()) widget->setProperty("listMaskDragSource", maskSource);
+        // An effect row (LayerEffectRow): Option-dragging it carries a copy of the effect.
+        if (widget->objectName().startsWith(QStringLiteral("layerEffectRow:")))
+            widget->setProperty("listEffectDragSource", widget->objectName().mid(QStringLiteral("layerEffectRow:").size()));
+        else if (widget->parentWidget() && widget->parentWidget()->property("listEffectDragSource").isValid())
+            widget->setProperty("listEffectDragSource", widget->parentWidget()->property("listEffectDragSource"));
         widget->installEventFilter(this);
         for (QWidget *child : widget->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) watch(child, row, maskSource);
     }
@@ -750,7 +790,7 @@ private:
     }
     QWidget *m_content;
     QList<QWidget *> m_rows;
-    QString m_folders, m_layerIdentifiers, m_maskDragIdentifiers, m_maskDropIdentifiers, m_pressMaskSource;
+    QString m_folders, m_layerIdentifiers, m_maskDragIdentifiers, m_maskDropIdentifiers, m_pressMaskSource, m_pressEffectSource;
     uint64_t m_handle;
     QString m_panel, m_nodeID;
     QFrame *m_indicator = nullptr;

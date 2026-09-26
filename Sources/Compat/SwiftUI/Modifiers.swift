@@ -291,6 +291,17 @@ extension View {
             }))
         }
     }
+    /// Compat-only: Option-dragging a row's effect (a view identified "layerEffectRow:<layer>:<effect>") onto another
+    /// row hands `action` that "<layer>:<effect>" and the row index it was dropped on.
+    public func compatListEffectDrop(perform action: @escaping (_ source: String, _ row: Int) -> Void) -> some View {
+        modified {
+            $0.boolParams["listEffectDrop"] = true
+            $0.modifiers.append(.sink("listEffectDrop", { value in
+                guard let values = value as? [Any], values.count == 2, let source = values[0] as? String else { return }
+                action(source, (values[1] as? Int) ?? Int((values[1] as? Double) ?? -1))
+            }))
+        }
+    }
     public func compatListMaskDrop(dragIdentifiers: [String], dropTargetIdentifiers: [String],
                                    perform action: @escaping (_ source: String, _ target: String) -> Void) -> some View {
         modified {

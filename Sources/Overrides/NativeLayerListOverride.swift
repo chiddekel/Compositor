@@ -54,6 +54,15 @@ struct NativeLayerList: View {
                   session.canCopyMask(from: sourceID, to: targetID) else { return }
             session.copyMask(from: sourceID, to: targetID)
         }
+        // LayerEffectRow's Option-drag: a copy of that effect onto the row it is dropped on.
+        .compatListEffectDrop { source, row in
+            let parts = source.split(separator: ":")
+            let rows = session.layerRows
+            guard parts.count == 2, let sourceID = UUID(uuidString: String(parts[0])),
+                  let kind = LayerEffectKind(rawValue: String(parts[1])), rows.indices.contains(row),
+                  session.canCopyEffect(kind, from: sourceID, to: rows[row].layer.id) else { return }
+            session.copyEffect(kind, from: sourceID, to: rows[row].layer.id)
+        }
         .accessibilityIdentifier("layersList")
     }
 
@@ -134,6 +143,7 @@ struct NativeLayerList: View {
                     }.frame(width: 36, height: 51)
                     // LayerThumbnailButton: selects the layer's pixels as the target; Cmd-click (Ctrl) loads them
                     // as a selection (Shift adds, Option subtracts).
+                    .help(layer.liveText != nil ? "Editable text layer" : "Select image pixels")
                     .onTapGesture { imageThumbnailTapped(layer.id, modifiers: CompatInput.clickModifiers) }
                     if let mask = layer.mask {
                         let canvas = session.document?.size ?? layer.size
@@ -144,13 +154,20 @@ struct NativeLayerList: View {
                             } else { Spacer() }
                         }.frame(width: linkable ? 13 : 5, height: 51)
                         // The link button: layer and mask move together, or apart.
+                        .help(linkable ? (mask.isLinked ? "Unlink layer and mask to move or transform them separately"
+                                                        : "Link layer and mask so they move together") : "")
                         .onTapGesture { if linkable { session.toggleMaskLink(layer.id) } }
-                        HStack {
+                        ZStack {
                             Image(nsImage: LayerThumbnails.mask(mask, transform: layer.maskTransform, layerID: layer.id, canvas: canvas))
                                 .frame(width: maskSize.width, height: maskSize.height)
                                 .border(session.activeLayerID == layer.id && session.isMaskSelected ? Color.accentColor : Color.clear, width: 2)
+                            // MaskDisabledMark: a red stroke across a disabled mask.
+                            if !mask.isEnabled {
+                                Text("╱").font(.system(size: 32, weight: .medium)).foregroundStyle(.red)
+                            }
                         }
                         .frame(width: 30, height: 51)
+                        .help("Select layer mask; Shift-click to enable/disable; Cmd-click to select its black areas (Cmd-Shift adds, Cmd-Option subtracts)")
                         .accessibilityIdentifier("layerMaskThumb:\(layer.id.uuidString)")
                         .onTapGesture { maskThumbnailTapped(layer.id, modifiers: CompatInput.clickModifiers) }
                     }
@@ -162,6 +179,9 @@ struct NativeLayerList: View {
                             Text(name).font(.system(size: 13)).lineLimit(1)
                         }
                         Text(details).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                            .help(layer.maskSourceID.map { source in
+                                "Clipping mask based on \(session.document?.layers.first(where: { $0.id == source })?.name ?? "Missing source"). Option-click the bottom of its row to release."
+                            } ?? "")
                     }
                     .padding(.leading, 5).padding(.top, 9).padding(.trailing, 8)
                     // The table's doubleAction: rename the layer (edit live text, open an adjustment).
@@ -181,8 +201,24 @@ struct NativeLayerList: View {
             .padding(.bottom, 2)
             .contentShape(Rectangle())
             .onTapGesture {
-                click(layer.id, modifiers: CompatInput.clickModifiers)
+                // An Option-click waits for where it landed (below); anything else is a click on the row.
+                let modifiers = CompatInput.clickModifiers
+                if modifiers & 2 != 0, modifiers & 1 == 0 { LayerRowClick.pendingOption = modifiers }
+                else { click(layer.id, modifiers: modifiers) }
             }
+            // LayerTableView.isClippingZone: Option-click along a row's bottom 10 points makes (or releases) a clipping
+            // mask (not on a folder); elsewhere in the row it is an ordinary Option-click.
+            .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                guard let modifiers = LayerRowClick.pendingOption else { return }
+                LayerRowClick.pendingOption = nil
+                let height = 52 + 24 * Double(layer.effects?.kinds.count ?? 0)
+                if !layer.isGroup, tap.location.y >= height - 10 {
+                    session.effectSelection = nil
+                    session.toggleClippingMask(layer.id)
+                } else {
+                    click(layer.id, modifiers: modifiers)
+                }
+            })
             .contextMenu { contextMenu(for: layer.id) }
         )
     }
@@ -245,6 +281,7 @@ struct NativeLayerList: View {
         }
         .frame(height: 24)
         .background(selected ? Color.accentColor.opacity(0.3) : Color.clear)
+        .accessibilityIdentifier("layerEffectRow:\(layer.id.uuidString):\(kind.rawValue)")
         .contentShape(Rectangle())
         .help("Click to select; double-click to edit; Option-drag to copy " + kind.rawValue.lowercased())
         .onTapGesture(count: 2) { session.selectEffect(kind, on: layer.id, editing: true) }
@@ -264,7 +301,13 @@ struct NativeLayerList: View {
     /// The real list's right-click menu (NativeLayerList.contextMenu(for:) and validateMenuItem), item for item.
     @ViewBuilder private func contextMenu(for id: UUID) -> some View {
         let active = session.activeLayer
-        let prepare = { if session.selectedLayerIDs.isEmpty { session.selectLayer(id) } }
+        // LayerTableView.menu(for:): a right-click outside the selection selects that row first; inside it, the row
+        // becomes the primary one of the same selection.
+        let prepare = {
+            session.effectSelection = nil
+            if session.selectedLayerIDs.contains(id) { session.selectLayers(session.selectedLayerIDs, primary: id) }
+            else { session.selectLayerTarget(id, mask: false) }
+        }
         Button("Duplicate Layer") { prepare(); session.duplicateActiveLayer() }
             .disabled(!(session.canEditLayers && active != nil))
         Button("Rename…") { prepare(); if session.canEditLayers, let id = session.activeLayerID { session.renamingLayerID = id } }
@@ -317,6 +360,8 @@ struct NativeLayerList: View {
         if layer.isGroup || layer.adjustment != nil || layer.liveText != nil {
             Image(systemName: layer.isGroup ? "folder" : layer.adjustment?.kind.symbol ?? "textformat")
                 .font(.system(size: 22))
+                // LayerCell.adjustmentIcon: the Curves symbol a quarter turn clockwise.
+                .rotationEffect(.degrees(layer.adjustment?.kind == .curves ? 90 : 0))
                 .frame(width: 36, height: 36)
                 .border(border, width: 2)
         } else {
@@ -378,6 +423,9 @@ struct LayerRenameField: View {
             .onExitCommand { if session.renamingLayerID == layerID { session.renamingLayerID = nil } }
     }
 }
+
+/// An Option-click on a row, waiting for its location (the row's plain tap reports the keys, its spatial tap the point).
+@MainActor enum LayerRowClick { static var pendingOption: Int? }
 
 /// The state an eye swipe gives the layers it passes over (nil when no swipe is in progress).
 @MainActor enum EyeSwipe { static var visible: Bool? }
