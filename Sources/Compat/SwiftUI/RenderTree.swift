@@ -41,6 +41,10 @@ extension RenderNode {
         for m in modifiers {
             if case .sink(let key, let closure) = m {
                 h[key] = closure
+            } else if case .onSubmit(let action) = m {
+                h["onSubmit"] = { _ in action() }
+            } else if case .onExitCommand(let action) = m {
+                h["onExitCommand"] = { _ in action() }
             }
         }
         if !h.isEmpty { registry[id] = h }

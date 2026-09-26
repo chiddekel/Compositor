@@ -76,6 +76,9 @@ extern "C" void compositor_app_did_become_active(void);
 
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
+    // Wayland and X11 otherwise discard intermediate mouse positions before the canvas receives them.
+    // Brush curves need those samples; SessionWindow batches redraws while preserving the input path.
+    QCoreApplication::setAttribute(Qt::AA_CompressHighFrequencyEvents, false);
     // QApplication adopts the environment's C locale; printf-style formatting (upstream's String(format:)) must stay
     // POSIX, as it is on macOS ("128.33", not "128,33"). Locale-aware formatting goes through Foundation's Locale.
     setlocale(LC_NUMERIC, "C");
@@ -272,27 +275,84 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             while (done.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
             std::fprintf(stderr, "PANELBUTTON %s pressed=%d\n", qPrintable(qEnvironmentVariable("COMPOSITOR_GRAB_PANEL_BUTTON")), pressed);
         }
-        // COMPOSITOR_GRAB_BRUSH_COLOR=<hex>: the options bar's Color swatch clicked, that color typed into the dialog it
-        // opens, then OK — as a user changes the main color there.
+        // COMPOSITOR_GRAB_BRUSH_COLOR=<hex>: the visible options bar's Color swatch, its floating picker's Hex field,
+        // then OK. COMPOSITOR_GRAB_BRUSH_COLOR_CANCEL=1 clicks Cancel instead. A missing control is a failed probe.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH_COLOR").isEmpty()) {
-            window.show();
-            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            auto settle = [] {
+                QElapsedTimer timer; timer.start();
+                while (timer.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            };
+            auto click = [](QWidget *widget) {
+                QPointer<QWidget> target = widget;
+                // sendEvent does not transfer mouse focus as a spontaneous click does.
+                widget->setFocus(Qt::MouseFocusReason);
+                if (!target || !target->isVisible()) return false;
+                const QPointF at(widget->width() / 2.0, widget->height() / 2.0);
+                const QPointF global = widget->mapToGlobal(at);
+                QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(target, &press);
+                // A real click spans event-loop turns; refreshing the panel must not replace the pressed button.
+                QElapsedTimer held; held.start();
+                while (held.elapsed() < 150) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                if (!target || !target->isVisible()) return false;
+                QMouseEvent release(QEvent::MouseButtonRelease, at, global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(target, &release);
+                return true;
+            };
+            QString hexText = qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH_COLOR");
+            if (!hexText.startsWith('#')) hexText.prepend('#');
+            const QColor requested(hexText);
+            if (!requested.isValid()) { std::fprintf(stderr, "BRUSHCOLOR invalid color\n"); return 2; }
+            settle();
+            const QJsonArray before = window.sessionState().value("foregroundColor").toArray();
             QPushButton *swatch = nullptr;
-            for (QPushButton *b : window.findChildren<QPushButton *>(QStringLiteral("brush.color"))) if (b->isVisible()) swatch = b;
-            if (!swatch) swatch = window.findChild<QPushButton *>(QStringLiteral("palette.foreground"));
-            QTimer::singleShot(200, [] {
-                auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
-                if (!dialog) { std::fprintf(stderr, "BRUSHCOLOR no dialog\n"); return; }
-                if (auto *hex = dialog->findChild<QLineEdit *>(QStringLiteral("colorPicker.hex"))) {
-                    hex->setText(qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH_COLOR"));
-                    emit hex->editingFinished();
+            if (QWidget *options = window.findChild<QWidget *>(QStringLiteral("swiftUIOptionsContainer")))
+                for (QPushButton *button : options->findChildren<QPushButton *>())
+                    if (button->isVisible() && button->isEnabled() && button->accessibleName() == QLatin1String("Foreground color"))
+                        swatch = button;
+            if (!swatch) { std::fprintf(stderr, "BRUSHCOLOR no visible options swatch\n"); return 2; }
+            if (!click(swatch)) { std::fprintf(stderr, "BRUSHCOLOR swatch replaced during click\n"); return 2; }
+            settle();
+            auto *dialog = window.findChild<QDialog *>(QStringLiteral("floatingPanel.ColorPickerSheet"));
+            if (!dialog || !dialog->isVisible()) { std::fprintf(stderr, "BRUSHCOLOR no picker\n"); return 2; }
+            QLineEdit *hex = nullptr;
+            for (QLineEdit *field : dialog->findChildren<QLineEdit *>())
+                if (field->isVisible() && field->accessibleName() == QLatin1String("Hex color")) hex = field;
+            if (!hex) { std::fprintf(stderr, "BRUSHCOLOR no Hex field\n"); return 2; }
+            dialog->activateWindow();
+            settle();
+            hex->setFocus(Qt::MouseFocusReason);
+            hex->selectAll();
+            hex->insert(requested.name().mid(1));
+            // Return commits the draft while the picker remains open; OK below accepts the color.
+            if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_BRUSH_COLOR_SUBMIT")) {
+                QKeyEvent submit(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QCoreApplication::sendEvent(hex, &submit);
+                const QJsonObject submitted = window.sessionState();
+                const QJsonArray color = submitted.value("colorPickerColor").toArray();
+                if (!submit.isAccepted() || submitted.value("colorPickerTitle").toString().isEmpty() || color.size() != 3 ||
+                    std::abs(color[0].toDouble() - requested.redF()) >= 1.0 / 255 ||
+                    std::abs(color[1].toDouble() - requested.greenF()) >= 1.0 / 255 ||
+                    std::abs(color[2].toDouble() - requested.blueF()) >= 1.0 / 255) {
+                    std::fprintf(stderr, "BRUSHCOLOR Return did not commit within the picker\n"); return 2;
                 }
-                dialog->accept();
-            });
-            if (swatch) swatch->click();
-            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
-            std::fprintf(stderr, "BRUSHCOLOR via %s -> %s\n", swatch ? qPrintable(swatch->objectName()) : "none",
-                         qPrintable(QJsonDocument(window.sessionState().value("foregroundColor").toArray()).toJson(QJsonDocument::Compact)));
+            }
+            const bool cancel = qEnvironmentVariableIsSet("COMPOSITOR_GRAB_BRUSH_COLOR_CANCEL");
+            QPushButton *finish = nullptr;
+            for (QPushButton *button : dialog->findChildren<QPushButton *>())
+                if (button->isVisible() && button->isEnabled() && button->text() == (cancel ? QLatin1String("Cancel") : QLatin1String("OK")))
+                    finish = button;
+            if (!finish) { std::fprintf(stderr, "BRUSHCOLOR no finish button\n"); return 2; }
+            if (!click(finish)) { std::fprintf(stderr, "BRUSHCOLOR finish button replaced during click\n"); return 2; }
+            settle();
+            const QJsonObject state = window.sessionState();
+            const QJsonArray actual = state.value("foregroundColor").toArray();
+            const QJsonArray expected = cancel ? before : QJsonArray{requested.redF(), requested.greenF(), requested.blueF()};
+            bool matched = actual.size() == 3 && expected.size() == 3 && state.value("colorPickerTitle").toString().isEmpty();
+            for (int i = 0; matched && i < 3; ++i) matched = std::abs(actual[i].toDouble() - expected[i].toDouble()) < 1.0 / 255;
+            std::fprintf(stderr, "BRUSHCOLOR via options -> %s %s %s\n", cancel ? "Cancel" : "OK",
+                         qPrintable(QJsonDocument(actual).toJson(QJsonDocument::Compact)), matched ? "PASS" : "FAIL");
+            if (!matched) return 2;
         }
         // COMPOSITOR_GRAB_CURSOR="x,y" (document pixels): hover the canvas there and save its cursor as <path>.cursor.png.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_CURSOR").isEmpty()) {
@@ -598,7 +658,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             }
             std::fprintf(stderr, "HOVER sent=%d rounds=%d in %lld ms\n", sent, rounds, (long long)spent.elapsed());
         }
-        // COMPOSITOR_GRAB_LAYER_POINT="row,fraction[,alt|ctrl|shift]": a click in that row of the layers list, `fraction`
+        // COMPOSITOR_GRAB_LAYER_POINT="row,fraction[,alt|ctrl|shift|double]": a click in that row of the layers list, `fraction`
         // of the way down it (0 top ... 1 bottom), with those keys held — on whatever view is there, as a mouse would.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_POINT").isEmpty()) {
             const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_POINT").split(QLatin1Char(','));
@@ -629,6 +689,23 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                     QCoreApplication::sendEvent(target, &release);
                 }
                 for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+                if (v.contains(QStringLiteral("double"))) {
+                    target = window.childAt(inWindow);
+                    if (target) {
+                        const QPoint secondLocal = target->mapFrom(&window, inWindow);
+                        QMouseEvent doubleClick(QEvent::MouseButtonDblClick, secondLocal, global, Qt::LeftButton, Qt::LeftButton, modifiers);
+                        QCoreApplication::sendEvent(target, &doubleClick);
+                        if (target) {
+                            QMouseEvent release(QEvent::MouseButtonRelease, secondLocal, global, Qt::LeftButton, Qt::NoButton, modifiers);
+                            QCoreApplication::sendEvent(target, &release);
+                        }
+                    }
+                    QElapsedTimer settle; settle.start();
+                    while (settle.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                    for (QLineEdit *field : window.findChildren<QLineEdit *>())
+                        if (field->isVisible() && field->placeholderText() == QLatin1String("Layer name"))
+                            std::fprintf(stderr, "RENAME field visible enabled=%d focused=%d selected=%s\n", field->isEnabled(), field->hasFocus(), qPrintable(field->selectedText()));
+                }
             } else std::fprintf(stderr, "LAYERPOINT no row %d\n", v.value(0).toInt());
         }
         // COMPOSITOR_GRAB_FOCUS_KEYS="v,delete,left,shift+down,5": keys typed at whatever has the focus (after a click in
@@ -660,6 +737,23 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                          qPrintable(st.value("tool").toString()), qPrintable(st.value("selectionMode").toString()),
                          qPrintable(st.value("lassoKind").toString()), qPrintable(st.value("marqueeKind").toString()), qPrintable(layers.join(' ')));
             std::fprintf(stderr, "FOCUSKEY undo '%s'\n", qPrintable(st.value("undoName").toString()));
+        }
+        // COMPOSITOR_GRAB_RENAME_BLUR=1: leave the inline name field as a click on the canvas does.
+        if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_RENAME_BLUR")) {
+            if (QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"))) canvas->setFocus(Qt::MouseFocusReason);
+        }
+        if (qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_POINT").split(',').contains(QStringLiteral("double"))) {
+            QElapsedTimer settle; settle.start();
+            while (settle.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            int editors = 0;
+            for (QLineEdit *field : window.findChildren<QLineEdit *>())
+                if (field->isVisible() && field->placeholderText() == QLatin1String("Layer name")) ++editors;
+            QWidget *add = window.findChild<QWidget *>(QStringLiteral("addBlankLayer"));
+            QStringList names;
+            const QJsonObject state = window.sessionState();
+            for (const auto &layer : state.value("layers").toArray()) names << layer.toObject().value("name").toString();
+            std::fprintf(stderr, "RENAME final editors=%d addEnabled=%d names=[%s] undo=%s\n", editors, add && add->isEnabled(),
+                         qPrintable(names.join(',')), qPrintable(state.value("undoName").toString()));
         }
         // COMPOSITOR_GRAB_LAYER_CURSOR="row,fraction[,x=N],alt|ctrl": the pointer resting there with that key held; the
         // cursor the list shows is saved as <path>.cursor.png.
@@ -836,6 +930,16 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 for (const auto &l : st.value("layers").toArray()) names << l.toObject().value("name").toString();
                 fprintf(stderr, "Drag result: layers=[%s] undo=%s gradientPending=%d\n", qPrintable(names.join(",")),
                         qPrintable(st.value("undoName").toString()), st.value("gradientLine").isArray() ? 1 : 0);
+                if (!qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH_COLOR").isEmpty()) {
+                    const QString path = qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".paint.png";
+                    if (!window.exportPNG(path)) { std::fprintf(stderr, "BRUSHPIXEL export failed\n"); return 2; }
+                    const QImage painted(path);
+                    const QPoint midpoint(qRound((v[0].toDouble() + v[2].toDouble()) / 2),
+                                          qRound((v[1].toDouble() + v[3].toDouble()) / 2));
+                    if (!painted.rect().contains(midpoint)) { std::fprintf(stderr, "BRUSHPIXEL outside image\n"); return 2; }
+                    const QColor pixel = painted.pixelColor(midpoint);
+                    std::fprintf(stderr, "BRUSHPIXEL %d,%d %s alpha=%d\n", midpoint.x(), midpoint.y(), qPrintable(pixel.name()), pixel.alpha());
+                }
             }
         }
         if (!qEnvironmentVariable("COMPOSITOR_TEST_TOOL_RAIL_CLICK").isEmpty()) {

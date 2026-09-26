@@ -197,9 +197,9 @@ public:
     void installAppMenus();
     void showAboutPanel();
     bool routesToUpstreamCanvas() const;
-    void sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount);
+    void sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount, bool refresh = true);
     void flushPendingDrag();
-    std::unique_ptr<QMouseEvent> m_pendingDrag;   // the latest drag move not yet delivered (coalesced per loop pass)
+    std::vector<std::unique_ptr<QMouseEvent>> m_pendingDrags;   // ordered pointer samples awaiting delivery
     void syncAppMenus();
     void performAppMenu(const QString &path);
     void handleShellRequests();

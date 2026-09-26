@@ -24,6 +24,7 @@
 #include <QPointer>
 #include <QStyleOption>
 #include <QAbstractItemView>
+#include <QAbstractButton>
 #include <QSvgRenderer>
 #include "PerfTrace.h"
 #include <QTimer>
@@ -379,15 +380,58 @@ void notifyListeners(uint64_t handle, const QString &panel) {
     for (const auto &cb : g_actionListeners) cb(handle, panel);
 }
 
-void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, const QString &handlerKey, const QByteArray &payload = {}) {
+void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, const QString &handlerKey,
+              const QByteArray &payload = {}, bool deferRefresh = false) {
     const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8(), keyUtf8 = handlerKey.toUtf8();
     compositor_session_dispatch_swiftui_action(handle, panelUtf8.constData(), nodeUtf8.constData(), keyUtf8.constData(),
                                                payload.isEmpty() ? nullptr : reinterpret_cast<const uint8_t *>(payload.constData()),
                                                static_cast<size_t>(payload.size()));
-    for (const auto &cb : g_actionListeners) {
-        cb(handle, panel);
-    }
+    if (deferRefresh) QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
+    else notifyListeners(handle, panel);
 }
+
+class SwiftUITextField : public QLineEdit {
+public:
+    explicit SwiftUITextField(bool handlesSubmit) : m_handlesSubmit(handlesSubmit) {}
+    std::function<void()> onExitCommand;
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override {
+        if (event->key() == Qt::Key_Escape && onExitCommand) {
+            event->accept();
+            const auto exit = onExitCommand;
+            exit();
+            return;
+        }
+        QLineEdit::keyPressEvent(event);
+        // onSubmit owns Return while editing; do not also activate a surrounding dialog's default button.
+        if (m_handlesSubmit && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)) event->accept();
+    }
+
+private:
+    bool m_handlesSubmit;
+};
+
+class TextFieldFocusFilter : public QObject {
+public:
+    TextFieldFocusFilter(QLineEdit *field, uint64_t handle, QString panel, QString nodeID)
+        : QObject(field), m_handle(handle), m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) {
+        field->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        // Commit the draft before the next button action, but let the mouse press reach that button before a
+        // visual refresh can replace its widgets. The pressed button keeps its panel alive until release.
+        if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut)
+            dispatch(m_handle, m_panel, m_nodeID, QStringLiteral("focused"), event->type() == QEvent::FocusIn ? "true" : "false", true);
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    uint64_t m_handle;
+    QString m_panel, m_nodeID;
+};
 
 int32_t dispatchDropEvent(uint64_t handle, const QString &panel, const QString &nodeID, const QByteArray &payload) {
     const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8(), keyUtf8 = QByteArrayLiteral("dropEvent");
@@ -2738,15 +2782,47 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         });
         widget = checkBox;
     } else if (kind == "TextField") {
-        auto *field = new QLineEdit;
-        field->setPlaceholderText(strings.value("placeholder").toString());
-        QObject::connect(field, &QLineEdit::editingFinished, field, [handle, panel] { notifyListeners(handle, panel); });
-        field->setStyleSheet("QLineEdit { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 2px 4px; } QLineEdit:focus { border-color: #007aff; }");
         const QStringList handlerKeys = [&] {
             QStringList keys;
             for (const auto &k : node.value("handlerKeys").toArray()) keys << k.toString();
             return keys;
         }();
+        auto *field = new SwiftUITextField(handlerKeys.contains(QStringLiteral("onSubmit")));
+        field->setPlaceholderText(strings.value("placeholder").toString());
+        QObject::connect(field, &QLineEdit::editingFinished, field, [handle, panel] {
+            QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
+        });
+        field->setStyleSheet("QLineEdit { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 2px 4px; } QLineEdit:focus { border-color: #007aff; }");
+        if (handlerKeys.contains(QStringLiteral("focused"))) new TextFieldFocusFilter(field, handle, panel, id);
+        // SwiftUI can focus a newly presented field (inline rename), not only observe Qt's focus changes.
+        if (bools.value("focused").toBool()) {
+            QTimer::singleShot(0, field, [field] {
+                if (!field->isVisible() || !field->isEnabled() || field->hasFocus()) return;
+                field->setFocus(Qt::OtherFocusReason);
+                field->selectAll();
+            });
+        }
+        auto finishEditing = [field, handle, panel, id](const QString &key) {
+            dispatch(handle, panel, id, key, {}, true);
+            // Return can keep editing (Hex), release focus (Zoom), or remove the field (Rename). Respect the
+            // resolved view before notifying the shell; otherwise its typing guard retains a finished editor.
+            QJsonObject nextField;
+            std::function<void(const QJsonObject &)> findField = [&](const QJsonObject &node) {
+                if (node.value("id").toString() == id) { nextField = node; return; }
+                for (const auto &child : node.value("children").toArray()) findField(child.toObject());
+            };
+            findField(fetchTree(handle, panel));
+            const QJsonObject focus = nextField.value("boolParams").toObject();
+            if (nextField.value("kind").toString() != QLatin1String("TextField") ||
+                (focus.contains("focused") && !focus.value("focused").toBool())) field->clearFocus();
+        };
+        if (handlerKeys.contains(QStringLiteral("onSubmit"))) {
+            QObject::connect(field, &QLineEdit::returnPressed, field, [finishEditing] {
+                finishEditing(QStringLiteral("onSubmit"));
+            });
+        }
+        if (handlerKeys.contains(QStringLiteral("onExitCommand")))
+            field->onExitCommand = [finishEditing] { finishEditing(QStringLiteral("onExitCommand")); };
         if (handlerKeys.contains(QStringLiteral("value"))) {
             const QJsonObject doubles = node.value("doubleParams").toObject();
             const int minimumFractionLength = qBound(0, doubles.value("minimumFractionLength").toInt(), 15);
@@ -3301,6 +3377,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 
 static bool isBeingManipulated(QWidget *panel) {
     for (QSlider *slider : panel->findChildren<QSlider *>()) if (slider->isSliderDown()) return true;
+    for (QAbstractButton *button : panel->findChildren<QAbstractButton *>()) if (button->isDown()) return true;
     if (QWidget *grabber = QWidget::mouseGrabber(); grabber && panel->isAncestorOf(grabber)) return true;
     QWidget *focus = QApplication::focusWidget();
     return focus && panel->isAncestorOf(focus)

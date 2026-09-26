@@ -331,13 +331,15 @@ extension View {
         }
     }
     public func focused(_ condition: FocusState<Bool>) -> some View {
-        modified { $0.modifiers.append(.sink("focused", { newValue in
+        modified { $0.boolParams["focused"] = condition.wrappedValue
+            $0.modifiers.append(.sink("focused", { newValue in
             if let bool = newValue as? Bool { condition.wrappedValue = bool }
         })) }
     }
     /// `.focused($field, equals: .someCase)` — sets `field` to `value` while this view holds focus, `nil` otherwise.
     public func focused<Value: Hashable>(_ binding: FocusState<Value?>, equals value: Value) -> some View {
-        modified { $0.modifiers.append(.sink("focused", { newValue in
+        modified { $0.boolParams["focused"] = binding.wrappedValue == value
+            $0.modifiers.append(.sink("focused", { newValue in
             if let isFocused = newValue as? Bool { binding.wrappedValue = isFocused ? value : nil }
         })) }
     }

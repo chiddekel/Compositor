@@ -408,7 +408,7 @@ extension NativeLayerList: HostedNativeContent {
     }
 }
 
-/// LayerCell's rename: the name in an editable field, Return keeps it, Escape (or losing focus) restores it.
+/// LayerCell's rename: Return or ending editing keeps the name; Escape restores it.
 struct LayerRenameField: View {
     let session: EditorSession
     let layerID: UUID
@@ -424,11 +424,16 @@ struct LayerRenameField: View {
             .font(.system(size: 13))
             .focused($focused)
             .onAppear { focused = true }
-            .onSubmit {
-                session.renameLayer(layerID, to: text)
-                if session.renamingLayerID == layerID { session.renamingLayerID = nil }
-            }
-            .onExitCommand { if session.renamingLayerID == layerID { session.renamingLayerID = nil } }
+            .onSubmit { finish(keeping: true) }
+            .onExitCommand { finish(keeping: false) }
+            .onChange(of: focused) { _, focused in if !focused { finish(keeping: true) } }
+    }
+
+    private func finish(keeping: Bool) {
+        guard session.renamingLayerID == layerID else { return }
+        if keeping { session.renameLayer(layerID, to: text) }
+        session.renamingLayerID = nil
+        focused = false
     }
 }
 

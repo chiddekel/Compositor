@@ -1355,8 +1355,11 @@ void SessionWindow::updateFloatingPanels() {
 }
 
 void SessionWindow::updateFloatingPanelsPass() {
+    const QJsonObject state = sessionState();
+    // Accepting or closing the picker must also return canvas input from color sampling to the active tool.
+    if (m_colorPickerOpen != !state.value("colorPickerTitle").toString().isEmpty()) syncPaletteFromSession();
     QHash<QString, QString> wanted;
-    for (const QJsonValue &v : sessionState().value("floatingPanels").toArray()) {
+    for (const QJsonValue &v : state.value("floatingPanels").toArray()) {
         const QJsonObject o = v.toObject();
         wanted.insert(o.value("panel").toString(), o.value("title").toString());
     }
@@ -3290,12 +3293,14 @@ bool SessionWindow::routesToUpstreamCanvas() const {
 }
 
 /// A pointer event for the hosted CanvasView, then the shell catches up with what it changed.
-void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount) {
+void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount, bool refresh) {
     PERF_SCOPE(kind == 3 ? "canvasMouse:hover" : kind == 1 ? "canvasMouse:drag" : "canvasMouse:press/release");
     { PERF_SCOPE("canvasMouse:syncViewport"); syncViewportGeometry(); }
     const int cursor = [&] { PERF_SCOPE("canvasMouse:upstream");
         return compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
                                        chordBits(event->modifiers()), clickCount); }();
+    // A burst delivers every sample to the tool, then updates the shell once at its final position.
+    if (!refresh) return;
     // Upstream's cursor for what is under the pointer (a custom picture — a selection tool's — shows as a crosshair).
     static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
         Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
@@ -3351,20 +3356,21 @@ void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
-/// Drag moves are coalesced as AppKit coalesces mouse-dragged events: the moves that arrive in one pass of the event
-/// loop reach upstream's canvas as one (the latest), so a 1000 Hz mouse doesn't make the brush redo its work sixteen
-/// times a frame. A press or release first delivers the pending move, so the stroke's ends are exact.
+/// Preserve every drag sample: dropping intermediate positions changes the brush's curve at high pointer speeds.
+/// Batch shell updates per event-loop pass; release drains the queue before finishing the stroke.
 void SessionWindow::flushPendingDrag() {
-    if (!m_pendingDrag) return;
-    std::unique_ptr<QMouseEvent> event = std::move(m_pendingDrag);
-    if (m_upstreamCanvasDrag) sendUpstreamCanvasMouse(1, event.get(), 1);
+    std::vector<std::unique_ptr<QMouseEvent>> events;
+    events.swap(m_pendingDrags);
+    if (!m_upstreamCanvasDrag) return;
+    for (size_t i = 0; i < events.size(); ++i)
+        sendUpstreamCanvasMouse(1, events[i].get(), 1, i + 1 == events.size());
 }
 
 void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
     if (m_upstreamCanvasDrag) {
-        const bool scheduled = m_pendingDrag != nullptr;
-        m_pendingDrag.reset(static_cast<QMouseEvent *>(event->clone()));
+        const bool scheduled = !m_pendingDrags.empty();
+        m_pendingDrags.emplace_back(static_cast<QMouseEvent *>(event->clone()));
         if (!scheduled) QTimer::singleShot(0, this, [this] { flushPendingDrag(); });
         return;
     }

@@ -27,9 +27,8 @@ public struct RenderModifierWire: Codable {
 }
 
 extension RenderNode {
-    /// Converts this (already `assignIDs()`-ed) node and its descendants to the wire format. Modifier cases that
-    /// carry a closure (`.onAppear`, `.onSubmit`, `.onExitCommand`, `.sink`) or a nested node (`.overlay`, not yet
-    /// needed by any wired-in panel) are dropped — see the plan's note on this phase's scope.
+    /// Converts this (already `assignIDs()`-ed) node and its descendants to the wire format. Closures stay in the
+    /// handler registry; the host gets the names it can dispatch. Nested overlay nodes are omitted here.
     public func wire() -> RenderNodeWire {
         var keys = Set(handlers.keys)
         for m in modifiers {
@@ -37,6 +36,10 @@ extension RenderNode {
                 keys.insert(key)
             } else if case .resultSink(let key, _) = m {
                 keys.insert(key)
+            } else if case .onSubmit = m {
+                keys.insert("onSubmit")
+            } else if case .onExitCommand = m {
+                keys.insert("onExitCommand")
             }
         }
         // JSON has no infinity or NaN: a single one (e.g. `.frame(maxWidth: .infinity)`) would fail the whole panel's
