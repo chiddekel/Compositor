@@ -29,6 +29,8 @@
 #include <QMimeData>
 #include <QAction>
 #include <QElapsedTimer>
+#include <QCursor>
+#include <QHoverEvent>
 #include <QNativeGestureEvent>
 #include <QPointingDevice>
 #include <QClipboard>
@@ -497,6 +499,27 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             QElapsedTimer wait; wait.start();
             while (wait.elapsed() < qEnvironmentVariable("COMPOSITOR_GRAB_WAIT_MS").toInt())
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        // COMPOSITOR_GRAB_HOVER_PANELS=<count>: the pointer resting on, then moving over, every hover-tracked view in the
+        // docked panels (label scrubbing), as a mouse would — each hovered view's handler runs.
+        if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_HOVER_PANELS")) {
+            window.show();
+            const int rounds = std::max(1, qEnvironmentVariable("COMPOSITOR_GRAB_HOVER_PANELS").toInt());
+            int sent = 0;
+            QElapsedTimer spent; spent.start();
+            for (int round = 0; round < rounds; ++round) {
+                for (QWidget *w : window.findChildren<QWidget *>()) {
+                    if (!w->testAttribute(Qt::WA_Hover) || !w->isVisible() || !w->property("swiftUIHandle").isNull()) continue;
+                    const QPointF at(w->width() / 2.0 + round % 3, w->height() / 2.0);
+                    // The pointer really is there: a view rebuilt under it gets Qt's own hover-enter, as on screen.
+                    QCursor::setPos(w->mapToGlobal(at.toPoint()));
+                    QHoverEvent enter(round == 0 ? QEvent::HoverEnter : QEvent::HoverMove, at, w->mapToGlobal(at), QPointF(-1, -1));
+                    QCoreApplication::sendEvent(w, &enter);
+                    ++sent;
+                }
+                for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+            }
+            std::fprintf(stderr, "HOVER sent=%d rounds=%d in %lld ms\n", sent, rounds, (long long)spent.elapsed());
         }
         // COMPOSITOR_GRAB_CLIPBOARD_REPORT=1: what the desktop clipboard holds now (after the menu items above).
         if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_CLIPBOARD_REPORT")) {

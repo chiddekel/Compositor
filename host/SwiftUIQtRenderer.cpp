@@ -810,6 +810,10 @@ extern "C" int32_t compositor_current_cursor(void);
 
 /// SwiftUI's `onContinuousHover`: the pointer's position in the view as it moves over it, "ended" when it leaves; the
 /// cursor is whatever the handler set (NSCursor.set()).
+///
+/// A handler usually changes state (NumericScrub's isHovering), so the panel is rebuilt — and the rebuilt view, under
+/// the pointer, gets a fresh hover-enter. So a report goes out only when it differs from the last one for that view (a
+/// rebuilt widget keeps its view's id), and after the event that caused it, never from inside a rebuild.
 class HoverFilter : public QObject {
 public:
     HoverFilter(QWidget *widget, uint64_t handle, QString panel, QString id)
@@ -822,31 +826,44 @@ protected:
         QByteArray payload;
         if (event->type() == QEvent::HoverEnter || event->type() == QEvent::HoverMove) {
             const QPointF p = static_cast<QHoverEvent *>(event)->position();
-            if (event->type() == QEvent::HoverMove && p == m_last) return false;
-            m_last = p;
-            payload = "[" + QByteArray::number(p.x()) + "," + QByteArray::number(p.y()) + "]";
+            payload = "[" + QByteArray::number(qRound(p.x())) + "," + QByteArray::number(qRound(p.y())) + "]";
         } else if (event->type() == QEvent::HoverLeave) {
-            m_last = QPointF(-1, -1);
             payload = "\"ended\"";
         } else {
             return false;
         }
+        const QString key = m_panel + QLatin1Char('/') + m_id;
+        auto &last = lastReports();
+        // Only a change of phase (entering, leaving) matters to a handler that doesn't read the position; a move within
+        // the view is reported, but a rebuilt view's hover-enter at the same point is not.
+        const QByteArray previous = last.value(key);
+        if (previous == payload) return false;
+        const bool phaseChanged = previous.isEmpty() || previous.startsWith('"') != payload.startsWith('"');
+        last.insert(key, payload);
+        if (!phaseChanged && pending().contains(key)) { pending()[key] = payload; return false; }
+        pending()[key] = payload;
         QPointer<QWidget> widget = m_widget;
-        dispatch(m_handle, m_panel, m_id, QStringLiteral("onContinuousHover"), payload);
-        if (widget) {
+        const uint64_t handle = m_handle;
+        const QString panel = m_panel, id = m_id;
+        QTimer::singleShot(0, [key, handle, panel, id, widget] {
+            const QByteArray latest = pending().take(key);
+            if (latest.isEmpty()) return;
+            dispatch(handle, panel, id, QStringLiteral("onContinuousHover"), latest);
+            if (!widget) return;
             static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
                 Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
                 Qt::SizeBDiagCursor, Qt::ArrowCursor};
             const int code = compositor_current_cursor();
             if (code >= 0 && code <= 10) widget->setCursor(shapes[code]);
-        }
+        });
         return false;
     }
 private:
+    static QHash<QString, QByteArray> &lastReports() { static QHash<QString, QByteArray> reports; return reports; }
+    static QHash<QString, QByteArray> &pending() { static QHash<QString, QByteArray> queued; return queued; }
     QWidget *m_widget;
     uint64_t m_handle;
     QString m_panel, m_id;
-    QPointF m_last{-1, -1};
 };
 
 class TapGestureFilter : public QObject {
