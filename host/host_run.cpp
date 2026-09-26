@@ -64,6 +64,7 @@
 #include <QPointer>
 #include <QWindow>
 #include "SessionWindow.h"
+#include "UIE2EBridge.h"
 
 #if defined(COMPOSITOR_SKIA_BRIDGE)
 #include "SkiaBridge.h"
@@ -160,6 +161,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     if (qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty() && !QCoreApplication::arguments().filter(QStringLiteral("-smoke")).size())
         window.restoreWindowPlacement();
     window.show();
+    installUIE2EBridge(window);
     if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
         // COMPOSITOR_GRAB_SIZE=WxH: the window at that size first (e.g. tall enough to show the whole tool rail).
         if (const QStringList wh = qEnvironmentVariable("COMPOSITOR_GRAB_SIZE").split(QLatin1Char('x')); wh.size() == 2) {
@@ -261,6 +263,20 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_PANEL_BUTTON").isEmpty()) {
             window.show();
             for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            // COMPOSITOR_GRAB_PICKER_SAMPLE="x,y" (document pixels): first a click on the canvas there (sampling into
+            // the open picker, as its "Click the canvas to sample" says).
+            if (!qEnvironmentVariable("COMPOSITOR_GRAB_PICKER_SAMPLE").isEmpty()) {
+                const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_PICKER_SAMPLE").split(QLatin1Char(','));
+                if (QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas")); canvas && v.size() == 2) {
+                    const QPointF at = window.documentToCanvasPoint(QPointF(v[0].toDouble(), v[1].toDouble()));
+                    QMouseEvent press(QEvent::MouseButtonPress, at, canvas->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(canvas, &press);
+                    for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                    QMouseEvent release(QEvent::MouseButtonRelease, at, canvas->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(canvas, &release);
+                    for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+                }
+            }
             bool pressed = false;
             for (QWidget *top : QApplication::topLevelWidgets()) {
                 if (pressed || !top->isVisible() || top == &window) continue;

@@ -191,7 +191,14 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
     var canStart: Bool { workspace?.current.controller.canStart ?? true }
     /// The current tab's window, as upstream's delegate's `projects` (the current ProjectController) keeps it.
     var window: NSWindow? {
-        get { workspace?.current.controller.window }
+        get {
+            guard let workspace else { return nil }
+            if let window = workspace.current.controller.window { return window }
+            // Qt hosts the workspace without embedding ProjectWindowBridge's native view. Use the current
+            // canvas's existing window so upstream's Close Project guard can reach the shell request.
+            guard let (handle, entry) = Sessions.entries.first(where: { $0.value.workspaceTabID == workspace.current.id }) else { return nil }
+            return UpstreamCanvases.canvas(handle, entry).window
+        }
         set { workspace?.current.controller.window = newValue }
     }
     func save(asNew: Bool = false) async -> Bool { request(asNew ? "saveAs" : "save"); return true }

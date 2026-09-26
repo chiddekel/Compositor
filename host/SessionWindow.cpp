@@ -66,6 +66,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QFileInfo>
 #include <QDir>
 #include <QToolBar>
+#include <QToolTip>
 #include <QActionGroup>
 #include <QTimer>
 #include <QDateTime>
@@ -1363,6 +1364,9 @@ void SessionWindow::updateFloatingPanelsPass() {
         const QJsonObject o = v.toObject();
         wanted.insert(o.value("panel").toString(), o.value("title").toString());
     }
+    // However the picker went away (OK, Cancel, its window's close button, Esc, a session change), the canvas paints
+    // again: it samples only while the picker's panel is up.
+    m_colorPickerOpen = wanted.contains(QStringLiteral("ColorPickerSheet"));
     // Closed ones leave the table first; their windows go after, when nothing refers to the table's entries.
     QList<QPointer<QDialog>> closing;
     for (auto it = m_floatingPanels.begin(); it != m_floatingPanels.end();) {
@@ -3375,6 +3379,9 @@ void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
         return;
     }
     if (!m_painting && routesToUpstreamCanvas()) { sendUpstreamCanvasMouse(3, event, 0); return; }
+    // With the color picker up a click samples into it: hovering shows upstream's eyedropper (EditorCanvas.mouseMoved,
+    // `picking`) rather than the tool's own cursor, so a click there isn't taken for a brush stroke.
+    if (!m_painting && m_colorPickerOpen && !m_spaceHandActive && !m_pixelSampler) sendUpstreamCanvasMouse(3, event, 0);
     m_currentPoint = documentPoint(event->position());
     mouseMoveEvent(event);
     // Mid-stroke, scheduleStrokeRefresh() repaints just the changed area; a whole-canvas repaint per mouse move
@@ -4766,7 +4773,7 @@ void SessionWindow::applyDarkTheme() {
     darkPalette.setColor(QPalette::WindowText, QColor(0xf5, 0xf5, 0xf7));
     darkPalette.setColor(QPalette::Base, QColor(0x24, 0x24, 0x27));
     darkPalette.setColor(QPalette::AlternateBase, QColor(0x2a, 0x2a, 0x2d));
-    darkPalette.setColor(QPalette::ToolTipBase, QColor(0x1e, 0x1e, 0x20));
+    darkPalette.setColor(QPalette::ToolTipBase, QColor(0x24, 0x24, 0x27));
     darkPalette.setColor(QPalette::ToolTipText, QColor(0xf5, 0xf5, 0xf7));
     darkPalette.setColor(QPalette::Text, QColor(0xf5, 0xf5, 0xf7));
     darkPalette.setColor(QPalette::Button, QColor(0x2a, 0x2a, 0x2d));
@@ -4780,6 +4787,9 @@ void SessionWindow::applyDarkTheme() {
     darkPalette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x6e, 0x6e, 0x73));
     if (qApp) {
         qApp->setPalette(darkPalette);
+        // Tooltips are separate windows with their own class palette and font.
+        QToolTip::setPalette(darkPalette);
+        QToolTip::setFont(qApp->font());
     }
 
     const QString qss = QString::fromUtf8(R"(
@@ -4789,6 +4799,16 @@ void SessionWindow::applyDarkTheme() {
         }
         QWidget {
             color: #f5f5f7;
+        }
+        QToolTip {
+            background-color: #242427;
+            color: #f5f5f7;
+            border: 1px solid #48484c;
+            border-radius: 4px;
+            padding: 5px 8px;
+            font-size: 12px;
+            font-weight: normal;
+            opacity: 255;
         }
         QMenuBar {
             background-color: #1e1e20;

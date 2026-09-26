@@ -1,0 +1,54 @@
+name: Linux UI E2E
+
+on:
+  push:
+    branches: [GNU_Linux]
+  pull_request:
+    branches: [GNU_Linux]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install desktop test tools and the manifest SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder xvfb libxtst6 python3-pil dbus-x11
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --install-deps-only --install-deps-from=flathub --assumeyes build/ui-deps com.wonderassembly.Compositor.yaml
+
+      - name: Cache production Skia build
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: ui-skia-${{ runner.os }}-${{ hashFiles('com.wonderassembly.Compositor.yaml') }}
+
+      - name: Build real Skia and image bridges
+        run: bash scripts/build-ui-e2e-deps.sh
+
+      - name: Build and test native desktop journeys
+        env:
+          UI_E2E_ARTIFACTS: ${{ github.workspace }}/build/ui-e2e-results
+        run: bash scripts/run-ui-e2e.sh
+
+      - name: Upload screenshots, pixels, input logs and JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-ui-e2e
+          path: build/ui-e2e-results
+          if-no-files-found: warn
+          retention-days: 14
