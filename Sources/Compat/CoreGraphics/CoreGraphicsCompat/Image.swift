@@ -139,12 +139,17 @@ public final class CGImage: @unchecked Sendable {
     private let imageLock = NSLock()
     private var resolved: PortableImage?
     private var deferred: (() -> PortableImage)?
+    private var regionRenderer: ((CGRect) -> PortableImage)?
+    private var regionCache: [(rect: CGRect, image: PortableImage)] = []
+    /// Filter-backed images can supply just the source pixels visible through a drawing context's clip.
+    public var supportsRegionRendering: Bool { regionRenderer != nil }
     /// The raster behind this image. Images built over a direct data provider resolve it on first use.
     public var portableImage: PortableImage {
         imageLock.lock(); defer { imageLock.unlock() }
         if let resolved { return resolved }
         let image = deferred!()
         resolved = image; deferred = nil
+        regionCache.removeAll()
         return image
     }
 
@@ -172,6 +177,20 @@ public final class CGImage: @unchecked Sendable {
 
     public convenience init(mask: MaskBuffer) {
         self.init(PortableImage(mask))
+    }
+
+    /// An immutable filter result, evaluated in top-down pixel coordinates. Full byte access still
+    /// materializes the complete image; drawing and cropping reuse a bounded cache of 64 px tiles.
+    public init(width: Int, height: Int, isGray: Bool, renderRegion: @escaping (CGRect) -> PortableImage) {
+        precondition(width > 0 && height > 0)
+        self.width = width; self.height = height
+        self.bytesPerRow = width * (isGray ? 1 : 4)
+        self.bitsPerComponent = 8; self.bitsPerPixel = isGray ? 8 : 32
+        self.space = isGray ? .deviceGraySpace : .srgbSpace
+        self.alphaInfo = isGray ? .none : .premultipliedLast
+        self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue)
+        self.regionRenderer = renderRegion
+        self.deferred = { renderRegion(CGRect(x: 0, y: 0, width: width, height: height)) }
     }
 
     public init?(width: Int,
@@ -207,8 +226,57 @@ public final class CGImage: @unchecked Sendable {
     }
 
     public func cropping(to rect: CGRect) -> CGImage? {
+        if regionRenderer != nil { return regionImage(in: rect).map(CGImage.init) }
         guard let cropped = portableImage.cropping(to: rect) else { return nil }
         return CGImage(cropped)
+    }
+
+    private func regionImage(in requested: CGRect) -> PortableImage? {
+        let rect = requested.integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !rect.isNull, !rect.isEmpty else { return nil }
+        if rect == CGRect(x: 0, y: 0, width: width, height: height) { return portableImage }
+        imageLock.lock(); defer { imageLock.unlock() }
+        if let resolved { return resolved.cropping(to: rect) }
+        guard let regionRenderer else { return nil }
+        // Small stable tiles retain work as a soft mask grows a few pixels per pointer event.
+        // A 256 px grid would turn a two-pixel interpolation margin into eight extra large tiles.
+        let tileSize = 64
+        let x0 = Int(rect.minX), y0 = Int(rect.minY), w = Int(rect.width), h = Int(rect.height)
+        let channels = isGrayPlane ? 1 : 4
+        var bytes = [UInt8](repeating: 0, count: w * h * channels)
+        for ty in (y0 / tileSize)...((y0 + h - 1) / tileSize) {
+            for tx in (x0 / tileSize)...((x0 + w - 1) / tileSize) {
+                let tile = CGRect(x: tx * tileSize, y: ty * tileSize,
+                                  width: min(tileSize, width - tx * tileSize), height: min(tileSize, height - ty * tileSize))
+                let pixels: PortableImage
+                if let index = regionCache.firstIndex(where: { $0.rect == tile }) {
+                    let cached = regionCache.remove(at: index)
+                    regionCache.append(cached)
+                    pixels = cached.image
+                } else {
+                    pixels = regionRenderer(tile)
+                    precondition(pixels.width == Int(tile.width) && pixels.height == Int(tile.height)
+                                 && pixels.bytesPerRow >= pixels.width * channels
+                                 && pixels.bytes.count >= pixels.bytesPerRow * pixels.height)
+                    regionCache.append((tile, pixels))
+                    // At most 4 MiB of RGBA pixels, irrespective of the document size.
+                    if regionCache.count > 256 { regionCache.removeFirst() }
+                }
+                let copy = rect.intersection(tile)
+                let rowBytes = Int(copy.width) * channels
+                bytes.withUnsafeMutableBufferPointer { dst in
+                    pixels.bytes.withUnsafeBufferPointer { src in
+                        for y in Int(copy.minY)..<Int(copy.maxY) {
+                            let from = (y - Int(tile.minY)) * pixels.bytesPerRow + Int(copy.minX - tile.minX) * channels
+                            let to = ((y - y0) * w + Int(copy.minX) - x0) * channels
+                            memcpy(dst.baseAddress! + to, src.baseAddress! + from, rowBytes)
+                        }
+                    }
+                }
+            }
+        }
+        return PortableImage(width: w, height: h, kind: isGrayPlane ? .mask : .rgba,
+                             bytesPerRow: w * channels, bytes: bytes)
     }
 
     public var dataProvider: CGDataProvider? {

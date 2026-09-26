@@ -743,6 +743,28 @@ void compositor_canvas_clip_mask(CompCanvas *canvas, const uint8_t *mask_pixels,
     sk_sp<SkShader> shader = maskImg->makeShader(SkTileMode::kClamp, SkTileMode::kClamp, canvas->current_state().sampling, m);
     if (shader) {
         canvas->canvas->clipRect(SkRect::MakeXYWH(x, y, w, h), SkClipOp::kIntersect, true);
+        // Shader clips alone retain the whole tile's bounds. Restrict the conservative
+        // bounds to nonzero coverage so a regional filter does not compute invisible pixels.
+        // Two mask pixels retain the complete support of linear and cubic interpolation.
+        size_t left = mask_w, top = mask_h, right = 0, bottom = 0;
+        for (size_t row = 0; row < mask_h; ++row) {
+            const uint8_t *pixels = mask_pixels + row * mask_stride;
+            const size_t stride = is_alpha_only ? 1 : 4, alpha = is_alpha_only ? 0 : 3;
+            size_t rowLeft = 0, rowRight = mask_w;
+            while (rowLeft < rowRight && pixels[rowLeft * stride + alpha] == 0) ++rowLeft;
+            if (rowLeft == rowRight) continue;
+            while (pixels[(rowRight - 1) * stride + alpha] == 0) --rowRight;
+            left = std::min(left, rowLeft); top = std::min(top, row);
+            right = std::max(right, rowRight); bottom = row + 1;
+        }
+        if (left == mask_w) {
+            canvas->canvas->clipRect(SkRect::MakeEmpty());
+        } else {
+            left = left > 2 ? left - 2 : 0; top = top > 2 ? top - 2 : 0;
+            right = std::min(mask_w, right + 2); bottom = std::min(mask_h, bottom + 2);
+            const SkRect support = SkRect::MakeLTRB(left, top, right, bottom);
+            canvas->canvas->clipRect(m.mapRect(support), SkClipOp::kIntersect, false);
+        }
         canvas->canvas->clipShader(shader, SkClipOp::kIntersect);
     }
 #else

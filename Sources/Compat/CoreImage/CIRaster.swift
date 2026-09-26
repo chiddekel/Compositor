@@ -7,6 +7,7 @@
 import Foundation
 import CoreGraphics
 import Dispatch
+import CoreImageKernels
 
 struct Raster {
     var rect: CGRect              // integral, in CI coordinates
@@ -105,33 +106,43 @@ enum RasterFilters {
         var kernel = (-radius...radius).map { Float(exp(-Double($0 * $0) / (2 * sigma * sigma))) }
         let total = kernel.reduce(0, +); kernel = kernel.map { $0 / total }
         let w = input.width, h = input.height
-        // Horizontal (edge pixels of the requested raster are treated as transparent beyond the margin).
-        var tmp = [Float](repeating: 0, count: w * h * 4)
-        for y in 0..<h {
-            for x in 0..<w {
-                var acc: (Float, Float, Float, Float) = (0, 0, 0, 0)
-                for k in -radius...radius {
-                    let sx = x + k
-                    guard sx >= 0, sx < w else { continue }
-                    let i = input.index(sx, y), wgt = kernel[k + radius]
-                    acc.0 += input.data[i] * wgt; acc.1 += input.data[i + 1] * wgt; acc.2 += input.data[i + 2] * wgt; acc.3 += input.data[i + 3] * wgt
-                }
-                let o = (y * w + x) * 4
-                tmp[o] = acc.0; tmp[o + 1] = acc.1; tmp[o + 2] = acc.2; tmp[o + 3] = acc.3
+        let visible = region.intersection(input.rect)
+        guard w > 0, h > 0, !visible.isNull, !visible.isEmpty else { return Raster(rect: region) }
+        let x0 = Int(visible.minX - input.rect.minX), y0 = Int(visible.minY - input.rect.minY)
+        let ow = Int(visible.width), oh = Int(visible.height)
+        let firstRow = max(0, y0 - radius), lastRow = min(h, y0 + oh + radius)
+        let rowsNeeded = lastRow - firstRow
+        // Only horizontal results feeding the requested output are needed. The vertical pass
+        // reads this narrow strip plus its halo, preserving the full convolution's summation order.
+        var tmp = [Float](repeating: 0, count: ow * rowsNeeded * 4)
+        var out = Raster(rect: visible)
+        func rows(_ count: Int, _ body: @escaping (Int) -> Void) {
+            let workers = min(count, min(16, ProcessInfo.processInfo.activeProcessorCount))
+            DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                for y in (worker * count / workers)..<((worker + 1) * count / workers) { body(y) }
             }
         }
-        var out = Raster(rect: input.rect)
-        for y in 0..<h {
-            for x in 0..<w {
-                var acc: (Float, Float, Float, Float) = (0, 0, 0, 0)
-                for k in -radius...radius {
-                    let sy = y + k
-                    guard sy >= 0, sy < h else { continue }
-                    let i = (sy * w + x) * 4, wgt = kernel[k + radius]
-                    acc.0 += tmp[i] * wgt; acc.1 += tmp[i + 1] * wgt; acc.2 += tmp[i + 2] * wgt; acc.3 += tmp[i + 3] * wgt
+        kernel.withUnsafeBufferPointer { coefficients in
+            let weights = coefficients.baseAddress!
+            input.data.withUnsafeBufferPointer { source in
+                tmp.withUnsafeMutableBufferPointer { temporary in
+                    let src = source.baseAddress!, dst = temporary.baseAddress!
+                    rows(rowsNeeded) { row in
+                        compositor_gaussian_horizontal(src + (firstRow + row) * w * 4,
+                            w, x0, ow, weights, radius, dst + row * ow * 4)
+                    }
                 }
-                let o = out.index(x, y)
-                out.data[o] = acc.0; out.data[o + 1] = acc.1; out.data[o + 2] = acc.2; out.data[o + 3] = acc.3
+            }
+            tmp.withUnsafeBufferPointer { temporary in
+                out.data.withUnsafeMutableBufferPointer { destination in
+                    let src = temporary.baseAddress!, dst = destination.baseAddress!
+                    rows(oh) { row in
+                        let y = y0 + row
+                        let lo = max(-radius, -y), hi = min(radius, h - y - 1)
+                        compositor_gaussian_vertical(src + (y + lo - firstRow) * ow * 4,
+                            ow, weights + lo + radius, hi - lo + 1, dst + row * ow * 4)
+                    }
+                }
             }
         }
         return out.cropped(to: region)
@@ -142,18 +153,28 @@ enum RasterFilters {
         var out = Raster(rect: region)
         let taps = max(1, Int(ceil(radius * 2)))
         let dx = cos(angle), dy = sin(angle)
-        for y in 0..<out.height {
-            for x in 0..<out.width {
-                let cx = Double(out.rect.minX - input.rect.minX) + Double(x) + 0.5
-                let cy = Double(out.rect.minY - input.rect.minY) + Double(y) + 0.5
-                var acc: (Float, Float, Float, Float) = (0, 0, 0, 0)
-                for t in 0...taps {
-                    let s = (Double(t) / Double(taps) * 2 - 1) * radius
-                    let p = input.bilinear(cx + s * dx, cy + s * dy)
-                    acc.0 += p.0; acc.1 += p.1; acc.2 += p.2; acc.3 += p.3
+        let width = out.width, height = out.height, sourceWidth = input.width, sourceHeight = input.height
+        guard width > 0, height > 0, sourceWidth > 0, sourceHeight > 0 else { return out }
+        let firstX = Int(region.minX - input.rect.minX), firstY = Int(region.minY - input.rect.minY)
+        // Every output pixel uses the same offsets and fractions. Computing these in
+        // the inner loop made even the default adjustment stall the desktop for seconds.
+        let kernel = (0...taps).map { t -> CompositorMotionTap in
+            let s = (Double(t) / Double(taps) * 2 - 1) * radius
+            let x = s * dx, y = s * dy, ix = floor(x), iy = floor(y)
+            return CompositorMotionTap(x: Int(ix), y: Int(iy), tx: Float(x - ix), ty: Float(y - iy))
+        }
+        kernel.withUnsafeBufferPointer { kernel in
+            input.data.withUnsafeBufferPointer { source in
+                out.data.withUnsafeMutableBufferPointer { destination in
+                    let src = source.baseAddress!, dst = destination.baseAddress!, weights = kernel.baseAddress!
+                    let workers = min(height, min(16, ProcessInfo.processInfo.activeProcessorCount))
+                    DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                        for y in (worker * height / workers)..<((worker + 1) * height / workers) {
+                            compositor_motion_row(src, sourceWidth, sourceHeight, firstX, firstY + y,
+                                                  width, weights, taps + 1, dst + y * width * 4)
+                        }
+                    }
                 }
-                let n = Float(taps + 1), o = out.index(x, y)
-                out.data[o] = acc.0 / n; out.data[o + 1] = acc.1 / n; out.data[o + 2] = acc.2 / n; out.data[o + 3] = acc.3 / n
             }
         }
         return out

@@ -26,6 +26,7 @@ EOF
 done
 
 if [ "$#" -eq 0 ]; then
+  python3 "$ROOT/scripts/gen-smudge-liquify-override.py" --check
   echo "UPSTREAM CLEAN: protected trees match $REF"
   exit 0
 fi

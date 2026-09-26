@@ -28,7 +28,7 @@ IMAGEIO_BACKEND="${COMPOSITOR_IMAGEIO_BACKEND:-"$ROOT/build/lib/libCompositorQtI
 # SDK ships, and a mismatched host SDK (e.g. a different major/minor Qt) fails at dynamic-link time with a missing
 # symbol-version error. Read it from the manifest instead of hardcoding a version: we don't control which Flatpak
 # runtimes are installed on a given machine, only which one the manifest declares this app is built against.
-MANIFEST="$ROOT/com.wonderassembly.Compositor.yaml"
+MANIFEST="$ROOT/com.compositor.Client.yaml"
 SDK_VERSION="$(sed -n "s/^runtime-version: *['\"]\\?\\([0-9.]*\\)['\"]\\?.*/\\1/p" "$MANIFEST" | head -n1)"
 if [[ -z "$SDK_VERSION" ]]; then
     echo "error: couldn't read runtime-version from $MANIFEST" >&2
@@ -72,19 +72,19 @@ if [[ "${1:-}" == "--install-desktop" ]]; then
         if [[ -f "$SRC_ICON" ]]; then
             DST_DIR="$ICON_BASE/${size}x${size}/apps"
             mkdir -p "$DST_DIR"
-            cp -p "$SRC_ICON" "$DST_DIR/com.wonderassembly.Compositor.png"
+            cp -p "$SRC_ICON" "$DST_DIR/com.compositor.Client.png"
         fi
     done
 
     # Generate desktop entry pointing to this launcher script
-    cat > "$APP_DIR/com.wonderassembly.Compositor.desktop" <<EOF
+    cat > "$APP_DIR/com.compositor.Client.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Compositor
 GenericName=Image Editor
 Comment=A free, open-source, Photoshop-style image editor
 Exec=$ROOT/scripts/run-compositor.sh %F
-Icon=com.wonderassembly.Compositor
+Icon=com.compositor.Client
 Terminal=false
 Categories=Graphics;Photography;2DGraphics;RasterGraphics;
 MimeType=application/x-compositor-project;image/png;image/jpeg;image/tiff;image/webp;
@@ -93,7 +93,7 @@ EOF
 
     update-desktop-database "$APP_DIR" 2>/dev/null || true
     gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-"$HOME/.local/share"}/icons/hicolor" 2>/dev/null || true
-    echo "Compositor successfully installed to $APP_DIR/com.wonderassembly.Compositor.desktop"
+    echo "Compositor successfully installed to $APP_DIR/com.compositor.Client.desktop"
     exit 0
 fi
 

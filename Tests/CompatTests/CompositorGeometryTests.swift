@@ -69,12 +69,12 @@ final class CompositorGeometryTests: XCTestCase {
     }
 
     func testAffineTransformConcatenationOrder() {
-        // translate then scale: scale applies first (closer to the point), then translate.
+        // Apple documents CGAffineTransformConcat(t1, t2) as t1 * t2 (row vectors).
         let scale = CGAffineTransform(scaleX: 2, y: 2)
         let translate = CGAffineTransform(translationX: 10, y: 0)
-        // t.concatenating(s) means t(s(point)): scale first, then translate.
+        // Apply translation, then scale the translated point.
         let combined = translate.concatenating(scale)
-        XCTAssertEqual(CGPoint(x: 3, y: 4).applying(combined), CGPoint(x: 16, y: 8))
+        XCTAssertEqual(CGPoint(x: 3, y: 4).applying(combined), CGPoint(x: 26, y: 8))
     }
 
     func testAffineTransformInvertedRoundTrip() {
@@ -93,9 +93,9 @@ final class CompositorGeometryTests: XCTestCase {
             .rotated(by: .pi / 2)
             .scaledBy(x: 2, y: 1)
             .translatedBy(x: -1, y: -1)
-        // Must be finite and non-identity.
-        XCTAssertTrue(chain.a.isFinite && chain.d.isFinite)
-        XCTAssertNotEqual(chain, .identity)
+        let mapped = CGPoint(x: 3, y: 4).applying(chain)
+        XCTAssertEqual(mapped.x, 47, accuracy: 1e-9)
+        XCTAssertEqual(mapped.y, 54, accuracy: 1e-9)
     }
 
     func testRectApplyingReturnsBoundingBox() {

@@ -34,8 +34,8 @@ extension CGSize {
 ///     [ tx ty 1 ]
 ///
 /// A point (x, y) maps to (a*x + c*y + tx, b*x + d*y + ty). `concatenating(other)`
-/// yields a transform equivalent to applying `other` first, then `self`
-/// (`self(other(point))`), matching `CGAffineTransform.concatenating`.
+/// yields a transform equivalent to applying `self` first, then `other`
+/// (`other(self(point))`), matching `CGAffineTransform.concatenating`.
 ///
 /// Foundation on Linux does not provide CGAffineTransform at all, so this is the
 /// canonical definition for the Linux core, not a redefinition.
@@ -63,17 +63,15 @@ public struct CGAffineTransform: Equatable, Sendable, Codable {
 
     public static let identity = CGAffineTransform(a: 1, b: 0, c: 0, d: 1)
 
-    /// `self(other(point))` — apply `other` first, then `self`. CoreGraphics uses
-    /// row-vector convention (`point' = point × M`), so the combined matrix is
-    /// `M_other × M_self` (other left-multiplied) to keep other applied first.
+    /// Core Graphics uses row vectors: concatenation is self × other, applying self first.
     public func concatenating(_ other: CGAffineTransform) -> CGAffineTransform {
         CGAffineTransform(
-            a: other.a * a + other.b * c,
-            b: other.a * b + other.b * d,
-            c: other.c * a + other.d * c,
-            d: other.c * b + other.d * d,
-            tx: other.tx * a + other.ty * c + tx,
-            ty: other.tx * b + other.ty * d + ty)
+            a: a * other.a + b * other.c,
+            b: a * other.b + b * other.d,
+            c: c * other.a + d * other.c,
+            d: c * other.b + d * other.d,
+            tx: tx * other.a + ty * other.c + other.tx,
+            ty: tx * other.b + ty * other.d + other.ty)
     }
 
     /// The inverse transform; returns identity if singular (determinant ~0). CG
@@ -91,18 +89,18 @@ public struct CGAffineTransform: Equatable, Sendable, Codable {
             ty: (b * tx - a * ty) * inv)
     }
 
-    /// Scale, applied in the transformed coordinate space: `self.concatenating(scale)`.
+    /// Scale, applied in the transformed coordinate space: `scale.concatenating(self)`.
     /// Non-mutating and value-returning, matching CG's `scaledBy(x:y:)`.
     public func scaledBy(x sx: CGFloat, y sy: CGFloat) -> CGAffineTransform {
-        concatenating(CGAffineTransform(scaleX: sx, y: sy))
+        CGAffineTransform(scaleX: sx, y: sy).concatenating(self)
     }
-    /// Translate, applied in the transformed coordinate space: `self.concatenating(translation)`.
+    /// Translate, applied in the transformed coordinate space: `translation.concatenating(self)`.
     public func translatedBy(x tx: CGFloat, y ty: CGFloat) -> CGAffineTransform {
-        concatenating(CGAffineTransform(translationX: tx, y: ty))
+        CGAffineTransform(translationX: tx, y: ty).concatenating(self)
     }
-    /// Rotate, applied in the transformed coordinate space: `self.concatenating(rotation)`.
+    /// Rotate, applied in the transformed coordinate space: `rotation.concatenating(self)`.
     public func rotated(by angle: CGFloat) -> CGAffineTransform {
-        concatenating(CGAffineTransform(rotationAngle: angle))
+        CGAffineTransform(rotationAngle: angle).concatenating(self)
     }
 }
 

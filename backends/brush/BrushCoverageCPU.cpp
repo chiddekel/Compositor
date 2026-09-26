@@ -16,6 +16,11 @@ float distanceSquared(float x, float y, const CompositorBrushSegment &s) {
     return px*px+py*py;
 }
 float density(float distanceSquared, const CompositorBrushUniforms &u) {
+    // Soft tips have a flat center and zero support outside the radius. Avoid exp/log
+    // for these exact values at the eight quadrature samples of every covered pixel.
+    if (distanceSquared >= u.radius * u.radius) return 0;
+    const float core = u.radius * u.hardness;
+    if (distanceSquared <= core * core) return -std::log(0.001f);
     return -std::log(std::max(1 - coverage(distanceSquared,u),0.001f));
 }
 float segmentDensity(float x, float y, const CompositorBrushSegment &s, const CompositorBrushUniforms &u) {
@@ -43,8 +48,16 @@ float segmentDensity(float x, float y, const CompositorBrushSegment &s, const Co
 extern "C" int compositor_brush_cpu(const CompositorBrushUniforms *uniforms,
     const CompositorBrushSegment *segments, size_t count,
     const float *permanent, size_t pixels, float *next, uint8_t *preview) {
+    return compositor_brush_cpu_rows(uniforms, segments, count, permanent, pixels, next, preview,
+                                     0, uniforms ? uniforms->height : 0);
+}
+extern "C" int compositor_brush_cpu_rows(const CompositorBrushUniforms *uniforms,
+    const CompositorBrushSegment *segments, size_t count,
+    const float *permanent, size_t pixels, float *next, uint8_t *preview,
+    uint32_t firstRow, uint32_t endRow) {
     if (!validBrush(uniforms,segments,count,permanent,pixels,next,preview)) return -1;
     const auto &u = *uniforms;
+    if (firstRow > endRow || endRow > u.height) return -1;
     // Most pointer updates cover only a small part of a tile. Outside this support, only the old
     // permanent coverage contributes; rebuilding it also removes the previous provisional tail.
     float minX = std::numeric_limits<float>::infinity(), minY = minX;
@@ -57,12 +70,18 @@ extern "C" int compositor_brush_cpu(const CompositorBrushUniforms *uniforms,
         maxX = std::max(maxX,std::max(s.x0,s.x1)+reach);
         maxY = std::max(maxY,std::max(s.y0,s.y1)+reach);
     }
-    for (uint32_t y=0;y<u.height;++y) for (uint32_t x=0;x<u.width;++x) {
+    for (uint32_t y=firstRow;y<endRow;++y) for (uint32_t x=0;x<u.width;++x) {
         const size_t i = size_t(y)*u.width+x;
         const float px = u.origin_x+(float(x)+0.5f)*u.a+(float(y)+0.5f)*u.c;
         const float py = u.origin_y+(float(x)+0.5f)*u.b+(float(y)+0.5f)*u.d;
         next[i] = permanent[i]; preview[i] = 0;
         if (px<0 || py<0 || px>=u.canvas_width || py>=u.canvas_height) continue;
+        // Hard coverage accumulates by max. A fully covered pixel cannot change with another
+        // settled segment or provisional tail (notably the many overlapping dabs at warp commit).
+        if (u.hardness >= 1 && permanent[i] == 1) { preview[i] = 255; continue; }
+        // Soft coverage stores density, capped at 20. Further deposition cannot change
+        // either that cap or its fully opaque 8-bit preview.
+        if (u.hardness < 1 && permanent[i] == 20) { preview[i] = 255; continue; }
         float value;
         if (px<minX || px>maxX || py<minY || py>maxY) {
             value = u.hardness >= 1 ? permanent[i]

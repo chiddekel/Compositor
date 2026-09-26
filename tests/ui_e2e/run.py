@@ -32,7 +32,7 @@ class App:
         self.sequence = 0
         self.log = open(artifacts / "app.log", "w")
         sdk = re.search(r"^runtime-version:\s*['\"]?([^'\"\s]+)",
-                        (ROOT / "com.wonderassembly.Compositor.yaml").read_text(), re.M).group(1)
+                        (ROOT / "com.compositor.Client.yaml").read_text(), re.M).group(1)
         env = {
             "DISPLAY": self.desktop.display_name, "QT_QPA_PLATFORM": "xcb",
             "QT_QPA_PLATFORMTHEME": "", "XDG_CURRENT_DESKTOP": "UIE2E", "QT_USE_PORTAL": "0",

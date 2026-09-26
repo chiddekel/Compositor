@@ -5,7 +5,7 @@ They do not modify `Compositor/`, `CompositorTests/` or the Xcode project.
 
 ## Run
 
-Install the KDE SDK and Swift extension declared by `com.wonderassembly.Compositor.yaml`,
+Install the KDE SDK and Swift extension declared by `com.compositor.Client.yaml`,
 plus host `flatpak`, `Xvfb`, `libX11`, `libXtst`, `dbus-run-session`, Python 3.11+ and Pillow.
 The normal development build's Skia and Qt image bridges must exist in `build/lib/`.
 For a clean machine, build those dependencies with:
@@ -59,6 +59,8 @@ mapping. The driver assigns X11 window focus because Xvfb has no window manager.
 | Clone Stamp | Alt-click source, copied pixels match source, source preserved; undo |
 | Spot Healing | Content-Aware, Create Texture, Proximity Match remove a dark spot and preserve distant pixels; undo |
 | Smear | Liquify/Smudge move color, Blur softens an edge; distant pixels preserved; undo |
+| Smear live feedback | All three modes at 256 px on a 1920 × 1080 image; working pixels and desktop preview change before release; five fresh edge crossings each appear within 100 ms |
+| Motion Blur adjustment | Add from the layer menu on a 1920 × 1080 image within 1500 ms; streak direction, distance/angle edits, preview toggle, apply, and pixel-exact undo |
 | Gradient | Linear/Radial preview, Cancel, Apply, alpha falloff and symmetry; undo |
 | Shape | Rectangle/Ellipse/Line geometry, filled and empty regions; undo |
 | Type | Native text input and commit produce rendered glyphs; undo |
@@ -90,6 +92,9 @@ and exports actual document pixels. It has no editor-command endpoint. A bounded
 Without that environment variable, the bridge installs no timer or input observer.
 
 ## Evidence and release use
+
+See [tool E2E and response-time results](tool-e2e-status.md) for the verified tool
+inventory, fixes, latest acceptance evidence, and measured performance limits.
 
 Each case retains the application log, Xvfb log, native input JSONL, widget/session JSON,
 desktop screenshot and exported PNGs. `junit.xml` records failures with tracebacks.
@@ -140,6 +145,20 @@ time includes intentional input pacing and observation requests. RSS is sampled 
 50 ms; process-lifetime peak RSS comes from Linux `VmHWM` and includes startup. CPU values
 have the kernel clock-tick resolution. The report includes machine, backend request and
 binary hash. GPU use, power consumption and hardware display presentation are unmeasured.
+
+The three `smear_feedback_*` cases additionally write `visible-latency.json`. They measure
+from native button-down and a 160 px document-space move to a changed X11 screenshot
+patch, independently of the application's observation bridge. Each of five samples
+starts from the original image, and undo must restore every pixel. This avoids treating
+Smudge's intentional dab spacing or Blur's already-saturated coverage as a stalled frame.
+The 100 ms limit includes stroke setup and screenshot overhead; it is a regression budget
+for this specified workload, not a guarantee for every document or hardware display.
+
+```sh
+UI_E2E_ARTIFACTS=/tmp/compositor-smear-feedback \
+  bash scripts/run-ui-e2e.sh --no-build \
+  --case smear_feedback_liquify --case smear_feedback_blur --case smear_feedback_smudge
+```
 
 The `Linux UI E2E` workflow runs on pushes and pull requests targeting `GNU_Linux`
 and can be run manually. It builds the production manifest's Skia module and the

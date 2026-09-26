@@ -269,7 +269,7 @@ These are observed facts at the reviewed working tree, not inferred completion p
 | `Sources/Overrides/MetalLayerEffects.swift:13`: `static var shared: MetalLayerEffects?` with no initializer | No accelerated effects instance is installed by this override. |
 | `Sources/Compat/AppKit/Text.swift:75`: `drawGlyphs(...) {}` | Type rasterization is a stub. |
 | `Sources/Compat/CoreImage/CoreImage.swift:327`: `image.node.eval(region, Env(linear: linearWorkingSpace))` | Current CI execution uses the graph's CPU evaluator. |
-| `com.wonderassembly.Compositor.yaml:99`: `-DBUILD_LIST=core,imgproc` | The manifest does not request OpenCV's photo module. |
+| `com.compositor.Client.yaml:99`: `-DBUILD_LIST=core,imgproc` | The manifest does not request OpenCV's photo module. |
 | `Sources/Overrides/MetalBrushCoverage.swift:7` references `OverrideSignatureTests.swift`, but that path is absent | The comment describes a contract test that has not been delivered. |
 | `scripts/check-upstream-clean.sh` | Protected `Compositor` and `CompositorTests` trees now match `upstream/main`; future Linux-only edits are rejected. |
 

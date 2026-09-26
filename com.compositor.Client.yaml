@@ -22,7 +22,7 @@
 # Build runs entirely inside the Flatpak SDK sandbox. Nothing links the build
 # host's installed system libraries.
 
-app-id: com.wonderassembly.Compositor
+app-id: com.compositor.Client
 runtime: org.kde.Platform
 runtime-version: '6.11'
 sdk: org.kde.Sdk
@@ -256,7 +256,7 @@ modules:
         for s in 16 32 64 128 256 512; do
           install -Dm644 \
             Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-${s}.png \
-            /app/share/icons/hicolor/${s}x${s}/apps/com.wonderassembly.Compositor.png
+            /app/share/icons/hicolor/${s}x${s}/apps/com.compositor.Client.png
         done
       # (g) Install desktop entry + AppStream metainfo.
       # UI font: Inter (OFL), the stand-in for macOS's SF Pro (MACOS_UI_PARITY_RULES.md §4.2).
@@ -265,8 +265,8 @@ modules:
       # Subject segmentation (Select Subject / Remove Background): U²-Net-small, Apache-2.0 (third_party/models).
       - install -Dm644 third_party/models/u2netp.onnx /app/share/compositor/models/u2netp.onnx
       - install -Dm644 third_party/models/LICENSE-U2Net.txt /app/share/compositor/models/LICENSE-U2Net.txt
-      - install -Dm644 flatpak/com.wonderassembly.Compositor.desktop /app/share/applications/com.wonderassembly.Compositor.desktop
-      - install -Dm644 flatpak/com.wonderassembly.Compositor.metainfo.xml /app/share/metainfo/com.wonderassembly.Compositor.metainfo.xml
+      - install -Dm644 flatpak/com.compositor.Client.desktop /app/share/applications/com.compositor.Client.desktop
+      - install -Dm644 flatpak/com.compositor.Client.metainfo.xml /app/share/metainfo/com.compositor.Client.metainfo.xml
     sources:
        # Local source for development. Release builds replace this with the
        # exact repository commit used for the artifact.

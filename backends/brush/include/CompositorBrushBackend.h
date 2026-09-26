@@ -21,6 +21,12 @@ typedef struct CompositorVulkanBrush CompositorVulkanBrush;
 int compositor_brush_cpu(const CompositorBrushUniforms *uniforms,
     const CompositorBrushSegment *segments, size_t segment_count,
     const float *permanent, size_t pixel_count, float *next, uint8_t *preview);
+// Same tile coordinates and buffers, but writes only [first_row, end_row).
+// Disjoint row ranges may run concurrently; each preserves the full kernel's arithmetic.
+int compositor_brush_cpu_rows(const CompositorBrushUniforms *uniforms,
+    const CompositorBrushSegment *segments, size_t segment_count,
+    const float *permanent, size_t pixel_count, float *next, uint8_t *preview,
+    uint32_t first_row, uint32_t end_row);
 CompositorVulkanBrush *compositor_vulkan_brush_create(void);
 void compositor_vulkan_brush_destroy(CompositorVulkanBrush *context);
 int compositor_vulkan_brush_render(CompositorVulkanBrush *context,

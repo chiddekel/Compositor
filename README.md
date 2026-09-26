@@ -108,13 +108,13 @@ Version must match the manifest's `runtime-version` — mismatched SDK/runtime f
 ### Run it
 
 ```
-flatpak-builder --user --install --force-clean build-dir com.wonderassembly.Compositor.yaml
-flatpak run com.wonderassembly.Compositor
+flatpak-builder --user --install --force-clean build-dir com.compositor.Client.yaml
+flatpak run com.compositor.Client
 ```
 
 No native title bar: drag the header to move the window, double-click to maximize.
 
-Headless: `QT_QPA_PLATFORM=offscreen flatpak run com.wonderassembly.Compositor --help`
+Headless: `QT_QPA_PLATFORM=offscreen flatpak run com.compositor.Client --help`
 
 ### Dev loop
 
@@ -148,7 +148,7 @@ See [Linux UI E2E](docs/linux-ui-e2e.md) for dependencies, coverage, artifacts a
 <summary>Manual build (what the script automates)</summary>
 
 ```
-flatpak-builder --run build-dir com.wonderassembly.Compositor.yaml bash
+flatpak-builder --run build-dir com.compositor.Client.yaml bash
 # inside the sandbox:
 export PATH=/usr/lib/sdk/swift6/bin:$PATH
 swift build -c release --static-swift-stdlib

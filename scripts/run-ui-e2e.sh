@@ -15,7 +15,7 @@ python3 -c 'from PIL import Image; import ctypes; ctypes.CDLL("libX11.so.6"); ct
 for library in libCompositorSkiaBridge.so libCompositorQtImageIO.so; do
     [[ -s "build/lib/$library" ]] || { echo "Missing build/lib/$library; see docs/linux-ui-e2e.md" >&2; exit 1; }
 done
-sdk=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.wonderassembly.Compositor.yaml)
+sdk=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.compositor.Client.yaml)
 [[ -n "$sdk" ]] || { echo "Missing manifest SDK version" >&2; exit 1; }
 if (( build )); then
     flatpak run --command=bash --devel --filesystem="$ROOT" "org.kde.Sdk//$sdk" -c \

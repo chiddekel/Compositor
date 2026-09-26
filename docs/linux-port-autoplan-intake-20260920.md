@@ -25,7 +25,7 @@ Earlier review logs and test counts are historical evidence only. No tests were 
 
 | Area | New brief | Current evidence | Consequence for review |
 |---|---|---|---|
-| Packaging | Freedesktop 26.08, separately bundled Qt and Swift toolchain | com.wonderassembly.Compositor.yaml selects KDE 6.10 and Swift SDK extension 25.08 | This is a migration of an existing build choice, not a first scaffold |
+| Packaging | Freedesktop 26.08, separately bundled Qt and Swift toolchain | com.compositor.Client.yaml selects KDE 6.10 and Swift SDK extension 25.08 | This is a migration of an existing build choice, not a first scaffold |
 | Rendering | CoreGraphics-shaped compatibility over one Skia contract | Sources/CompositorCore/Rendering/DocumentRenderer.swift renders/composites/masks through portable Swift buffers and LayerRenderer | Need inspect full rendering path and estimate convergence; do not declare existing code compliant merely because tests pass |
 | GPU | Skia Vulkan plus mandatory Raster fallback | Manifest explicitly sets skia_enable_gpu=false and skia_use_vulkan=false | Existing manifest does not deliver the proposed GPU backend |
 | Sandbox | No home/host grants | Manifest grants home, xdg-download and /tmp | Portal and package persistence work remains a release condition |

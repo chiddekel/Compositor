@@ -2,7 +2,7 @@
 #
 # The actual source archive is NOT committed to this repo. flatpak-builder
 # fetches the URL below at build time and verifies the sha256 (declared in
-# com.wonderassembly.Compositor.yaml, Module "skia"). This file is the
+# com.compositor.Client.yaml, Module "skia"). This file is the
 # human-readable pin record; the manifest is the source of truth.
 #
 # Build: static, GPU + Vulkan enabled (plan §8.4), self-contained third-party

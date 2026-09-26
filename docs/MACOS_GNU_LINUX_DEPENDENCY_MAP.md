@@ -265,5 +265,5 @@ Platform integration: XDG portals + Wayland/X11 + DRI
 - macOS third party: `Compositor.xcodeproj/.../Package.resolved` (Sparkle)
 - Linux dependency composition: `Package.swift`
 - Linux native/link topology: `CMakeLists.txt`
-- Linux runtime/package pins: `com.wonderassembly.Compositor.yaml`
+- Linux runtime/package pins: `com.compositor.Client.yaml`
 - Linux desktop shell: `host/SessionWindow.cpp`, `host/host_run.cpp`

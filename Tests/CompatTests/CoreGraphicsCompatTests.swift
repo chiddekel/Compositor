@@ -197,6 +197,37 @@ final class CoreGraphicsCompatTests: XCTestCase {
         XCTAssertEqual(out.bytes[pRight + 3], 0)
     }
 
+    func testSparseMaskClipMatchesRenderedMaskWithInterpolation() throws {
+        var mask = MaskBuffer(width: 64, height: 64)
+        for y in 27..<34 { for x in 26..<35 { mask[x, y] = UInt8((x + y) % 3 * 100) } }
+        let image = CGImage(mask: mask)
+        let rect = CGRect(x: 2, y: 3, width: 84, height: 78)
+        for quality in [CGInterpolationQuality.none, .low, .medium, .high] {
+            func context() -> CGContext {
+                let ctx = CGContext(width: 100, height: 100)
+                ctx.translateBy(x: 6, y: 2)
+                ctx.rotate(by: 0.07)
+                ctx.interpolationQuality = quality
+                return ctx
+            }
+            let clipped = context()
+            clipped.clip(to: rect, mask: image)
+            clipped.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+            clipped.fill(CGRect(x: -100, y: -100, width: 300, height: 300))
+            // Draw an RGBA alpha mask independently of the mask clipping path.
+            var rgba = PixelBuffer(width: 64, height: 64)
+            for y in 0..<64 { for x in 0..<64 {
+                let alpha = mask[x, y]
+                rgba[x, y] = (alpha, 0, 0, alpha)
+            } }
+            let rendered = context()
+            rendered.draw(CGImage(rgba), in: rect)
+            let actual = try XCTUnwrap(clipped.makeImage()).bytes
+            let expected = try XCTUnwrap(rendered.makeImage()).bytes
+            XCTAssertLessThanOrEqual(zip(actual, expected).map { abs(Int($0) - Int($1)) }.max()!, 1)
+        }
+    }
+
     func testBlendModesParity() {
         // Multiply: 0.5 * 0.5 ~ 0.25 (64)
         var buf = PixelBuffer(width: 2, height: 2)

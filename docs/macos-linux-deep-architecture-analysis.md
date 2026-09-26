@@ -225,7 +225,7 @@ backends/{brush,effects}/ (C++, Vulkan/OpenCV/CPU)   implementacje GPU/CPU za pr
   — panele warstw, pasek opcji, doki) — dojrzały zestaw widżetów Qt Widgets pasuje lepiej niż immediate-mode
   (Dear ImGui) czy deklaratywny, młodszy Slint.
 - Jeden toolkit obsługujący zarówno Wayland, jak i X11 fallback bez dodatkowej warstwy — **[Fakt — kod]**
-  `com.wonderassembly.Compositor.yaml` finish-args: `--socket=wayland` (preferowany), `--socket=fallback-x11`.
+  `com.compositor.Client.yaml` finish-args: `--socket=wayland` (preferowany), `--socket=fallback-x11`.
 - GTK4 byłby też sensownym wyborem (podobna dojrzałość), ale Qt ma lepsze wsparcie dla natywnego GPU (Vulkan/GL
   przez `--device=dri`) i tabletów graficznych (`QTabletEvent` — nacisk, przechył, gumka) bez dodatkowych zależności.
 
@@ -264,7 +264,7 @@ backends/{brush,effects}/ (C++, Vulkan/OpenCV/CPU)   implementacje GPU/CPU za pr
 
 ## 9. Wayland i X11 **[Zrealizowane w porcie]**
 
-**[Fakt — kod]** `com.wonderassembly.Compositor.yaml`: `--socket=wayland` jako preferowany, `--socket=fallback-x11`
+**[Fakt — kod]** `com.compositor.Client.yaml`: `--socket=wayland` jako preferowany, `--socket=fallback-x11`
 jako fallback, `--share=ipc` (IPC pluginu platformy Qt). Obsługa realizowana **przez framework (Qt)**, nie ręcznie
 — słuszny wybór dla aplikacji tej wielkości: Qt sam wybiera odpowiedni backend platformowy (`qtwayland`/xcb) w
 runtime, a ręczna implementacja Wayland/X11 od zera (jak zrobiłby to np. silnik gry pisany bezpośrednio na
@@ -360,7 +360,7 @@ projekcie (Swift + C++, nie Swift + C++ + Rust) bez utraty właściwości bezpie
 | Język współdzielonej logiki | Swift 6.3.3 | `Package.swift`, `org.freedesktop.Sdk.Extension.swift6` |
 | UI | Qt 6.11 (Widgets) | `host/`, `org.kde.Sdk//6.11` |
 | GPU rendering | Vulkan (przez Skia Ganesh + własne compute) | `backends/effects/EffectsVulkan.cpp` |
-| Rasteryzacja 2D | Skia (`canvaskit/0.42.0`) | `com.wonderassembly.Compositor.yaml` moduł `skia` |
+| Rasteryzacja 2D | Skia (`canvaskit/0.42.0`) | `com.compositor.Client.yaml` moduł `skia` |
 | Computer vision (segmentacja) | OpenCV 4.14.0 (GrabCut) | moduł `opencv` w manifeście |
 | Kodeki obrazów | Qt image plugins | `host/QtImageIO.cpp` |
 | Dystrybucja | Flatpak (`org.kde.Platform//6.11`) | manifest główny |

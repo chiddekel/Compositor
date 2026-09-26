@@ -2,7 +2,7 @@ import Foundation
 import CompositorBrushBackend
 
 /// This adapter is the only Swift layer aware of the native brush ABI.
-private func nativeCoverage(_ request: BrushCoverageRequest, context: OpaquePointer? = nil,
+nonisolated private func nativeCoverage(_ request: BrushCoverageRequest, context: OpaquePointer? = nil,
                             accelerated: Bool = false) throws -> BrushCoverageResult {
     guard (1...256).contains(request.width), (1...256).contains(request.height),
           request.settled.count <= 2048, request.tail.count <= 2048 - request.settled.count,
@@ -26,6 +26,30 @@ private func nativeCoverage(_ request: BrushCoverageRequest, context: OpaquePoin
                         return compositor_vulkan_brush_render(context, &uniforms, segments.baseAddress, segments.count,
                             source.baseAddress, source.count, destination.baseAddress, preview.baseAddress)
                     }
+                    if request.radius >= 64, request.hardness < 1, request.height >= 128, !segments.isEmpty {
+                        // A wide soft tip spends most of its time integrating each pixel. A stroke may
+                        // touch only two tiles, so split their rows too instead of leaving cores idle.
+                        let workers = 4
+                        var codes = [Int32](repeating: 0, count: workers)
+                        withUnsafePointer(to: &uniforms) { uniforms in
+                            codes.withUnsafeMutableBufferPointer { codes in
+                                // concurrentPerform joins before these buffer scopes end. Inputs are
+                                // immutable; each worker owns separate output rows and one status slot.
+                                nonisolated(unsafe) let uniforms = uniforms
+                                nonisolated(unsafe) let segments = segments
+                                nonisolated(unsafe) let source = source
+                                nonisolated(unsafe) let destination = destination
+                                nonisolated(unsafe) let preview = preview
+                                nonisolated(unsafe) let codes = codes
+                                DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                                    codes[worker] = compositor_brush_cpu_rows(uniforms, segments.baseAddress, segments.count,
+                                        source.baseAddress, source.count, destination.baseAddress, preview.baseAddress,
+                                        UInt32(worker * request.height / workers), UInt32((worker + 1) * request.height / workers))
+                                }
+                            }
+                        }
+                        return codes.first(where: { $0 != 0 }) ?? 0
+                    }
                     return compositor_brush_cpu(&uniforms, segments.baseAddress, segments.count,
                         source.baseAddress, source.count, destination.baseAddress, preview.baseAddress)
                 }
@@ -36,7 +60,8 @@ private func nativeCoverage(_ request: BrushCoverageRequest, context: OpaquePoin
     return BrushCoverageResult(permanent: permanent, preview: preview)
 }
 
-final class CPUBrushCoverage: BrushCoverageComputing {
+// Stateless and called by tile workers; its lifetime must not be tied to the UI actor.
+nonisolated final class CPUBrushCoverage: BrushCoverageComputing {
     var isThreadSafe: Bool { true }
     func render(_ request: BrushCoverageRequest) throws -> BrushCoverageResult { try nativeCoverage(request) }
 }

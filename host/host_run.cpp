@@ -114,7 +114,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     });
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
-    app.setDesktopFileName("com.wonderassembly.Compositor");
+    app.setDesktopFileName("com.compositor.Client");
 
     QIcon appIcon;
     const int iconSizes[] = {16, 32, 64, 128, 256, 512, 1024};
@@ -123,7 +123,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         if (QFile::exists(p1)) {
             appIcon.addFile(p1);
         } else {
-            const QString p2 = QDir::homePath() + QStringLiteral("/.local/share/icons/hicolor/%1x%1/apps/com.wonderassembly.Compositor.png").arg(s);
+            const QString p2 = QDir::homePath() + QStringLiteral("/.local/share/icons/hicolor/%1x%1/apps/com.compositor.Client.png").arg(s);
             if (QFile::exists(p2)) appIcon.addFile(p2);
         }
     }

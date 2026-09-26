@@ -1011,10 +1011,22 @@ final class UpstreamEditor {
         let stroke = s.brushStroke ?? s.gradientEdit?.raster
         for (index, layer) in document.layers.enumerated() {
             var shown = s.displayedTransform(for: layer)
+            var maskPlacement = layer.mask?.placement
             let preview = s.filterEdit?.previewImage(for: layer.id) ?? s.levels?.previewImage(for: layer.id)
                 ?? s.hueSaturation?.previewImage(for: layer.id)
             if let preview, let asset = layer.asset {
                 images[layer.id] = ImportedImage(image: preview, thumbnail: asset.thumbnail, name: asset.name)
+            } else if let warp = s.warpStroke, warp.layer.id == layer.id, let image = warp.image {
+                // CanvasView draws the working warp in document coordinates. Show the same pixels here;
+                // otherwise the cached Qt canvas stays frozen until finishWarp commits the layer.
+                let canvas = CGRect(origin: .zero, size: document.size)
+                let crop = strokeRegion.map { $0.integral.insetBy(dx: -2, dy: -2).intersection(canvas) } ?? canvas
+                if !crop.isNull, !crop.isEmpty, let cropped = crop == canvas ? image : image.cropping(to: crop) {
+                    images[layer.id] = ImportedImage(image: cropped, thumbnail: cropped, name: layer.name)
+                    shown = LayerTransform(origin: crop.origin, size: crop.size)
+                    // A linked mask still covers the original layer placement, not the preview's cropped rect.
+                    if layer.mask != nil { maskPlacement = layer.maskTransform }
+                }
             } else if let stroke, stroke.layer.id == layer.id, !stroke.isMask, let strokeRegion,
                       let painted = Self.paintRegion(of: stroke, in: strokeRegion) {
                 images[layer.id] = painted.asset
@@ -1036,12 +1048,12 @@ final class UpstreamEditor {
             }
             // Text being edited is drawn by the shell's inline editor, not from the layer (EditorCanvas skips it too).
             let editing = s.textDraft?.layerID == layer.id
-            if shown != layer.transform || editing {
+            if shown != layer.transform || maskPlacement != layer.mask?.placement || editing {
                 let record = manifest.layers[index]
                 manifest.layers[index] = ProjectLayerRecord(id: record.id, name: record.name, isVisible: record.isVisible && !editing, transform: shown,
                     imageFile: record.imageFile, parentID: record.parentID, isGroup: record.isGroup, opacity: record.opacity,
                     blendMode: record.blendMode, maskFile: record.maskFile, maskEnabled: record.maskEnabled, maskSourceID: record.maskSourceID,
-                    adjustment: record.adjustment, maskPlacement: record.maskPlacement, maskLinked: record.maskLinked,
+                    adjustment: record.adjustment, maskPlacement: maskPlacement, maskLinked: record.maskLinked,
                     shape: record.shape, effects: record.effects, text: record.text)
             }
         }
@@ -1099,8 +1111,12 @@ final class UpstreamEditor {
     /// pumping the main run loop from the shell's plain callback. Bounded, so a stuck preview cannot hang the shell.
     func settle(timeout: TimeInterval = 3) {
         func waiting() -> Bool {
-            if let edit = session.filterEdit, edit.preview, edit.preparedPreview == nil, edit.previewError == nil { return true }
-            if let edit = session.levels, edit.preview, edit.preparedPreview == nil { return true }
+            // Adjustment editors render their settings through the layer composite; they
+            // never start a preview task or fill preparedPreview. Waiting for that image
+            // exhausted the timeout on every revision check and frame read.
+            if let edit = session.filterEdit, edit.preview, edit.previewTask != nil,
+               edit.preparedPreview == nil, edit.previewError == nil { return true }
+            if let edit = session.levels, edit.preview, edit.previewTask != nil, edit.preparedPreview == nil { return true }
             return false
         }
         let deadline = Date(timeIntervalSinceNow: timeout)

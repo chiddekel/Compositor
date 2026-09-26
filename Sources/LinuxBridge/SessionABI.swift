@@ -25,6 +25,8 @@ final class Entry {
     var renderRevision: Int64 = 0
     /// Document area the brush stroke in progress changed since the last `compositor_session_render_dirty`.
     var strokeDirty: CGRect?
+    private weak var trackedWarp: WarpStroke?
+    private var warpPointCount = 0
     /// The RAW Develop sheet being shown for this session (see resolvePanel "RawDevelopSheet").
     var rawDevelopSheet: (url: URL, view: RawDevelopSheet)?
     /// The last resolved SwiftUI tree's action handlers, per panel: panel name -> node id -> handler key -> closure.
@@ -41,8 +43,28 @@ final class Entry {
     /// anything that can advance a stroke: a bridge command, a pointer event on the hosted canvas.
     func noteStrokeProgress() {
         if let stroke = editor.session.brushStroke {
+            trackedWarp = nil
+            warpPointCount = 0
             if let dirty = stroke.dirtyDocumentRect { strokeDirty = strokeDirty.map { $0.union(dirty) } ?? dirty }
+        } else if let warp = editor.session.warpStroke {
+            if trackedWarp !== warp {
+                trackedWarp = warp
+                warpPointCount = 0
+                strokeDirty = nil
+            }
+            // WarpStroke records every interpolated dab. Include only new dabs, with rounding/filter margin,
+            // then accumulate until the next frame, exactly as for a tiled BrushStroke.
+            let radius = ceil(warp.diameter / 2) + 2
+            let canvas = CGRect(x: 0, y: 0, width: warp.width, height: warp.height)
+            for point in warp.points.dropFirst(warpPointCount) {
+                let dirty = CGRect(x: point.x - radius, y: point.y - radius,
+                                   width: radius * 2, height: radius * 2).integral.intersection(canvas)
+                if !dirty.isNull, !dirty.isEmpty { strokeDirty = strokeDirty.map { $0.union(dirty) } ?? dirty }
+            }
+            warpPointCount = warp.points.count
         } else {
+            trackedWarp = nil
+            warpPointCount = 0
             strokeDirty = nil
         }
     }
@@ -241,7 +263,7 @@ nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: U
                                                      _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     guard let rect, let output, capacity >= 0 else { return -1 }
     return withEntry(handle) { entry in
-        guard entry.editor.session.brushStroke != nil else { return -3 }
+        guard entry.editor.session.brushStroke != nil || entry.editor.session.warpStroke != nil else { return -3 }
         guard let dirty = entry.strokeDirty else { return 0 }
         // At full resolution: shrinking the region through the high-quality downsampler every frame costs more than
         // the stroke; the shell scales the patch into its display image (the committed stroke re-renders properly).

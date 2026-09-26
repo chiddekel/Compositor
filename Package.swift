@@ -146,7 +146,9 @@ let package = Package(
         .target(name: "SwiftUI", dependencies: ["CoreGraphics", "AppKit", "Combine", "FoundationCompat", "CompatSupport"], path: "Sources/Compat/SwiftUI",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport"], path: "Sources/Compat/CoreImage",
+        .target(name: "CoreImageKernels", path: "backends/coreimage", sources: ["Gaussian.c", "Motion.c"],
+                publicHeadersPath: "include", cSettings: [.unsafeFlags(["-ffp-contract=off"])]),
+        .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport", "CoreImageKernels"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // CoreText: single-line drawing over the Qt text engine (upstream's Dither ASCII glyphs).
         .target(name: "CoreText", dependencies: ["AppKit", "CoreGraphics"], path: "Sources/Compat/CoreText",
@@ -166,6 +168,7 @@ let package = Package(
         // own tests (`@testable import Compositor`) run against it. Files are reached through symlinks in
         // Sources/UpstreamCore; nothing under Compositor/ is edited. Excluded: view/app code the Qt shell replaces
         // and the two Metal files, which Sources/Overrides replaces with same-API Vulkan/CPU implementations.
+        // SmudgeLiquify's generated override caches the unchanged tip falloff; its upstream class is a test oracle.
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
@@ -190,6 +193,7 @@ let package = Package(
                      "Rendering/WandPixels.c",
                      "Rendering/WandPixels.h",
                      "IO/CompositorApplicationDelegate.swift",
+                     "Document/SmudgeLiquify.swift",
                      "Rendering/MetalBrushCoverage.swift",
                      "Rendering/MetalLayerEffects.swift"],
             swiftSettings: [

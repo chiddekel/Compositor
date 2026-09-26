@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 mkdir -p build/lib
-flatpak-builder --show-manifest com.wonderassembly.Compositor.yaml > build/ui-e2e-full-manifest.json
+flatpak-builder --show-manifest com.compositor.Client.yaml > build/ui-e2e-full-manifest.json
 python3 - <<'PY'
 import json
 from pathlib import Path

@@ -28,13 +28,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder xvfb libxtst6 python3-pil dbus-x11
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak-builder --user --install-deps-only --install-deps-from=flathub --assumeyes build/ui-deps com.wonderassembly.Compositor.yaml
+          flatpak-builder --user --install-deps-only --install-deps-from=flathub --assumeyes build/ui-deps com.compositor.Client.yaml
 
       - name: Cache production Skia build
         uses: actions/cache@v4
         with:
           path: .flatpak-builder
-          key: ui-skia-${{ runner.os }}-${{ hashFiles('com.wonderassembly.Compositor.yaml') }}
+          key: ui-skia-${{ runner.os }}-${{ hashFiles('com.compositor.Client.yaml') }}
 
       - name: Build real Skia and image bridges
         run: bash scripts/build-ui-e2e-deps.sh

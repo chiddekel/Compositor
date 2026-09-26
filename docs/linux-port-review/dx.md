@@ -50,10 +50,10 @@ Build the complete application bundle for distribution or local testing:
 ```bash
 # Build and install Flatpak bundle locally
 flatpak-builder --disable-rofiles-fuse --user --install --force-clean \
-  build-flatpak com.wonderassembly.Compositor.yaml
+  build-flatpak com.compositor.Client.yaml
 
 # Launch the installed Flatpak
-flatpak run com.wonderassembly.Compositor
+flatpak run com.compositor.Client
 ```
 
 ---

@@ -220,7 +220,7 @@ public final class CGContext: @unchecked Sendable {
     public var ctm: CGAffineTransform { userSpaceToDeviceSpaceTransform }
 
     public func concatCTM(_ transform: CGAffineTransform) {
-        state.ctm = state.ctm.concatenating(transform)
+        state.ctm = transform.concatenating(state.ctm)
         canvas?.concat(transform)
     }
 
@@ -543,6 +543,23 @@ public final class CGContext: @unchecked Sendable {
 
     /// `opacity` is the caller's own; the context's alpha is applied by the backend from its tracked state.
     private func drawRaw(_ canvas: CanvasBackend, _ image: CGImage, in rect: CGRect, opacity: Double) {
+        if image.supportsRegionRendering, rect.width > 0, rect.height > 0,
+           state.shadowBlur == 0, state.shadowOffset == .zero, !canvas.clipBounds.isNull {
+            let visible = canvas.clipBounds.intersection(rect)
+            guard !visible.isNull, !visible.isEmpty else { return }
+            let sx = CGFloat(image.width) / rect.width, sy = CGFloat(image.height) / rect.height
+            // Two source pixels retain the interpolation kernel at the cropped edge.
+            let source = CGRect(x: (visible.minX - rect.minX) * sx, y: (visible.minY - rect.minY) * sy,
+                                width: visible.width * sx, height: visible.height * sy)
+                .insetBy(dx: -2, dy: -2).integral
+                .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            guard let cropped = image.cropping(to: source) else { return }
+            let placed = CGRect(x: rect.minX + source.minX / sx, y: rect.minY + source.minY / sy,
+                                width: source.width / sx, height: source.height / sy)
+            canvas.draw(image: cropped.portableImage, isGray: cropped.isGrayPlane, in: placed, opacity: Float(opacity),
+                        blendMode: state.blendMode.rawValue, quality: mapQuality(state.interpolationQuality))
+            return
+        }
         canvas.draw(image: image.portableImage, isGray: image.isGrayPlane, in: rect, opacity: Float(opacity),
                     blendMode: state.blendMode.rawValue, quality: mapQuality(state.interpolationQuality))
     }

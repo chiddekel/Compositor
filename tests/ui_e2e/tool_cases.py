@@ -2,8 +2,9 @@
 from collections import Counter
 import json
 import math
+import time
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import ImageGrab, Image, ImageChops, ImageDraw
 
 
 TOOLS = {
@@ -289,6 +290,112 @@ def text_tool(app):
     undo_pixels(app, before)
 
 
+def smear_feedback(app, mode):
+    """Measure a larger stroke and require visible feedback before mouse release."""
+    fixture = Image.new("RGBA", (1920, 1080), "white")
+    ImageDraw.Draw(fixture).rectangle((400, 200, 959, 879), fill="black")
+    path = app.artifacts / "smear-fixture.png"
+    fixture.save(path)
+    app.click(app.widget(text="Import image", kind="button"))
+    app.field(str(path), name="fileNameEdit", commit=False)
+    app.desktop.key("Return")
+    app.wait(lambda s: s["state"].get("width") == 1920 and not s["state"]["busy"], "smear fixture")
+    app.tool("brush")
+    app.brush(size=256, hardness=50, opacity=70)
+    app.tool("blur")
+    app.option(mode)
+    # Tools remember separate settings; configure and verify Smear after selecting it.
+    for label, value, key, expected in [("Size", 256, "brushDiameter", 256),
+                                       ("Hardness", 50, "brushHardness", .5),
+                                       ("Opacity", 70, "brushOpacity", .7)]:
+        app.field(value, label=label, ancestor="swiftUIOptionsContainer")
+        app.wait(lambda s: abs(s["state"].get(key, -999) - expected) < .001, "Smear " + label)
+    before = app.image("before-smear")
+    assert before.tobytes() == fixture.tobytes(), "Smear fixture changed on import"
+    points = line((900, 540), (1140, 540), 80)
+    committed = None
+    for repetition in range(4):
+        previous = app.inspect()["state"]["undoName"]
+        name = "smear_warmup" if repetition == 0 else "smear_256px"
+        with app.metrics.measure(name, mode=mode, diameter=256, hardness=50, strength=70,
+                                 canvas=[1920, 1080], points=len(points), interval_ms=3) as record:
+            app._gesture(points, None, .003, record)
+            changed(app, previous)
+        committed = app.image("smear-" + str(repetition))
+        assert committed.tobytes() != before.tobytes(), mode + " did not change pixels"
+        assert committed.getpixel((30, 30)) == before.getpixel((30, 30)), "Smear damaged distant pixels"
+        undo_pixels(app, before, "undo-smear-" + str(repetition))
+
+    snapshot = app.inspect()
+    app.desktop.focus(snapshot["windowID"])
+    screen = app.points(points)
+    # Keep the cursor outside the sampled area in both desktop captures.
+    app.desktop.move(*screen[-1])
+    baseline_path = app.request("capture", name="before-live.png")["path"]
+    app.desktop.move(*screen[0])
+    app.desktop.button(True)
+    try:
+        app.wait(lambda s: s["pointerPresses"] > snapshot["pointerPresses"], "live smear press")
+        for point in screen[1:]:
+            app.desktop.move(*point)
+            time.sleep(.003)
+        # Export observes the session; the desktop capture independently checks the displayed preview.
+        live = app.image("live-smear")
+        live_path = app.request("capture", name="live-desktop.png")["path"]
+    finally:
+        app.desktop.button(False)
+    app.wait(lambda s: s["pointerReleases"] > snapshot["pointerReleases"] and not s["state"]["busy"], "live smear release")
+    assert live.tobytes() != before.tobytes(), mode + " preview stayed frozen until release"
+    x, y, sx, sy = snapshot["canvasMapping"]
+    # The original edge, well behind the final pointer and away from the tool cursor.
+    region = (round(x + 950 * sx), round(y + 510 * sy), round(x + 980 * sx), round(y + 570 * sy))
+    baseline = Image.open(baseline_path).convert("RGB").crop(region)
+    displayed = Image.open(live_path).convert("RGB").crop(region)
+    assert ImageChops.difference(baseline, displayed).getbbox(), mode + " canvas preview stayed frozen"
+    assert app.image("after-live-smear").tobytes() == committed.tobytes(), "Preview changed the committed stroke"
+    undo_pixels(app, before, "undo-live-smear")
+
+    # Each sample crosses a fresh edge. Blur's max coverage need not change already-painted
+    # pixels, and Smudge deliberately ignores motion shorter than 8% of its diameter.
+    # A 160 px move exercises all three modes without mistaking either behavior for lag.
+    patch = (round(x + 950 * sx), round(y + 560 * sy),
+             round(x + 970 * sx), round(y + 580 * sy))
+
+    def screen_patch():
+        return ImageGrab.grab(bbox=patch, xdisplay=app.desktop.display_name).convert("RGB")
+
+    samples = []
+    try:
+        for repetition in range(5):
+            app.desktop.move(x + 820 * sx, y + 540 * sy)
+            app.request("capture", name="latency-baseline-" + str(repetition) + ".png")
+            previous_patch = screen_patch()
+            started = time.perf_counter()
+            app.desktop.button(True)
+            try:
+                app.desktop.move(x + 980 * sx, y + 540 * sy)
+                while True:
+                    current_patch = screen_patch()
+                    elapsed = (time.perf_counter() - started) * 1000
+                    if ImageChops.difference(previous_patch, current_patch).getbbox():
+                        break
+                    assert elapsed < 1000, mode + " did not display this input within one second"
+                    time.sleep(.002)
+                samples.append({"repetition": repetition, "visible_ms": elapsed})
+            finally:
+                app.desktop.button(False)
+            changed(app, snapshot["state"]["undoName"])
+            undo_pixels(app, before, "undo-latency-smear-" + str(repetition))
+    finally:
+        (app.artifacts / "visible-latency.json").write_text(json.dumps({
+            "mode": mode, "limit_ms": 100, "canvas": [1920, 1080], "diameter": 256,
+            "path": [[820, 540], [980, 540]],
+            "observer": "X11 screenshot pixels; includes press setup and capture overhead; excludes hardware display scanout",
+            "samples": samples}, indent=2))
+    assert len(samples) == 5 and all(sample["visible_ms"] <= 100 for sample in samples), mode + " exceeded 100 ms: " + repr(samples)
+
+
+
 def idle(app):
     before = import_fixture(app)
     app.desktop.key("a")
@@ -299,7 +406,56 @@ def idle(app):
     assert app.inspect()["state"]["undoName"] == previous, "Idle tool added history"
 
 
+def motion_blur_adjustment(app):
+    before = Image.new("RGBA", (1920, 1080), "white")
+    ImageDraw.Draw(before).rectangle((750, 350, 1169, 729), fill="black")
+    path = app.artifacts / "motion-fixture.png"
+    before.save(path)
+    app.click(app.widget(text="Import image", kind="button"))
+    app.field(str(path), name="fileNameEdit", commit=False)
+    app.desktop.key("Return")
+    app.wait(lambda s: s["state"].get("width") == 1920 and not s["state"]["busy"], "motion fixture")
+    button = app.wait(lambda s: next((w for w in s["widgets"] if w.get("help") == "New adjustment layer"), None),
+                      "adjustment menu button")
+    app.click(button)
+    menu = app.wait(lambda s: next((w for w in s["widgets"] if w["class"] == "QMenu"), None), "adjustment menu")
+    app.desktop.focus(menu["windowID"])
+    for _ in range(9):  # First Down selects the first item; Motion Blur is ninth.
+        app.desktop.key("Down")
+    start = time.monotonic()
+    app.desktop.key("Return")
+    snapshot = app.wait(lambda s: s if any(p["title"] == "Motion Blur" for p in s["state"]["floatingPanels"]) else None,
+                        "Motion Blur editor", timeout=15)
+    elapsed = (time.monotonic() - start) * 1000
+    (app.artifacts / "motion-latency.json").write_text(json.dumps({"open_ms": elapsed, "limit_ms": 1500}, indent=2))
+    assert elapsed < 1500, f"Adding Motion Blur blocked the desktop for {elapsed:.0f} ms"
+    assert len(snapshot["state"]["layers"]) == 2
+    initial = app.image("motion-default")
+    assert initial.tobytes() != before.tobytes(), "Motion Blur produced no changed pixels"
+    assert initial.getpixel((748, 540))[0] < 255, "Default motion streak did not spread horizontally"
+    assert initial.getpixel((960, 340)) == before.getpixel((960, 340)), "Horizontal motion spread vertically"
+    panel = "floatingPanel.FilterSheet"
+    app.field(60, label="Distance", ancestor=panel, commit=False)
+    app.desktop.key("Tab")
+    app.field(45, label="Angle", ancestor=panel, commit=False)
+    app.desktop.key("Tab")
+    changed_image = app.image("motion-diagonal")
+    assert changed_image.tobytes() != initial.tobytes(), "Motion Blur settings did not affect the preview"
+    app.click(app.widget(text="Preview", kind="button", ancestor=panel))
+    assert app.image("motion-preview-off").tobytes() == initial.tobytes(), "Preview off did not restore the original adjustment"
+    app.click(app.widget(text="Preview", kind="button", ancestor=panel))
+    assert app.image("motion-preview-on").tobytes() == changed_image.tobytes(), "Preview on did not restore edited pixels"
+    app.click(app.widget(text="OK", kind="button", ancestor=panel))
+    app.wait(lambda s: not s["state"]["floatingPanels"] and not s["state"]["busy"], "motion commit")
+    assert app.image("motion-committed").tobytes() == changed_image.tobytes()
+    # Xvfb has no window manager to return keyboard focus after the floating panel closes.
+    app.desktop.focus(app.inspect()["windowID"])
+    undo_pixels(app, initial, "motion-undo-settings")
+    undo_pixels(app, before, "motion-undo-add")
+
+
 TOOL_CASES = {
+    "effect_motion_blur": motion_blur_adjustment,
     "tool_inventory_tooltips": inventory_and_tooltips,
     "tool_move": move,
     "tool_crop": crop,
@@ -320,3 +476,5 @@ for tool in ["hand", "zoom"]:
 for tool, modes in [("spotHealing", ["Content-Aware", "Create Texture", "Proximity Match"]), ("blur", ["Liquify", "Blur", "Smudge"])]:
     for mode in modes:
         TOOL_CASES[f"tool_{tool}_{mode.lower().replace(' ', '_').replace('-', '_')}"] = lambda app, t=tool, m=mode: retouch(app, t, m)
+for mode in ["Liquify", "Blur", "Smudge"]:
+    TOOL_CASES["smear_feedback_" + mode.lower()] = lambda app, m=mode: smear_feedback(app, m)

@@ -101,6 +101,14 @@ private indirect enum Node {
         }
     }
 
+    var isRegionalFilter: Bool {
+        switch self {
+        case .gaussian: return true
+        case .crop(let node, _): return node.isRegionalFilter
+        default: return false
+        }
+    }
+
     /// Computes `region` (integral, in CI coordinates). Outside the node's extent the result is transparent.
     func eval(_ region: CGRect, _ env: Env) -> Raster {
         switch self {
@@ -394,6 +402,20 @@ public final class CIContext: @unchecked Sendable {
     }
 
     public func createCGImage(_ image: CIImage, from rect: CGRect, format: CIFormat = .RGBA8, colorSpace: CGColorSpace? = nil) -> CGImage? {
+        let region = rect.integral
+        if image.node.isRegionalFilter, region.width * region.height > 256 * 256,
+           region.width >= 1, region.height >= 1, region.width * region.height <= 200_000_000 {
+            return CGImage(width: Int(region.width), height: Int(region.height), isGray: format == .L8 || format == .A8) { tile in
+                // CGImage rows run downwards, whereas the filter graph uses bottom-left coordinates.
+                let slice = CGRect(x: region.minX + tile.minX, y: region.maxY - tile.maxY,
+                                   width: tile.width, height: tile.height)
+                return self.createCGImageEager(image, from: slice, format: format, colorSpace: colorSpace)!.portableImage
+            }
+        }
+        return createCGImageEager(image, from: region, format: format, colorSpace: colorSpace)
+    }
+
+    private func createCGImageEager(_ image: CIImage, from rect: CGRect, format: CIFormat, colorSpace: CGColorSpace?) -> CGImage? {
         if case .bitmap(let bitmap) = image.node, format == .RGBA8, rect.integral == image.extent { return bitmap }
         guard let r = raster(image, rect) else { return nil }
         let w = r.width, h = r.height

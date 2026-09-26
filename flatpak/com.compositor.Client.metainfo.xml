@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.wonderassembly.Compositor</id>
+  <id>com.compositor.Client</id>
 
   <name>Compositor</name>
   <summary>A free, open-source, Photoshop-style image editor</summary>
@@ -9,7 +9,7 @@
     <name>Wonder Assembly LLC</name>
   </developer>
 
-  <launchable type="desktop-id">com.wonderassembly.Compositor.desktop</launchable>
+  <launchable type="desktop-id">com.compositor.Client.desktop</launchable>
 
   <project_license>MIT</project_license>
   <metadata_license>CC0-1.0</metadata_license>

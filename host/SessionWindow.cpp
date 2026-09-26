@@ -1153,7 +1153,14 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         if (bytes == m_pumpedState) return;
         const bool first = m_pumpedState.isEmpty();
         m_pumpedState = bytes;
-        if (!first) { refreshImage(); updateToolRail(); }
+        if (!first) {
+            const bool painting = m_upstreamCanvasDrag && (m_tool == Tool::Brush || m_tool == Tool::SpotHealing
+                || m_tool == Tool::CloneStamp || m_tool == Tool::Smear);
+            // A working stroke changes session state too. Keep the main-queue pump on the
+            // same partial-render path as pointer events; release refreshes the panels.
+            if (painting) scheduleStrokeRefresh();
+            else { refreshImage(); updateToolRail(); }
+        }
         updateFloatingPanels();
         showSessionAlert();
         applyShortcutSettings();
@@ -3336,7 +3343,11 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     // Mid-stroke, only the area the brush changed is re-rendered and repainted (as EditorCanvas redraws its dirty
     // rect), and of the overlay only what moved (the brush circle): no whole-canvas repaint per pointer event.
     const bool brush = m_tool == Tool::Brush || m_tool == Tool::SpotHealing || m_tool == Tool::CloneStamp || m_tool == Tool::Smear;
-    if (brush && kind == 1) { scheduleStrokeRefresh(); updateInvalidOverlay(); return; }
+    // Starting Smear changes the working pixels, not the layer list or tool options. Use the same
+    // partial frame as a drag so rebuilding panels cannot delay the first visible dab.
+    if ((brush && kind == 1) || (m_tool == Tool::Smear && kind == 0)) {
+        scheduleStrokeRefresh(); updateInvalidOverlay(); return;
+    }
     invalidateOverlay();
     refreshImage();
     if (kind == 2 || kind == 0) {
@@ -3657,8 +3668,8 @@ void SessionWindow::scheduleStrokeRefresh() {
         connect(m_strokeRefreshTimer, &QTimer::timeout, this, [this] {
             m_strokeFrameClock.start();
             if (m_sessionHandle == 0 || m_image.isNull()) { refreshImage(); return; }
-            // Brush strokes: re-render and repaint only the area the stroke changed (upstream's EditorCanvas redraws
-            // just BrushStroke.dirtyDocumentRect). -3 = no region tracked (e.g. a Liquify warp): whole document below.
+            // Brush and warp strokes: re-render and repaint only the area the stroke changed.
+            // -3 = no active stroke with region tracking: render the whole document below.
             std::vector<uint8_t> &region = m_strokeRegionBuffer;
             // The patch comes at full resolution: room for the whole document at worst (grown once, then reused).
             region.resize(std::max(region.size(), static_cast<size_t>(docWidth()) * docHeight() * 4 + 16));

@@ -230,6 +230,24 @@ struct UpstreamEditorTests {
         #expect(layers(e).count >= 3)
     }
 
+    @Test(arguments: [AdjustmentKind.motionBlur, .gaussianBlur, .levels])
+    func adjustmentEditorDoesNotWaitForANonexistentPreview(kind: AdjustmentKind) async throws {
+        let e = loaded()
+        e.session.addAdjustment(kind)
+        let id = try #require(e.session.adjustmentEditingID)
+        await e.session.beginAdjustmentEditing(id)
+        #expect(e.session.filterEdit?.previewTask == nil)
+        #expect(e.session.levels?.previewTask == nil)
+        #expect(e.session.filterEdit?.preparedPreview == nil)
+        #expect(e.session.levels?.preparedPreview == nil)
+        let start = Date()
+        e.settle(timeout: 0.2)
+        #expect(Date().timeIntervalSince(start) < 0.05, "An idle adjustment editor has no preview task to await")
+        #expect(try e.renderRGBA().bytes.count == 40 * 30 * 4)
+        e.session.cancelFilter()
+        e.session.cancelLevels()
+    }
+
     @Test func projectManifestRoundTripsThroughLayerPixels() async throws {
         let a = loaded()
         await send(a, cmd("addRevealMask"), cmd("addLayer"))

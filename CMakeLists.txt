@@ -26,7 +26,7 @@ set(CMAKE_AUTOMOC ON)
 # COMPOSITOR_BUILD_HOST=ON is a local-dev escape hatch that allows finding Qt6
 # from the host system. The Flatpak build (the only supported build path) never
 # sets it: Qt6 comes from the KDE SDK, Skia/OpenCV are vendored under /app, and
-# the build refuses to use a host-system Qt. See com.wonderassembly.Compositor.yaml.
+# the build refuses to use a host-system Qt. See com.compositor.Client.yaml.
 option(COMPOSITOR_BUILD_HOST OFF)
 
 # ── VENDORED DEPENDENCIES (Flatpak) ──────────────────────────────────────
@@ -53,7 +53,7 @@ else()
         message(FATAL_ERROR
             "Qt6 was found (at ${Qt6_DIR}) but this is a host-system Qt, not the "
             "Flatpak SDK Qt. Build via the Flatpak manifest "
-            "(com.wonderassembly.Compositor.yaml), or set -DCOMPOSITOR_BUILD_HOST=ON "
+            "(com.compositor.Client.yaml), or set -DCOMPOSITOR_BUILD_HOST=ON "
             "explicitly for local dev.")
     endif()
 endif()
