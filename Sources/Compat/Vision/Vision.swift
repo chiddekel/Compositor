@@ -23,8 +23,12 @@ public struct SegmentationResult: Sendable {
     public var width: Int
     public var height: Int
     public var instanceCount: Int
-    public init(labels: [UInt8], width: Int, height: Int, instanceCount: Int) {
+    /// A model's soft foreground (0...1 per pixel, same grid as `labels`), when the segmenter has one: masks then
+    /// carry its soft edges, as Apple's model's do. Nil for hard-label segmenters.
+    public var confidence: [Float]?
+    public init(labels: [UInt8], width: Int, height: Int, instanceCount: Int, confidence: [Float]? = nil) {
         self.labels = labels; self.width = width; self.height = height; self.instanceCount = instanceCount
+        self.confidence = confidence
     }
 }
 
@@ -89,10 +93,20 @@ public final class VNInstanceMaskObservation: VNObservation, @unchecked Sendable
         allInstances = result.instanceCount > 0 ? IndexSet(1...result.instanceCount) : IndexSet()
     }
 
-    /// Float mask at the label buffer's resolution: 1 where the pixel belongs to one of `instances`, else 0.
+    /// Float mask at the label buffer's resolution: where the pixel belongs to one of `instances`. With a model's soft
+    /// map, its values inside those instances; and when every instance is asked for (the whole subject, as Remove
+    /// Background asks), the soft fringe around them too — else 1 inside, 0 outside.
     public func generateMask(forInstances instances: IndexSet) throws -> CVPixelBuffer {
         guard instances.isSubset(of: allInstances) else { throw VNError.invalidRequest }
-        let values = source.labels.map { instances.contains(Int($0)) ? Float(1) : 0 }
+        let values: [Float]
+        if let confidence = source.confidence, confidence.count == source.labels.count {
+            let whole = instances == allInstances
+            values = zip(source.labels, confidence).map { label, soft in
+                instances.contains(Int(label)) ? max(soft, 0.5) : (whole && label == 0 ? min(soft, 0.5) : 0)
+            }
+        } else {
+            values = source.labels.map { instances.contains(Int($0)) ? Float(1) : 0 }
+        }
         return CVPixelBuffer(width: source.width, height: source.height, gray32Float: values)
     }
 

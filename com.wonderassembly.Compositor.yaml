@@ -13,7 +13,7 @@
 #     extension is verified, installed, and matches the existing 408-test
 #     suite. Swapping in Swift 6.4 later needs no source change.
 #   - Skia: pinned canvaskit/0.42.0, GPU + Vulkan enabled (plan §8.4).
-#   - OpenCV: 4.14.0 (plan §8.5), core+imgproc only.
+#   - OpenCV: 4.14.0 (plan §8.5), core+imgproc+dnn (dnn runs U²-Net-small for subject segmentation).
 #
 # Sandbox: tightened to plan §8.6 (no home/host grants; portal-driven).
 #   - No --filesystem grants; all file access routes through the XDG
@@ -175,7 +175,7 @@ modules:
     buildsystem: cmake-ninja
     builddir: true   # OpenCV refuses in-source builds
     config-opts:
-      - -DBUILD_LIST=core,imgproc
+      - -DBUILD_LIST=core,imgproc,dnn
       - -DBUILD_SHARED_LIBS=OFF
       - -DBUILD_TESTS=OFF
       - -DBUILD_EXAMPLES=OFF
@@ -206,7 +206,11 @@ modules:
       - -DWITH_ITT=OFF   # Intel tracing: its static lib is not linked into the app
       - -DWITH_EIGEN=OFF
       - -DWITH_OPENCL=OFF
-      - -DWITH_PROTOBUF=OFF
+      - -DWITH_PROTOBUF=ON   # the dnn module reads ONNX models through its bundled protobuf
+      - -DBUILD_PROTOBUF=ON
+      - -DOPENCV_DNN_OPENCL=OFF
+      - -DWITH_OPENVINO=OFF
+      - -DWITH_FLATBUFFERS=OFF
       - -DCMAKE_INSTALL_PREFIX=/app
     sources:
        - type: archive
@@ -258,6 +262,9 @@ modules:
       # UI font: Inter (OFL), the stand-in for macOS's SF Pro (MACOS_UI_PARITY_RULES.md §4.2).
       - install -Dm644 -t /app/share/compositor/fonts third_party/fonts/inter/Inter-*.ttf
       - install -Dm644 third_party/fonts/inter/LICENSE.txt /app/share/compositor/fonts/Inter-LICENSE.txt
+      # Subject segmentation (Select Subject / Remove Background): U²-Net-small, Apache-2.0 (third_party/models).
+      - install -Dm644 third_party/models/u2netp.onnx /app/share/compositor/models/u2netp.onnx
+      - install -Dm644 third_party/models/LICENSE-U2Net.txt /app/share/compositor/models/LICENSE-U2Net.txt
       - install -Dm644 flatpak/com.wonderassembly.Compositor.desktop /app/share/applications/com.wonderassembly.Compositor.desktop
       - install -Dm644 flatpak/com.wonderassembly.Compositor.metainfo.xml /app/share/metainfo/com.wonderassembly.Compositor.metainfo.xml
     sources:

@@ -66,6 +66,7 @@
 
 extern "C" int compositor_qt_imageio_install(void);
 extern "C" int compositor_raw_install(void);
+extern "C" int32_t compositor_install_subject_model(void);
 
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
@@ -96,6 +97,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     compositor_qt_imageio_install();
     compositor_raw_install();   // camera RAW via LibRaw (a no-op when built without it)
     systemclipboard::install();   // NSPasteboard.general is the desktop clipboard, as on macOS
+    compositor_install_subject_model();   // Select Subject / Remove Background: U²-Net-small when bundled
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
     app.setDesktopFileName("com.wonderassembly.Compositor");

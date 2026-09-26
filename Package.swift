@@ -23,6 +23,12 @@ let opencvPrefix: String? = ["\(packageRoot)/build/opencv/install", "/app"].firs
 let opencvLibrary: String? = opencvPrefix.flatMap { prefix in
     ["lib64", "lib"].map { "\(prefix)/\($0)" }.first { FileManager.default.fileExists(atPath: "\($0)/libopencv_core.a") }
 }
+// OpenCV's DNN module (same prefix, when the build enabled it — scripts/build-opencv.sh, the manifest's `opencv`): runs
+// U²-Net-small for the Vision compat's subject segmentation (backends/vision).
+let opencvHasDNN: Bool = opencvPrefix.map { prefix in
+    FileManager.default.fileExists(atPath: "\(prefix)/include/opencv4/opencv2/dnn.hpp")
+        && opencvLibrary.map { FileManager.default.fileExists(atPath: "\($0)/libopencv_dnn.a") } == true
+} ?? false
 // The pinned LibRaw (scripts/build-libraw.sh / the manifest's `libraw` module: static, OpenMP) — camera RAW decoding for
 // the host (host/RawDecoder.cpp compiles its decoder only when the header is there).
 let librawPrefix: String? = ["\(packageRoot)/build/libraw/install", "/app"].first {
@@ -64,6 +70,16 @@ let package = Package(
                 .linkedLibrary("opencv_imgproc"), .linkedLibrary("opencv_core"), .linkedLibrary("zlib"),
                 .linkedLibrary("dl"), .linkedLibrary("pthread"),
             ] } ?? [])),
+        // Subject segmentation (Select Subject, Remove Background): U²-Net-small through OpenCV DNN; without the DNN
+        // module it builds as stubs and the Vision compat keeps its classical segmenter.
+        .target(name: "CompositorVisionBackend", path: "backends/vision", sources: ["U2NetSegmenter.cpp"],
+            publicHeadersPath: "include",
+            cxxSettings: opencvHasDNN ? [.unsafeFlags(["-DCOMPOSITOR_HAS_OPENCV_DNN", "-I\(opencvPrefix!)/include/opencv4"])] : [],
+            linkerSettings: opencvHasDNN ? [
+                .unsafeFlags(["-L\(opencvLibrary!)", "-L\(opencvLibrary!)/opencv4/3rdparty"]),
+                .linkedLibrary("opencv_dnn"), .linkedLibrary("opencv_imgproc"), .linkedLibrary("opencv_core"),
+                .linkedLibrary("libprotobuf"), .linkedLibrary("zlib"), .linkedLibrary("dl"), .linkedLibrary("pthread"),
+            ] : []),
         .target(name: "CompositorBrushBackend", path: "backends/brush",
             exclude: ["shaders/continuous_brush.comp"],
             sources: ["BrushCoverageCPU.cpp", "VulkanBrushCoverage.cpp"],
@@ -148,7 +164,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
