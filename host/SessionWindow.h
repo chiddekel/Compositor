@@ -274,6 +274,7 @@ private:
     bool m_presentingColorPicker = false;
     bool m_railFitChecked = false;
     bool m_layersRefreshQueued = false;
+    QTimer *m_rescalePoll = nullptr;         // polls a background display render (refreshImage)
     int m_shownTabModified = -1;            // the modified flag the tab bar last showed
     QByteArray m_shownLayerListKey;          // what the legacy layer model was last built from (refreshLayers)
     QTimer *m_panelThrottle = nullptr;       // refreshPanels() mid-drag

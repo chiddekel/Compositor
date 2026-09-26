@@ -1125,6 +1125,13 @@ final class UpstreamEditor {
     }
 
     func renderRegionRGBA(_ region: CGRect, scale: CGFloat = 1) throws -> (bytes: [UInt8], rect: CGRect, width: Int, height: Int) {
+        let prepared = try regionSnapshot(region, scale: scale)
+        let raster = try exportRGBA(prepared.snapshot)
+        return (raster.bytes, prepared.rect, raster.width, raster.height)
+    }
+
+    /// The snapshot `renderRegionRGBA` renders: taken on the main actor (it reads the session), rendered anywhere.
+    func regionSnapshot(_ region: CGRect, scale: CGFloat = 1) throws -> (snapshot: ProjectSnapshot, rect: CGRect) {
         settle()
         guard let snapshot = displayedSnapshot(strokeRegion: region) else { throw ExportError.render }
         let canvas = CGRect(x: 0, y: 0, width: snapshot.manifest.width, height: snapshot.manifest.height)
@@ -1149,8 +1156,21 @@ final class UpstreamEditor {
         let manifest = ProjectManifest(format: m.format, version: m.version, colorSpace: m.colorSpace, resolution: m.resolution,
             documentID: m.documentID, width: outW, height: outH, activeLayerID: m.activeLayerID,
             layers: layers, guides: m.guides)
-        let raster = try exportRGBA(ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks))
-        return (raster.bytes, rect, raster.width, raster.height)
+        return (ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks), rect)
+    }
+
+    /// Renders a snapshot off the main thread (upstream's exporter actor), as premultiplied RGBA8.
+    nonisolated static func renderInBackground(_ snapshot: ProjectSnapshot) async throws -> (bytes: [UInt8], width: Int, height: Int) {
+        let image = try await ImageExporter.shared.render(snapshot).image
+        return try rgbaBytes(of: image)
+    }
+
+    nonisolated private static func rgbaBytes(of image: CGImage) throws -> (bytes: [UInt8], width: Int, height: Int) {
+        let context = try BrushRaster.context(width: image.width, height: image.height, mask: false)
+        BrushRaster.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height), mask: false, context: context)
+        guard let data = context.data else { throw ExportError.render }
+        return (Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: image.width * image.height * 4)),
+                image.width, image.height)
     }
 
     /// Everything the composite depends on, compared by identity for pixels (an image replaced is a new object) — the
@@ -1224,11 +1244,6 @@ final class UpstreamEditor {
         }
         done.wait()
         guard let raster = outcome else { throw ExportError.render }
-        let image = try raster.get().image
-        let context = try BrushRaster.context(width: image.width, height: image.height, mask: false)
-        BrushRaster.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height), mask: false, context: context)
-        guard let data = context.data else { throw ExportError.render }
-        return (Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: image.width * image.height * 4)),
-                image.width, image.height)
+        return try Self.rgbaBytes(of: try raster.get().image)
     }
 }

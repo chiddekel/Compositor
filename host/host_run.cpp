@@ -428,7 +428,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             const std::pair<const char *, SessionWindow::Tool> tools[] = {
                 {"move", SessionWindow::Tool::Move}, {"marquee", SessionWindow::Tool::Marquee},
                 {"lasso", SessionWindow::Tool::Lasso}, {"brush", SessionWindow::Tool::Brush},
-                {"hand", SessionWindow::Tool::Hand}, {"gradient", SessionWindow::Tool::Gradient}};
+                {"hand", SessionWindow::Tool::Hand}, {"gradient", SessionWindow::Tool::Gradient}, {"zoom", SessionWindow::Tool::Zoom}};
             const int steps = 60;
             // COMPOSITOR_BENCH_TOOLS=brush,move: only those.
             const QStringList only = qEnvironmentVariable("COMPOSITOR_BENCH_TOOLS").split(QLatin1Char(','), Qt::SkipEmptyParts);
@@ -437,6 +437,19 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 window.sendCommand({{"version", 1}, {"action", "new"}, {"width", bw}, {"height", bh}, {"emptyLayer", true}});
                 QElapsedTimer settleNew; settleNew.start();   // the main pump picks up the new document
                 while (settleNew.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                // COMPOSITOR_BENCH_LAYERS=N: N more layers, each crossed by a wide opaque stroke (a document with content).
+                for (int layer = 0; layer < qEnvironmentVariable("COMPOSITOR_BENCH_LAYERS").toInt(); ++layer) {
+                    window.sendCommand({{"version", 1}, {"action", "addLayer"}});
+                    const QJsonObject brush{{"diameter", 300.0}, {"hardness", 0.8}, {"opacity", 1.0}, {"red", 0.2 + 0.1 * (layer % 7)},
+                                            {"green", 0.5}, {"blue", 0.9 - 0.1 * (layer % 7)}, {"erasing", 0}, {"mask", 0}};
+                    window.sendCommand({{"version", 1}, {"action", "brushBegin"}, {"x", bw * 0.1}, {"y", bh * (0.1 + 0.08 * layer)}, {"parameters", brush}});
+                    window.sendCommand({{"version", 1}, {"action", "brushMove"}, {"x", bw * 0.9}, {"y", bh * (0.2 + 0.08 * layer)}});
+                    window.sendCommand({{"version", 1}, {"action", "brushEnd"}});
+                }
+                if (qEnvironmentVariableIsSet("COMPOSITOR_BENCH_LAYERS")) {
+                    QElapsedTimer settleLayers; settleLayers.start();
+                    while (settleLayers.elapsed() < 1500) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                }
                 window.setTool(tool);
                 // COMPOSITOR_BENCH_DIAMETER: the brush size the painting tools use.
                 if (qEnvironmentVariableIsSet("COMPOSITOR_BENCH_DIAMETER"))

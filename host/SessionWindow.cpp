@@ -111,6 +111,8 @@ int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double 
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
 int64_t compositor_canvas_overlay_region(uint64_t handle, int32_t x, int32_t y, int32_t width, int32_t height, uint8_t *output, size_t capacity);
 int32_t compositor_canvas_overlay_invalid(uint64_t handle, double *rect);
+int32_t compositor_session_render_scaled_async(uint64_t handle, double scale);
+int64_t compositor_canvas_draw(uint64_t handle, double x, double y, double width, double height, double scale, uint8_t *output, size_t capacity);
 int64_t compositor_session_dirty_panels(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_app_menus(uint8_t *output, size_t capacity);
 int32_t compositor_app_menu_perform(const char *path);
@@ -3062,6 +3064,37 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
         m_rescalePending = true;
         QTimer::singleShot(0, this, [this] { m_rescalePending = false; refreshImage(); });
     }
+    // COMPOSITOR_UPSTREAM_DRAW=1: upstream's own CanvasView.draw(_:) paints the exposed area — the Mac's canvas path,
+    // pixel for pixel (pixel grid, crisp zoom, live previews), as a reference for parity checks. Not the default: through
+    // the compat CGContext (Skia raster) it measures ~30 ms a paint on a 6000x4000, 8-layer document where the cached
+    // composite below takes ~2 ms.
+    static const bool upstreamDraw = qEnvironmentVariableIsSet("COMPOSITOR_UPSTREAM_DRAW");
+    if (upstreamDraw && m_sessionHandle != 0) {
+        PERF_SCOPE("canvas:upstreamDraw");
+        syncViewportGeometry();
+        const QRect area = event ? event->rect() : canvas->rect();
+        const double dpr = canvas->devicePixelRatioF();
+        const int pw = int(std::ceil(area.width() * dpr)), ph = int(std::ceil(area.height() * dpr));
+        QImage drawn(pw, ph, QImage::Format_RGBA8888_Premultiplied);
+        const int64_t got = compositor_canvas_draw(m_sessionHandle, area.x(), area.y(), area.width(), area.height(), dpr,
+                                                   drawn.bits(), size_t(drawn.sizeInBytes()));
+        QPainter p(canvas);
+        if (got == int64_t(drawn.sizeInBytes())) {
+            drawn.setDevicePixelRatio(dpr);
+            p.drawImage(area.topLeft(), drawn);
+        }
+        {
+            // The overlay (handles, ants, brush circle) as in the default path.
+            const int w = canvas->width(), h = canvas->height();
+            if (m_overlayCache.size() != QSize(w, h) || !m_overlayCacheValid) {
+                if (m_overlayCache.size() != QSize(w, h)) m_overlayCache = QImage(w, h, QImage::Format_RGBA8888_Premultiplied);
+                const size_t capacity = size_t(w) * size_t(h) * 4;
+                m_overlayCacheValid = compositor_canvas_overlay(m_sessionHandle, w, h, m_overlayCache.bits(), capacity) == int64_t(capacity);
+            }
+            if (m_overlayCacheValid) p.drawImage(0, 0, m_overlayCache);
+        }
+        return;
+    }
     Q_UNUSED(event);
     QPainter p(canvas);
     // EditorCanvas.draw: the surround, then the document with its shadow, dark checkerboard and hairline.
@@ -3392,6 +3425,7 @@ double SessionWindow::desiredDisplayScale() const {
 
 /// The document composited at `scale` (1: the full composite).
 QImage SessionWindow::renderDisplayImage(double scale) {
+    PERF_SCOPE("renderDisplayImage");
     if (scale >= 1.0) return renderToQImage(m_sessionHandle, docWidth(), docHeight());
     int32_t w = 0, h = 0;
     const int64_t size = compositor_session_render_scaled(m_sessionHandle, scale, nullptr, 0, &w, &h);
@@ -3467,6 +3501,22 @@ void SessionWindow::refreshImage() {
     const bool unchanged = revision >= 0 && revision == m_shownRenderRevision && m_shownRenderHandle == m_sessionHandle
         && !m_image.isNull() && m_displayScale == scale;
     if (unchanged) {
+        refreshPanels();
+        return;
+    }
+    // Only the zoom crossed to another display scale (same content, same tab): the image on screen stays, stretched to
+    // the new zoom, while the sharp one renders in the background — a zoom never waits on a whole-document composite.
+    const bool rescaleOnly = revision >= 0 && revision == m_shownRenderRevision && m_shownRenderHandle == m_sessionHandle
+        && !m_image.isNull() && m_displayScale != scale;
+    if (rescaleOnly && compositor_session_render_scaled_async(m_sessionHandle, scale) == 0) {
+        if (!m_rescalePoll) {
+            m_rescalePoll = new QTimer(this);
+            m_rescalePoll->setSingleShot(true);
+            m_rescalePoll->setInterval(30);
+            connect(m_rescalePoll, &QTimer::timeout, this, [this] { refreshImage(); });
+        }
+        m_rescalePoll->start();
+        if (m_canvasWidget) m_canvasWidget->update();
         refreshPanels();
         return;
     }

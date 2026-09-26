@@ -102,7 +102,7 @@ metrics (GuideTests excluded).
 | System clipboard (copy to / paste from other apps) | ✅ | ✅ `NSPasteboard.general` over `QClipboard` (c9a45a7) |
 | Trackpad pinch to zoom (`magnify(with:)`) | ✅ | ✅ Qt zoom gesture → upstream `CanvasView.magnify(with:)` |
 | New canvas from clipboard size (`NewCanvasSheet.clipboardDimensions`) | ✅ | ✅ |
-| GPU canvas compositing | Metal | 🟡 Skia raster (Vulkan device set up, rendering falls back) — correct, slower on huge documents |
+| Canvas compositing | CPU (Core Graphics in `EditorCanvas.draw`, cached downscales) | ✅ CPU (Skia) into a cached display image; zoom re-renders in the background, the canvas never waits. GPU is used where the Mac uses Metal: brush coverage and layer effects (Vulkan). `COMPOSITOR_UPSTREAM_DRAW=1` paints through upstream's own `draw(_:)` as a parity reference |
 | Subject / Remove Background model | Vision | ✅ U²-Net-small through OpenCV DNN |
 | Window chrome | native title bar | 🟡 drawn traffic lights + header by the Qt shell |
 | Services, Quick Look, Dock menu | ✅ | n/a |
@@ -115,4 +115,4 @@ metrics (GuideTests excluded).
 4. ~~Keyboard Shortcuts recorder parity~~ — done.
 5. ~~Recent documents~~ — covered by the file-chooser portal (sandbox).
 6. ~~Subject / Remove Background model~~ — done (U²-Net-small).
-7. GPU compositing through Skia-Vulkan.
+7. ~~Canvas compositing~~ — the Mac composites on the CPU too; the zoom hitch is gone (background display renders).

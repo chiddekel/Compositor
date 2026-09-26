@@ -92,6 +92,28 @@ import AppKit
                                            isARepeat: isRepeat, keyCode: UInt16(keyCode)) else { return }
         view.keyDown(with: event)
     }
+    /// The canvas itself, as upstream's CanvasView.draw(_:) paints it on the Mac — surround, shadow, checkerboard, the
+    /// layers composited from their cached downscales at view resolution, pixel grid, hairline, text being typed — for
+    /// `region` of the view (points, top-left), at `scale` device pixels per point. Premultiplied RGBA8, top row first.
+    func drawCanvas(region: CGRect, scale: CGFloat) -> [UInt8] {
+        let width = max(1, Int((region.width * scale).rounded(.up))), height = max(1, Int((region.height * scale).rounded(.up)))
+        // A bitmap context as AppKit makes one for a flipped view: Core Graphics' y-up space with the view's flip on
+        // top (upstream flips images locally for exactly this), then the backing scale.
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return [] }
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: -region.minX, y: -region.minY)
+        context.clip(to: region)
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        defer { NSGraphicsContext.current = previous }
+        view.draw(region)
+        return context.buffer.bytes
+    }
+
     /// The overlay views, in their stacking order (TransformOverlay, the brush circle, the sample ring).
     private var overlayViews: [NSView] {
         view.subviews.filter { $0 is TransformOverlay || $0 is BrushCursorOverlay || $0 is SampleRingOverlay }
@@ -215,6 +237,22 @@ nonisolated public func compositorCanvasOverlayRegion(_ handle: UInt64, _ x: Int
 
 /// Whether the overlay changed since it was last drawn: 0 no, 1 yes — `rect` (x, y, width, height, points, top-left)
 /// then holds the part that did.
+/// The canvas for the view rect (x, y, width, height points) at `scale`, as upstream draws it (see drawCanvas); the byte
+/// count is width*scale x height*scale x 4 (rounded up). Returns the byte count, or -1.
+@_cdecl("compositor_canvas_draw")
+nonisolated public func compositorCanvasDraw(_ handle: UInt64, _ x: Double, _ y: Double, _ width: Double, _ height: Double,
+                                             _ scale: Double, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard width > 0, height > 0, scale > 0, width * height * scale * scale <= 80_000_000 else { return -1 }
+    let count = Int((width * scale).rounded(.up)) * Int((height * scale).rounded(.up)) * 4
+    guard let output, capacity >= count else { return Int64(count) }
+    return withEntry(handle) { entry in
+        let bytes = UpstreamCanvases.canvas(handle, entry).drawCanvas(region: CGRect(x: x, y: y, width: width, height: height),
+                                                                        scale: CGFloat(scale))
+        bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: min(count, $0.count)) }
+        return Int64(bytes.count)
+    }
+}
+
 @_cdecl("compositor_canvas_overlay_invalid")
 nonisolated public func compositorCanvasOverlayInvalid(_ handle: UInt64, _ rect: UnsafeMutablePointer<Double>?) -> Int32 {
     Int32(withEntry(handle) { entry in

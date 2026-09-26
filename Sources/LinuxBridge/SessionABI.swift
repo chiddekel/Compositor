@@ -17,6 +17,9 @@ final class Entry {
     var renderedKey: UpstreamEditor.RenderKey?
     /// Display-resolution renders (compositor_session_render_scaled): the last one and what it was made from.
     var scaled: (key: UpstreamEditor.RenderKey, scale: Double, bytes: [UInt8], width: Int, height: Int)?
+    /// A display render at another scale, running in the background (compositor_session_render_scaled_async): the
+    /// shell keeps showing the previous one, stretched, until this lands in `scaled`.
+    var scaledJob: (key: UpstreamEditor.RenderKey, scale: Double, task: Task<Void, Never>)?
     /// The scale stroke patches are rendered at (the shell's current display scale).
     var strokeScale: Double = 1
     var renderRevision: Int64 = 0
@@ -345,6 +348,34 @@ nonisolated public func compositorSessionRenderScaled(_ handle: UInt64, _ scale:
         }
         return Int64(image.bytes.count)
     }
+}
+
+/// Starts rendering the display image at `scale` in the background (a zoom that crossed to another display scale —
+/// the content didn't change). Returns 1 when it is ready now (compositor_session_render_scaled then answers without
+/// rendering), 0 when it is under way, negative on error. Poll it until it returns 1.
+@_cdecl("compositor_session_render_scaled_async")
+nonisolated public func compositorSessionRenderScaledAsync(_ handle: UInt64, _ scale: Double) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        guard let document = entry.editor.session.document else { return -2 }
+        entry.editor.settle()
+        let key = entry.editor.renderKey()
+        if let ready = entry.scaled, ready.key == key, ready.scale == scale { return 1 }
+        if let job = entry.scaledJob, job.key == key, job.scale == scale { return 0 }
+        entry.scaledJob?.task.cancel()
+        guard let prepared = try? entry.editor.regionSnapshot(CGRect(origin: .zero, size: document.size), scale: CGFloat(scale))
+        else { return -5 }
+        nonisolated(unsafe) let snapshot = prepared.snapshot
+        let task = Task.detached(priority: .userInitiated) {
+            guard let made = try? await UpstreamEditor.renderInBackground(snapshot), !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let job = entry.scaledJob, job.key == key, job.scale == scale else { return }
+                entry.scaled = (key, scale, made.bytes, made.width, made.height)
+                entry.scaledJob = nil
+            }
+        }
+        entry.scaledJob = (key, scale, task)
+        return 0
+    })
 }
 
 @_cdecl("compositor_session_export_manifest")
