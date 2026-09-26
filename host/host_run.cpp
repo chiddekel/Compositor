@@ -508,7 +508,13 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                     send(QEvent::MouseMove, from + (to - from) * (step / 8.0), Qt::LeftButton);
                     for (int i = 0; i < 3; ++i) QCoreApplication::processEvents();
                 }
-                send(QEvent::MouseButtonRelease, to, Qt::NoButton);
+                // COMPOSITOR_GRAB_DRAG_HOLD=1: the button stays down — the picture shows the drag in progress.
+                if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_DRAG_HOLD")) {
+                    QElapsedTimer frame; frame.start();
+                    while (frame.elapsed() < 150) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                } else {
+                    send(QEvent::MouseButtonRelease, to, Qt::NoButton);
+                }
                 for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
                 // COMPOSITOR_GRAB_TYPE: typed into whatever has focus (the Type tool's inline editor).
                 const QString typed = qEnvironmentVariable("COMPOSITOR_GRAB_TYPE");

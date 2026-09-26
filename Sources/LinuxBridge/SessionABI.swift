@@ -33,6 +33,17 @@ final class Entry {
     /// it isn't a document tab, just a bare session (e.g. the SwiftUI render-tree debug path).
     var workspaceTabID: UUID?
 
+    /// BrushStroke.dirtyDocumentRect covers only its latest publish; several moves can land between two frames, so
+    /// the area painted since the last frame accumulates here (compositor_session_render_dirty takes it). Called after
+    /// anything that can advance a stroke: a bridge command, a pointer event on the hosted canvas.
+    func noteStrokeProgress() {
+        if let stroke = editor.session.brushStroke {
+            if let dirty = stroke.dirtyDocumentRect { strokeDirty = strokeDirty.map { $0.union(dirty) } ?? dirty }
+        } else {
+            strokeDirty = nil
+        }
+    }
+
     init(editor: UpstreamEditor = UpstreamEditor()) {
         self.editor = editor
     }
@@ -157,12 +168,7 @@ nonisolated public func compositorSessionCommand(_ handle: UInt64, _ json: Unsaf
     return Int32(withEntry(handle) { entry in
         let code = entry.editor.command(data)
         if code == 0 { entry.rendered = nil }
-        // BrushStroke.dirtyDocumentRect covers only its latest publish; several moves can land between two frames.
-        if let stroke = entry.editor.session.brushStroke {
-            if let dirty = stroke.dirtyDocumentRect { entry.strokeDirty = entry.strokeDirty.map { $0.union(dirty) } ?? dirty }
-        } else {
-            entry.strokeDirty = nil
-        }
+        entry.noteStrokeProgress()
         return Int64(code)
     })
 }

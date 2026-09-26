@@ -170,6 +170,7 @@ nonisolated public func compositorCanvasResize(_ handle: UInt64, _ width: Double
 nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _ x: Double, _ y: Double, _ modifiers: Int32, _ clickCount: Int32) -> Int32 {
     Int32(withEntry(handle) { entry in
         UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers), clickCount: Int(clickCount))
+        entry.noteStrokeProgress()   // the brush painted: the shell redraws just that area mid-stroke
         return Int64(UpstreamCanvas.cursorCode(NSCursor.current))
     })
 }
