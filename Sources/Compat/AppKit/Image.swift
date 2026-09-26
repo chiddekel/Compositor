@@ -91,7 +91,17 @@ open class NSImage: @unchecked Sendable {
                         hints: [NSImageRep.HintKey: Any]?) -> CGImage? { bitmap ?? svgImage(pixels: size) }
     public func draw(in rect: CGRect, from source: CGRect, operation: NSCompositingOperation, fraction: CGFloat,
                      respectFlipped: Bool, hints: [NSImageRep.HintKey: Any]?) {
+        // AppKit keeps the image upright in a flipped context when asked to; Core Graphics alone would draw it
+        // upside down there (its first row at the rect's max y).
+        guard respectFlipped, let graphics = NSGraphicsContext.current, graphics.isFlipped else {
+            draw(in: rect, from: source, operation: operation, fraction: fraction); return
+        }
+        let context = graphics.cgContext
+        context.saveGState()
+        context.translateBy(x: 0, y: rect.minY + rect.maxY)
+        context.scaleBy(x: 1, y: -1)
         draw(in: rect, from: source, operation: operation, fraction: fraction)
+        context.restoreGState()
     }
     public func lockFocus() {}
     public func unlockFocus() {}

@@ -60,6 +60,9 @@
 #include <QFontDatabase>
 #include <QDir>
 #include <QCoreApplication>
+#include <QDrag>
+#include <QPointer>
+#include <QWindow>
 #include "SessionWindow.h"
 
 #if defined(COMPOSITOR_SKIA_BRIDGE)
@@ -194,6 +197,8 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         // COMPOSITOR_GRAB_EFFECT="Drop Shadow" (a LayerEffectKind): added to the active layer as the Layers panel's fx menu
         // does, which opens its floating panel.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT").isEmpty()) {
+            window.show();   // its floating panel shows beside a visible window (a real display needs this first)
+            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
             window.sendCommand({{"version", 1}, {"action", "addLayerEffect"}, {"kind", qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT")}});
             window.updateFloatingPanels();
             QElapsedTimer settle; settle.start();   // let the pump render the effect's preview
@@ -247,6 +252,47 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             window.sendCommand(QJsonDocument::fromJson(json.toUtf8()).object());
             window.updateFloatingPanels();
             for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+        }
+        // COMPOSITOR_GRAB_PANEL_BUTTON=<title>|close: that button of an open floating panel pressed (the color picker's OK,
+        // ...), or the panel closed with its window's close button.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_PANEL_BUTTON").isEmpty()) {
+            window.show();
+            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            bool pressed = false;
+            for (QWidget *top : QApplication::topLevelWidgets()) {
+                if (pressed || !top->isVisible() || top == &window) continue;
+                // "close": the panel window's own close button.
+                if (qEnvironmentVariable("COMPOSITOR_GRAB_PANEL_BUTTON") == QLatin1String("close") && qobject_cast<QDialog *>(top)) {
+                    top->close(); pressed = true; break;
+                }
+                for (QPushButton *button : top->findChildren<QPushButton *>())
+                    if (button->isVisible() && button->text() == qEnvironmentVariable("COMPOSITOR_GRAB_PANEL_BUTTON")) { button->click(); pressed = true; break; }
+            }
+            QElapsedTimer done; done.start();
+            while (done.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            std::fprintf(stderr, "PANELBUTTON %s pressed=%d\n", qPrintable(qEnvironmentVariable("COMPOSITOR_GRAB_PANEL_BUTTON")), pressed);
+        }
+        // COMPOSITOR_GRAB_BRUSH_COLOR=<hex>: the options bar's Color swatch clicked, that color typed into the dialog it
+        // opens, then OK — as a user changes the main color there.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH_COLOR").isEmpty()) {
+            window.show();
+            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            QPushButton *swatch = nullptr;
+            for (QPushButton *b : window.findChildren<QPushButton *>(QStringLiteral("brush.color"))) if (b->isVisible()) swatch = b;
+            if (!swatch) swatch = window.findChild<QPushButton *>(QStringLiteral("palette.foreground"));
+            QTimer::singleShot(200, [] {
+                auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!dialog) { std::fprintf(stderr, "BRUSHCOLOR no dialog\n"); return; }
+                if (auto *hex = dialog->findChild<QLineEdit *>(QStringLiteral("colorPicker.hex"))) {
+                    hex->setText(qEnvironmentVariable("COMPOSITOR_GRAB_BRUSH_COLOR"));
+                    emit hex->editingFinished();
+                }
+                dialog->accept();
+            });
+            if (swatch) swatch->click();
+            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            std::fprintf(stderr, "BRUSHCOLOR via %s -> %s\n", swatch ? qPrintable(swatch->objectName()) : "none",
+                         qPrintable(QJsonDocument(window.sessionState().value("foregroundColor").toArray()).toJson(QJsonDocument::Compact)));
         }
         // COMPOSITOR_GRAB_CURSOR="x,y" (document pixels): hover the canvas there and save its cursor as <path>.cursor.png.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_CURSOR").isEmpty()) {
@@ -585,6 +631,67 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
             } else std::fprintf(stderr, "LAYERPOINT no row %d\n", v.value(0).toInt());
         }
+        // COMPOSITOR_GRAB_FOCUS_KEYS="v,delete,left,shift+down,5": keys typed at whatever has the focus (after a click in
+        // the layers list, say); prints the focus and the session's tool, layers and active layer after each.
+        for (const QString &spec : qEnvironmentVariable("COMPOSITOR_GRAB_FOCUS_KEYS").split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            const bool shift = spec.startsWith(QLatin1String("shift+"));
+            const QString name = shift ? spec.mid(6) : spec;
+            static const QHash<QString, int> named = {{"delete", Qt::Key_Backspace}, {"left", Qt::Key_Left}, {"right", Qt::Key_Right},
+                {"up", Qt::Key_Up}, {"down", Qt::Key_Down}, {"tab", Qt::Key_Tab}, {"escape", Qt::Key_Escape}, {"return", Qt::Key_Return}};
+            const int key = named.value(name, name.isEmpty() ? 0 : name.toUpper().at(0).unicode());
+            const QString text = named.contains(name) ? QString() : (shift ? name.toUpper() : name);
+            QWidget *focus = QApplication::focusWidget() ? QApplication::focusWidget() : static_cast<QWidget *>(&window);
+            const QString focusName = QStringLiteral("%1 %2").arg(focus->metaObject()->className(), focus->objectName());
+            QKeyEvent press(QEvent::KeyPress, key, shift ? Qt::ShiftModifier : Qt::NoModifier, text);
+            QCoreApplication::sendEvent(focus, &press);
+            QKeyEvent release(QEvent::KeyRelease, key, shift ? Qt::ShiftModifier : Qt::NoModifier, text);
+            if (QApplication::focusWidget()) QCoreApplication::sendEvent(QApplication::focusWidget(), &release);
+            for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            const QJsonObject st = window.sessionState();
+            QStringList layers;
+            for (const auto &l : st.value("layers").toArray()) {
+                const QJsonObject o = l.toObject();
+                const QJsonValue origin = o.value("transform").toObject().value("origin");
+                const QJsonArray xy = origin.isArray() ? origin.toArray() : QJsonArray{origin.toObject().value("x"), origin.toObject().value("y")};
+                layers << QStringLiteral("%1@%2,%3o%4%5").arg(o.value("name").toString()).arg(xy.at(0).toDouble()).arg(xy.at(1).toDouble())
+                              .arg(o.value("opacity").toDouble()).arg(QString(o.value("id") == st.value("activeLayerID") ? "*" : "") + (o.value("visible").toBool() ? "" : "(hidden)"));
+            }
+            std::fprintf(stderr, "FOCUSKEY %s -> focus %s tool %s mode %s/%s/%s layers [%s]\n", qPrintable(spec), qPrintable(focusName),
+                         qPrintable(st.value("tool").toString()), qPrintable(st.value("selectionMode").toString()),
+                         qPrintable(st.value("lassoKind").toString()), qPrintable(st.value("marqueeKind").toString()), qPrintable(layers.join(' ')));
+            std::fprintf(stderr, "FOCUSKEY undo '%s'\n", qPrintable(st.value("undoName").toString()));
+        }
+        // COMPOSITOR_GRAB_LAYER_CURSOR="row,fraction[,x=N],alt|ctrl": the pointer resting there with that key held; the
+        // cursor the list shows is saved as <path>.cursor.png.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_CURSOR").isEmpty()) {
+            const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_CURSOR").split(QLatin1Char(','));
+            window.show();
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            QWidget *row = nullptr;
+            for (QWidget *w : window.findChildren<QWidget *>())
+                if (w->isVisible() && w->property("listRow").isValid() && w->property("listRow").toInt() == v.value(0).toInt()
+                    && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())) { row = w; break; }
+            if (row) {
+                int x = 120;
+                for (const QString &part : v) if (part.startsWith(QStringLiteral("x="))) x = part.mid(2).toInt();
+                const QPoint at(std::min(row->width() - 1, x), std::min(row->height() - 1, int(row->height() * v.value(1).toDouble())));
+                const QPoint global = row->mapToGlobal(at);
+                QCursor::setPos(global);
+                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();   // the move lands before the key goes down
+                const Qt::KeyboardModifiers keys = v.contains(QStringLiteral("alt")) ? Qt::AltModifier : Qt::ControlModifier;
+                QWidget *under = window.childAt(window.mapFromGlobal(global));
+                if (!under) under = row;
+                // The key goes down (as a keyboard sends it), then the pointer moves there.
+                QKeyEvent press(QEvent::KeyPress, keys == Qt::AltModifier ? Qt::Key_Alt : Qt::Key_Control, keys);
+                QCoreApplication::sendEvent(&window, &press);
+                QHoverEvent hover(QEvent::HoverMove, under->mapFromGlobal(global), global, under->mapFromGlobal(global), keys);
+                QCoreApplication::sendEvent(under, &hover);
+                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+                const QCursor *cursor = QApplication::overrideCursor();
+                std::fprintf(stderr, "LAYERCURSOR %s\n", cursor ? "override" : "none");
+                if (cursor) cursor->pixmap().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".cursor.png");
+            }
+        }
         // COMPOSITOR_GRAB_EFFECT_DROP=<row>: the first effect row in the list, dropped on that row as an Option-drag ends
         // (the drop half of the gesture; a real QDrag needs a window system).
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DROP").isEmpty()) {
@@ -614,6 +721,59 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 for (QWidget *w : window.findChildren<QWidget *>())
                     if (w->property("listRow").isValid() && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid()))
                         std::fprintf(stderr, "EFFECTDROP row %d visible %d %dx%d\n", w->property("listRow").toInt(), w->isVisible(), w->width(), w->height());
+            }
+        }
+        // COMPOSITOR_GRAB_EFFECT_DRAG=<row>: the whole Option-drag of the list's first effect row onto that row — the
+        // press, a move past the drag distance (the list starts its QDrag) and the release over the target, which Qt's
+        // drag loop answers with a drop there.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DRAG").isEmpty()) {
+            window.show();
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            QWidget *effect = nullptr, *row = nullptr;
+            const int target = qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DRAG").toInt();
+            for (QWidget *w : window.findChildren<QWidget *>()) {
+                if (!effect && w->isVisible() && w->objectName().startsWith(QStringLiteral("layerEffectRow:"))) effect = w;
+                if (!row && w->isVisible() && w->property("listRow").isValid() && w->property("listRow").toInt() == target
+                    && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())) row = w;
+            }
+            if (effect && row) {
+                const QString before = window.sessionState().value("undoName").toString(), effectName = effect->objectName();
+                QWindow *handle = window.windowHandle();
+                const QPoint from = effect->mapToGlobal(effect->rect().center()), to = row->mapToGlobal(row->rect().center());
+                bool dropped = false;
+                // The pointer arrives over the target, stays while the drop target answers (XDND status), then lets go.
+                QTimer::singleShot(150, &window, [handle, to] {
+                    QCursor::setPos(to);
+                    const QPointF local = handle->mapFromGlobal(QPointF(to));
+                    QMouseEvent move(QEvent::MouseMove, local, QPointF(to), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+                    QCoreApplication::sendEvent(handle, &move);
+                });
+                QTimer::singleShot(700, &window, [handle, to, &dropped] {
+                    const QPointF local = handle->mapFromGlobal(QPointF(to));
+                    QMouseEvent release(QEvent::MouseButtonRelease, local, QPointF(to), Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+                    QCoreApplication::sendEvent(handle, &release);
+                    dropped = true;
+                });
+                QTimer::singleShot(3000, &window, [] { QDrag::cancel(); });   // never left hanging
+                QCursor::setPos(from);
+                QMouseEvent press(QEvent::MouseButtonPress, effect->mapFromGlobal(from), from, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
+                QCoreApplication::sendEvent(effect, &press);
+                const QPoint past = from + QPoint(0, 3 * QApplication::startDragDistance());
+                QPointer<QWidget> source = effect;
+                if (source) {
+                    QMouseEvent move(QEvent::MouseMove, source->mapFromGlobal(past), past, Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+                    QCoreApplication::sendEvent(source, &move);   // returns when the drag is over
+                }
+                for (int i = 0; i < 40; ++i) QCoreApplication::processEvents();
+                QStringList names;
+                for (const auto &l : window.sessionState().value("layers").toArray()) names << l.toObject().value("name").toString();
+                std::fprintf(stderr, "EFFECTDRAG layers [%s] from %s\n", qPrintable(names.join(',')), qPrintable(effectName));
+                std::fprintf(stderr, "EFFECTDRAG onto row %d released=%d undo '%s' -> '%s'\n", target, dropped, qPrintable(before), qPrintable(window.sessionState().value("undoName").toString()));
+            } else {
+                std::fprintf(stderr, "EFFECTDRAG no %s\n", effect ? "target row" : "effect row");
+                for (QWidget *w : window.findChildren<QWidget *>())
+                    if (w->objectName().startsWith(QStringLiteral("layerEffectRow:")) || (w->property("listRow").isValid() && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())))
+                        std::fprintf(stderr, "EFFECTDRAG  %s row %d visible %d\n", qPrintable(w->objectName().left(20)), w->property("listRow").toInt(), w->isVisible());
             }
         }
         // COMPOSITOR_GRAB_CLIPBOARD_REPORT=1: what the desktop clipboard holds now (after the menu items above).

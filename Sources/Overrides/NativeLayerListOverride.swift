@@ -15,6 +15,7 @@
 // `compatListDrop` (the Qt renderer drags the rows) into the same placement the real list's drop performs.
 
 import SwiftUI
+import AppKit
 
 struct NativeLayerList: View {
     let session: EditorSession
@@ -63,6 +64,12 @@ struct NativeLayerList: View {
                   session.canCopyEffect(kind, from: sourceID, to: rows[row].layer.id) else { return }
             session.copyEffect(kind, from: sourceID, to: rows[row].layer.id)
         }
+        // LayerTableView.refreshClippingCursor's inputs, per row: whether an Option-click on its bottom edge would make
+        // ("c") or release ("r") a clipping mask ("-": neither), and whether an Option-drag may duplicate ("d").
+        .compatListCursorInfo(session.layerRows.map { row in
+            (session.canToggleClippingMask(row.layer.id) ? (row.layer.maskSourceID == nil ? "c" : "r") : "-")
+                + (session.canEditLayers ? "d" : "-")
+        })
         .accessibilityIdentifier("layersList")
     }
 
@@ -144,6 +151,7 @@ struct NativeLayerList: View {
                     // LayerThumbnailButton: selects the layer's pixels as the target; Cmd-click (Ctrl) loads them
                     // as a selection (Shift adds, Option subtracts).
                     .help(layer.liveText != nil ? "Editable text layer" : "Select image pixels")
+                    .accessibilityIdentifier("layerThumb:\(layer.id.uuidString)")
                     .onTapGesture { imageThumbnailTapped(layer.id, modifiers: CompatInput.clickModifiers) }
                     if let mask = layer.mask {
                         let canvas = session.document?.size ?? layer.size
@@ -457,5 +465,70 @@ struct LayerRenameField: View {
         let image = CanvasThumbnail.mask(mask.asset.thumbnail, transform: transform, canvas: canvas, box: 30)
         maskCache[layerID] = (key, image)
         return image
+    }
+}
+
+/// The layer list's pointers, upstream's own: LayerTableView's clipping cursors (drawn here as it draws them — its file
+/// is the one this override replaces), CanvasView's duplicate and load-selection cursors.
+@MainActor enum LayerListCursors {
+    static let createClipping = clippingCursor(releasing: false)
+    static let releaseClipping = clippingCursor(releasing: true)
+    /// LayerTableView.clippingCursor(releasing:), verbatim.
+    private static func clippingCursor(releasing: Bool) -> NSCursor {
+        let image = NSImage(size: NSSize(width: 30, height: 28), flipped: false) { _ in
+            let arrow = NSImage(systemSymbolName: "arrow.turn.down.right", accessibilityDescription: nil)!
+            let box = NSImage(systemSymbolName: releasing ? "rectangle.badge.minus" : "rectangle.badge.plus", accessibilityDescription: nil)!
+            func drawOutlined(_ symbol: NSImage, in rect: NSRect) {
+                let white = symbol.withSymbolConfiguration(.init(paletteColors: [.white]))!
+                let black = symbol.withSymbolConfiguration(.init(paletteColors: [.black]))!
+                for step in 0..<16 {
+                    let angle = CGFloat(step) * .pi / 8
+                    white.draw(in: rect.offsetBy(dx: cos(angle), dy: sin(angle)))
+                }
+                black.draw(in: rect)
+            }
+            drawOutlined(arrow, in: NSRect(x: 1, y: 11, width: 16, height: 15))
+            drawOutlined(box, in: NSRect(x: 10, y: 1, width: 19, height: 17))
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: 3, y: 3))
+    }
+}
+
+/// Makes one of the layer list's cursors current (0 arrow, 1 duplicate, 2 create clipping, 3 release clipping,
+/// 4 load selection) and returns its code as the canvas's cursors do (10: a picture, read with
+/// compositor_canvas_cursor_image).
+@_cdecl("compositor_layer_list_cursor")
+nonisolated public func compositorLayerListCursor(_ kind: Int32) -> Int32 {
+    MainActor.assumeIsolated {
+        let cursor: NSCursor
+        switch kind {
+        case 1: cursor = CanvasView.duplicateCursor
+        case 2: cursor = LayerListCursors.createClipping
+        case 3: cursor = LayerListCursors.releaseClipping
+        case 4: cursor = CanvasView.loadSelectionCursor
+        default: cursor = .arrow
+        }
+        NSCursor.current = cursor
+        return UpstreamCanvas.cursorCode(cursor)
+    }
+}
+
+/// The layers list's own arrows while it holds the focus (after a click on a row): LayerTableView.keyDown leaves Up and
+/// Down to NSTableView — the row above or below becomes the selection, Shift extends it — unless a transform or the
+/// Move tool takes them to nudge. `keyCode` is the Mac's (125 down, 126 up), `modifiers` the chord bits (8 Shift).
+/// Returns 1 when the list answered the key, 0 when the canvas should have it.
+@MainActor
+enum LayerListKeys {
+    static func arrow(_ session: EditorSession, keyCode: Int, modifiers: Int) -> Bool {
+        guard keyCode == 125 || keyCode == 126, modifiers & 7 == 0,
+              session.transformEdit == nil, session.tool != .move else { return false }
+        let rows = session.layerRows.map(\.layer.id)
+        guard !rows.isEmpty else { return true }
+        let current = rows.firstIndex { $0 == session.activeLayerID } ?? (keyCode == 125 ? -1 : rows.count)
+        let next = min(max(current + (keyCode == 125 ? 1 : -1), 0), rows.count - 1)
+        let id = rows[next]
+        session.selectLayers(modifiers & 8 != 0 ? session.selectedLayerIDs.union([id]) : [id], primary: id)
+        return true
     }
 }

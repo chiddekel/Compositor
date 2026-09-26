@@ -107,6 +107,7 @@ void compositor_set_symbol_renderer(compositor_symbol_renderer render);
 int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
 int32_t compositor_canvas_magnify(uint64_t handle, double x, double y, double magnification);
 int32_t compositor_canvas_key(uint64_t handle, int32_t keyCode, const char *characters, int32_t modifiers, int32_t isRepeat);
+int32_t compositor_layer_list_key(uint64_t handle, int32_t keyCode, int32_t modifiers);
 int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double y, int32_t modifiers, int32_t clickCount);
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
 int64_t compositor_canvas_overlay_region(uint64_t handle, int32_t x, int32_t y, int32_t width, int32_t height, uint8_t *output, size_t capacity);
@@ -227,8 +228,16 @@ protected:
     void wheelEvent(QWheelEvent *event) override {
         m_window->canvasWheelEvent(event);
     }
-    // A trackpad pinch: upstream's magnify(with:) (EditorCanvas zooms about the pointer).
+    // A trackpad pinch: upstream's magnify(with:) (EditorCanvas zooms about the pointer). Tab is a canvas key
+    // (EditorCanvas.keyDown: cycleToolMode), not focus navigation: Qt would move the focus before keyPressEvent saw it.
     bool event(QEvent *event) override {
+        if (event->type() == QEvent::KeyPress) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            if ((key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) && !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+                m_window->keyPressEvent(key);
+                return true;
+            }
+        }
         if (event->type() == QEvent::NativeGesture) {
             auto *gesture = static_cast<QNativeGestureEvent *>(event);
             if (gesture->gestureType() == Qt::ZoomNativeGesture) {
@@ -1700,11 +1709,21 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
+    // Up/Down after a click in the layers list move its row selection (NSTableView), unless Move or a transform nudges.
+    if ((event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) && qApp->property("layerListFocused").toBool()
+        && compositor_layer_list_key(m_sessionHandle, event->key() == Qt::Key_Down ? 125 : 126, chordBits(event->modifiers())) == 1) {
+        compositor_pump_main();
+        refreshLayers();
+        updateLayersPanel();
+        updateOptionsBar();
+        event->accept();
+        return;
+    }
     if (routesToUpstreamCanvas()) {
         static const QHash<int, int> codes{{Qt::Key_Return, 36}, {Qt::Key_Enter, 76}, {Qt::Key_Escape, 53}, {Qt::Key_Backspace, 51},
-            {Qt::Key_Delete, 117}, {Qt::Key_Tab, 48}, {Qt::Key_Left, 123}, {Qt::Key_Right, 124}, {Qt::Key_Down, 125}, {Qt::Key_Up, 126}};
+            {Qt::Key_Delete, 117}, {Qt::Key_Tab, 48}, {Qt::Key_Backtab, 48}, {Qt::Key_Left, 123}, {Qt::Key_Right, 124}, {Qt::Key_Down, 125}, {Qt::Key_Up, 126}};
         static const QHash<int, QString> typed{{Qt::Key_Return, "\r"}, {Qt::Key_Enter, "\u0003"}, {Qt::Key_Escape, "\u001b"},
-            {Qt::Key_Backspace, "\u007f"}, {Qt::Key_Delete, QString(QChar(0xf728))}, {Qt::Key_Tab, "\t"},
+            {Qt::Key_Backspace, "\u007f"}, {Qt::Key_Delete, QString(QChar(0xf728))}, {Qt::Key_Tab, "\t"}, {Qt::Key_Backtab, "\u0019"},
             {Qt::Key_Left, QString(QChar(0xf702))}, {Qt::Key_Right, QString(QChar(0xf703))}, {Qt::Key_Down, QString(QChar(0xf701))},
             {Qt::Key_Up, QString(QChar(0xf700))}};
         if (codes.contains(event->key())) {
@@ -3320,6 +3339,7 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
 }
 
 void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
+    qApp->setProperty("layerListFocused", false);   // the canvas has the keys again
     Q_UNUSED(canvas);
     if (event->button() == Qt::LeftButton && routesToUpstreamCanvas()) {
         m_upstreamCanvasDrag = true;

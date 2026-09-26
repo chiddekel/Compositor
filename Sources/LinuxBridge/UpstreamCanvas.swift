@@ -214,6 +214,14 @@ nonisolated public func compositorCanvasKey(_ handle: UInt64, _ keyCode: Int32, 
     })
 }
 
+/// Up/Down while the layers list holds the focus (LayerListKeys.arrow): 1 when the list moved its selection.
+@_cdecl("compositor_layer_list_key")
+nonisolated public func compositorLayerListKey(_ handle: UInt64, _ keyCode: Int32, _ modifiers: Int32) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        LayerListKeys.arrow(entry.editor.session, keyCode: Int(keyCode), modifiers: Int(modifiers)) ? 1 : 0
+    })
+}
+
 /// The overlay's pixels (width × height × 4); returns the byte count, -1 if `capacity` is too small.
 @_cdecl("compositor_canvas_overlay")
 nonisolated public func compositorCanvasOverlay(_ handle: UInt64, _ width: Int32, _ height: Int32,

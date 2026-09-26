@@ -59,7 +59,36 @@ public final class NSCursor: @unchecked Sendable, Equatable {
     }()
     public static let openHand = NSCursor(shape: .openHand)
     public static let closedHand = NSCursor(shape: .closedHand)
-    public static let pointingHand = NSCursor(shape: .pointingHand)
+    /// The Mac's pointing hand: white with a black outline, the hot spot on the fingertip (the host still shows its own
+    /// hand for this shape; the image is for cursors built on it, like the layer list's load-selection cursor).
+    public static let pointingHand: NSCursor = {
+        let image = NSImage(size: CGSize(width: 24, height: 24), flipped: true) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            let parts = [CGRect(x: 6.5, y: 0.5, width: 4, height: 13), CGRect(x: 10, y: 7.5, width: 3.5, height: 8),
+                         CGRect(x: 13, y: 8.5, width: 3.5, height: 7), CGRect(x: 16, y: 9.5, width: 3, height: 6),
+                         CGRect(x: 6.5, y: 12, width: 12.5, height: 9.5)]
+            let thumb = CGMutablePath()
+            thumb.move(to: CGPoint(x: 8, y: 16)); thumb.addLine(to: CGPoint(x: 3.5, y: 11.5))
+            context.setLineCap(.round)
+            // Every part outlined first, then filled over: the outline of the whole hand stays.
+            for (color, grow) in [(CGColor(red: 0, green: 0, blue: 0, alpha: 1), 1.0), (CGColor(red: 1, green: 1, blue: 1, alpha: 1), 0.0)] {
+                context.setFillColor(color); context.setStrokeColor(color)
+                for rect in parts {
+                    let r = rect.insetBy(dx: -grow, dy: -grow)
+                    context.addPath(CGPath(roundedRect: r, cornerWidth: min(r.width / 2, 3.5), cornerHeight: min(r.width / 2, 3.5), transform: nil))
+                    context.fillPath()
+                }
+                context.setLineWidth(3.5 + 2 * grow)
+                context.addPath(thumb); context.strokePath()
+            }
+            context.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            context.setLineWidth(1)
+            for x in [10.5, 13.5, 16.5] { context.move(to: CGPoint(x: x, y: 11)); context.addLine(to: CGPoint(x: x, y: 14.5)) }
+            context.strokePath()
+            return true
+        }
+        return NSCursor(shape: .pointingHand, image: image, hotSpot: CGPoint(x: 8, y: 1))
+    }()
     public static let resizeLeftRight = NSCursor(shape: .resizeLeftRight)
     public static let resizeUpDown = NSCursor(shape: .resizeUpDown)
     public static func frameResize(position: FrameResizePosition, directions: FrameResizeDirections) -> NSCursor {

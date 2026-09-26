@@ -570,6 +570,88 @@ private:
     QByteArray m_lastPayload;
 };
 
+extern "C" int32_t compositor_layer_list_cursor(int32_t kind);
+extern "C" int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
+
+/// The layer list's pointer, as LayerTableView.refreshClippingCursor keeps it: with Alt (Option) held, the clipping
+/// cursor over a row's bottom edge (making or releasing a clipping mask) and the duplicate cursor over the rest; with
+/// Ctrl (Command) over a thumbnail, the load-selection cursor; otherwise the ordinary arrow. It follows the pointer and
+/// the modifier keys (pressed or released without moving), as the Mac's flagsChanged monitor does.
+class ListCursorController : public QObject {
+public:
+    ListCursorController(QWidget *content, QList<QWidget *> rows, const QString &info)
+        : QObject(content), m_content(content), m_rows(std::move(rows)), m_info(info.split(QLatin1Char(','), Qt::KeepEmptyParts)) {
+        content->setMouseTracking(true);
+        for (QWidget *w : content->findChildren<QWidget *>()) { w->setMouseTracking(true); w->installEventFilter(this); }
+        content->installEventFilter(this);
+        qApp->installEventFilter(this);   // modifier keys, wherever the focus is
+    }
+    ~ListCursorController() override { if (m_shown >= 0) QApplication::restoreOverrideCursor(); }
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+            // A click in the list makes it the first responder, as the Mac's table becomes: its arrows move the row
+            // selection until a click on the canvas takes the keys back (SessionWindow::keyPressEvent).
+            if (auto *w = qobject_cast<QWidget *>(watched); w && (w == m_content || m_content->isAncestorOf(w)))
+                qApp->setProperty("layerListFocused", true);
+            break;
+        case QEvent::MouseMove: case QEvent::KeyPress: case QEvent::KeyRelease:
+            // The keys as this event reports them (a released Alt already left out). Hover events Qt makes from a
+            // move don't carry them reliably, so only real input sets them.
+            heldKeys() = static_cast<QInputEvent *>(event)->modifiers();
+            QTimer::singleShot(0, this, [this] { refresh(); });
+            break;
+        case QEvent::HoverMove: case QEvent::Enter: case QEvent::Leave:
+            QTimer::singleShot(0, this, [this] { refresh(); });
+            break;
+        default: break;
+        }
+        return false;
+    }
+private:
+    void refresh() {
+        const QPoint pos = m_content->mapFromGlobal(QCursor::pos());
+        const Qt::KeyboardModifiers keys = heldKeys();
+        int kind = 0;
+        if (m_content->isVisible() && m_content->rect().contains(pos)) {
+            int row = -1;
+            for (int i = 0; i < m_rows.size(); ++i) if (m_rows[i]->geometry().contains(pos)) { row = i; break; }
+            const QString flags = row >= 0 && row < m_info.size() ? m_info[row] : QString();
+            if (row >= 0 && keys.testFlag(Qt::AltModifier) && !keys.testFlag(Qt::ControlModifier)) {
+                const QRect r = m_rows[row]->geometry();
+                const bool strip = pos.y() >= r.bottom() + 1 - std::min(10, r.height() / 3);
+                if (strip && flags.startsWith(QLatin1Char('c'))) kind = 2;
+                else if (strip && flags.startsWith(QLatin1Char('r'))) kind = 3;
+                else if (flags.endsWith(QLatin1Char('d'))) kind = 1;
+            } else if (row >= 0 && keys.testFlag(Qt::ControlModifier)) {
+                QWidget *under = m_content->childAt(pos);
+                for (QWidget *w = under; w && w != m_content; w = w->parentWidget())
+                    if (w->objectName().startsWith(QStringLiteral("layerThumb:")) || w->objectName().startsWith(QStringLiteral("layerMaskThumb:"))) { kind = 4; break; }
+            }
+        }
+        if (kind == m_shown || (kind == 0 && m_shown < 0)) return;
+        if (m_shown >= 0) QApplication::restoreOverrideCursor();
+        m_shown = -1;
+        if (kind == 0) return;
+        compositor_layer_list_cursor(kind);
+        int32_t w = 0, h = 0; double hx = 0, hy = 0;
+        const int64_t size = compositor_canvas_cursor_image(&w, &h, &hx, &hy, nullptr, 0);
+        if (size <= 0 || size != int64_t(w) * h * 4) return;
+        QByteArray bytes(qsizetype(size), Qt::Uninitialized);
+        compositor_canvas_cursor_image(&w, &h, &hx, &hy, reinterpret_cast<uint8_t *>(bytes.data()), size_t(bytes.size()));
+        const QImage image = QImage(reinterpret_cast<const uchar *>(bytes.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied).copy();
+        QApplication::setOverrideCursor(QCursor(QPixmap::fromImage(image), qRound(hx), qRound(hy)));
+        m_shown = kind;
+    }
+    QWidget *m_content;
+    QList<QWidget *> m_rows;
+    QStringList m_info;
+    int m_shown = -1;
+    /// Shared by every list: a key pressed while one panel was showing still counts after it is rebuilt.
+    static Qt::KeyboardModifiers &heldKeys() { static Qt::KeyboardModifiers keys; return keys; }
+};
+
 /// Drag-and-drop for a List whose view asked for it (`compatListDrop`): press a row and drag to move it; the drop
 /// lands above the nearer row edge, or into a folder row's middle (highlighted), Alt copies. The List's own handler
 /// ("listDrop": [source row, row under the drop, fraction within it, copying]) decides what the drop does.
@@ -619,8 +701,9 @@ protected:
                 auto *mime = new QMimeData;
                 mime->setData("com.compositor.layer-effect", source.toUtf8());
                 drag->setMimeData(mime);
+                QPointer<ListDragController> alive(this);   // the drop can rebuild the panel inside exec's loop
                 drag->exec(Qt::CopyAction, Qt::CopyAction);
-                m_indicator->hide();
+                if (alive) m_indicator->hide();
                 return true;
             }
             if (!m_pressMaskSource.isEmpty()) {
@@ -631,8 +714,9 @@ protected:
                 auto *mime = new QMimeData;
                 mime->setData("com.compositor.layer-mask", source.toUtf8());
                 drag->setMimeData(mime);
+                QPointer<ListDragController> alive(this);   // the drop can rebuild the panel inside exec's loop
                 drag->exec(Qt::CopyAction, Qt::CopyAction);
-                m_indicator->hide();
+                if (alive) m_indicator->hide();
                 return true;
             }
             const int source = m_pressRow;
@@ -649,8 +733,9 @@ protected:
                 drag->setPixmap(snapshot);
                 drag->setHotSpot(m_rows[source]->mapFromGlobal(e->globalPosition().toPoint()));
             }
+            QPointer<ListDragController> alive(this);   // the drop can rebuild the panel inside exec's loop
             drag->exec(Qt::MoveAction | Qt::CopyAction, Qt::MoveAction);
-            m_indicator->hide();
+            if (alive) m_indicator->hide();
             return true;
         }
         case QEvent::MouseButtonRelease:
@@ -3077,10 +3162,12 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                     for (int i = 0; i < content->layout()->count(); ++i)
                         if (QWidget *item = content->layout()->itemAt(i)->widget()) rows << item;
                     if (!rows.isEmpty()) rows.removeLast();
-                    new ListDragController(content, rows, strings.value("listFolders").toString(),
+                    auto *controller = new ListDragController(content, rows, strings.value("listFolders").toString(),
                                            strings.value("listLayerIdentifiers").toString(),
                                            strings.value("listMaskDragIdentifiers").toString(),
                                            strings.value("listMaskDropIdentifiers").toString(), handle, panel, id);
+                    if (strings.contains("listCursorInfo")) new ListCursorController(content, rows, strings.value("listCursorInfo").toString());
+                    Q_UNUSED(controller);
                 }
             }
         }
@@ -3149,6 +3236,19 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 });
             });
             timer->start();
+        }
+        // A view with gestures of its own takes the mouse, even one drawn passive (an Image: the layer and effect eyes),
+        // unless SwiftUI turned its hit-testing off.
+        static const QStringList interactive{QStringLiteral("dragChanged"), QStringLiteral("dragEnded"), QStringLiteral("onContinuousHover"),
+            QStringLiteral("swipeBegan"), QStringLiteral("onTapGesture"), QStringLiteral("spatialTapGesture"), QStringLiteral("contextMenu")};
+        if (std::any_of(interactive.begin(), interactive.end(), [&](const QString &key) { return hKeys.contains(key); })) {
+            bool hitTestingOff = false;
+            for (const auto &entry : node.value("modifiers").toArray()) {
+                const QJsonObject modifier = entry.toObject();
+                if (modifier.value("kind").toString() == QLatin1String("allowsHitTesting")
+                    && !modifier.value("boolParams").toObject().value("enabled").toBool()) hitTestingOff = true;
+            }
+            if (!hitTestingOff) widget->setAttribute(Qt::WA_TransparentForMouseEvents, false);
         }
         if (hKeys.contains(QStringLiteral("dragChanged")) || hKeys.contains(QStringLiteral("dragEnded"))) {
             new DragPressFilter(widget, widget, handle, panel, id);

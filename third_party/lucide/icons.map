@@ -55,3 +55,6 @@ scope crosshair
 text.aligncenter text-align-center
 text.alignleft text-align-start
 text.alignright text-align-end
+arrow.turn.down.right custom/corner-down-right
+rectangle.badge.plus custom/rectangle-badge-plus
+rectangle.badge.minus custom/rectangle-badge-minus

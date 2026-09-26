@@ -302,6 +302,10 @@ extension View {
             }))
         }
     }
+    /// Compat-only: per-row flags the Qt list reads to choose its pointer as the Mac's list does (see NativeLayerList).
+    public func compatListCursorInfo(_ rows: [String]) -> some View {
+        modified { $0.stringParams["listCursorInfo"] = rows.joined(separator: ",") }
+    }
     public func compatListMaskDrop(dragIdentifiers: [String], dropTargetIdentifiers: [String],
                                    perform action: @escaping (_ source: String, _ target: String) -> Void) -> some View {
         modified {
