@@ -51,26 +51,31 @@ public enum TextBackend {
         return []
     }()
 
-    /// Ascender, descender (negative) and leading of `font`, in points, from the Qt text engine; nil without it.
-    static func metrics(_ font: NSFont) -> (ascender: CGFloat, descender: CGFloat, leading: CGFloat)? {
+    typealias MetricsFn = @convention(c) (UnsafePointer<CChar>?, Double, UnsafeMutablePointer<Double>?,
+                                          UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?) -> Int32
+    nonisolated(unsafe) static let metricsFn: MetricsFn? = {
         #if canImport(Glibc)
-        typealias MetricsFn = @convention(c) (UnsafePointer<CChar>?, Double, UnsafeMutablePointer<Double>?,
-                                              UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?) -> Int32
         let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
         for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
             guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_font_metrics") else { continue }
-            var ascent = 0.0, descent = 0.0, leading = 0.0
-            guard unsafeBitCast(sym, to: MetricsFn.self)(font.fontName, Double(font.pointSize), &ascent, &descent, &leading) == 1 else { return nil }
-            return (CGFloat(ascent), CGFloat(descent), CGFloat(leading))
+            return unsafeBitCast(sym, to: MetricsFn.self)
         }
         #endif
         return nil
+    }()
+
+    /// Ascender, descender (negative) and leading of `font`, in points, from the Qt text engine; nil without it.
+    static func metrics(_ font: NSFont) -> (ascender: CGFloat, descender: CGFloat, leading: CGFloat)? {
+        guard let metricsFn else { return nil }
+        var ascent = 0.0, descent = 0.0, leading = 0.0
+        guard metricsFn(font.fontName, Double(font.pointSize), &ascent, &descent, &leading) == 1 else { return nil }
+        return (CGFloat(ascent), CGFloat(descent), CGFloat(leading))
     }
 
     public struct Layout { public let width: CGFloat; public let height: CGFloat; public let baseline: CGFloat }
 
     /// Size and first baseline of `text`, lines `lineHeight` apart (0: 1.2 em), wrapping at `maxWidth` (0: never).
-    static func layout(_ text: String, font: NSFont, tracking: CGFloat, lineHeight: CGFloat, maxWidth: CGFloat) -> Layout? {
+    public static func layout(_ text: String, font: NSFont, tracking: CGFloat, lineHeight: CGFloat, maxWidth: CGFloat) -> Layout? {
         _ = autoloaded
         guard let layoutFn else { return nil }
         var w = 0.0, h = 0.0, baseline = 0.0
@@ -81,7 +86,53 @@ public enum TextBackend {
     }
 
     /// The text drawn, premultiplied RGBA, at least `boxWidth` wide with `alignment` (0 left, 1 center, 2 right) in it.
-    static func render(_ text: String, font: NSFont, tracking: CGFloat, lineHeight: CGFloat, maxWidth: CGFloat,
+    typealias RenderRunsFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Double, Double, Double, Double, Int32, Double,
+                                             Double, Double, Double, Double, UnsafePointer<Double>?, Int32,
+                                             UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int32>?,
+                                             UnsafeMutablePointer<Int32>?) -> Int32
+    nonisolated(unsafe) static let renderRunsFn: RenderRunsFn? = {
+        #if canImport(Glibc)
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_text_render_runs") else { continue }
+            return unsafeBitCast(sym, to: RenderRunsFn.self)
+        }
+        #endif
+        return nil
+    }()
+
+    /// `render` with letters colored on their own: each run is a UTF-16 range and its color.
+    public static func render(_ text: String, font: NSFont, tracking: CGFloat, lineHeight: CGFloat, maxWidth: CGFloat,
+                              alignment: Int32, boxWidth: CGFloat, color: NSColor, runs: [(NSRange, NSColor)]) -> CGImage? {
+        guard !runs.isEmpty, let renderRunsFn else {
+            return render(text, font: font, tracking: tracking, lineHeight: lineHeight, maxWidth: maxWidth, alignment: alignment,
+                          boxWidth: boxWidth, color: color)
+        }
+        let flat = runs.flatMap { range, c in
+            [Double(range.location), Double(range.length), Double(c.redComponent), Double(c.greenComponent),
+             Double(c.blueComponent), Double(c.alphaComponent)]
+        }
+        var pixels: UnsafeMutablePointer<UInt8>?
+        var w: Int32 = 0, h: Int32 = 0
+        let status = text.withCString { t in font.fontName.withCString { f in
+            flat.withUnsafeBufferPointer { r in
+                renderRunsFn(t, f, Double(font.pointSize), Double(tracking), Double(lineHeight), Double(maxWidth), alignment,
+                             Double(boxWidth), Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent),
+                             Double(color.alphaComponent), r.baseAddress, Int32(runs.count), &pixels, &w, &h)
+            }
+        } }
+        guard status == 0, let pixels, w > 0, h > 0 else { return nil }
+        defer { free(pixels) }
+        let count = Int(w) * Int(h) * 4
+        guard let context = CGContext(data: nil, width: Int(w), height: Int(h), bitsPerComponent: 8, bytesPerRow: Int(w) * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let destination = context.data else { return nil }
+        destination.copyMemory(from: pixels, byteCount: count)
+        return context.makeImage()
+    }
+
+    public static func render(_ text: String, font: NSFont, tracking: CGFloat, lineHeight: CGFloat, maxWidth: CGFloat,
                        alignment: Int32, boxWidth: CGFloat, color: NSColor) -> CGImage? {
         _ = autoloaded
         guard let renderFn else { return nil }

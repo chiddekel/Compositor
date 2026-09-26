@@ -88,7 +88,9 @@ public:
     void newCanvasTab();
     void refreshTabTitle();
     bool saveProject(const QString &path);
+    bool writeProjectPackage(const QString &path);   // saveProject without noting it as recent
     bool loadProject(const QString &path);
+    bool readProjectPackage(const QString &path);    // loadProject without noting it as recent
 
     // Command Palette (Ctrl+Shift+P / F1)
     void showCommandPalette();

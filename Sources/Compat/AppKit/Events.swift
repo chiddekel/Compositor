@@ -39,6 +39,8 @@ public final class NSEvent: @unchecked Sendable {
         public static let flagsChanged = EventTypeMask(type: .flagsChanged), leftMouseDown = EventTypeMask(type: .leftMouseDown)
         public static let leftMouseUp = EventTypeMask(type: .leftMouseUp), mouseMoved = EventTypeMask(type: .mouseMoved)
         public static let scrollWheel = EventTypeMask(type: .scrollWheel), any = EventTypeMask(rawValue: ~0)
+        public static let leftMouseDragged = EventTypeMask(type: .leftMouseDragged), rightMouseDown = EventTypeMask(type: .rightMouseDown)
+        public static let rightMouseUp = EventTypeMask(type: .rightMouseUp), rightMouseDragged = EventTypeMask(type: .rightMouseDragged)
     }
     public struct ModifierFlags: OptionSet, Hashable, Sendable {
         public let rawValue: UInt

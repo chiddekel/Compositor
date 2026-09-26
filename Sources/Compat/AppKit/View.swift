@@ -111,6 +111,15 @@ public final class NSTrackingArea {
         view.superview = self; subviews.append(view)
         view.windowDidChange()
     }
+    /// Whether this view is `view` or lies inside it.
+    public func isDescendant(of view: NSView) -> Bool {
+        var current: NSView? = self
+        while let candidate = current {
+            if candidate === view { return true }
+            current = candidate.superview
+        }
+        return false
+    }
     open func removeFromSuperview() {
         superview?.subviews.removeAll { $0 === self }
         superview = nil

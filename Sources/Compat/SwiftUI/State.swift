@@ -108,10 +108,12 @@ public enum StateStore {
         guard self.scope == nil else { return false }
         self.scope = scope
         claimed = []
+        PreferenceValues.begin(scope: scope)
         return true
     }
     public static func end() {
         guard let scope else { return }
+        PreferenceValues.end(scope: scope)
         let prefix = scope + "|"
         for key in boxes.keys where key.hasPrefix(prefix) && !claimed.contains(key) { boxes.removeValue(forKey: key) }
         self.scope = nil
@@ -204,5 +206,48 @@ public struct EnvironmentValues {
     public var projectedValue: Bindable<Value> { self }
     public subscript<Subject>(dynamicMember keyPath: ReferenceWritableKeyPath<Value, Subject>) -> Binding<Subject> {
         Binding(get: { wrappedValue[keyPath: keyPath] }, set: { wrappedValue[keyPath: keyPath] = $0 })
+    }
+}
+
+
+// MARK: - Preferences
+
+/// SwiftUI's `PreferenceKey`: values views publish up the tree, combined by `reduce`.
+public protocol PreferenceKey {
+    associatedtype Value
+    static var defaultValue: Value { get }
+    static func reduce(value: inout Value, nextValue: () -> Value)
+}
+
+/// The preferences a panel's views published, per panel. `.preference` adds to the resolve in progress;
+/// `onPreferenceChange` reads the last complete resolve's value — SwiftUI delivers a preference after layout, and
+/// the bridge resolves again until the actions it triggers settle, so the value lands on the next pass.
+public enum PreferenceValues {
+    // Resolves run on the main thread (the StateStore's own statics work the same way).
+    nonisolated(unsafe) private static var collecting: [ObjectIdentifier: Any] = [:]
+    nonisolated(unsafe) private static var settled: [String: [ObjectIdentifier: Any]] = [:]
+    nonisolated(unsafe) private static var scope: String?
+    static func begin(scope: String) { self.scope = scope; collecting = [:] }
+    static func end(scope: String) { settled[scope] = collecting; collecting = [:]; self.scope = nil }
+    static func publish<K: PreferenceKey>(_ key: K.Type, _ value: K.Value) {
+        var combined = (collecting[ObjectIdentifier(key)] as? K.Value) ?? K.defaultValue
+        K.reduce(value: &combined, nextValue: { value })
+        collecting[ObjectIdentifier(key)] = combined
+    }
+    static func value<K: PreferenceKey>(_ key: K.Type) -> K.Value {
+        guard let scope else { return K.defaultValue }
+        return (settled[scope]?[ObjectIdentifier(key)] as? K.Value) ?? K.defaultValue
+    }
+}
+
+extension View {
+    public func preference<K: PreferenceKey>(key: K.Type, value: K.Value) -> some View {
+        modified { _ in PreferenceValues.publish(key, value) }
+    }
+    /// Runs `action` with the panel's combined value for `key` when it changes (and once at first, as SwiftUI does).
+    public func onPreferenceChange<K: PreferenceKey>(_ key: K.Type, perform action: @escaping (K.Value) -> Void) -> some View
+    where K.Value: Equatable {
+        let value = PreferenceValues.value(key)
+        return onChange(of: value, initial: true) { _, new in action(new) }
     }
 }

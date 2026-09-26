@@ -11,6 +11,11 @@ public enum NSApplication {
         case alertFirstButtonReturn = 1000, alertSecondButtonReturn = 1001, alertThirdButtonReturn = 1002 }
 }
 public typealias NSModalResponse = NSApplication.ModalResponse
+extension NSApplication {
+    /// Posted when the app comes to the front (the host posts it on window activation).
+    public static let didBecomeActiveNotification = Notification.Name("NSApplicationDidBecomeActiveNotification")
+    public static let didResignActiveNotification = Notification.Name("NSApplicationDidResignActiveNotification")
+}
 
 /// Model code asks questions through alerts; the host installs `handler` (Qt message box). Headless default:
 /// choose the first button, like pressing Return.
@@ -86,12 +91,25 @@ open class NSOpenPanel: NSSavePanel {
 /// Recent-documents bookkeeping; the Qt shell may mirror it into its own recent-files menu.
 @MainActor public final class NSDocumentController {
     public static let shared = NSDocumentController()
-    public private(set) var recentDocumentURLs: [URL] = []
+    /// Most recent first, kept across launches (macOS keeps the list per app; here in the app's defaults), at most
+    /// `maximumRecentDocumentCount`.
+    public private(set) var recentDocumentURLs: [URL]
+    public var maximumRecentDocumentCount = 10
     nonisolated(unsafe) public static var onNoteRecent: ((URL) -> Void)?
+    private static let defaultsKey = "NSRecentDocumentURLs"
+    init() {
+        recentDocumentURLs = (UserDefaults.standard.stringArray(forKey: Self.defaultsKey) ?? []).map { URL(fileURLWithPath: $0) }
+    }
     public func noteNewRecentDocumentURL(_ url: URL) {
-        recentDocumentURLs.removeAll { $0 == url }
+        recentDocumentURLs.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
         recentDocumentURLs.insert(url, at: 0)
+        if recentDocumentURLs.count > maximumRecentDocumentCount { recentDocumentURLs.removeLast(recentDocumentURLs.count - maximumRecentDocumentCount) }
+        save()
         Self.onNoteRecent?(url)
     }
-    public func clearRecentDocuments(_ sender: Any?) { recentDocumentURLs = [] }
+    public func clearRecentDocuments(_ sender: Any?) { recentDocumentURLs = []; save() }
+    private func save() {
+        UserDefaults.standard.set(recentDocumentURLs.map(\.path), forKey: Self.defaultsKey)
+        UserDefaults.standard.synchronize()   // written now, not at some later flush a quit can beat
+    }
 }

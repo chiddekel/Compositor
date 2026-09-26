@@ -69,6 +69,7 @@
 extern "C" int compositor_qt_imageio_install(void);
 extern "C" int compositor_raw_install(void);
 extern "C" int32_t compositor_install_subject_model(void);
+extern "C" void compositor_app_did_become_active(void);
 
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
@@ -100,6 +101,10 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     compositor_raw_install();   // camera RAW via LibRaw (a no-op when built without it)
     systemclipboard::install();   // NSPasteboard.general is the desktop clipboard, as on macOS
     compositor_install_subject_model();   // Select Subject / Remove Background: U²-Net-small when bundled
+    // NSApplication.didBecomeActiveNotification: coming back to the app (upstream re-checks its recent projects).
+    QObject::connect(qApp, &QGuiApplication::applicationStateChanged, qApp, [](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive) compositor_app_did_become_active();
+    });
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
     app.setDesktopFileName("com.wonderassembly.Compositor");
@@ -194,6 +199,9 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             QElapsedTimer settle; settle.start();   // let the pump render the effect's preview
             while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         }
+        // COMPOSITOR_GRAB_SAVE_PROJECT=<package path>: the document saved there, as File > Save does.
+        if (!qEnvironmentVariable("COMPOSITOR_GRAB_SAVE_PROJECT").isEmpty())
+            std::fprintf(stderr, "SAVE %s\n", window.saveProject(qEnvironmentVariable("COMPOSITOR_GRAB_SAVE_PROJECT")) ? "ok" : "failed");
         // COMPOSITOR_GRAB_CLIPBOARD_IMAGE=<file>: that picture on the desktop clipboard, as another application puts it.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_CLIPBOARD_IMAGE").isEmpty())
             QApplication::clipboard()->setImage(QImage(qEnvironmentVariable("COMPOSITOR_GRAB_CLIPBOARD_IMAGE")));

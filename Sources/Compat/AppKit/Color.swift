@@ -17,6 +17,14 @@ open class NSColor: @unchecked Sendable, Equatable {
     public init(srgbRed red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
         redComponent = red; greenComponent = green; blueComponent = blue; alphaComponent = alpha
     }
+    /// HSB (all 0...1, hue in turns), as AppKit's.
+    public convenience init(hue: CGFloat, saturation: CGFloat, brightness: CGFloat, alpha: CGFloat) {
+        let h = (hue - floor(hue)) * 6, i = Int(h) % 6, f = h - floor(h)
+        let p = brightness * (1 - saturation), q = brightness * (1 - saturation * f), t = brightness * (1 - saturation * (1 - f))
+        let (r, g, b): (CGFloat, CGFloat, CGFloat) = [(brightness, t, p), (q, brightness, p), (p, brightness, t),
+                                                     (p, q, brightness), (t, p, brightness), (brightness, p, q)][i]
+        self.init(srgbRed: r, green: g, blue: b, alpha: alpha)
+    }
     public convenience init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
         self.init(srgbRed: red, green: green, blue: blue, alpha: alpha)
     }

@@ -148,6 +148,14 @@ extension View {
     public func tint(_ color: Color?) -> some View { modified { $0.modifiers.append(.foregroundStyle(color?.name ?? "accentColor")) } }
     public func clipShape(_ shape: StyleToken) -> some View { modified { $0.modifiers.append(.clipShape(shape.name)) } }
     public func clipShape<S: Shape>(_ shape: S) -> some View { modified { $0.modifiers.append(.clipShape("\(S.self)")) } }
+    /// A slider's track drawn as this left-to-right gradient across its whole width (upstream's GradientSliderCell:
+    /// Camera Raw, Hue/Saturation, Black & White, Color Balance). Stops are RGBA 0...1.
+    public func compatSliderTrack(_ stops: [(Double, Double, Double, Double)]?) -> some View {
+        modified { node in
+            guard let stops, stops.count >= 2 else { return }
+            node.stringParams["trackGradient"] = stops.map { "\($0.0),\($0.1),\($0.2),\($0.3)" }.joined(separator: ";")
+        }
+    }
     public func labelsHidden() -> some View { modified { $0.boolParams["labelsHidden"] = true } }
     public func cornerRadius(_ radius: Double) -> some View { modified { $0.modifiers.append(.cornerRadius(radius)) } }
     public func offset(x: Double = 0, y: Double = 0) -> some View { modified { $0.modifiers.append(.offset(x: x, y: y)) } }

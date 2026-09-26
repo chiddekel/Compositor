@@ -2657,7 +2657,22 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         const double lower = doubles.value("lowerBound").toDouble(), upper = doubles.value("upperBound").toDouble(1);
         constexpr int steps = 1000;
         auto *slider = new QSlider(Qt::Horizontal);
-        slider->setStyleSheet("QSlider::groove:horizontal { height: 4px; background: #38383c; border-radius: 2px; } QSlider::handle:horizontal { background: #ffffff; border: 1px solid #b0b0b5; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }");
+        // A colored track (upstream's GradientSliderCell): the gradient across the whole 4 pt bar, no filled part.
+        QString groove = QStringLiteral("background: #38383c;");
+        if (const QStringList stops = strings.value("trackGradient").toString().split(QLatin1Char(';'), Qt::SkipEmptyParts); stops.size() >= 2) {
+            QStringList parts;
+            for (int i = 0; i < stops.size(); ++i) {
+                const QStringList c = stops[i].split(QLatin1Char(','));
+                if (c.size() != 4) continue;
+                parts << QStringLiteral("stop:%1 rgba(%2, %3, %4, %5)").arg(double(i) / (stops.size() - 1))
+                             .arg(qRound(c[0].toDouble() * 255)).arg(qRound(c[1].toDouble() * 255)).arg(qRound(c[2].toDouble() * 255))
+                             .arg(qRound(c[3].toDouble() * 255));
+            }
+            groove = QStringLiteral("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, %1);").arg(parts.join(QStringLiteral(", ")));
+        }
+        slider->setStyleSheet(QStringLiteral("QSlider::groove:horizontal { height: 4px; %1 border-radius: 2px; } "
+            "QSlider::handle:horizontal { background: #ffffff; border: 1px solid #b0b0b5; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }").arg(groove)
+            + (strings.contains("trackGradient") ? QStringLiteral(" QSlider::sub-page:horizontal { background: transparent; }") : QString()));
         slider->setRange(0, steps);
         const double span = (upper > lower) ? (upper - lower) : 1;
         slider->setValue(static_cast<int>((doubles.value("value").toDouble() - lower) / span * steps));

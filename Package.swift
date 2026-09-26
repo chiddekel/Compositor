@@ -148,6 +148,9 @@ let package = Package(
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        // CoreText: single-line drawing over the Qt text engine (upstream's Dither ASCII glyphs).
+        .target(name: "CoreText", dependencies: ["AppKit", "CoreGraphics"], path: "Sources/Compat/CoreText",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // CryptoKit: SHA256 with Apple's API over a portable implementation (upstream's ProjectDigest).
         .target(name: "CryptoKit", path: "Sources/Compat/CryptoKit"),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
@@ -166,7 +169,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
@@ -174,6 +177,8 @@ let package = Package(
                      "Rendering/BrushPixels.h",
                      "Rendering/ContentFill.c",
                      "Rendering/ContentFill.h",
+                     "Rendering/DitherPixels.c",
+                     "Rendering/DitherPixels.h",
                      "Rendering/HealPixels.c",
                      "Rendering/HealPixels.h",
                      "Rendering/LensPixels.c",

@@ -20,6 +20,12 @@ open class NSFont: @unchecked Sendable {
         fontName = name; pointSize = size
     }
     private init(system size: CGFloat) { fontName = "System"; pointSize = size }
+    private init(systemNamed name: String, size: CGFloat) { fontName = name; pointSize = size }
+    /// The system's monospaced face ("Monospace" to the Qt text engine: the desktop's fixed-pitch font), bold from
+    /// semibold up.
+    public static func monospacedSystemFont(ofSize size: CGFloat, weight: Weight) -> NSFont {
+        NSFont(systemNamed: weight.rawValue >= Weight.semibold.rawValue ? "Monospace-Bold" : "Monospace", size: size)
+    }
     /// AppKit's vertical metrics: from the installed face through the Qt text engine; without it, typical proportions
     /// (0.8 em above the baseline, 0.2 below).
     public var ascender: CGFloat { TextBackend.metrics(self)?.ascender ?? pointSize * 0.8 }
@@ -80,33 +86,53 @@ open class NSTextContainer {
     public var size: CGSize
     public var lineFragmentPadding: CGFloat = 5
     public var widthTracksTextView = false, heightTracksTextView = false
+    public weak var layoutManager: NSLayoutManager?
     public init(size: CGSize) { self.size = size }
+    /// Puts `manager` in the current one's place, with the same text (AppKit's way to swap in a subclass).
+    open func replaceLayoutManager(_ manager: NSLayoutManager) {
+        let old = layoutManager
+        old?.textStorage?.addLayoutManager(manager)
+        manager.addTextContainer(self)
+        layoutManager = manager
+        replacedManagers.append(manager)
+    }
+    /// The container keeps the managers it was given alive (AppKit's text storage owns them).
+    private var replacedManagers: [NSLayoutManager] = []
 }
 
-open class NSLayoutManager {
-    public weak var textStorage: NSTextStorage?
-    public private(set) var textContainers: [NSTextContainer] = []
+/// `@preconcurrency`: AppKit leaves text layout usable off the main thread (upstream builds PSD text layout there),
+/// while a main-actor subclass (upstream's SeeThroughSelectionLayout) must match its isolation.
+@preconcurrency @MainActor open class NSLayoutManager {
+    /// Fills a selection's background rects; the host's text editor draws selections through its own painter, so the
+    /// default only fills in the current graphics context (a subclass adjusts the color first, as upstream's does).
+    open func fillBackgroundRectArray(_ rectArray: UnsafePointer<CGRect>, count rectCount: Int, forCharacterRange charRange: NSRange,
+                                      color: NSColor) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        for index in 0..<rectCount { context.fill(rectArray[index]) }
+    }
+    nonisolated(unsafe) public weak var textStorage: NSTextStorage?
+    nonisolated(unsafe) public private(set) var textContainers: [NSTextContainer] = []
 
     public init() {}
 
-    open func addTextContainer(_ container: NSTextContainer) {
+    nonisolated open func addTextContainer(_ container: NSTextContainer) {
         textContainers.append(container)
     }
 
-    open func glyphRange(for container: NSTextContainer) -> NSRange {
+    nonisolated open func glyphRange(for container: NSTextContainer) -> NSRange {
         NSRange(location: 0, length: textStorage?.attributedString.length ?? 0)
     }
 
-    open var numberOfGlyphs: Int {
+    nonisolated open var numberOfGlyphs: Int {
         textStorage?.attributedString.length ?? 0
     }
 
-    open func ensureLayout(for container: NSTextContainer) {}
+    nonisolated open func ensureLayout(for container: NSTextContainer) {}
 
     /// The line a glyph sits on and its origin in that line, laid out exactly as `drawGlyphs` draws: fixed advances
     /// (0.55 em plus tracking), lines `minimumLineHeight` or 1.2 em apart, wrapping at the container's width, each
     /// glyph drawn in an em-tall box from the line's top — so its baseline is about 0.8 em down.
-    private func placement(ofGlyphAt index: Int) -> (line: Int, x: CGFloat, lineHeight: CGFloat, pointSize: CGFloat, width: CGFloat) {
+    nonisolated private func placement(ofGlyphAt index: Int) -> (line: Int, x: CGFloat, lineHeight: CGFloat, pointSize: CGFloat, width: CGFloat) {
         let attrString = textStorage?.attributedString ?? NSAttributedString(string: "")
         let attrs = attrString.length > 0 ? attrString.attributes(at: 0, effectiveRange: nil) : [:]
         let font = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
@@ -126,14 +152,14 @@ open class NSLayoutManager {
         return (line, x, lineHeight, pointSize, containerWidth)
     }
 
-    open func lineFragmentRect(forGlyphAt glyphIndex: Int, effectiveRange: UnsafeMutablePointer<NSRange>?) -> CGRect {
+    nonisolated open func lineFragmentRect(forGlyphAt glyphIndex: Int, effectiveRange: UnsafeMutablePointer<NSRange>?) -> CGRect {
         let p = placement(ofGlyphAt: glyphIndex)
         effectiveRange?.pointee = NSRange(location: 0, length: numberOfGlyphs)
         return CGRect(x: 0, y: CGFloat(p.line) * p.lineHeight, width: p.width == .greatestFiniteMagnitude ? 0 : p.width, height: p.lineHeight)
     }
 
     /// The glyph's origin (baseline) relative to its line fragment.
-    open func location(forGlyphAt glyphIndex: Int) -> CGPoint {
+    nonisolated open func location(forGlyphAt glyphIndex: Int) -> CGPoint {
         let p = placement(ofGlyphAt: glyphIndex)
         let attrString = textStorage?.attributedString ?? NSAttributedString(string: "")
         let attrs = attrString.length > 0 ? attrString.attributes(at: 0, effectiveRange: nil) : [:]
@@ -145,7 +171,7 @@ open class NSLayoutManager {
         return CGPoint(x: p.x, y: p.pointSize * 0.8)
     }
 
-    open func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+    nonisolated open func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         guard let storage = textStorage,
               let context = NSGraphicsContext.current?.cgContext else { return }
         let attrString = storage.attributedString
@@ -166,8 +192,13 @@ open class NSLayoutManager {
         // upstream's text layers draw (a flipped context, y growing down from the text's top-left).
         let wrapWidth = containerWidth >= 1e5 ? 0 : containerWidth
         let alignment: Int32 = paragraph?.alignment == .center ? 1 : paragraph?.alignment == .right ? 2 : 0
+        // Letters colored on their own (a foreground color run that differs from the first letter's).
+        var runs: [(NSRange, NSColor)] = []
+        attrString.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: attrString.length)) { value, range, _ in
+            if let runColor = value as? NSColor, runColor != color { runs.append((range, runColor)) }
+        }
         if let image = TextBackend.render(fullString, font: font, tracking: tracking, lineHeight: lineHeight, maxWidth: wrapWidth,
-                                          alignment: alignment, boxWidth: wrapWidth, color: color) {
+                                          alignment: alignment, boxWidth: wrapWidth, color: color, runs: runs) {
             let rect = CGRect(x: origin.x, y: origin.y, width: CGFloat(image.width), height: CGFloat(image.height))
             context.saveGState()
             // CGContext draws an image with its first row at the rect's max y; in this y-down space that is upside
@@ -189,8 +220,16 @@ open class NSLayoutManager {
         var currentY = origin.y
 
         let glyphTable = Self.lazyGlyphTable
+        // Each letter in its own color when the text has color runs (UTF-16 offsets, as NSAttributedString's).
+        var utf16Offset = 0
+        var shownColor = color
 
         for ch in fullString {
+            defer { utf16Offset += ch.utf16.count }
+            if !runs.isEmpty {
+                let letterColor = runs.first { NSLocationInRange(utf16Offset, $0.0) }?.1 ?? color
+                if letterColor != shownColor { shownColor = letterColor; context.setFillColor(letterColor.cgColor) }
+            }
             if ch == "\n" {
                 currentX = origin.x
                 currentY += lineHeight
@@ -238,7 +277,7 @@ open class NSLayoutManager {
         return []
     }()
 
-    private static func glyphBytes(for ch: Character, table: [UInt8]) -> [UInt8] {
+    nonisolated private static func glyphBytes(for ch: Character, table: [UInt8]) -> [UInt8] {
         guard let scalar = ch.unicodeScalars.first, scalar.isASCII else {
             return [0, 0, 0x1E, 0x12, 0x12, 0x12, 0x12, 0x12, 0x1E, 0, 0]
         }
@@ -300,7 +339,7 @@ extension NSString {
         return CGSize(width: w, height: h)
     }
 
-    public func draw(at point: CGPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
+    @MainActor public func draw(at point: CGPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let font = (attrs?[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
         let color = (attrs?[.foregroundColor] as? NSColor) ?? NSColor.black
@@ -320,7 +359,7 @@ extension String {
         (self as NSString).size(withAttributes: attrs)
     }
 
-    public func draw(at point: CGPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
+    @MainActor public func draw(at point: CGPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
         (self as NSString).draw(at: point, withAttributes: attrs)
     }
 }

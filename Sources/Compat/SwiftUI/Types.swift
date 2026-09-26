@@ -148,6 +148,8 @@ extension StyleToken {
     public func weight(_ weight: StyleToken) -> StyleToken { StyleToken("\(name)+weight:\(weight.name)") }
     public func bold() -> StyleToken { StyleToken("\(name)+bold") }
     public func monospacedDigit() -> StyleToken { StyleToken("\(name)+monospacedDigit") }
+    /// `Font.body.monospaced()`: the same style in the fixed-pitch design.
+    public func monospaced() -> StyleToken { StyleToken("\(name)+design:monospaced") }
     /// `Color`-shaped: `Color.black.opacity(0.35)` — a new color token, not the `View.opacity(_:)` modifier.
     public func opacity(_ value: Double) -> StyleToken { StyleToken("\(name)+opacity:\(value)") }
     public static func system(size: Double, weight: StyleToken = "regular") -> StyleToken {

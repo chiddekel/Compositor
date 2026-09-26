@@ -2183,6 +2183,11 @@ void SessionWindow::handleShellRequests() {
         const QString request = v.toString();
         if (request == QLatin1String("newCanvas")) newCanvasTab();
         else if (request == QLatin1String("open")) trigger("file.openProject");
+        else if (request.startsWith(QLatin1String("open:"))) {
+            // File > Open Recent: that project, no chooser.
+            const QString path = request.mid(5);
+            if (!loadProject(path)) QMessageBox::warning(this, tr("Open Recent"), tr("Could not open %1.").arg(QFileInfo(path).fileName()));
+        }
         else if (request == QLatin1String("save")) trigger("file.save");
         else if (request == QLatin1String("saveAs")) trigger("file.saveAs");
         else if (request == QLatin1String("exportPNG")) exportWithUpstream(false);
@@ -4357,7 +4362,22 @@ void SessionWindow::refreshTabTitle() {
 // IO milestone: Save project as .compositor package
 // (replaces macOS ProjectStore.save with FileWrapper/NSFileCoordinator).
 // Writes manifest.json + layer PNGs + mask PNGs into a directory.
+extern "C" void compositor_note_recent_project(const char *path);
+
+/// File > Open Recent: a project saved or opened goes to the top of upstream's list (RecentProjects.note).
 bool SessionWindow::saveProject(const QString &path) {
+    if (!writeProjectPackage(path)) return false;
+    compositor_note_recent_project(QFileInfo(path).absoluteFilePath().toUtf8().constData());
+    return true;
+}
+
+bool SessionWindow::loadProject(const QString &path) {
+    if (!readProjectPackage(path)) return false;
+    compositor_note_recent_project(QFileInfo(path).absoluteFilePath().toUtf8().constData());
+    return true;
+}
+
+bool SessionWindow::writeProjectPackage(const QString &path) {
     if (m_sessionHandle == 0) return false;
 
     // Export manifest JSON from Swift core
@@ -4436,7 +4456,7 @@ bool SessionWindow::saveProject(const QString &path) {
 
 // IO milestone: Load project from .compositor package
 // (replaces macOS ProjectStore.load with FileWrapper/NSFileCoordinator).
-bool SessionWindow::loadProject(const QString &path) {
+bool SessionWindow::readProjectPackage(const QString &path) {
     if (m_sessionHandle == 0) return false;
 
     QDir dir(path);

@@ -200,7 +200,10 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
     func canvasSize() async { request("canvasSize") }
     func imageSize() async { request("imageSize") }
     func trim() async { request("trim") }
-    @discardableResult func open(_ suppliedURL: URL? = nil) async -> Bool { request("open"); return true }
+    /// With a URL (File > Open Recent) that project opens directly; without one the shell asks for it.
+    @discardableResult func open(_ suppliedURL: URL? = nil) async -> Bool {
+        request(suppliedURL.map { "open:" + $0.path } ?? "open"); return true
+    }
     func newCanvas() async { request("newCanvas") }
     func close(_ window: NSWindow?) async { request("close") }
 }
@@ -216,4 +219,18 @@ nonisolated public func compositorTakeShellRequests(_ output: UnsafeMutablePoint
         ShellProjects.pending = []
         return Int64(data.count)
     }
+}
+
+/// A project the shell saved or opened: upstream's recent list (RecentProjects, which File > Open Recent shows).
+@_cdecl("compositor_note_recent_project")
+nonisolated public func compositorNoteRecentProject(_ path: UnsafePointer<CChar>?) {
+    guard let path else { return }
+    let url = URL(fileURLWithPath: String(cString: path))
+    onMain { RecentProjects.shared.note(url) }
+}
+
+/// The app came to the front (a window was activated): as NSApplication posts it — upstream re-checks its recent list.
+@_cdecl("compositor_app_did_become_active")
+nonisolated public func compositorAppDidBecomeActive() {
+    onMain { Foundation.NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil) }
 }

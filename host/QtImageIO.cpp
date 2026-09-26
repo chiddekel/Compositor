@@ -294,6 +294,11 @@ QFont fontFor(const char *name, double pixelSize) {
     if (dash > 0) { face = family.mid(dash + 1).toLower(); family = family.left(dash); }
     if (family.isEmpty() || family == QLatin1String("System") || family.startsWith('.')) family = QStringLiteral("Sans Serif");
     QFont font(family);
+    // NSFont.monospacedSystemFont: the desktop's fixed-pitch face.
+    if (family == QLatin1String("Monospace")) {
+        font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        font.setStyleHint(QFont::Monospace);
+    }
     font.setPixelSize(std::max(1, int(std::lround(pixelSize))));
     if (face.contains(QLatin1String("black")) || face.contains(QLatin1String("heavy"))) font.setWeight(QFont::Black);
     else if (face.contains(QLatin1String("bold"))) font.setWeight(QFont::Bold);
@@ -311,16 +316,33 @@ struct TextLines {
 
 // Lays the text out as AppKit does with a fixed line height (min = max): each line `lineHeight` tall, its baseline
 // `lineHeight - descent` down, wrapping at `maxWidth` when positive; tracking is extra space after every character.
-TextLines layOut(const char *utf8, const char *fontName, double pixelSize, double tracking, double lineHeight, double maxWidth) {
+// A color over part of the text: UTF-16 offsets into the whole string, premultiplied-free RGBA 0...1.
+struct ColorRun { int start, length; QColor color; };
+
+TextLines layOut(const char *utf8, const char *fontName, double pixelSize, double tracking, double lineHeight, double maxWidth,
+                 const std::vector<ColorRun> &runs = {}) {
     TextLines out;
     const QFont font = [&] { QFont f = fontFor(fontName, pixelSize); f.setLetterSpacing(QFont::AbsoluteSpacing, tracking); return f; }();
     const QFontMetricsF metrics(font);
     out.lineHeight = lineHeight > 0 ? lineHeight : pixelSize * 1.2;
     out.baseline = out.lineHeight - metrics.descent();
     const QStringList paragraphs = QString::fromUtf8(utf8 ? utf8 : "").split('\n');
-    int lines = 0;
+    int lines = 0, paragraphStart = 0;
     for (const QString &text : paragraphs) {
         auto layout = std::make_unique<QTextLayout>(text, font);
+        // Letters colored on their own (upstream's selected-letter colors): each run's part within this paragraph.
+        QList<QTextLayout::FormatRange> formats;
+        for (const ColorRun &run : runs) {
+            const int from = std::max(run.start, paragraphStart), to = std::min(run.start + run.length, paragraphStart + int(text.size()));
+            if (to <= from) continue;
+            QTextLayout::FormatRange range;
+            range.start = from - paragraphStart;
+            range.length = to - from;
+            range.format.setForeground(run.color);
+            formats << range;
+        }
+        if (!formats.isEmpty()) layout->setFormats(formats);
+        paragraphStart += int(text.size()) + 1;
         QTextOption option;
         option.setWrapMode(maxWidth > 0 ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
         layout->setTextOption(option);
@@ -351,11 +373,22 @@ int32_t textLayout(const char *text, const char *fontName, double pixelSize, dou
 }
 
 // Draws the laid-out text, premultiplied RGBA8, `boxWidth` wide (alignment within it) — malloc'd, the caller frees.
+int32_t textRenderRuns(const char *text, const char *fontName, double pixelSize, double tracking, double lineHeight,
+                       double maxWidth, int32_t alignment, double boxWidth, double r, double g, double b, double a,
+                       const std::vector<ColorRun> &runs, uint8_t **pixels, int32_t *outWidth, int32_t *outHeight);
+
 int32_t textRender(const char *text, const char *fontName, double pixelSize, double tracking, double lineHeight,
                    double maxWidth, int32_t alignment, double boxWidth, double r, double g, double b, double a,
                    uint8_t **pixels, int32_t *outWidth, int32_t *outHeight) {
+    return textRenderRuns(text, fontName, pixelSize, tracking, lineHeight, maxWidth, alignment, boxWidth, r, g, b, a, {},
+                          pixels, outWidth, outHeight);
+}
+
+int32_t textRenderRuns(const char *text, const char *fontName, double pixelSize, double tracking, double lineHeight,
+                       double maxWidth, int32_t alignment, double boxWidth, double r, double g, double b, double a,
+                       const std::vector<ColorRun> &runs, uint8_t **pixels, int32_t *outWidth, int32_t *outHeight) {
     if (!qGuiApp || !pixels || !outWidth || !outHeight) return -2;
-    const TextLines lines = layOut(text, fontName, pixelSize, tracking, lineHeight, maxWidth);
+    const TextLines lines = layOut(text, fontName, pixelSize, tracking, lineHeight, maxWidth, runs);
     const double width = std::max(boxWidth, lines.width);
     const int w = std::max(1, int(std::ceil(width))), h = std::max(1, int(std::ceil(lines.height)));
     if (qint64(w) * h > 200000000) return -1;
@@ -419,6 +452,7 @@ extern "C" int64_t compositor_qt_font_names(char *out, size_t capacity) {
 extern "C" int32_t compositor_qt_svg_render(const uint8_t *data, size_t length, int32_t width, int32_t height, uint8_t **out,
                                            int32_t *declaredWidth, int32_t *declaredHeight) {
     if (!data || !length) return -1;
+    if (!qGuiApp) return -5;   // SVG text needs fonts, and fonts a QGuiApplication
     QByteArray bytes = QByteArray::fromRawData(reinterpret_cast<const char *>(data), static_cast<qsizetype>(length));
     QBuffer buffer(&bytes);
     buffer.open(QIODevice::ReadOnly);
@@ -441,11 +475,27 @@ extern "C" int32_t compositor_qt_svg_render(const uint8_t *data, size_t length, 
 
 // The font's vertical metrics in points (NSFont's ascender, descender — negative, below the baseline — and leading).
 extern "C" int compositor_qt_font_metrics(const char *name, double pointSize, double *ascent, double *descent, double *leading) {
+    if (!qGuiApp) return 0;   // fonts need a QGuiApplication (bare test processes have none): the caller's estimate stands
     const QFontMetricsF metrics(fontFor(name, pointSize));
     if (ascent) *ascent = metrics.ascent();
     if (descent) *descent = -metrics.descent();
     if (leading) *leading = metrics.leading();
     return 1;
+}
+
+// textRender with letters colored on their own: `runs` holds `runCount` groups of (start, length, r, g, b, a), UTF-16
+// offsets into the whole text; letters outside every run take (r, g, b, a).
+extern "C" int32_t compositor_qt_text_render_runs(const char *text, const char *fontName, double pixelSize, double tracking,
+                                                 double lineHeight, double maxWidth, int32_t alignment, double boxWidth,
+                                                 double r, double g, double b, double a, const double *runs, int32_t runCount,
+                                                 uint8_t **pixels, int32_t *outWidth, int32_t *outHeight) {
+    std::vector<ColorRun> list;
+    for (int32_t i = 0; runs && i < runCount; ++i) {
+        const double *run = runs + i * 6;
+        list.push_back({int(run[0]), int(run[1]), QColor::fromRgbF(float(run[2]), float(run[3]), float(run[4]), float(run[5]))});
+    }
+    return textRenderRuns(text, fontName, pixelSize, tracking, lineHeight, maxWidth, alignment, boxWidth, r, g, b, a, list,
+                          pixels, outWidth, outHeight);
 }
 
 extern "C" int compositor_qt_text_functions(CompositorTextLayoutFn *layout, CompositorTextRenderFn *render) {

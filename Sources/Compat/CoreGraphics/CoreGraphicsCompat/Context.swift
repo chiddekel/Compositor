@@ -181,6 +181,8 @@ public final class CGContext: @unchecked Sendable {
         canvas?.setBlendMode(mode.rawValue)
     }
 
+    /// Where the next text drawn (CTLineDraw) puts its baseline origin, in user space.
+    public var textPosition: CGPoint = .zero
     public var interpolationQuality: CGInterpolationQuality {
         get { state.interpolationQuality }
         set {
