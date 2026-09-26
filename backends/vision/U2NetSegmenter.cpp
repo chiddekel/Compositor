@@ -2,7 +2,7 @@
 //
 // Preprocessing and postprocessing follow the model's reference (xuebinqin/U-2-Net, as rembg runs it): RGB resized to
 // 320x320, scaled by the image's maximum, normalized with ImageNet mean/std; the first output (d1, the fused map) is
-// min-max normalized to 0...1 and resized back. Subjects are the connected regions of the map at 0.5, largest first,
+// min-max normalized to 0...1, resized back, and its edge band tightened to Vision's. Subjects are the connected regions of the map at 0.5, largest first,
 // small specks dropped — the per-object instances Apple's model reports.
 #include "CompositorVision.h"
 
@@ -68,8 +68,13 @@ extern "C" int32_t compositor_u2net_segment(const uint8_t *rgba, int32_t width, 
         cv::Mat normalized = (map - lo) / std::max(1e-6, hi - lo);
         cv::Mat full;
         cv::resize(normalized, full, cv::Size(width, height), 0, 0, cv::INTER_LINEAR);
+        // The model's transition band is wider than Apple Vision's edge (a halo of background shows through a cut-out):
+        // a smoothstep over 0.25...0.75 keeps the edge antialiased but as tight as Vision's.
         cv::Mat soft(height, width, CV_32F, confidence);
-        cv::min(cv::max(full, 0.0), 1.0, soft);
+        cv::Mat t = (full - 0.25) / 0.5;
+        cv::min(cv::max(t, 0.0), 1.0, t);
+        cv::Mat squared = t.mul(t);
+        soft = squared.mul(3.0 - 2.0 * t);
 
         cv::Mat binary;
         cv::threshold(soft, binary, 0.5, 255, cv::THRESH_BINARY);

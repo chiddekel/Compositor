@@ -228,7 +228,7 @@ nonisolated public func compositorSessionDispatchSwiftUIAction(_ handle: UInt64,
 /// Panels whose observed state changed since they were last resolved (withObservationTracking's onChange, which may
 /// fire on any thread).
 enum DirtyPanels {
-    struct Key: Hashable, Sendable { let entry: ObjectIdentifier; let panel: String }
+    nonisolated struct Key: Hashable, Sendable { let entry: ObjectIdentifier; let panel: String }
     nonisolated(unsafe) private static var dirty: Set<Key> = []
     private static let lock = NSLock()
     static func mark(_ key: Key) { lock.lock(); dirty.insert(key); lock.unlock() }

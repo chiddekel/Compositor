@@ -23,6 +23,8 @@ let opencvPrefix: String? = ["\(packageRoot)/build/opencv/install", "/app"].firs
 let opencvLibrary: String? = opencvPrefix.flatMap { prefix in
     ["lib64", "lib"].map { "\(prefix)/\($0)" }.first { FileManager.default.fileExists(atPath: "\($0)/libopencv_core.a") }
 }
+// (SwiftPM caches this manifest's evaluation by its content: after building OpenCV locally, build once with
+// `--manifest-cache none` so these file checks run again.)
 // OpenCV's DNN module (same prefix, when the build enabled it — scripts/build-opencv.sh, the manifest's `opencv`): runs
 // U²-Net-small for the Vision compat's subject segmentation (backends/vision).
 let opencvHasDNN: Bool = opencvPrefix.map { prefix in

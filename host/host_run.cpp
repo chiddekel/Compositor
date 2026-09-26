@@ -492,6 +492,12 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
             }
         }
+        // COMPOSITOR_GRAB_WAIT_MS=<ms>: let background work the menu items started (a subject model's inference) finish.
+        if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_WAIT_MS")) {
+            QElapsedTimer wait; wait.start();
+            while (wait.elapsed() < qEnvironmentVariable("COMPOSITOR_GRAB_WAIT_MS").toInt())
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
         // COMPOSITOR_GRAB_CLIPBOARD_REPORT=1: what the desktop clipboard holds now (after the menu items above).
         if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_CLIPBOARD_REPORT")) {
             const QMimeData *mime = QApplication::clipboard()->mimeData();

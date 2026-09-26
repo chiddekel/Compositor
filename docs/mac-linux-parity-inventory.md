@@ -16,7 +16,7 @@ Evidence: 378 tests green (upstream `CompositorTests` compiled unmodified except
 | Move / Transform | auto-select, show controls, X/Y/W/H/link/scale/angle, handles, rotate, distort (Ctrl) | ✅ | TransformTests, DistortTests, smoke |
 | Marquee | rectangle / ellipse; new / add / subtract; expand, contract, feather | ✅ | SelectionEditTests, SelectionFeatherTests |
 | Lasso | freehand / polygonal; anti-alias | ✅ | SelectionEditTests |
-| Magic (wand / object) | tolerance, contiguous, subject | 🟡 | MagicWandTests ✅; *object/subject* uses a classical segmenter, not Apple Vision's model |
+| Magic (wand / object) | tolerance, contiguous, subject | ✅ | MagicWandTests; *object/subject* through U²-Net-small behind the Vision API |
 | Crop | ratio, apply/cancel, oversized layers | ✅ | CropTests, CropToCanvasImportTests |
 | Brush | paint / erase, size, hardness, opacity, smoothing, colour | ✅ | BrushTests (19), BrushIntersectionTests |
 | Spot Healing | modes | ✅ | SpotHealingTests |
@@ -51,13 +51,13 @@ Evidence: 378 tests green (upstream `CompositorTests` compiled unmodified except
 | Gaussian Blur, Motion Blur, Add Noise, Vignette, Bloom/Glow, Tonal Contrast, Lens Correction, Grain, Exposure, Gradient Map, Black & White, Color Balance, Curves, Levels, Hue/Saturation, Invert | ✅ (FilterTests, FinishingFilterTests, ImageAdjustmentTests, HueSaturationTests; CoreImage graph evaluated on CPU) |
 | Camera Raw Filter (light, colour, detail, optics, geometry, calibration) | ✅ (CameraRawTests 20) — sliders are SwiftUI sliders (CameraRawSliderTests excluded) |
 | Content-Aware Fill | ✅ (C kernel) |
-| Remove Background | 🟡 classical segmentation instead of Apple Vision's subject model — results differ on photos |
+| Remove Background | ✅ U²-Net-small (Apache-2.0) behind the Vision API, soft edges like Vision's |
 
 ## 4. Selection menu
 
 All, Deselect, Inverse, Layer's Pixels, Mask's Black Areas, Expand/Contract/Feather, Copy/Cut/Paste, Copy Merged,
 Clear, Fill with Foreground/Background — ✅ (SelectionClipboardTests, SelectionEditTests).
-Subject — 🟡 (see Magic tool).
+Subject — ✅ (U²-Net-small).
 
 ## 5. Image menu
 
@@ -103,7 +103,7 @@ metrics (GuideTests excluded).
 | Trackpad pinch to zoom (`magnify(with:)`) | ✅ | ✅ Qt zoom gesture → upstream `CanvasView.magnify(with:)` |
 | New canvas from clipboard size (`NewCanvasSheet.clipboardDimensions`) | ✅ | ✅ |
 | GPU canvas compositing | Metal | 🟡 Skia raster (Vulkan device set up, rendering falls back) — correct, slower on huge documents |
-| Subject / Remove Background model | Vision | 🟡 classical segmenter |
+| Subject / Remove Background model | Vision | ✅ U²-Net-small through OpenCV DNN |
 | Window chrome | native title bar | 🟡 drawn traffic lights + header by the Qt shell |
 | Services, Quick Look, Dock menu | ✅ | n/a |
 
@@ -114,5 +114,5 @@ metrics (GuideTests excluded).
 3. ~~New canvas from clipboard size~~ — done.
 4. ~~Keyboard Shortcuts recorder parity~~ — done.
 5. ~~Recent documents~~ — covered by the file-chooser portal (sandbox).
-6. Subject / Remove Background quality (model-backed segmentation behind the Vision API).
+6. ~~Subject / Remove Background model~~ — done (U²-Net-small).
 7. GPU compositing through Skia-Vulkan.
