@@ -150,4 +150,40 @@ final class GaussianRasterTests: XCTestCase {
             }
         }
     }
+
+    func testLargeKernelMatchesScalarAcrossFFTBlocksAndRegionalFallback() {
+        // Non-power-of-two sizes cross overlap-save blocks in both directions.
+        // Narrow rasters also exercise a mixture of FFT and direct passes.
+        for (width, height) in [(513, 277), (3, 513), (513, 3)] {
+            var input = Raster(rect: CGRect(x: -7, y: 11, width: width, height: height))
+            for i in input.data.indices { input.data[i] = Float((i * 37 + 19) % 251) / 251 }
+            for sigma in [16.0, 25.6, 80.0] {
+                let radius = Int(ceil(sigma * 3))
+                var kernel = (-radius...radius).map { Float(exp(-Double($0 * $0) / (2 * sigma * sigma))) }
+                let total = kernel.reduce(0, +)
+                kernel = kernel.map { $0 / total }
+                var horizontal = input.data.map { _ in Float(0) }
+                var expected = horizontal
+                for y in 0..<height { for x in 0..<width {
+                    for k in max(-radius, -x)...min(radius, width - x - 1) { for c in 0..<4 {
+                        horizontal[(y * width + x) * 4 + c] += input.data[(y * width + x + k) * 4 + c] * kernel[k + radius]
+                    } }
+                } }
+                for y in 0..<height { for x in 0..<width {
+                    for k in max(-radius, -y)...min(radius, height - y - 1) { for c in 0..<4 {
+                        expected[(y * width + x) * 4 + c] += horizontal[((y + k) * width + x) * 4 + c] * kernel[k + radius]
+                    } }
+                } }
+                let reference = Raster(rect: input.rect, data: expected)
+                for region in [input.rect, input.rect.insetBy(dx: -2, dy: -3),
+                               CGRect(x: 243, y: 250, width: 64, height: 64),
+                               CGRect(x: 4, y: 12, width: 300, height: 260)] {
+                    let actual = RasterFilters.gaussian(input, sigma: sigma, output: region)
+                    let wanted = reference.cropped(to: region)
+                    let error = zip(actual.data, wanted.data).map { abs($0 - $1) }.max() ?? 0
+                    XCTAssertLessThan(error, 0.000002, "size=\(width)x\(height), sigma=\(sigma), region=\(region)")
+                }
+            }
+        }
+    }
 }

@@ -407,55 +407,102 @@ def idle(app):
 
 
 def motion_blur_adjustment(app):
+    blur_adjustment(app, motion=True)
+
+
+def gaussian_blur_adjustment(app):
+    blur_adjustment(app, motion=False)
+
+
+def blur_adjustment(app, motion):
+    title = "Motion Blur" if motion else "Gaussian Blur"
+    prefix = "motion" if motion else "gaussian"
     before = Image.new("RGBA", (1920, 1080), "white")
     ImageDraw.Draw(before).rectangle((750, 350, 1169, 729), fill="black")
-    path = app.artifacts / "motion-fixture.png"
+    path = app.artifacts / (prefix + "-fixture.png")
     before.save(path)
     app.click(app.widget(text="Import image", kind="button"))
     app.field(str(path), name="fileNameEdit", commit=False)
     app.desktop.key("Return")
-    app.wait(lambda s: s["state"].get("width") == 1920 and not s["state"]["busy"], "motion fixture")
+    app.wait(lambda s: s["state"].get("width") == 1920 and not s["state"]["busy"], prefix + " fixture")
     button = app.wait(lambda s: next((w for w in s["widgets"] if w.get("help") == "New adjustment layer"), None),
                       "adjustment menu button")
     app.click(button)
     menu = app.wait(lambda s: next((w for w in s["widgets"] if w["class"] == "QMenu"), None), "adjustment menu")
     app.desktop.focus(menu["windowID"])
-    for _ in range(9):  # First Down selects the first item; Motion Blur is ninth.
+    for _ in range(9 if motion else 8):  # First Down selects the first item.
         app.desktop.key("Down")
     start = time.monotonic()
     app.desktop.key("Return")
-    snapshot = app.wait(lambda s: s if any(p["title"] == "Motion Blur" for p in s["state"]["floatingPanels"]) else None,
-                        "Motion Blur editor", timeout=15)
+    snapshot = app.wait(lambda s: s if any(p["title"] == title for p in s["state"]["floatingPanels"]) else None,
+                        title + " editor", timeout=15)
     elapsed = (time.monotonic() - start) * 1000
-    (app.artifacts / "motion-latency.json").write_text(json.dumps({"open_ms": elapsed, "limit_ms": 1500}, indent=2))
-    assert elapsed < 1500, f"Adding Motion Blur blocked the desktop for {elapsed:.0f} ms"
+    (app.artifacts / (prefix + "-latency.json")).write_text(json.dumps({"open_ms": elapsed, "limit_ms": 1500}, indent=2))
+    assert elapsed < 1500, f"Adding {title} blocked the desktop for {elapsed:.0f} ms"
     assert len(snapshot["state"]["layers"]) == 2
-    initial = app.image("motion-default")
-    assert initial.tobytes() != before.tobytes(), "Motion Blur produced no changed pixels"
-    assert initial.getpixel((748, 540))[0] < 255, "Default motion streak did not spread horizontally"
-    assert initial.getpixel((960, 340)) == before.getpixel((960, 340)), "Horizontal motion spread vertically"
+    initial = app.image(prefix + "-default")
+    assert initial.tobytes() != before.tobytes(), title + " produced no changed pixels"
+    assert initial.getpixel((748, 540))[0] < 255, title + " did not spread horizontally"
+    if motion:
+        assert initial.getpixel((960, 340)) == before.getpixel((960, 340)), "Horizontal motion spread vertically"
+    else:
+        assert initial.getpixel((960, 348))[0] < 255, "Gaussian Blur did not spread vertically"
     panel = "floatingPanel.FilterSheet"
-    app.field(60, label="Distance", ancestor=panel, commit=False)
+    field = app.widget(kind="field", label="Distance" if motion else "Radius", ancestor=panel)
+    snapshot = app.inspect()
+    slider = next(w for w in snapshot["widgets"] if w["class"] == "QSlider"
+                  and panel in w["ancestors"] and abs(w["rect"][1] - field["rect"][1]) < 10)
+    x, y, width, height = slider["rect"]
+    lower, upper = (1, 2000) if motion else (0.1, 250)
+    fraction = math.log(float(field["text"]) / lower) / math.log(upper / lower)
+    handle = x + 7 + (width - 14) * fraction
+    baseline_path = app.request("capture", name=prefix + "-before-drag.png")["path"]
+    app.desktop.focus(slider["windowID"])
+    app.desktop.move(handle, y + height / 2)
+    app.desktop.button(True)
+    try:
+        for step in range(1, 5):
+            app.desktop.move(min(x + width - 7, handle + step * 8), y + height / 2)
+            time.sleep(.04)
+        # An inspection can overtake the slider's 16 ms coalescing timer. Let
+        # the final queued value dispatch while the mouse is still held.
+        app.inspect()
+        time.sleep(.1)
+        live = app.image(prefix + "-drag-live")
+        live_path = app.request("capture", name=prefix + "-during-drag.png")["path"]
+        assert live.tobytes() != initial.tobytes(), title + " slider did not update during the drag"
+        cx, cy, sx, sy = snapshot["canvasMapping"]
+        patch = (round(cx + 725 * sx), round(cy + 500 * sy),
+                 round(cx + 790 * sx), round(cy + 570 * sy))
+        before_patch = Image.open(baseline_path).convert("RGB").crop(patch)
+        live_patch = Image.open(live_path).convert("RGB").crop(patch)
+        assert ImageChops.difference(before_patch, live_patch).getbbox(), title + " canvas froze during the drag"
+    finally:
+        app.desktop.button(False)
+    assert app.image(prefix + "-drag-released").tobytes() == live.tobytes(), "Release lost the final slider value"
+    app.field(60 if motion else 25.6, label="Distance" if motion else "Radius", ancestor=panel, commit=False)
     app.desktop.key("Tab")
-    app.field(45, label="Angle", ancestor=panel, commit=False)
-    app.desktop.key("Tab")
-    changed_image = app.image("motion-diagonal")
-    assert changed_image.tobytes() != initial.tobytes(), "Motion Blur settings did not affect the preview"
+    if motion:
+        app.field(45, label="Angle", ancestor=panel, commit=False)
+        app.desktop.key("Tab")
+    changed_image = app.image(prefix + "-diagonal")
+    assert changed_image.tobytes() != initial.tobytes(), title + " settings did not affect the preview"
     app.click(app.widget(text="Preview", kind="button", ancestor=panel))
-    assert app.image("motion-preview-off").tobytes() == initial.tobytes(), "Preview off did not restore the original adjustment"
+    assert app.image(prefix + "-preview-off").tobytes() == initial.tobytes(), "Preview off did not restore the original adjustment"
     app.click(app.widget(text="Preview", kind="button", ancestor=panel))
-    assert app.image("motion-preview-on").tobytes() == changed_image.tobytes(), "Preview on did not restore edited pixels"
+    assert app.image(prefix + "-preview-on").tobytes() == changed_image.tobytes(), "Preview on did not restore edited pixels"
     app.click(app.widget(text="OK", kind="button", ancestor=panel))
-    app.wait(lambda s: not s["state"]["floatingPanels"] and not s["state"]["busy"], "motion commit")
-    assert app.image("motion-committed").tobytes() == changed_image.tobytes()
+    app.wait(lambda s: not s["state"]["floatingPanels"] and not s["state"]["busy"], prefix + " commit")
+    assert app.image(prefix + "-committed").tobytes() == changed_image.tobytes()
     # Xvfb has no window manager to return keyboard focus after the floating panel closes.
     app.desktop.focus(app.inspect()["windowID"])
-    undo_pixels(app, initial, "motion-undo-settings")
-    undo_pixels(app, before, "motion-undo-add")
+    undo_pixels(app, initial, prefix + "-undo-settings")
+    undo_pixels(app, before, prefix + "-undo-add")
 
 
 TOOL_CASES = {
     "effect_motion_blur": motion_blur_adjustment,
+    "effect_gaussian_blur": gaussian_blur_adjustment,
     "tool_inventory_tooltips": inventory_and_tooltips,
     "tool_move": move,
     "tool_crop": crop,

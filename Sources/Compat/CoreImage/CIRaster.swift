@@ -112,8 +112,13 @@ enum RasterFilters {
         let ow = Int(visible.width), oh = Int(visible.height)
         let firstRow = max(0, y0 - radius), lastRow = min(h, y0 + oh + radius)
         let rowsNeeded = lastRow - firstRow
+        // Large finite kernels are cheaper in frequency space. Small regions
+        // (including brush tiles) keep the direct convolution to avoid FFT setup.
+        let plan = radius >= 48 && max(ow, oh) >= 256
+            ? kernel.withUnsafeBufferPointer { compositor_gaussian_plan($0.baseAddress!, radius) } : nil
+        defer { compositor_gaussian_plan_free(plan) }
         // Only horizontal results feeding the requested output are needed. The vertical pass
-        // reads this narrow strip plus its halo, preserving the full convolution's summation order.
+        // reads this narrow strip plus its halo, with the same finite-kernel support as a full render.
         var tmp = [Float](repeating: 0, count: ow * rowsNeeded * 4)
         var out = Raster(rect: visible)
         func rows(_ count: Int, _ body: @escaping (Int) -> Void) {
@@ -128,6 +133,9 @@ enum RasterFilters {
                 tmp.withUnsafeMutableBufferPointer { temporary in
                     let src = source.baseAddress!, dst = temporary.baseAddress!
                     rows(rowsNeeded) { row in
+                        if let plan, ow >= 256,
+                           compositor_gaussian_fft(plan, src + (firstRow + row) * w * 4,
+                               w, 4, x0, ow, dst + row * ow * 4, 4) != 0 { return }
                         compositor_gaussian_horizontal(src + (firstRow + row) * w * 4,
                             w, x0, ow, weights, radius, dst + row * ow * 4)
                     }
@@ -136,6 +144,25 @@ enum RasterFilters {
             tmp.withUnsafeBufferPointer { temporary in
                 out.data.withUnsafeMutableBufferPointer { destination in
                     let src = temporary.baseAddress!, dst = destination.baseAddress!
+                    if let plan, oh >= 256 {
+                        rows(ow) { x in
+                            if compositor_gaussian_fft(plan, src + x * 4, rowsNeeded, ow * 4,
+                                y0 - firstRow, oh, dst + x * 4, ow * 4) != 0 { return }
+                            // Allocation failure keeps the direct implementation available.
+                            for row in 0..<oh {
+                                let y = y0 + row
+                                let lo = max(-radius, -y), hi = min(radius, h - y - 1)
+                                for c in 0..<4 {
+                                    var sum: Float = 0
+                                    for k in lo...hi {
+                                        sum += src[((y + k - firstRow) * ow + x) * 4 + c] * weights[k + radius]
+                                    }
+                                    dst[(row * ow + x) * 4 + c] = sum
+                                }
+                            }
+                        }
+                        return
+                    }
                     rows(oh) { row in
                         let y = y0 + row
                         let lo = max(-radius, -y), hi = min(radius, h - y - 1)

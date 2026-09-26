@@ -134,8 +134,8 @@ fractional radii, diagonal/negative angles, single-pixel images, and transparent
 - Default full-HD kernel measurements were approximately 19–20 ms in the focused
   regression run (`/tmp/compositor-motion-tests.log`). This excludes UI and composition.
 
-The earlier 52-check desktop result above predates this additional case. The default
-suite now includes 53 checks; this follow-up ran the new desktop case and the full Swift
+The earlier 52-check desktop result above predates this additional case. This follow-up
+added the 53rd check and ran the new desktop case and the full Swift
 suite, rather than claiming a new full-desktop-suite result.
 
 Flatpak packaging now uses `com.compositor.Client`: manifest, desktop entry, icons,
@@ -143,3 +143,48 @@ AppStream component/launchable, host desktop identity, scripts, CI, and document
 use the new name. `flatpak-builder --show-manifest`, `desktop-file-validate`, and offline
 AppStream validation passed. This source rename does not migrate an existing installed
 Flatpak's application data or install a new Flatpak package.
+
+## Whole-image blur performance follow-up, September 27, 2026
+
+Large Gaussian kernels now use overlap-save FFT convolution of the same finite,
+normalized kernel. Small kernels and brush tiles retain direct convolution. The native
+direct kernels select AVX2 on supported x86 CPUs and retain a portable fallback.
+Motion Blur checks its sampling footprint once per row and processes eight interior
+pixels together, retaining the bilinear interpolation and accumulation order. Filter
+slider drags defer layer-thumbnail and tool-panel refreshes until release.
+
+A paired native-desktop measurement on the Ryzen 5 7430U used the same 1920 × 1080
+white image with a black rectangle. Times start before clicking OK and end when the
+editor closes; they include driver polling, panel refreshes, and the full composite.
+
+| Adjustment | Before | After |
+| --- | ---: | ---: |
+| Gaussian Blur, radius 50 | 953 ms | 399 ms |
+| Motion Blur, distance 240, angle 0° | 579 ms | 330 ms |
+
+Artifacts: `/tmp/compositor-blur-baseline-{gaussian,motion}-3` and
+`/tmp/compositor-blur-optimized-{gaussian,motion}`. Each contains `performance.json`
+and exported images at multiple blur amounts. Motion outputs match byte for byte;
+Gaussian output differs by at most one 8-bit level at radius 50. Independent scalar
+oracles cover transparent borders, fractional radii, FFT block boundaries, narrow
+images, and regional rendering, with a maximum allowed float-channel error of 0.000002.
+
+These are operation timings for this workload, not a sustained 25 fps claim. The
+desktop tests check visible canvas changes while a slider is held and preserve the
+final value on release, Preview off/on, Apply, and Undo. They do not measure continuous
+frame rate. Full-resolution filter preview and destructive Apply/Undo are also covered
+by `UpstreamEditorTests.blurPreviewAndApplyAtFullHD`.
+
+Validation for this follow-up:
+
+- **503 regression tests passed**: 109 XCTest and 394 Swift Testing tests in
+  `/tmp/compositor-blur-full-tests-verified.log`. The full-HD destructive filter
+  tests measured Apply plus compositing at 105 ms for Gaussian radius 25.6 and
+  90 ms for Motion distance 120 at 45°; these exclude the desktop shell.
+- `effect_motion_blur` and `effect_gaussian_blur` pass in
+  `/tmp/compositor-blur-desktop-final-2` (editor openings 585 ms and 599 ms).
+- `smear_feedback_blur` passes in `/tmp/compositor-blur-smear-regression`, including
+  all five visible-feedback samples at 60–63 ms against the existing 100 ms budget.
+- `git diff --check` and `bash scripts/check-upstream-clean.sh` pass.
+- The default desktop suite now contains 54 cases; only the affected journeys were
+  rerun for this follow-up, not the entire desktop suite.

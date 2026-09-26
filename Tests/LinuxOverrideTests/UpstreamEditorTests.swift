@@ -248,6 +248,27 @@ struct UpstreamEditorTests {
         e.session.cancelLevels()
     }
 
+    @Test(arguments: [FilterKind.gaussianBlur, .motionBlur])
+    func blurPreviewAndApplyAtFullHD(kind: FilterKind) async throws {
+        let e = loaded(1920, 1080)
+        let original = try e.renderRGBA().bytes
+        let start = ContinuousClock.now
+        #expect(await send(e, cmd("filterBegin", #""kind":"\#(kind.rawValue)","parameters":{"radius":25.6,"distance":120,"angle":45}"#)) == [0])
+        // Opening starts the default preview; changed settings can queue its successor.
+        while let task = e.session.filterEdit?.previewTask { await task.value }
+        let preview = try e.renderRGBA()
+        #expect(preview.bytes.count == original.count && preview.bytes != original)
+        print("BLUR \(kind.rawValue) 1920x1080 preview: \(ContinuousClock.now - start)")
+        let applyStart = ContinuousClock.now
+        #expect(await send(e, cmd("filterCommit")) == [0])
+        let committed = try e.renderRGBA()
+        print("BLUR \(kind.rawValue) 1920x1080 apply and composite: \(ContinuousClock.now - applyStart)")
+        #expect(committed.bytes.count == original.count && committed.bytes != original)
+        #expect(e.session.filterEdit == nil)
+        #expect(await send(e, cmd("undo")) == [0])
+        #expect(try e.renderRGBA().bytes == original, "Applying the optimized blur must remain fully undoable")
+    }
+
     @Test func projectManifestRoundTripsThroughLayerPixels() async throws {
         let a = loaded()
         await send(a, cmd("addRevealMask"), cmd("addLayer"))

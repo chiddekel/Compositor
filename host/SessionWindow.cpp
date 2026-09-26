@@ -3611,6 +3611,9 @@ void SessionWindow::refreshImage() {
 /// The panels that follow the session (status bar, tool options, layers). Mid-drag on the canvas they catch up at most
 /// every 50 ms (the release brings them up to date), so a drag costs the canvas and not a rebuild of every panel.
 void SessionWindow::refreshPanels() {
+    // Filter sliders already refresh their own controls and the canvas. The
+    // layer thumbnails and tool panels catch up when the slider is released.
+    if (filterSliderIsDown()) return;
     if (m_upstreamCanvasDrag) {
         if (!m_panelThrottle) {
             m_panelThrottle = new QTimer(this);
@@ -3656,6 +3659,14 @@ void SessionWindow::queueLayersRefresh() {
     if (m_layersRefreshQueued) return;
     m_layersRefreshQueued = true;
     QMetaObject::invokeMethod(this, [this] { if (m_layersRefreshQueued) refreshLayers(); }, Qt::QueuedConnection);
+}
+
+bool SessionWindow::filterSliderIsDown() const {
+    const auto panel = m_floatingPanels.constFind(QStringLiteral("FilterSheet"));
+    if (panel == m_floatingPanels.cend() || !panel->window || !panel->content) return false;
+    for (QSlider *slider : panel->content->findChildren<QSlider *>())
+        if (slider->isSliderDown()) return true;
+    return false;
 }
 
 // Mid-stroke, every brushMove still reaches the session (so the stroke stays continuous), but the canvas is
@@ -3726,6 +3737,7 @@ bool SessionWindow::setLayerFlag(const char *action, bool on) {
 void SessionWindow::refreshLayers() {
     PERF_SCOPE("refreshLayers");
     m_layersRefreshQueued = false;
+    if (filterSliderIsDown()) return;
     if (!m_layersView || !m_layerModel || m_sessionHandle == 0) return;
     const int64_t size = compositor_session_state(m_sessionHandle, nullptr, 0);
     if (size <= 0 || size > 4 * 1024 * 1024) return;
@@ -6302,6 +6314,7 @@ void SessionWindow::updateToolRail() {
 
 void SessionWindow::updateLayersPanel() {
     PERF_SCOPE("updateLayersPanel");
+    if (filterSliderIsDown()) return;
     if (m_sessionHandle == 0 || !m_layersDock || !m_layersStack) return;
     QWidget *rendered = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("LayersPanel"), m_swiftUICurrentLayersPanel);
     if (rendered && rendered == m_swiftUICurrentLayersPanel) {

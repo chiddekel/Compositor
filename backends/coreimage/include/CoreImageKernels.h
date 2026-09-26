@@ -11,6 +11,14 @@ void compositor_gaussian_horizontal(const float *source, size_t source_width,
     size_t first_x, size_t output_width, const float *kernel, size_t radius, float *output);
 void compositor_gaussian_vertical(const float *source, size_t width,
     const float *kernel, size_t taps, float *output);
+// Exact finite-kernel convolution for large blurs. The immutable plan can be
+// shared by row workers; each call owns its scratch buffers. Strides are floats.
+typedef struct CompositorGaussianPlan CompositorGaussianPlan;
+CompositorGaussianPlan *compositor_gaussian_plan(const float *kernel, size_t radius);
+void compositor_gaussian_plan_free(CompositorGaussianPlan *plan);
+int compositor_gaussian_fft(const CompositorGaussianPlan *plan,
+    const float *source, size_t count, size_t stride, size_t first, size_t width,
+    float *output, size_t output_stride);
 typedef struct {
     ptrdiff_t x, y;
     float tx, ty;

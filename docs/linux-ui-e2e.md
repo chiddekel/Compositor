@@ -60,7 +60,7 @@ mapping. The driver assigns X11 window focus because Xvfb has no window manager.
 | Spot Healing | Content-Aware, Create Texture, Proximity Match remove a dark spot and preserve distant pixels; undo |
 | Smear | Liquify/Smudge move color, Blur softens an edge; distant pixels preserved; undo |
 | Smear live feedback | All three modes at 256 px on a 1920 × 1080 image; working pixels and desktop preview change before release; five fresh edge crossings each appear within 100 ms |
-| Motion Blur adjustment | Add from the layer menu on a 1920 × 1080 image within 1500 ms; streak direction, distance/angle edits, preview toggle, apply, and pixel-exact undo |
+| Gaussian / Motion Blur | Full-HD adjustment layers; editor opens within 1500 ms, blur direction, visible slider feedback before release, final value, Preview off/on, Apply, and Undo (`effect_gaussian_blur`, `effect_motion_blur`) |
 | Gradient | Linear/Radial preview, Cancel, Apply, alpha falloff and symmetry; undo |
 | Shape | Rectangle/Ellipse/Line geometry, filled and empty regions; undo |
 | Type | Native text input and commit produce rendered glyphs; undo |

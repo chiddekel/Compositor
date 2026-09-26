@@ -282,6 +282,7 @@ private:
     QTimer *m_panelThrottle = nullptr;       // refreshPanels() mid-drag
     QElapsedTimer m_panelThrottleClock;
     void refreshPanels();
+    bool filterSliderIsDown() const;
     void refreshDirtyPanels();
     void queueLayersRefresh();
     // Gradient / Shape tools: the pending gradient line (x0,y0,x1,y1), which end is being dragged (1 start, 2 end),

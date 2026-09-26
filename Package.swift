@@ -146,7 +146,7 @@ let package = Package(
         .target(name: "SwiftUI", dependencies: ["CoreGraphics", "AppKit", "Combine", "FoundationCompat", "CompatSupport"], path: "Sources/Compat/SwiftUI",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "CoreImageKernels", path: "backends/coreimage", sources: ["Gaussian.c", "Motion.c"],
+        .target(name: "CoreImageKernels", path: "backends/coreimage", sources: ["Gaussian.c", "GaussianFFT.c", "Motion.c"],
                 publicHeadersPath: "include", cSettings: [.unsafeFlags(["-ffp-contract=off"])]),
         .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport", "CoreImageKernels"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
