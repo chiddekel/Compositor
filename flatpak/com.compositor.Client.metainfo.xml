@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.1.0-linux-alpha.1" date="2026-09-27" type="development">
+      <description><p>Fix save and autosave crashes with SQLite-backed preferences, migrate existing settings, and verify preference persistence in installed Flatpak builds.</p></description>
+    </release>
     <release version="1.0.5-linux-alpha.1" date="2026-09-27" type="development">
       <description><p>Signed Flatpak updates, Linux release downloads, and faster Gaussian and Motion Blur rendering.</p></description>
     </release>
