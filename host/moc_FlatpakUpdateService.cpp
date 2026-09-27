@@ -1,7 +1,7 @@
 /****************************************************************************
 ** Meta object code from reading C++ file 'FlatpakUpdateService.h'
 **
-** Created by: The Qt Meta Object Compiler version 69 (Qt 6.10.3)
+** Created by: The Qt Meta Object Compiler version 69 (Qt 6.11.2)
 **
 ** WARNING! All changes made in this file will be lost!
 *****************************************************************************/
@@ -18,7 +18,7 @@
 #if !defined(Q_MOC_OUTPUT_REVISION)
 #error "The header file 'FlatpakUpdateService.h' doesn't include <QObject>."
 #elif Q_MOC_OUTPUT_REVISION != 69
-#error "This file was generated using the moc from 6.10.3. It"
+#error "This file was generated using the moc from 6.11.2. It"
 #error "cannot be used with the include files from this version of Qt."
 #error "(The moc has changed too much.)"
 #endif
@@ -42,9 +42,8 @@ template <> constexpr inline auto qtplatform::FlatpakUpdateService::qt_create_me
         "onUpdateAvailable",
         "",
         "QVariantMap",
-        "updateInfo",
-        "onProgress",
-        "info"
+        "info",
+        "onProgress"
     };
 
     QtMocHelpers::UintData qt_methods {
@@ -54,7 +53,7 @@ template <> constexpr inline auto qtplatform::FlatpakUpdateService::qt_create_me
         }}),
         // Slot 'onProgress'
         QtMocHelpers::SlotData<void(const QVariantMap &)>(5, 2, QMC::AccessPublic, QMetaType::Void, {{
-            { 0x80000000 | 3, 6 },
+            { 0x80000000 | 3, 4 },
         }}),
     };
     QtMocHelpers::UintData qt_properties {

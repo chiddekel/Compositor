@@ -1,0 +1,8 @@
+{
+  "app_id": "com.compositor.Client",
+  "version": "1.0.5-linux-alpha.1",
+  "channel": "alpha",
+  "architecture": "x86_64",
+  "repository": "chiddekel/Compositor",
+  "site_url": "https://chiddekel.github.io/Compositor"
+}

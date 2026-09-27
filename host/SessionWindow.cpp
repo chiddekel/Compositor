@@ -2889,7 +2889,7 @@ void SessionWindow::createMenus() {
             m_platform.updates->checkForUpdates(true);
         } else {
             QMessageBox::information(this, tr("Check for Updates"),
-                tr("You are running the latest version of Compositor for GNU/Linux."));
+                tr("Updates are available through installed Flatpak releases of Compositor."));
         }
     })->setObjectName("help.updates");
 }

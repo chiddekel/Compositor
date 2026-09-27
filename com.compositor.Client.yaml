@@ -23,6 +23,7 @@
 # host's installed system libraries.
 
 app-id: com.compositor.Client
+branch: alpha
 runtime: org.kde.Platform
 runtime-version: '6.11'
 sdk: org.kde.Sdk
@@ -47,6 +48,9 @@ finish-args:
   - --talk-name=com.canonical.AppMenu.Registrar   # the desktop's global menu, where there is one (menus as on the Mac)
 
 # Strip static archives post-link (they are consumed at build time).
+build-options:
+  no-debuginfo: true
+
 cleanup:
   - '*.a'
 
@@ -278,6 +282,7 @@ modules:
            - .build
            - .flatpak-builder
            - build
+           - dist
            - build-host
            - build-swift
            - build-flatpak

@@ -10,6 +10,12 @@ Because it’s open source, you can download the Xcode project and add, remove, 
 
 ## Installation
 
+### Linux alpha (Flatpak)
+
+Install the x86_64 alpha from the [Linux download page](https://chiddekel.github.io/Compositor/).
+The installed app's **Check for Updates…** menu updates it through Flatpak.
+See [Flatpak releases](docs/flatpak-releases.md) for installation, updating, and publishing.
+
 ### Download
 Get Compositor from [robbietilton.com/compositor](https://robbietilton.com/compositor), or download the latest release directly from [GitHub Releases](https://github.com/robbietilton/Compositor/releases/latest).
 

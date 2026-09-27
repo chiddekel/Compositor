@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Compositor for Linux. A free, open-source image editor with layers, masks, painting, and photo adjustments. Install the Flatpak alpha.">
+  <title>Compositor for Linux</title>
+  <link rel="icon" href="icon.png">
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; color: #eeeef1; background: #141416; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    a { color: inherit; text-underline-offset: .22em; }
+    a:focus-visible, summary:focus-visible { outline: 3px solid #a9bfff; outline-offset: 5px; }
+    .wrap { max-width: 1040px; margin: auto; padding: 0 28px; }
+    nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 28px 0; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 650; text-decoration: none; }
+    .brand img { width: 36px; height: 36px; }
+    nav .links { display: flex; gap: 24px; font-size: 14px; color: #b9b9c3; }
+    main { padding: 78px 0 64px; }
+    .eyebrow { color: #c5caff; font-size: 13px; letter-spacing: .09em; text-transform: uppercase; }
+    h1 { font-size: clamp(44px, 8vw, 80px); line-height: 1.04; font-weight: 650; letter-spacing: -.05em; margin: 22px 0; max-width: 750px; }
+    .intro { max-width: 610px; font-size: 20px; line-height: 1.6; color: #b9b9c3; }
+    .download { display: flex; flex-wrap: wrap; align-items: center; gap: 22px; margin: 34px 0 18px; }
+    .primary { background: #dce1ff; color: #202133; text-decoration: none; padding: 15px 23px; border-radius: 8px; font-weight: 650; }
+    .primary:hover { background: #f0f2ff; }
+    .secondary { font-size: 15px; }
+    .meta code { overflow-wrap: anywhere; }
+    .meta, footer { color: #a2a2af; font-size: 14px; line-height: 1.6; }
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin: 64px 0; padding: 32px 0; border-top: 1px solid #34343c; border-bottom: 1px solid #34343c; }
+    h2 { font-size: 20px; letter-spacing: -.02em; margin: 0 0 12px; }
+    .features p { color: #b9b9c3; font-size: 15px; line-height: 1.7; margin: 0; }
+    .install { max-width: 760px; }
+    .install p { color: #b9b9c3; line-height: 1.7; }
+    pre { padding: 18px 20px; border: 1px solid #34343c; border-radius: 8px; overflow: auto; background: #1e1e23; line-height: 1.8; font-size: 13px; }
+    summary { cursor: pointer; margin: 24px 0 12px; }
+    footer { padding: 28px 0; border-top: 1px solid #34343c; }
+    @media (max-width: 620px) { main { padding-top: 40px; } .features { grid-template-columns: 1fr; gap: 26px; margin: 44px 0; } nav .links { gap: 14px; } .intro { font-size: 18px; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav aria-label="Main navigation">
+      <a class="brand" href="./"><img src="icon.png" alt="" width="36" height="36">Compositor</a>
+      <div class="links"><a href="https://github.com/@REPOSITORY@/tree/GNU_Linux">Source</a><a href="@RELEASE_URL@">Release notes</a></div>
+    </nav>
+    <main>
+      <div class="eyebrow">Linux / Alpha</div>
+      <h1>Make room<br>for your next image.</h1>
+      <p class="intro">Compositor is a free, open-source image editor for compositing and photo work. Layers, masks, painting, and adjustments, together on your Linux desktop.</p>
+      <div class="download">
+        <a class="primary" href="com.compositor.Client.flatpakref">Install Flatpak alpha</a>
+        <a class="secondary" href="@BUNDLE_URL@">Download .flatpak bundle</a>
+      </div>
+      <p class="meta">Version @VERSION@ · Linux x86_64 · Alpha channel</p>
+      <section class="features" aria-label="Editing tools">
+        <div><h2>Build with layers</h2><p>Compose images with layer masks, blend modes, selections, and transforms.</p></div>
+        <div><h2>Find the right look</h2><p>Adjust color and tone, soften with Gaussian Blur, or add directional Motion Blur.</p></div>
+        <div><h2>Keep working</h2><p>Paint, retouch, and save editable projects. Flatpak updates keep your installation current.</p></div>
+      </section>
+      <section class="install" aria-labelledby="install-title">
+        <h2 id="install-title">Install once. Keep up to date.</h2>
+        <p>Open the Flatpak install file in your software center, or use the commands below. <a href="https://flatpak.org/setup/">Set up Flatpak</a> first if your distribution needs it.</p>
+        <pre><code>flatpak install --user @SITE_URL@/com.compositor.Client.flatpakref
+flatpak run com.compositor.Client</code></pre>
+        <p>In Compositor, choose <strong>Check for Updates…</strong> from the application menu, then <strong>Check and Update</strong>. You can also use your software center. After an update, save your work and reopen the app.</p>
+        <details><summary>Terminal updates and repository details</summary>
+          <pre><code>flatpak update com.compositor.Client</code></pre>
+          <p>The alpha repository is signed. <a href="compositor.flatpakrepo">Add the repository</a> or <a href="release-key.gpg">download its public signing key</a>.</p>
+          <p class="meta">Signing fingerprint: <code>@FINGERPRINT@</code></p>
+        </details>
+      </section>
+    </main>
+    <footer>Linux port maintained at <a href="https://github.com/@REPOSITORY@">@REPOSITORY@</a>.<br>Based on <a href="https://github.com/robbietilton/Compositor">Compositor by Wonder Assembly</a>. Free and open source under the MIT license.</footer>
+  </div>
+</body>
+</html>

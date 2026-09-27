@@ -1,41 +1,60 @@
 #pragma once
 
 #include "interfaces/IUpdateService.h"
-#include <QObject>
+#include <QDBusConnection>
 #include <QDBusObjectPath>
-#include <QDBusMessage>
+#include <QObject>
+#include <QPointer>
+
+class QDialog;
+class QLabel;
+class QProgressBar;
+class QPushButton;
 
 namespace qtplatform {
 
-/// Linux implementation of IUpdateService using Flatpak's XDG desktop portal:
-///   org.freedesktop.portal.Flatpak -> CreateUpdateMonitor
-///   org.freedesktop.portal.Flatpak.UpdateMonitor -> UpdateAvailable, Update, Progress, Close
+// Updates only this installed Flatpak through its host portal. SDK/developer
+// launches never request an SDK update or execute host shell commands.
 class FlatpakUpdateService : public QObject, public IUpdateService {
     Q_OBJECT
-
 public:
     explicit FlatpakUpdateService(QObject *parent = nullptr);
+    FlatpakUpdateService(const QString &infoPath, const QString &executable,
+                         const QDBusConnection &bus, QObject *parent = nullptr);
     ~FlatpakUpdateService() override;
 
     void checkForUpdates(bool interactive = true) override;
     void installUpdate() override;
     UpdateStatus status() const override { return m_status; }
     UpdateInfo updateInfo() const override { return m_info; }
-    bool isSupported() const override;
+    bool isSupported() const override { return m_supported; }
+    QString errorMessage() const { return m_error; }
+    static bool isInstalledApplication(const QString &infoPath, const QString &executable);
 
 public slots:
-    void onUpdateAvailable(const QVariantMap &updateInfo);
+    void onUpdateAvailable(const QVariantMap &info);
     void onProgress(const QVariantMap &info);
 
 private:
-    bool ensurePortalMonitor(QString *errorMessage = nullptr);
+    void ensureMonitor();
     void closeMonitor();
+    void beginUpdate();
+    void fail(const QString &message);
+    void refreshDialog();
+    void subscribe(const QString &path, bool connect);
 
+    QDBusConnection m_bus;
+    bool m_supported = false;
+    bool m_creating = false;
+    bool m_installPending = false;
     UpdateStatus m_status = UpdateStatus::Idle;
     UpdateInfo m_info;
-    QDBusObjectPath m_monitorPath;
-    bool m_hasUpdate = false;
-    bool m_monitorActive = false;
+    QString m_monitorPath, m_error;
+    int m_progress = 0;
+    QPointer<QDialog> m_dialog;
+    QPointer<QLabel> m_label;
+    QPointer<QProgressBar> m_progressBar;
+    QPointer<QPushButton> m_updateButton;
 };
 
-}  // namespace qtplatform
+} // namespace qtplatform

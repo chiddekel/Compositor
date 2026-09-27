@@ -1,223 +1,222 @@
 #include "FlatpakUpdateService.h"
 
 #include <QApplication>
-#include <QDBusConnection>
 #include <QDBusMessage>
-#include <QDBusReply>
-#include <QFile>
-#include <QMessageBox>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QLabel>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QSettings>
+#include <QTimer>
+#include <QUuid>
+#include <QVBoxLayout>
+#include <utility>
 
 namespace qtplatform {
+namespace {
+const QString service = QStringLiteral("org.freedesktop.portal.Flatpak");
+const QString portalPath = QStringLiteral("/org/freedesktop/portal/Flatpak");
+const QString monitorInterface = QStringLiteral("org.freedesktop.portal.Flatpak.UpdateMonitor");
+}
 
 FlatpakUpdateService::FlatpakUpdateService(QObject *parent)
-    : QObject(parent) {
-    if (isSupported()) {
-        ensurePortalMonitor();
-    }
+    : FlatpakUpdateService(QStringLiteral("/.flatpak-info"), QApplication::applicationFilePath(),
+                           QDBusConnection::sessionBus(), parent) {}
+
+FlatpakUpdateService::FlatpakUpdateService(const QString &infoPath, const QString &executable,
+                                         const QDBusConnection &bus, QObject *parent)
+    : QObject(parent), m_bus(bus), m_supported(isInstalledApplication(infoPath, executable)) {
+    if (m_supported) QTimer::singleShot(0, this, [this] { ensureMonitor(); });
+    else m_status = UpdateStatus::Unsupported;
 }
 
 FlatpakUpdateService::~FlatpakUpdateService() {
     closeMonitor();
+    delete m_dialog;
 }
 
-bool FlatpakUpdateService::isSupported() const {
-    return QFile::exists(QStringLiteral("/.flatpak-info")) || qEnvironmentVariableIsSet("FLATPAK_ID");
+bool FlatpakUpdateService::isInstalledApplication(const QString &infoPath, const QString &executable) {
+    QSettings info(infoPath, QSettings::IniFormat);
+    return executable == QLatin1String("/app/bin/compositor")
+        && info.value(QStringLiteral("Application/name")).toString() == QLatin1String("com.compositor.Client")
+        && !info.value(QStringLiteral("Instance/app-commit")).toString().isEmpty();
 }
 
-bool FlatpakUpdateService::ensurePortalMonitor(QString *errorMessage) {
-    if (m_monitorActive) return true;
-
-    QDBusConnection bus = QDBusConnection::sessionBus();
-    if (!bus.isConnected()) {
-        if (errorMessage) *errorMessage = tr("D-Bus session bus is not connected.");
-        return false;
+void FlatpakUpdateService::subscribe(const QString &path, bool connect) {
+    for (const auto &pair : {std::pair{"UpdateAvailable", SLOT(onUpdateAvailable(QVariantMap))},
+                            std::pair{"Progress", SLOT(onProgress(QVariantMap))}}) {
+        if (connect) m_bus.connect(service, path, monitorInterface, QLatin1String(pair.first), this, pair.second);
+        else m_bus.disconnect(service, path, monitorInterface, QLatin1String(pair.first), this, pair.second);
     }
+}
 
-    QDBusMessage msg = QDBusMessage::createMethodCall(
-        QStringLiteral("org.freedesktop.portal.Flatpak"),
-        QStringLiteral("/org/freedesktop/portal/Flatpak"),
-        QStringLiteral("org.freedesktop.portal.Flatpak"),
-        QStringLiteral("CreateUpdateMonitor")
-    );
-    QVariantMap options;
-    msg << options;
-
-    QDBusMessage reply = bus.call(msg);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        if (errorMessage) *errorMessage = reply.errorMessage();
-        return false;
-    }
-
-    if (reply.arguments().isEmpty()) {
-        if (errorMessage) *errorMessage = tr("No monitor object path returned by Flatpak portal.");
-        return false;
-    }
-
-    m_monitorPath = reply.arguments().at(0).value<QDBusObjectPath>();
-    if (m_monitorPath.path().isEmpty()) {
-        if (errorMessage) *errorMessage = tr("Invalid monitor object path returned by Flatpak portal.");
-        return false;
-    }
-
-    bus.connect(
-        QStringLiteral("org.freedesktop.portal.Flatpak"),
-        m_monitorPath.path(),
-        QStringLiteral("org.freedesktop.portal.Flatpak.UpdateMonitor"),
-        QStringLiteral("UpdateAvailable"),
-        this,
-        SLOT(onUpdateAvailable(QVariantMap))
-    );
-
-    bus.connect(
-        QStringLiteral("org.freedesktop.portal.Flatpak"),
-        m_monitorPath.path(),
-        QStringLiteral("org.freedesktop.portal.Flatpak.UpdateMonitor"),
-        QStringLiteral("Progress"),
-        this,
-        SLOT(onProgress(QVariantMap))
-    );
-
-    m_monitorActive = true;
-    return true;
+void FlatpakUpdateService::ensureMonitor() {
+    if (!m_supported || m_creating || !m_monitorPath.isEmpty()) return;
+    if (!m_bus.isConnected()) { fail(tr("The Flatpak update service is unavailable.")); return; }
+    m_creating = true;
+    const QString token = QStringLiteral("compositor_") + QUuid::createUuid().toString(QUuid::Id128);
+    QString sender = m_bus.baseService().mid(1);
+    sender.replace('.', '_');
+    const QString path = portalPath + QStringLiteral("/update_monitor/") + sender + '/' + token;
+    // Subscribe before requesting the monitor, so an immediate update signal is not lost.
+    m_monitorPath = path;
+    subscribe(path, true);
+    QDBusMessage message = QDBusMessage::createMethodCall(service, portalPath, service, QStringLiteral("CreateUpdateMonitor"));
+    message << QVariantMap{{QStringLiteral("handle_token"), token}};
+    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message, 10000), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher, path] {
+        QDBusPendingReply<QDBusObjectPath> reply = *watcher;
+        watcher->deleteLater();
+        m_creating = false;
+        if (reply.isError()) { closeMonitor(); fail(reply.error().message()); return; }
+        if (reply.value().path() != path) {
+            closeMonitor();
+            fail(tr("The Flatpak update service returned an unexpected monitor."));
+            return;
+        }
+        if (m_installPending) beginUpdate();
+        refreshDialog();
+    });
 }
 
 void FlatpakUpdateService::closeMonitor() {
-    if (!m_monitorActive) return;
+    if (m_monitorPath.isEmpty()) return;
+    subscribe(m_monitorPath, false);
+    m_bus.call(QDBusMessage::createMethodCall(service, m_monitorPath, monitorInterface, QStringLiteral("Close")), QDBus::NoBlock);
+    m_monitorPath.clear();
+}
 
-    QDBusConnection bus = QDBusConnection::sessionBus();
-    if (bus.isConnected() && !m_monitorPath.path().isEmpty()) {
-        QDBusMessage closeMsg = QDBusMessage::createMethodCall(
-            QStringLiteral("org.freedesktop.portal.Flatpak"),
-            m_monitorPath.path(),
-            QStringLiteral("org.freedesktop.portal.Flatpak.UpdateMonitor"),
-            QStringLiteral("Close")
-        );
-        bus.call(closeMsg, QDBus::NoBlock);
-    }
-    m_monitorActive = false;
-    m_monitorPath = QDBusObjectPath();
+void FlatpakUpdateService::fail(const QString &message) {
+    m_installPending = false;
+    m_error = message;
+    m_status = UpdateStatus::Error;
+    refreshDialog();
 }
 
 void FlatpakUpdateService::checkForUpdates(bool interactive) {
-    if (!isSupported()) {
-        m_status = UpdateStatus::Unsupported;
-        if (interactive) {
-            QMessageBox::information(
-                QApplication::activeWindow(),
-                tr("Check for Updates"),
-                tr("<h3>Compositor</h3>"
-                   "<p>Running in host developer mode.</p>"
-                   "<p>On GNU/Linux Flatpak releases, updates are monitored automatically via "
-                   "<code>org.freedesktop.portal.Flatpak.UpdateMonitor</code>.</p>"
-                   "<p>On macOS, updates are managed by Sparkle 2.10.x.</p>")
-            );
-        }
-        return;
+    if (m_supported) ensureMonitor();
+    if (!interactive) return;
+    if (!m_dialog) {
+        m_dialog = new QDialog(QApplication::activeWindow());
+        m_dialog->setAttribute(Qt::WA_DeleteOnClose);
+        m_dialog->setWindowTitle(tr("Flatpak Updates"));
+        m_dialog->setObjectName(QStringLiteral("flatpakUpdates"));
+        auto *layout = new QVBoxLayout(m_dialog);
+        m_label = new QLabel(m_dialog);
+        m_label->setTextFormat(Qt::PlainText);
+        m_label->setWordWrap(true);
+        m_label->setMinimumWidth(380);
+        layout->addWidget(m_label);
+        m_progressBar = new QProgressBar(m_dialog);
+        layout->addWidget(m_progressBar);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, m_dialog);
+        m_updateButton = buttons->addButton(tr("Check and Update"), QDialogButtonBox::ActionRole);
+        connect(m_updateButton, &QPushButton::clicked, this, [this] { installUpdate(); });
+        connect(buttons, &QDialogButtonBox::rejected, m_dialog, &QDialog::close);
+        layout->addWidget(buttons);
     }
-
-    QString error;
-    if (!ensurePortalMonitor(&error)) {
-        m_status = UpdateStatus::Error;
-        if (interactive) {
-            QMessageBox::warning(
-                QApplication::activeWindow(),
-                tr("Check for Updates"),
-                tr("Unable to contact Flatpak update portal:<br><br>%1").arg(error)
-            );
-        }
-        return;
-    }
-
-    if (m_status == UpdateStatus::ReadyToRestart) {
-        if (interactive) {
-            auto res = QMessageBox::question(
-                QApplication::activeWindow(),
-                tr("Update Ready"),
-                tr("An update has already been installed.<br><br>Restart Compositor now to use the updated version?"),
-                QMessageBox::Yes | QMessageBox::No
-            );
-            if (res == QMessageBox::Yes) {
-                QApplication::quit();
-            }
-        }
-        return;
-    }
-
-    if (m_hasUpdate) {
-        if (interactive) {
-            auto res = QMessageBox::question(
-                QApplication::activeWindow(),
-                tr("Update Available"),
-                tr("A newer version of Compositor is available.<br><br>Would you like to install it now?"),
-                QMessageBox::Yes | QMessageBox::No
-            );
-            if (res == QMessageBox::Yes) {
-                installUpdate();
-            }
-        }
-        return;
-    }
-
-    m_status = UpdateStatus::NoUpdate;
-    if (interactive) {
-        QMessageBox::information(
-            QApplication::activeWindow(),
-            tr("Check for Updates"),
-            tr("You are running the latest version of Compositor.<br><br>"
-               "Update monitoring is active via <code>org.freedesktop.portal.Flatpak.UpdateMonitor</code>.")
-        );
-    }
+    refreshDialog();
+    m_dialog->show();
+    m_dialog->raise();
+    m_dialog->activateWindow();
 }
 
 void FlatpakUpdateService::installUpdate() {
-    if (!m_monitorActive || m_monitorPath.path().isEmpty()) return;
-
-    QDBusMessage msg = QDBusMessage::createMethodCall(
-        QStringLiteral("org.freedesktop.portal.Flatpak"),
-        m_monitorPath.path(),
-        QStringLiteral("org.freedesktop.portal.Flatpak.UpdateMonitor"),
-        QStringLiteral("Update")
-    );
-    msg << QString() << QVariantMap();
-
-    m_status = UpdateStatus::Downloading;
-    QDBusConnection::sessionBus().call(msg, QDBus::NoBlock);
+    if (!m_supported || m_installPending || m_status == UpdateStatus::Downloading
+        || m_status == UpdateStatus::ReadyToRestart) return;
+    m_installPending = true;
+    m_error.clear();
+    m_status = UpdateStatus::Checking;
+    ensureMonitor();
+    if (!m_creating && !m_monitorPath.isEmpty()) beginUpdate();
+    refreshDialog();
 }
 
-void FlatpakUpdateService::onUpdateAvailable(const QVariantMap &updateInfo) {
-    m_info.runningCommit = updateInfo.value(QStringLiteral("running-commit")).toString();
-    m_info.localCommit = updateInfo.value(QStringLiteral("local-commit")).toString();
-    m_info.remoteCommit = updateInfo.value(QStringLiteral("remote-commit")).toString();
+void FlatpakUpdateService::beginUpdate() {
+    m_installPending = false;
+    m_progress = 0;
+    m_status = UpdateStatus::Downloading;
+    QDBusMessage message = QDBusMessage::createMethodCall(service, m_monitorPath, monitorInterface, QStringLiteral("Update"));
+    QString parentWindow;
+    if (m_dialog && QApplication::platformName() == QLatin1String("xcb"))
+        parentWindow = QStringLiteral("x11:%1").arg(qulonglong(m_dialog->winId()), 0, 16);
+    message << parentWindow << QVariantMap();
+    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher] {
+        QDBusPendingReply<> reply = *watcher;
+        watcher->deleteLater();
+        if (reply.isError() && m_status == UpdateStatus::Downloading) {
+            closeMonitor();
+            fail(reply.error().message());
+        }
+    });
+    refreshDialog();
+}
 
-    if (!m_info.localCommit.isEmpty() && m_info.localCommit != m_info.runningCommit) {
+void FlatpakUpdateService::onUpdateAvailable(const QVariantMap &info) {
+    if (!m_supported) return;
+    m_info.runningCommit = info.value(QStringLiteral("running-commit")).toString();
+    m_info.localCommit = info.value(QStringLiteral("local-commit")).toString();
+    m_info.remoteCommit = info.value(QStringLiteral("remote-commit")).toString();
+    if (m_status == UpdateStatus::Downloading || m_installPending) return;
+    if (!m_info.runningCommit.isEmpty() && !m_info.localCommit.isEmpty() && m_info.localCommit != m_info.runningCommit)
         m_status = UpdateStatus::ReadyToRestart;
-        m_hasUpdate = true;
-    } else if (!m_info.remoteCommit.isEmpty() && m_info.remoteCommit != m_info.runningCommit) {
+    else if (!m_info.runningCommit.isEmpty() && !m_info.remoteCommit.isEmpty() && m_info.remoteCommit != m_info.runningCommit)
         m_status = UpdateStatus::UpdateAvailable;
-        m_hasUpdate = true;
-    }
+    else if (!m_info.runningCommit.isEmpty() && m_info.remoteCommit == m_info.runningCommit)
+        m_status = UpdateStatus::NoUpdate;
+    else m_status = UpdateStatus::Idle;
+    refreshDialog();
 }
 
 void FlatpakUpdateService::onProgress(const QVariantMap &info) {
+    if (!m_supported || m_status != UpdateStatus::Downloading) return;
     const uint status = info.value(QStringLiteral("status")).toUInt();
-    if (status == 1) {
-        // Success
-        m_status = UpdateStatus::ReadyToRestart;
-        QMessageBox::information(
-            QApplication::activeWindow(),
-            tr("Update Installed"),
-            tr("The update has been installed successfully.<br><br>Please restart Compositor.")
-        );
-    } else if (status > 1) {
-        // Error
-        m_status = UpdateStatus::Error;
-        const QString err = info.value(QStringLiteral("error")).toString();
-        QMessageBox::warning(
-            QApplication::activeWindow(),
-            tr("Update Error"),
-            tr("Failed to install update: %1").arg(err.isEmpty() ? tr("Unknown error") : err)
-        );
+    // Flatpak's terminal states are Empty=1, Done=2, Failed=3. A completed
+    // individual operation (progress=100, status=0) is not a completed update.
+    if (status == 0) {
+        const uint operations = qMax(1u, info.value(QStringLiteral("n_ops"), 1u).toUInt());
+        const uint operation = qMin(operations - 1, info.value(QStringLiteral("op")).toUInt());
+        m_progress = int((100.0 * operation + qMin(100u, info.value(QStringLiteral("progress")).toUInt())) / operations);
+    } else if (status == 1) {
+        m_status = !m_info.localCommit.isEmpty() && m_info.localCommit != m_info.runningCommit
+            ? UpdateStatus::ReadyToRestart : UpdateStatus::NoUpdate;
+    } else if (status == 2) m_status = UpdateStatus::ReadyToRestart;
+    else if (status == 3) {
+        fail(info.value(QStringLiteral("error_message"), info.value(QStringLiteral("error"), tr("The update could not be installed."))).toString());
+        return;
     }
+    refreshDialog();
 }
 
-}  // namespace qtplatform
+void FlatpakUpdateService::refreshDialog() {
+    if (!m_dialog) return;
+    QString text;
+    switch (m_status) {
+    case UpdateStatus::Unsupported:
+        text = tr("This copy was not installed as the Compositor Flatpak. Install the Flatpak release to receive updates here."); break;
+    case UpdateStatus::Idle:
+        text = tr("Check for Flatpak updates and install any available update. Your open documents will stay open."); break;
+    case UpdateStatus::Checking: text = tr("Connecting to the Flatpak update service…"); break;
+    case UpdateStatus::UpdateAvailable: text = tr("A Compositor update is available. You can install it while keeping your documents open."); break;
+    case UpdateStatus::NoUpdate: text = tr("No update was available at the last check."); break;
+    case UpdateStatus::Downloading: text = tr("Checking for and installing updates…"); break;
+    case UpdateStatus::ReadyToRestart:
+        text = tr("The update is installed. Save your work, then close and reopen Compositor to use it."); break;
+    case UpdateStatus::Error:
+        text = tr("The update could not be completed. %1\n\nYou can also update Compositor in your software center or run:\nflatpak update com.compositor.Client").arg(m_error); break;
+    }
+    m_label->setText(text);
+    const bool busy = m_status == UpdateStatus::Checking || m_status == UpdateStatus::Downloading;
+    m_progressBar->setVisible(busy);
+    m_progressBar->setRange(0, m_progress > 0 ? 100 : 0);
+    m_progressBar->setValue(m_progress);
+    m_updateButton->setText(m_status == UpdateStatus::UpdateAvailable ? tr("Install Update") : tr("Check and Update"));
+    m_updateButton->setVisible(m_supported && m_status != UpdateStatus::ReadyToRestart);
+    m_updateButton->setEnabled(!busy);
+}
+
+} // namespace qtplatform

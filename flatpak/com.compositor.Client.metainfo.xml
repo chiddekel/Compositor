@@ -14,7 +14,8 @@
   <project_license>MIT</project_license>
   <metadata_license>CC0-1.0</metadata_license>
 
-  <url type="homepage">https://github.com/robbietilton/Compositor</url>
+  <url type="homepage">https://chiddekel.github.io/Compositor/</url>
+  <url type="bugtracker">https://github.com/chiddekel/Compositor/issues</url>
 
   <description>
     <p>
@@ -30,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.0.5-linux-alpha.1" date="2026-09-27" type="development">
+      <description><p>Signed Flatpak updates, Linux release downloads, and faster Gaussian and Motion Blur rendering.</p></description>
+    </release>
     <release version="1.0.4-linux-preview.1" date="2026-09-19">
       <description>
         <p>First Linux Flatpak preview build of the port. Feature-aligned with
