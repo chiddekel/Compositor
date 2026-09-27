@@ -7,6 +7,8 @@ Compositor for Linux — signed Flatpak alpha, x86_64.
 
 This is an alpha release. The Linux port is based on Compositor by Wonder Assembly.
 
+Validation: the release build, six native tests, updater tests, and signed-install session smoke test passed. The broader [desktop UI run](https://github.com/chiddekel/Compositor/actions/runs/36281364021) reports two unresolved assertions when undoing Gaussian Blur and Motion Blur adjustment layers. Those failures have not yet been diagnosed; this alpha is not a claim of full desktop regression coverage.
+
 App ID: `com.compositor.Client`, branch: `alpha`. Older `com.wonderassembly.Compositor` installations are a separate app; save/export projects before moving to this package. Their private app data is not migrated automatically.
 
 The `.flatpak` bundle includes the alpha repository URL and its public signing key. `SHA256SUMS` covers the release downloads.
