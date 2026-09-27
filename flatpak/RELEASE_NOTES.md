@@ -1,9 +1,9 @@
-Compositor 1.1.0-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.2.0-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
-- Fix the diagnosed save/autosave crash when updating recent projects in statically linked Flatpak builds.
-- Store preferences in SQLite behind the existing UserDefaults API. Existing settings are imported once; project files keep their current format.
-- Retry temporarily blocked preference writes and verify migration, recent-project updates, and persistence in the installed-package smoke test.
-- Update Linux application branding and include the license in the Flatpak package.
+- Ctrl+Z now stops at the newly created canvas instead of removing the document.
+- Preserve the initial blank layer, selection, redo behavior, and unsaved document state when undoing all edits.
+- Apply the change only through the GNU/Linux compatibility layer. Upstream macOS source and tests remain unchanged.
+- Add Linux regression coverage for the canvas undo boundary and save-state handling.
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.
@@ -11,7 +11,7 @@ Compositor 1.1.0-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 This is an alpha release of the GNU/Linux port of Compositor.
 
-Local validation: 508 tests passed in sequential mode, including five new SQLite tests. The static Swift build passed the preferences and session smoke tests. A file-watcher test failed during parallel execution and passed both separately and in the full sequential run. The release pipeline additionally checks native tests, the updater, and the signed installed package before publication.
+Local validation: 507 tests passed in an optimized sequential run with the manifest's KDE 6.11 SDK (114 XCTest and 393 Swift Testing tests). The updater tests reported zero failures, all three release descriptor tests passed, and a clean optimized GNU/Linux build succeeded. Two upstream tests that expect canvas creation to be undoable are skipped on Linux, with the requested behavior covered by Linux regression tests. The upstream-clean guard confirms that protected macOS source and tests are unchanged. The release pipeline additionally checks native tests, the updater, and the signed installed package before publication.
 
 The earlier [desktop UI run](https://github.com/chiddekel/Compositor/actions/runs/36281364021) reports two unresolved assertions when undoing Gaussian Blur and Motion Blur adjustment layers. Those failures have not yet been diagnosed; this alpha is not a claim of full desktop regression coverage.
 

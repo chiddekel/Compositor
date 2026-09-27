@@ -186,12 +186,47 @@ struct UpstreamEditorTests {
         #expect(left == right)
     }
 
-    @Test func historyFollowsUpstream() async throws {
+    @Test func historyStopsAtNewCanvas() async throws {
         let e = UpstreamEditor()
         await send(e, cmd("new", #""width":50,"height":40"#), cmd("addLayer"), cmd("setOpacity", #""value":0.5"#))
         #expect(state(e)["undoName"] as? String == "Layer Opacity" && state(e)["canUndo"] as? Bool == true)
-        await send(e, cmd("undo"), cmd("undo"), cmd("undo"))   // File > New is undoable upstream
-        #expect(state(e)["canUndo"] as? Bool == false && state(e)["redoName"] as? String == "New Canvas")
+        await send(e, cmd("undo"), cmd("undo"), cmd("undo"))
+        #expect(state(e)["canUndo"] as? Bool == false)
+        #expect(state(e)["width"] as? Int == 50 && state(e)["height"] as? Int == 40)
+        #expect(layers(e).isEmpty)
+        await send(e, cmd("redo"), cmd("redo"))
+        #expect(layers(e).count == 1)
+        #expect(layers(e).first?["opacity"] as? Double == 0.5)
+    }
+
+    @Test func newCanvasKeepsItsInitialLayerAndUnsavedState() throws {
+        for emptyLayer in [false, true] {
+            let session = EditorSession()
+            session.createDocument(width: 80, height: 60, emptyLayer: emptyLayer)
+            let initial = try #require(session.document)
+            let selection = session.activeLayerID
+            #expect(!session.canUndo && !session.canRedo)
+            #expect(session.isModified)
+            session.undo()
+            #expect(session.document == initial)
+            session.addBlankLayer()
+            let edited = session.document
+            #expect(session.canUndo)
+            session.undo()
+            #expect(session.document == initial)
+            #expect(session.activeLayerID == selection)
+            #expect(!session.canUndo && session.isModified)
+            session.undo()
+            #expect(session.document == initial)
+            session.redo()
+            #expect(session.document == edited)
+            session.undo()
+            session.history.markSaved()
+            session.addBlankLayer()
+            #expect(session.isModified)
+            session.undo()
+            #expect(!session.isModified)
+        }
     }
 
     @Test func gaussianBlurGrowsTheLayer() async throws {

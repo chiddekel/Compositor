@@ -21,10 +21,10 @@ excluded here, with a reason; individual tests are never edited.
 
 ## Per-test skips (files stay compiled; pass these to `swift test --skip`)
 
-| Test | Reason (verified by reading upstream's logic; nothing platform-specific is involved) |
+| Test | Reason |
 |---|---|
+| `everyLayerEditRoundTripsWithSelection` and `historyBlockedDuringImportsAndDialogs` (`HistoryTests`) | Deliberate GNU/Linux behavior: undo stops at the initially created canvas. These upstream tests expect undoing New Canvas to remove the document. Linux coverage is `UpstreamEditorTests.historyStopsAtNewCanvas` and `newCanvasKeepsItsInitialLayerAndUnsavedState`; replacement-canvas and import history tests still run unchanged. |
 | `gaussianBlurSoftensAHardEdgeWithoutFadingTheBordersAsOneUndoStep` (`FilterTests`) | Stale upstream test. `Filters.swift` blurs unclamped and the layer is first trimmed to its visible pixels, so the result grows by the blur margin (a 40x20 layer with a 20x20 opaque half becomes 36x36) and its edge fades. The test still expects the pre-change "border stays 255" behaviour. The shim's profile is a correct sigma-3 Gaussian (row peak 0.8 two pixels inside the edge, symmetric, ~0 at the ends). |
 | `moveToolNumberKeysSetSelectedLayersOpacityAsOneUndo` (`LayerAppearanceTests`) | Stale upstream test. `setSelectedLayersOpacity` sets every id in `selectedLayerIDs`, and the test selects the folder explicitly, so the folder becomes 0.5; the test expects 1 (pre-folder-opacity, commit `391042d`). The other 7 tests in these two files pass. |
 | `perspectiveMappingHitsTheCornersAndTwistedShapesAreRefused` (`DistortTests`) | Stale upstream test. `DistortWarp.isUsable` documents that a folded shape (bow-tie) is now accepted and "warped as two triangles instead" (`Distort.swift`, `isUsable`/`isConvex`); the test still expects bow-ties refused. Pure geometry, no platform involvement. |
 | `distortingWarpsTheLayerIntoTheShapeAsOneUndoStep` (`DistortTests`) | Same cause: it previews a twisted shape and expects it ignored (`corners[1] == (30, 10)`), but twisted shapes are now valid input. The other two Distort tests pass. |
-

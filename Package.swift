@@ -194,6 +194,7 @@ let package = Package(
                      "Rendering/WandPixels.c",
                      "Rendering/WandPixels.h",
                      "IO/CompositorApplicationDelegate.swift",
+                     "Document/DocumentHistory.swift",
                      "Document/SmudgeLiquify.swift",
                      "Rendering/MetalBrushCoverage.swift",
                      "Rendering/MetalLayerEffects.swift"],
