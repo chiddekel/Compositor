@@ -5,8 +5,8 @@
   <name>Compositor</name>
   <summary>A free, open-source, Photoshop-style image editor</summary>
 
-  <developer id="com.wonderassembly">
-    <name>Wonder Assembly LLC</name>
+  <developer id="io.github.chiddekel">
+    <name>Compositor Linux contributors</name>
   </developer>
 
   <launchable type="desktop-id">com.compositor.Client.desktop</launchable>

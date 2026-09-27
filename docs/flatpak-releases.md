@@ -11,8 +11,8 @@ flatpak run com.compositor.Client
 The reference adds the signed `compositor-alpha` repository hosted alongside the
 page. GitHub Releases also provides a `.flatpak` bundle containing the repository
 URL and public key. The KDE runtime comes from Flathub. Alpha builds may have bugs;
-keep backups of important projects. The old `com.wonderassembly.Compositor` ID is
-a separate installation; its private settings are not automatically migrated.
+keep backups of important projects. Older previews using a different application
+ID are separate installations; their private settings are not automatically migrated.
 
 ## Updating
 
