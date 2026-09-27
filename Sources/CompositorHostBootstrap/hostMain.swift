@@ -20,11 +20,16 @@ import Compositor
 import CoreGraphics
 import ImageIO
 import Foundation
+import FoundationCompat
 import HostRun
 
 @main
 struct HostBootstrap {
     static func main() {
+        if CommandLine.arguments.contains("--preferences-smoke") {
+            runPreferencesSmoke()
+            return
+        }
         compositorConfigureBrushAcceleration(ProcessInfo.processInfo.environment["COMPOSITOR_BRUSH_BACKEND"] != "cpu")
         if CommandLine.arguments.contains("--dialog-smoke") {
             let result = compositor_host_dialog_smoke(CommandLine.argc, CommandLine.unsafeArgv)
@@ -70,6 +75,55 @@ struct HostBootstrap {
         // Run the Qt host window/event loop
         let qt = compositor_host_run(CommandLine.argc, CommandLine.unsafeArgv)
         guard qt == 0 else { fail("compositor_host_run returned \(qt)") }
+    }
+
+    private static func runPreferencesSmoke() {
+        let workerDirectory = ProcessInfo.processInfo.environment["COMPOSITOR_PREFERENCES_SMOKE_ROOT"]
+        let directory = workerDirectory.map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("compositor-preferences-\(UUID())")
+        defer { if workerDirectory == nil { try? FileManager.default.removeItem(at: directory) } }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // Exercise read-only migration from a real Foundation plist without ever writing through Foundation.
+            let legacy = directory.appendingPathComponent("\(ProcessInfo.processInfo.processName).plist")
+            let plist = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <plist version="1.0"><dict>
+            <key>layersPanelWidth</key><real>321.5</real>
+            <key>NSRecentDocumentURLs</key><array><string>/tmp/legacy.comp</string></array>
+            </dict></plist>
+            """
+            if workerDirectory == nil {
+                try Data(plist.utf8).write(to: legacy)
+                // Foundation caches its configuration directory before main; set the environment before launch.
+                let child = Process()
+                child.executableURL = URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath()
+                child.arguments = ["--preferences-smoke"]
+                var environment = ProcessInfo.processInfo.environment
+                environment["XDG_CONFIG_HOME"] = directory.path
+                environment["COMPOSITOR_PREFERENCES_SMOKE_ROOT"] = directory.path
+                child.environment = environment
+                try child.run()
+                child.waitUntilExit()
+                guard child.terminationStatus == 0 else { fail("preferences smoke child failed") }
+                return
+            }
+            let defaults = SQLiteUserDefaults.standard
+            guard defaults.double(forKey: "layersPanelWidth") == 321.5,
+                  defaults.stringArray(forKey: "NSRecentDocumentURLs") == ["/tmp/legacy.comp"] else {
+                fail("legacy preference migration")
+            }
+            // This is the exact save/autosave entry point that trapped in static Foundation's array writer.
+            "/tmp/preferences-smoke.comp".withCString { compositorNoteRecentProject($0) }
+            compositorFlushPreferences()
+            guard defaults.stringArray(forKey: "NSRecentDocumentURLs")?.first == "/tmp/preferences-smoke.comp",
+                  defaults.synchronize() else { fail("recent project preference write") }
+            let reopened = SQLiteUserDefaults(databaseURL: directory.appendingPathComponent("Compositor/preferences.sqlite3"))
+            guard reopened.stringArray(forKey: "NSRecentDocumentURLs")?.first == "/tmp/preferences-smoke.comp",
+                  reopened.double(forKey: "layersPanelWidth") == 321.5,
+                  try Data(contentsOf: legacy) == Data(plist.utf8) else { fail("preference persistence") }
+            print("CompositorHostBootstrap: preferences OK (legacy import / save-autosave recents / SQLite reopen)")
+        } catch { fail("preferences smoke: \(error)") }
     }
 
     private static func runSessionSmoke() {

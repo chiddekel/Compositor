@@ -31,6 +31,30 @@ The updater follows the host's installed origin. It cannot update an old standal
 bundle that has no configured remote. The update monitor's absence of notifications
 does not mean the app is up to date; only a completed check reports that result.
 
+## Preferences on Linux
+
+The Linux compatibility layer keeps the existing `UserDefaults.standard` and
+`@AppStorage` calls, with SQLite storing the values in
+`$XDG_CONFIG_HOME/Compositor/preferences.sqlite3` (or
+`~/.config/Compositor/preferences.sqlite3` when XDG_CONFIG_HOME is unset).
+Flatpak supplies its private configuration directory under
+`~/.var/app/com.compositor.Client/config`.
+
+The first successful database initialization imports the current executable's
+Foundation preferences once, without changing the old plist. Later launches use
+SQLite, so deleted settings are not reimported. Project files are unaffected.
+Each setting change is committed in a transaction; a temporarily failed write
+stays in memory and is retried by the shell's regular preference flush. Persistent
+storage errors are logged to stderr, and unsaved changes cannot survive process exit.
+
+This avoids the static Swift Foundation property-list writer crash encountered
+when save/autosave updates the recent-project array. To exercise migration and
+that exact application entry point with temporary, isolated settings, run:
+
+```sh
+flatpak run com.compositor.Client --preferences-smoke
+```
+
 ## Publishing another alpha
 
 1. Update `flatpak/release.json`, the newest AppStream release in
@@ -42,7 +66,7 @@ does not mean the app is up to date; only a completed check reports that result.
    JSON version, and push the tag. Do not move an existing release tag.
 
 `.github/workflows/flatpak-release.yml` builds and signs the full manifest, runs
-native tests, installs the signed result and runs the app's session smoke test.
+native tests, installs the signed result and runs the app's session and preferences smoke tests.
 Only then does it stage release assets, deploy Pages, and publish the prerelease.
 A failed deployment leaves the new release as a draft. A manual workflow rerun
 must use `GNU_Linux` with its matching release tag already present.

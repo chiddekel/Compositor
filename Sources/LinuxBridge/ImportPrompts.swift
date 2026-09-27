@@ -69,8 +69,8 @@ nonisolated public func compositorSetWaitPump(_ pump: (@convention(c) (UnsafeMut
     ImportPrompts.waitPumpContext = context
 }
 
-/// Writes upstream's preferences (UserDefaults: @AppStorage values, saved keyboard shortcuts, …) to disk. The Mac does
-/// this by itself; Linux Foundation keeps them in memory until asked, so the shell asks periodically and on quit.
+/// Retries any pending preference writes. SQLite normally commits each UserDefaults change immediately;
+/// the shell also asks periodically and on quit, so a temporary storage failure can recover.
 @_cdecl("compositor_flush_preferences")
 nonisolated public func compositorFlushPreferences() {
     UserDefaults.standard.synchronize()

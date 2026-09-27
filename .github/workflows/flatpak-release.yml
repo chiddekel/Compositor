@@ -72,6 +72,7 @@ jobs:
           flatpak remote-add --user --gpg-import=flatpak/release-key.gpg compositor-release-test "$PWD/dist/site/repo"
           flatpak install --user --noninteractive -y compositor-release-test com.compositor.Client//alpha
           flatpak run --env=QT_QPA_PLATFORM=offscreen com.compositor.Client --session-smoke
+          flatpak run --env=QT_QPA_PLATFORM=offscreen com.compositor.Client --preferences-smoke
       - name: Remove private signing material
         if: always()
         run: |

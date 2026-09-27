@@ -133,7 +133,8 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // Foundation gaps (FileWrapper, NSFileCoordinator, security-scoped URLs), UTType and the headless AppKit
         // surface upstream's model code touches. Each is one Apple framework (interface segregation).
-        .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers"], path: "Sources/Compat/FoundationCompat",
+        .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3"),
+        .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers", "CSQLite"], path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Accelerate", path: "Sources/Compat/Accelerate",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -243,7 +244,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CompatTests",
-            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision"],
+            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision"],
             path: "Tests/CompatTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift
@@ -280,7 +281,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",
-            dependencies: ["Compositor", "HostRun", "ImageIO", "CoreGraphics"],
+            dependencies: ["Compositor", "HostRun", "ImageIO", "CoreGraphics", "FoundationCompat"],
             path: "Sources/CompositorHostBootstrap",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
             linkerSettings: [
