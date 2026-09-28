@@ -114,6 +114,8 @@ private struct State: Encodable {
     let shapeKind: String?
     let shapeRect: [Double]?
     let shapeLine: [Double]?
+    /// A pending crop's rect (x, y, width, height) in document pixels, as upstream `cropRect`.
+    let cropRect: [Double]?
     /// The text being typed (upstream `textDraft`): where it sits and how it looks, for the shell's inline editor.
     let colorRange: ColorRangeState?
     struct ColorRangeState: Encodable {
@@ -503,7 +505,12 @@ final class UpstreamEditor {
         // The Gradient and Shape tools, as upstream's EditorCanvas drives them with the mouse.
         case "gradientBegin":
             guard let point = point(command) else { return fail(-1, "invalid point") }
-            if s.tool != .gradient { s.selectTool(.gradient) }
+            if s.tool != .gradient {
+                s.selectTool(.gradient)
+                guard s.tool == .gradient else {
+                    return fail(-5, s.brushError ?? "could not leave text editing to use Gradient")
+                }
+            }
             s.beginGradient(at: point)
             guard s.gradientEdit != nil else { return fail(-5, s.brushError ?? "gradient could not start") }
         case "gradientMove":
@@ -514,7 +521,12 @@ final class UpstreamEditor {
         case "gradientCancel": s.cancelGradient()
         case "shapeBegin":
             guard let point = point(command) else { return fail(-1, "invalid point") }
-            if s.tool != .shape { s.selectTool(.shape) }
+            if s.tool != .shape {
+                s.selectTool(.shape)
+                guard s.tool == .shape else {
+                    return fail(-5, s.brushError ?? "could not leave text editing to use Shape")
+                }
+            }
             s.beginShape(at: point)
             guard s.shapeDraft != nil else { return fail(-5, "shape could not start") }
         case "shapeDrag":
@@ -1007,6 +1019,7 @@ final class UpstreamEditor {
             shapeKind: s.shapeDraft.map { $0.kind.rawValue },
             shapeRect: s.shapeDraft.map { [Double($0.rect.minX), Double($0.rect.minY), Double($0.rect.width), Double($0.rect.height)] },
             shapeLine: s.shapeLineEnds.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] },
+            cropRect: s.cropRect.map { [Double($0.origin.x), Double($0.origin.y), Double($0.size.width), Double($0.size.height)] },
             colorRange: s.colorRange.map { State.ColorRangeState(working: $0.isWorking, generation: $0.generation,
                 hasColors: $0.hasColors, sampleMode: $0.effectiveMode.rawValue, error: $0.error) },
             textDraft: s.textDraft.map { draft in

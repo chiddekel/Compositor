@@ -398,7 +398,53 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             require(injected.performAutosave(), "autosave failed against the injected storage");
             require(QDir(temporary.filePath("appdata/recovery")).exists(), "autosave ignored the injected storage locator");
         }
-        qInfo("Qt dialog journey OK (resize, resolution, cancel, preview, commit, undo, command palette, autosave, save/reopen)");
+
+        // Tool-transition contract (upstream EditorSession.selectTool): rail mirrors session;
+        // textDraft is committed by session state, not editor visibility; crop seeds from selection.
+        {
+            require(window.sendCommand({{"action", "textBegin"}, {"x", 20}, {"y", 20}}), "textBegin for transition failed");
+            require(window.sessionState().contains("textDraft") && !window.sessionState().value("textDraft").isNull(),
+                    "text draft missing before tool switch");
+            if (auto *editor = window.findChild<QPlainTextEdit *>("canvasTextEditor")) editor->hide();
+            QApplication::processEvents();
+            const QString beforeTool = window.sessionState().value("tool").toString();
+            require(beforeTool == "type", "textBegin did not select Type");
+            window.setTool(SessionWindow::Tool::Gradient);
+            QApplication::processEvents();
+            require(window.sessionState().value("tool").toString() == "gradient", "Type→Gradient did not settle session tool");
+            require(window.currentTool() == SessionWindow::Tool::Gradient, "rail tool lagged session after Type→Gradient");
+            require(!window.sessionState().contains("textDraft") || window.sessionState().value("textDraft").isNull(),
+                    "textDraft survived tool switch (visibility must not gate finish)");
+            require(window.sendCommand({{"action", "gradientBegin"}, {"x", 10}, {"y", 10}}), "gradientBegin after Type commit failed");
+            require(window.sessionState().value("gradientLine").isArray(), "gradient draft missing");
+            window.setTool(SessionWindow::Tool::Move);
+            QApplication::processEvents();
+            require(window.sessionState().value("tool").toString() == "move" && window.currentTool() == SessionWindow::Tool::Move,
+                    "Gradient→Move rail/session mismatch");
+            require(!window.sessionState().contains("gradientLine") || window.sessionState().value("gradientLine").isNull(),
+                    "pending gradient was not resolved on tool switch");
+
+            require(window.sendCommand({{"action", "selectRectangle"}, {"x", 8}, {"y", 8}, {"width", 24}, {"height", 16}}),
+                    "selection for crop seed failed");
+            window.setTool(SessionWindow::Tool::Crop);
+            QApplication::processEvents();
+            require(window.sessionState().value("tool").toString() == "crop" && window.currentTool() == SessionWindow::Tool::Crop,
+                    "Crop tool rail/session mismatch");
+            const QJsonArray crop = window.sessionState().value("cropRect").toArray();
+            require(crop.size() == 4, "session cropRect missing after Crop");
+            require(window.hasPendingCrop(), "shell crop overlay missing");
+            const QRectF pending = window.pendingCropRect();
+            require(qAbs(pending.x() - crop.at(0).toDouble()) < 0.5 && qAbs(pending.y() - crop.at(1).toDouble()) < 0.5
+                    && qAbs(pending.width() - crop.at(2).toDouble()) < 0.5 && qAbs(pending.height() - crop.at(3).toDouble()) < 0.5,
+                    "shell crop did not mirror session cropRect");
+            require(pending.width() < window.sessionState().value("width").toDouble()
+                    || pending.height() < window.sessionState().value("height").toDouble(),
+                    "crop with selection seeded the full canvas instead of selection bounds");
+            window.setTool(SessionWindow::Tool::Move);
+            QApplication::processEvents();
+        }
+
+        qInfo("Qt dialog journey OK (resize, resolution, cancel, preview, commit, undo, command palette, autosave, save/reopen, tool transitions)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt dialog journey failed: %s", e.what()); return 1;

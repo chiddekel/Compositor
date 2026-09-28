@@ -156,6 +156,7 @@ public:
     enum class SpotHealingMode { ContentAware, CreateTexture, ProximityMatch };
     enum class ShapeMode { Rectangle, Ellipse, Line };
 
+    /// User intent: commit/refuse drafts like upstream `EditorSession.selectTool`, then mirror the session.
     void setTool(Tool tool);
     Tool currentTool() const { return m_tool; }
 
@@ -351,6 +352,13 @@ private:
     void setupHeaderBar();
     void setupOptionsBar();
     void syncToolFromSession();
+    /// Shell-only mirror of the session tool (and crop rect). Never sends selectTool / textFinish.
+    void applyToolLocally(Tool tool);
+    /// User-driven tool change: finish textDraft if needed, selectTool, then applyToolLocally from session.
+    void requestTool(Tool tool);
+    Tool toolFromSessionState(const QJsonObject &state) const;
+    const char *sessionNameForTool(Tool tool) const;
+    void syncCropFromSession(const QJsonObject &state);
     void syncOptionsFromSession();
     void syncBrushFromSession();
     void updateStatusTelemetry();

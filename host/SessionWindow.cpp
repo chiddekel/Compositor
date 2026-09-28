@@ -4094,53 +4094,110 @@ void SessionWindow::healStroke(double x1, double y1, double x2, double y2) {
     if (compositor_session_command(m_sessionHandle, reinterpret_cast<const uint8_t *>(R"({"version":1,"action":"brushEnd"})"), std::strlen(R"({"version":1,"action":"brushEnd"})")) == 0) refreshImage();
 }
 
-void SessionWindow::setTool(Tool tool) {
-    if (m_tool == Tool::Crop && tool != Tool::Crop) {
-        cancelCrop();
+const char *SessionWindow::sessionNameForTool(Tool tool) const {
+    switch (tool) {
+    case Tool::Move: return "move";
+    case Tool::Marquee: return "marquee";
+    case Tool::Lasso: return "lasso";
+    case Tool::Magic: return "wand";
+    case Tool::Crop: return "crop";
+    case Tool::Brush: return "brush";
+    case Tool::SpotHealing: return "spotHealing";
+    case Tool::CloneStamp: return "cloneStamp";
+    case Tool::Smear: return "blur";
+    case Tool::Gradient: return "gradient";
+    case Tool::Shape: return "shape";
+    case Tool::Type: return "type";
+    case Tool::Eyedropper: return "eyedropper";
+    case Tool::Hand: return "hand";
+    case Tool::Zoom: return "zoom";
+    case Tool::Idle: return "idle";
     }
-    if (m_tool == Tool::Type && tool != Tool::Type && m_textEditor && m_textEditor->isVisible()) {
-        sendCommandQuiet({{"action", "textFinish"}});   // switching tools applies the text, as upstream does
-        syncTextEditor();
-        refreshImage();
+    return "move";
+}
+
+SessionWindow::Tool SessionWindow::toolFromSessionState(const QJsonObject &state) const {
+    const QString toolStr = state.value("tool").toString();
+    if (toolStr == "move") return Tool::Move;
+    if (toolStr == "marquee") return Tool::Marquee;
+    if (toolStr == "lasso") return Tool::Lasso;
+    if (toolStr == "wand") return Tool::Magic;
+    if (toolStr == "crop") return Tool::Crop;
+    if (toolStr == "brush") return Tool::Brush;
+    if (toolStr == "spotHealing") return Tool::SpotHealing;
+    if (toolStr == "cloneStamp") return Tool::CloneStamp;
+    if (toolStr == "blur") return Tool::Smear;
+    if (toolStr == "gradient") return Tool::Gradient;
+    if (toolStr == "shape") return Tool::Shape;
+    if (toolStr == "type") return Tool::Type;
+    if (toolStr == "eyedropper") return Tool::Eyedropper;
+    if (toolStr == "hand") return Tool::Hand;
+    if (toolStr == "zoom") return Tool::Zoom;
+    if (toolStr == "idle") return Tool::Idle;
+    return m_tool;
+}
+
+void SessionWindow::syncCropFromSession(const QJsonObject &state) {
+    const QJsonArray crop = state.value("cropRect").toArray();
+    if (crop.size() == 4) {
+        m_pendingCropRect = QRectF(crop.at(0).toDouble(), crop.at(1).toDouble(),
+                                   crop.at(2).toDouble(), crop.at(3).toDouble());
+        m_hasPendingCrop = true;
+    } else if (m_tool != Tool::Crop) {
+        m_hasPendingCrop = false;
+        m_pendingCropRect = QRectF();
     }
+}
+
+void SessionWindow::applyToolLocally(Tool tool) {
     m_tool = tool;
     if (m_toolActions.contains(tool) && !m_toolActions[tool]->isChecked()) {
         m_toolActions[tool]->setChecked(true);
-    }
-    if (m_tool == Tool::Crop && !m_image.isNull() && !m_hasPendingCrop) {
-        m_pendingCropRect = QRectF(0, 0, docWidth(), docHeight());
-        m_hasPendingCrop = true;
-    }
-    if (m_sessionHandle != 0) {
-        const char *toolName = "move";
-        switch (tool) {
-        case Tool::Move: toolName = "move"; break;
-        case Tool::Marquee: toolName = "marquee"; break;
-        case Tool::Lasso: toolName = "lasso"; break;
-        case Tool::Magic: toolName = "wand"; break;
-        case Tool::Crop: toolName = "crop"; break;
-        case Tool::Brush: toolName = "brush"; break;
-        case Tool::SpotHealing: toolName = "spotHealing"; break;
-        case Tool::CloneStamp: toolName = "cloneStamp"; break;
-        case Tool::Smear: toolName = "blur"; break;
-        case Tool::Gradient: toolName = "gradient"; break;
-        case Tool::Shape: toolName = "shape"; break;
-        case Tool::Type: toolName = "type"; break;
-        case Tool::Eyedropper: toolName = "eyedropper"; break;
-        case Tool::Hand: toolName = "hand"; break;
-        case Tool::Zoom: toolName = "zoom"; break;
-        case Tool::Idle: toolName = "idle"; break;
-        }
-        QJsonObject cmdObj;
-        cmdObj["version"] = 1;
-        cmdObj["action"] = "selectTool";
-        cmdObj["kind"] = toolName;
-        sendCommand(cmdObj);
     }
     updateOptionsBar();
     updateToolRail();
     updateStatusTelemetry();
     if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::requestTool(Tool tool) {
+    // Mirror upstream EditorSession.selectTool: session owns drafts and refusal.
+    if (m_sessionHandle == 0) {
+        applyToolLocally(tool);
+        return;
+    }
+    QJsonObject before = sessionState();
+    const Tool sessionTool = toolFromSessionState(before);
+    if (tool != sessionTool) {
+        if (before.contains("textDraft") && !before.value("textDraft").isNull()) {
+            // Gate on session textDraft, not QTextEdit visibility (headless / lost focus).
+            if (!sendCommand({{"action", "textFinish"}})) {
+                applyToolLocally(sessionTool);
+                syncTextEditor();
+                showSessionAlert();
+                return;
+            }
+            syncTextEditor();
+            refreshImage();
+            before = sessionState();
+        }
+        if (m_tool == Tool::Crop && tool != Tool::Crop) {
+            // Local overlay; session cancelCrop runs inside selectTool.
+            cancelCrop();
+        }
+    }
+    QJsonObject cmdObj;
+    cmdObj["version"] = 1;
+    cmdObj["action"] = "selectTool";
+    cmdObj["kind"] = QString::fromUtf8(sessionNameForTool(tool));
+    sendCommand(cmdObj);
+    const QJsonObject after = sessionState();
+    applyToolLocally(toolFromSessionState(after));
+    syncCropFromSession(after);
+}
+
+void SessionWindow::setTool(Tool tool) {
+    requestTool(tool);
 }
 
 /// What the canvas does itself (the tools are upstream's CanvasView, see canvasMousePressEvent): sampling into the
@@ -6626,27 +6683,16 @@ void SessionWindow::syncToolFromSession() {
     PERF_SCOPE("syncToolFromSession");
     if (m_sessionHandle == 0) return;
     const auto state = sessionState();
-    const QString toolStr = state.value("tool").toString();
-    if (toolStr.isEmpty()) return;
-    Tool t = m_tool;
-    if (toolStr == "move") t = Tool::Move;
-    else if (toolStr == "marquee") t = Tool::Marquee;
-    else if (toolStr == "lasso") t = Tool::Lasso;
-    else if (toolStr == "wand") t = Tool::Magic;
-    else if (toolStr == "crop") t = Tool::Crop;
-    else if (toolStr == "brush") t = Tool::Brush;
-    else if (toolStr == "spotHealing") t = Tool::SpotHealing;
-    else if (toolStr == "cloneStamp") t = Tool::CloneStamp;
-    else if (toolStr == "blur") t = Tool::Smear;
-    else if (toolStr == "gradient") t = Tool::Gradient;
-    else if (toolStr == "shape") t = Tool::Shape;
-    else if (toolStr == "type") t = Tool::Type;
-    else if (toolStr == "eyedropper") t = Tool::Eyedropper;
-    else if (toolStr == "hand") t = Tool::Hand;
-    else if (toolStr == "zoom") t = Tool::Zoom;
-    else if (toolStr == "idle") t = Tool::Idle;
+    if (state.value("tool").toString().isEmpty()) return;
+    const Tool t = toolFromSessionState(state);
     if (t != m_tool) {
-        QMetaObject::invokeMethod(this, [this, t] { setTool(t); }, Qt::QueuedConnection);
+        // Mirror only — never re-enter requestTool / textFinish / selectTool.
+        QMetaObject::invokeMethod(this, [this, t] {
+            applyToolLocally(t);
+            syncCropFromSession(sessionState());
+        }, Qt::QueuedConnection);
+    } else {
+        syncCropFromSession(state);
     }
 }
 
