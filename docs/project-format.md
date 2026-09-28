@@ -1,12 +1,12 @@
-# Compositor project format, versions 1–10
+# Compositor project format, versions 1–11
 
 A `.comp` project is a directory package containing `manifest.json` and an `images/` directory of `<layer UUID>.png` assets. macOS presents the directory as a document package. The Linux host uses the same Codable manifest and asset names through Qt codecs.
 
-The manifest identifies `com.compositor.project`, version `10` for new saves (versions `1`–`9` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
+The manifest identifies `com.compositor.project`, version `11` for new GNU/Linux saves (versions `1`–`10` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
 
 Embedded PNGs preserve source pixels and transparency; transforms remain separate. Projects survive moving or deleting imported source photos. The macOS implementation saves using coordinated atomic package replacement. Linux validates manifest data through the Swift ABI, writes PNG assets under `images/`, stages a sibling package, and replaces the destination only after all assets encode successfully. Unsupported versions, invalid metadata, missing assets, unsafe paths, and oversized data are rejected before replacing the live document.
 
-Limits: 30,000 pixels per canvas/image side, 100 million total source pixels, 10,000 layers, 4 MiB manifest, 512 MiB per encoded asset. See `ProjectStore.swift` for validation.
+Limits: 30,000 pixels per canvas/image side, 200 million pixels per surface, 10,000 layers, 4 MiB manifest, and 512 MiB per encoded asset. Image and mask totals each use `DocumentLimits.documentPixelBudget`: physical memory divided by 16, clamped to 200–800 million pixels. See `ProjectStore.swift` and `DocumentLimits.swift` for validation.
 
 Undo history and viewport are session-only. Opening fits the canvas, restores selection, and starts with clean history. Future editable features must extend the schema and round-trip tests. PNG export is a flattened derivative and does not mark project edits saved.
 
@@ -18,7 +18,7 @@ Version 3 adds optional per-layer `opacity` (finite 0–1) and `blendMode` (Norm
 
 Version 4 adds optional `maskFile` and `maskEnabled` fields to individual layers. Mask filenames must be `<layer UUID>.mask.png` under `images/`; enabled defaults to true when a mask exists. Records without masks omit both fields. Groups cannot carry masks in this version. Files declaring versions 1–3 cannot contain mask metadata.
 
-Masks store 8-bit grayscale coverage without alpha (white reveals, black hides). Their normalized extent matches the image’s local rectangle, so the same layer transform applies to both. A uniform 1×1 mask is valid and avoids allocating full-resolution pixels before painting. Nonuniform mask pixels and a thumbnail are immutable assets shared by history. Image Size resamples them with the image transform; Canvas Size and Crop preserve their pixels. Up to 100 million mask pixels may be stored in addition to the existing 100 million image pixels; per-side and per-file limits also apply to masks. Disabled masks remain embedded and editable but do not affect compositing. Image-versus-mask target selection is session-only and reopens on image pixels.
+Masks store 8-bit grayscale coverage without alpha (white reveals, black hides). Their normalized extent matches the image’s local rectangle, so the same layer transform applies to both. A uniform 1×1 mask is valid and avoids allocating full-resolution pixels before painting. Nonuniform mask pixels and a thumbnail are immutable assets shared by history. Image Size resamples them with the image transform; Canvas Size and Crop preserve their pixels. Masks have a separate cumulative pixel budget of the same size as the image budget; per-surface, per-side and per-file limits also apply to masks. Disabled masks remain embedded and editable but do not affect compositing. Image-versus-mask target selection is session-only and reopens on image pixels.
 
 Version 5 adds optional `maskSourceID`: the UUID of a non-group layer supplying live alpha in document coordinates. It multiplies the target’s alpha alongside its enabled raster mask. Source pixels, transform, opacity, raster mask and upstream live masks contribute coverage; visibility and RGB color do not. Sources remain independent layers. Missing references, self-links, cycles, group endpoints and chains over 256 nodes are rejected. Deletion can bake the live coverage into dependent image pixels (retaining their raster masks) or remove the links, as one undoable operation. Links survive image/canvas resize and crop. Older versions default to no live mask; older app builds reject v5.
 
@@ -32,7 +32,11 @@ Version 8 lets a folder carry its own `opacity`, which multiplies into every lay
 
 Version 9 adds three adjustment kinds that sample neighboring pixels: `Gaussian Blur` (`blurRadius`, 0.1–250 document pixels), `Motion Blur` (`motionAngle`, −90 to 90 degrees, and `motionDistance`, 1–2000) and `Add Noise` (`noiseAmount`, 0.1–400, `noiseGaussian`, `noiseMonochromatic` and `noiseSeed`, so the pattern is stable between sessions). Files declaring 1–8 cannot contain these kinds; the earlier adjustment kinds remain valid at version 7 and up.
 
+The GNU/Linux writer and validator use Linux-owned overrides of upstream 1.3.4 (`c28f827`). The protected macOS source tree in this checkout still declares version 10.
+
 Version 10 lets a text layer color some of its letters differently: optional `colorRuns` in its `text` metadata (see Editable text). Files declaring 1–9 cannot contain it.
+
+Version 11 adds optional `fontRuns` to text metadata. Each run has UTF-16 `location` and `length`, and a nonempty `fontName` of at most 200 characters without newlines. Runs must be sorted, nonoverlapping, positive in length and end within the content. Outside these runs, letters use the base `fontName`. Versions 1–10 reject font runs; per-letter colors remain valid from version 10. Missing faces fall back when editing; opening preserves the saved PNG.
 
 ### Additive layer fields
 

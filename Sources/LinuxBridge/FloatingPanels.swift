@@ -32,6 +32,7 @@ enum FloatingPanels {
         var panels: [Open] = []
         if let editing = session.effectsEditing { panels.append(Open(panel: "EffectsSheet", title: editing.kind.rawValue)) }
         if let picker = session.colorPicker { panels.append(Open(panel: "ColorPickerSheet", title: picker.target.title)) }
+        if session.colorRange != nil { panels.append(Open(panel: "ColorRangeSheet", title: "Color Range")) }
         if session.levels != nil { panels.append(Open(panel: "LevelsSheet", title: "Levels")) }
         if session.hueSaturation != nil { panels.append(Open(panel: "HueSaturationSheet", title: "Hue/Saturation")) }
         if let operation = session.selectionAmountOperation {
@@ -51,6 +52,7 @@ enum FloatingPanels {
         case "ColorPickerSheet": if session.colorPicker != nil { session.closeColorPicker(commit: false) }
         case "LevelsSheet": if session.levels != nil { session.cancelLevels() }
         case "HueSaturationSheet": if session.hueSaturation != nil { session.cancelHueSaturation() }
+        case "ColorRangeSheet": session.cancelColorRange()
         case "SelectionAmountSheet": session.selectionAmountOperation = nil
         case "KeyboardShortcutsSheet": ShortcutSettings.shared.close()
         default: break

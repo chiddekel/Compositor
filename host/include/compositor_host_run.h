@@ -15,6 +15,12 @@ extern "C" {
 
 int compositor_host_run(int argc, char **argv);
 int compositor_host_dialog_smoke(int argc, char **argv);
+int compositor_host_package_smoke(int argc, char **argv);
+int compositor_host_save_smoke(int argc, char **argv);
+int compositor_host_text_smoke(int argc, char **argv, int (*probe)(void));
+int compositor_host_interchange(int argc, char **argv);
+int compositor_host_preview_smoke(int argc, char **argv);
+int compositor_host_color_range_smoke(int argc, char **argv);
 int compositor_host_io_smoke(int argc, char **argv);
 int compositor_host_layers_smoke(int argc, char **argv);
 int compositor_host_brush_smoke(int argc, char **argv);

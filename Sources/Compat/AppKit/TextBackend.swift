@@ -72,6 +72,86 @@ public enum TextBackend {
         return (CGFloat(ascent), CGFloat(descent), CGFloat(leading))
     }
 
+    typealias AttributeLayoutFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Double, Double, Double, Double,
+        UnsafePointer<CChar>?, UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?) -> Int32
+    typealias AttributeRenderFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Double, Double, Double, Double,
+        Int32, Double, Double, Double, Double, Double, UnsafePointer<CChar>?,
+        UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
+    private static let attributedFunctions: (layout: AttributeLayoutFn, render: AttributeRenderFn)? = {
+        #if canImport(Glibc)
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL),
+                  let layout = dlsym(handle, "compositor_qt_text_layout_attributes"),
+                  let render = dlsym(handle, "compositor_qt_text_render_attributes") else { continue }
+            return (unsafeBitCast(layout, to: AttributeLayoutFn.self), unsafeBitCast(render, to: AttributeRenderFn.self))
+        }
+        #endif
+        return nil
+    }()
+
+    /// Effective ranges combine overlapping color/font attributes before crossing
+    /// the ABI. Qt therefore receives disjoint ranges in the same UTF-16 units.
+    private static func attributesJSON(_ string: NSAttributedString, font: NSFont, color: NSColor) -> String? {
+        var runs: [[String: Any]] = []
+        string.enumerateAttributes(in: NSRange(location: 0, length: string.length)) { attributes, range, _ in
+            let face = attributes[.font] as? NSFont ?? font
+            let ink = attributes[.foregroundColor] as? NSColor ?? color
+            runs.append(["location": range.location, "length": range.length, "font": face.fontName,
+                         "size": Double(face.pointSize), "color": [Double(ink.redComponent), Double(ink.greenComponent),
+                             Double(ink.blueComponent), Double(ink.alphaComponent)]])
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: runs) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    public static func layout(_ string: NSAttributedString, maxWidth: CGFloat) -> Layout? {
+        let attributes = string.length > 0 ? string.attributes(at: 0, effectiveRange: nil) : [:]
+        let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 12)
+        let tracking = attributes[.kern] as? CGFloat ?? 0
+        let leading = (attributes[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0
+        guard let functions = attributedFunctions,
+              let json = attributesJSON(string, font: font, color: .black) else {
+            return layout(string.string, font: font, tracking: tracking, lineHeight: leading, maxWidth: maxWidth)
+        }
+        var width = 0.0, height = 0.0, baseline = 0.0
+        let status = string.string.withCString { text in font.fontName.withCString { name in json.withCString { runs in
+            functions.layout(text, name, Double(font.pointSize), Double(tracking), Double(leading), Double(maxWidth),
+                             runs, &width, &height, &baseline)
+        } } }
+        return status == 0 ? Layout(width: CGFloat(width), height: CGFloat(height), baseline: CGFloat(baseline)) : nil
+    }
+
+    public static func render(_ string: NSAttributedString, maxWidth: CGFloat, alignment: Int32, boxWidth: CGFloat) -> CGImage? {
+        let attributes = string.length > 0 ? string.attributes(at: 0, effectiveRange: nil) : [:]
+        let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 12)
+        let color = attributes[.foregroundColor] as? NSColor ?? .black
+        let tracking = attributes[.kern] as? CGFloat ?? 0
+        let leading = (attributes[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0
+        guard let functions = attributedFunctions, let json = attributesJSON(string, font: font, color: color) else {
+            var runs: [(NSRange, NSColor)] = []
+            string.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: string.length)) { value, range, _ in
+                if let ink = value as? NSColor, ink != color { runs.append((range, ink)) }
+            }
+            return render(string.string, font: font, tracking: tracking, lineHeight: leading, maxWidth: maxWidth,
+                          alignment: alignment, boxWidth: boxWidth, color: color, runs: runs)
+        }
+        var pixels: UnsafeMutablePointer<UInt8>?
+        var width: Int32 = 0, height: Int32 = 0
+        let status = string.string.withCString { text in font.fontName.withCString { name in json.withCString { runs in
+            functions.render(text, name, Double(font.pointSize), Double(tracking), Double(leading), Double(maxWidth), alignment,
+                             Double(boxWidth), Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent),
+                             Double(color.alphaComponent), runs, &pixels, &width, &height)
+        } } }
+        guard status == 0, let pixels, width > 0, height > 0 else { return nil }
+        defer { free(pixels) }
+        guard let context = CGContext(data: nil, width: Int(width), height: Int(height), bitsPerComponent: 8, bytesPerRow: Int(width) * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let destination = context.data else { return nil }
+        destination.copyMemory(from: pixels, byteCount: Int(width) * Int(height) * 4)
+        return context.makeImage()
+    }
+
     public struct Layout { public let width: CGFloat; public let height: CGFloat; public let baseline: CGFloat }
 
     /// Size and first baseline of `text`, lines `lineHeight` apart (0: 1.2 em), wrapping at `maxWidth` (0: never).

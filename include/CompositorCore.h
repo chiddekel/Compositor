@@ -99,17 +99,33 @@ int compositor_composite_over(uint8_t *dst_rgba,
 
 /*
  * Project manifest (JSON) serialization for save/load operations.
- * The manifest is the Codable ProjectManifest (version 1-7 schema).
+ * The manifest is the Codable ProjectManifest (currently versions 1-10).
  * Returns required byte count or negative status.
  */
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
 int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
+
+/* Resource limits shared by project save/load. Account images and masks in
+ * separate totals, matching ProjectStore. Returns the new total or -1. */
+size_t compositor_project_max_surface_pixels(void);
+size_t compositor_project_pixel_budget(void);
+int64_t compositor_project_account_asset(size_t width, size_t height, size_t used);
 
 /*
  * Export or install one canonical layer asset. UUID is its textual
  * representation. RGBA assets use premultiplied RGBA bytes; mask assets use
  * one grayscale byte per pixel.
  */
+/* Frozen save snapshots: capture/mark_saved run on the main thread. Exports and
+ * release are worker-safe and never read the current session. Always release.
+ * Autosave must not call mark_saved. A closed/replaced session rejects completion. */
+uint64_t compositor_save_capture(uint64_t handle);
+int64_t compositor_save_export_manifest(uint64_t token, uint8_t *output, size_t capacity);
+int64_t compositor_save_export_layer(uint64_t token, const uint8_t *layer_id, size_t count,
+    int32_t mask, uint8_t *output, size_t capacity, size_t *width, size_t *height);
+int32_t compositor_save_mark_saved(uint64_t token);
+void compositor_save_release(uint64_t token);
+
 int64_t compositor_session_export_layer(uint64_t handle,
                                         const uint8_t *layer_id, size_t layer_id_count,
                                         int32_t mask, uint8_t *output, size_t capacity,

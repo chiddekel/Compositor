@@ -61,6 +61,7 @@ let package = Package(
         .library(name: "CompositorCore", type: .static, targets: ["Compositor"]),
     ],
     targets: [
+        .target(name: "CompositorSelectionBackend", path: "backends/selection", publicHeadersPath: "include"),
         // Layer effects (stroke / shadow / overlay / inner shadow): the C tier and the Vulkan tier of the chain that
         // Sources/Overrides/MetalLayerEffects.swift fronts. Same nine passes as upstream's Metal kernels.
         .target(name: "CompositorEffectsBackend", path: "backends/effects",
@@ -173,7 +174,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
@@ -195,7 +196,10 @@ let package = Package(
                      "Rendering/WandPixels.h",
                      "IO/CompositorApplicationDelegate.swift",
                      "Document/DocumentHistory.swift",
+                     "Document/EditorSession.swift",
                      "Document/SmudgeLiquify.swift",
+                     "Document/TypeTool.swift",
+                     "IO/ProjectStore.swift",
                      "Rendering/MetalBrushCoverage.swift",
                      "Rendering/MetalLayerEffects.swift"],
             swiftSettings: [
@@ -222,6 +226,7 @@ let package = Package(
             exclude: ["SliderSnapTests.swift", "FloatingPanelTests.swift", "CanvasThumbnailTests.swift",
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
+                      "TypeToolTests.swift", "GroupTests.swift", "LayerMaskTests.swift", "LayerAppearanceTests.swift",
                       "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
@@ -264,7 +269,7 @@ let package = Package(
             name: "HostRun",
             dependencies: [],
             path: "host",
-            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "QtImageIO.cpp", "RawDecoder.cpp", "FlatpakUpdateService.cpp", "SwiftUIQtRenderer.cpp", "moc_SessionWindow.cpp", "moc_FlatpakUpdateService.cpp"],
+            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "InterchangeJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "QtImageIO.cpp", "RawDecoder.cpp", "FlatpakUpdateService.cpp", "SwiftUIQtRenderer.cpp", "moc_SessionWindow.cpp", "moc_FlatpakUpdateService.cpp"],
             cxxSettings: [
                 .unsafeFlags([
                     "-I/usr/include/QtWidgets",
@@ -282,7 +287,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",
-            dependencies: ["Compositor", "HostRun", "ImageIO", "CoreGraphics", "FoundationCompat"],
+            dependencies: ["Compositor", "HostRun", "ImageIO", "CoreGraphics", "FoundationCompat", "AppKit"],
             path: "Sources/CompositorHostBootstrap",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
             linkerSettings: [

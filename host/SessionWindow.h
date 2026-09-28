@@ -27,6 +27,7 @@
 #include <QJsonObject>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QSet>
 #include <QKeySequence>
 #include <QAction>
 #include <QPointer>
@@ -34,6 +35,7 @@
 #include "interfaces/IPlatformServices.h"
 #include "ParityMetrics.h"
 #include "ParityPalette.h"
+#include "NativeTextHistory.h"
 
 class QTreeView;
 class QStandardItemModel;
@@ -100,6 +102,8 @@ public:
 
     // Crash-Recovery Autosave (R61)
     bool performAutosave();
+    bool startProjectSave(const QString &path, bool autosave, std::function<void(bool)> completion = {}, bool markSaved = true, uint64_t sourceHandle = 0);
+    bool startAutosave();
     bool hasAutosaveRecovery() const;
     bool recoverAutosave();
     void clearAutosave();
@@ -294,8 +298,14 @@ private:
     QVector<double> m_shapeLine;
     // Type tool: the inline editor over the session's text draft, the draft it shows, and a text box being dragged.
     class QPlainTextEdit *m_textEditor = nullptr;
+    class QSyntaxHighlighter *m_textHighlighter = nullptr;
     QJsonObject m_textDraft;
     bool m_syncingText = false;
+    NativeTextHistory m_textHistory;
+    int m_textUndoPosition = 0;
+    int m_textFormatRevision = 0;
+    bool m_textUndoCommandAdded = false;
+    bool m_textPreviewingColor = false;
     QPointF m_textBoxAnchor;
     QRectF m_textBoxRect;
     // The document's size, and the scale the canvas image (m_image) is composited at (see desiredDisplayScale).
@@ -324,7 +334,7 @@ private:
 
     void endBusy();
     bool sendCommandQuiet(const QJsonObject &command);   // no status-bar error (probing, e.g. "text here?")
-    void syncTextEditor();
+    void syncTextEditor(bool requestFocus = true);
     void layoutTextEditor();
     void refreshLayers();
     void setOpacityFromSlider(int value);
@@ -368,8 +378,8 @@ private:
     void closeDocumentTab(int index);
     // Upstream ProjectController.confirmReplacement: "Save changes to …?" Save / Cancel / Don't Save for the tab at
     // index (made current first, as upstream does). True when closing may proceed.
-    bool confirmDocumentClose(int index);
-    // Saves the current tab to its known .comp path, or asks for one (always, when forceChoosePath). True on success.
+    bool confirmDocumentClose(int index, bool closingWindow = false);
+    // Starts saving the captured tab; completion updates only that tab. True when accepted.
     bool saveCurrentDocument(bool forceChoosePath);
     bool isDocumentModified(uint64_t handle) const;
 
@@ -378,6 +388,9 @@ private:
     uint64_t m_sessionHandle = 0;
     std::vector<DocumentTab> m_documents;
     int m_activeDocumentIndex = -1;
+    QSet<uint64_t> m_savingDocuments;
+    QSet<uint64_t> m_closeAfterSave;
+    bool m_closeWindowAfterSave = false;
     bool m_painting = false;
     Tool m_tool = Tool::Move;
     MarqueeMode m_marqueeMode = MarqueeMode::Rectangle;
@@ -475,6 +488,7 @@ private:
     bool m_handlingShellRequests = false;
     int m_panelPollTick = 0;
     bool m_colorPickerOpen = false, m_samplingPicker = false;
+    bool m_colorRangeOpen = false;
     bool m_upstreamCanvasDrag = false;
     QByteArray m_cursorPicture;
     // Upstream's overlay as last drawn (canvas-sized, premultiplied): repainted only where its views are invalid

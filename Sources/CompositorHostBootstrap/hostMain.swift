@@ -17,6 +17,7 @@
 // where it traps from a C++ main). Run: `swift run CompositorHostBootstrap`.
 
 import Compositor
+import AppKit
 import CoreGraphics
 import ImageIO
 import Foundation
@@ -26,11 +27,43 @@ import HostRun
 @main
 struct HostBootstrap {
     static func main() {
+        if CommandLine.arguments.contains("--text-backend-smoke") {
+            let result = compositor_host_text_smoke(CommandLine.argc, CommandLine.unsafeArgv) {
+                MainActor.assumeIsolated { HostBootstrap.runTextBackendProbe() }
+            }
+            guard result == 0 else { fail("Qt text backend smoke returned \(result)") }
+            return
+        }
         if CommandLine.arguments.contains("--preferences-smoke") {
             runPreferencesSmoke()
             return
         }
         compositorConfigureBrushAcceleration(ProcessInfo.processInfo.environment["COMPOSITOR_BRUSH_BACKEND"] != "cpu")
+        if CommandLine.arguments.contains("--color-range-smoke") {
+            let result = compositor_host_color_range_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt Color Range smoke returned \(result)") }
+            return
+        }
+        if CommandLine.arguments.contains("--interchange") {
+            let result = compositor_host_interchange(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Interchange returned \(result)") }
+            return
+        }
+        if CommandLine.arguments.contains("--preview-smoke") {
+            let result = compositor_host_preview_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt preview smoke returned \(result)") }
+            return
+        }
+        if CommandLine.arguments.contains("--save-smoke") {
+            let result = compositor_host_save_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt save smoke returned \(result)") }
+            return
+        }
+        if CommandLine.arguments.contains("--package-smoke") {
+            let result = compositor_host_package_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt package smoke returned \(result)") }
+            return
+        }
         if CommandLine.arguments.contains("--dialog-smoke") {
             let result = compositor_host_dialog_smoke(CommandLine.argc, CommandLine.unsafeArgv)
             guard result == 0 else { fail("Qt dialog smoke returned \(result)") }
@@ -75,6 +108,68 @@ struct HostBootstrap {
         // Run the Qt host window/event loop
         let qt = compositor_host_run(CommandLine.argc, CommandLine.unsafeArgv)
         guard qt == 0 else { fail("compositor_host_run returned \(qt)") }
+    }
+
+    @MainActor private static func runTextBackendProbe() -> Int32 {
+        func check(_ condition: Bool, _ message: String) throws {
+            if !condition { throw NSError(domain: "TextBackendSmoke", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+        }
+        do {
+            let names = NSFontManager.shared.availableFonts
+            guard let sansName = ["DejaVu Sans", "Liberation Sans", "Noto Sans"].first(where: { names.contains($0) }),
+                  let monoName = ["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"].first(where: { names.contains($0) }),
+                  let sans = NSFont(name: sansName, size: 32), let mono = NSFont(name: monoName, size: 32) else {
+                throw NSError(domain: "TextBackendSmoke", code: 2, userInfo: [NSLocalizedDescriptionKey: "Required installed sans/mono test fonts missing: \(names.prefix(20))"])
+            }
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.minimumLineHeight = 44; paragraph.maximumLineHeight = 44
+            let text = NSMutableAttributedString(string: "iiiiiiii WWWW\nA😀é", attributes: [.font: sans, .foregroundColor: NSColor.black, .paragraphStyle: paragraph])
+            guard let plain = TextBackend.layout(text, maxWidth: 0) else { throw NSError(domain: "TextBackendSmoke", code: 3) }
+            text.addAttribute(.font, value: mono, range: NSRange(location: 0, length: 8))
+            text.addAttribute(.foregroundColor, value: NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1), range: NSRange(location: 6, length: 6))
+            guard let measured = TextBackend.layout(text, maxWidth: 0),
+                  let first = TextBackend.layout("iiiiiiii", font: mono, tracking: 0, lineHeight: 44, maxWidth: 0),
+                  let last = TextBackend.layout(" WWWW", font: sans, tracking: 0, lineHeight: 44, maxWidth: 0),
+                  let rendered = TextBackend.render(text, maxWidth: 0, alignment: 0, boxWidth: 0) else {
+                throw NSError(domain: "TextBackendSmoke", code: 4, userInfo: [NSLocalizedDescriptionKey: "Native attributed engine unavailable"])
+            }
+            try check(measured.width > plain.width + 20, "measurement ignored the per-letter face")
+            try check(abs(measured.width - first.width - last.width) < 1, "mixed measurement differs from independent font advances")
+            let bounds = text.boundingRect(with: CGSize(width: 100_000, height: 100_000))
+            try check(abs(bounds.width - measured.width) < 0.01, "AppKit measurement bypassed font runs")
+            try check(rendered.width == Int(ceil(measured.width)) && rendered.height == Int(ceil(measured.height)), "measure/render dimensions disagree")
+            let bytes = rendered.portableImage.bytes
+            var red = 0, dark = 0
+            for index in stride(from: 0, to: bytes.count, by: 4) where bytes[index + 3] > 230 {
+                if bytes[index] > 200 && bytes[index + 1] < 30 { red += 1 }
+                if bytes[index] < 30 && bytes[index + 1] < 30 { dark += 1 }
+            }
+            try check(red > 20 && dark > 20, "overlapping color and font ranges were not both rendered")
+            guard let wrapped = TextBackend.layout(text, maxWidth: 120),
+                  let wrappedImage = TextBackend.render(text, maxWidth: 120, alignment: 1, boxWidth: 120) else {
+                throw NSError(domain: "TextBackendSmoke", code: 5)
+            }
+            try check(wrapped.height > measured.height && wrappedImage.height == Int(ceil(wrapped.height)), "mixed-font wrapping differs between measurement and drawing")
+            let context = CGContext(data: nil, width: rendered.width, height: rendered.height, bitsPerComponent: 8,
+                bytesPerRow: rendered.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            // Match BrushRaster.context: text layers draw in a top-left coordinate space.
+            context.translateBy(x: 0, y: CGFloat(rendered.height)); context.scaleBy(x: 1, y: -1)
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+            defer { NSGraphicsContext.current = nil }
+            let storage = NSTextStorage(attributedString: text)
+            let layout = NSLayoutManager()
+            let container = NSTextContainer(size: CGSize(width: 100_000, height: 100_000))
+            storage.addLayoutManager(layout); layout.addTextContainer(container)
+            layout.drawGlyphs(forGlyphRange: layout.glyphRange(for: container), at: .zero)
+            let drawn = context.makeImage()!.portableImage.bytes
+            try check(drawn == bytes, "AppKit glyph rendering differs from the attributed backend")
+            try check(NSFont(name: "CompositorMissingFace-DoesNotExist", size: 32) == nil, "missing face did not request explicit system fallback")
+            print("Qt text backend journey OK (\(sansName) + \(monoName); mixed measurement, drawing, wrapping, UTF-16 colors, fallback)")
+            return 0
+        } catch {
+            print("Qt text backend journey failed: \(error)")
+            return 1
+        }
     }
 
     private static func runPreferencesSmoke() {

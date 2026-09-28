@@ -1,9 +1,12 @@
+#include "CanvasTextHighlighter.h"
+#include <QTextLayout>
 // SessionWindow — see SessionWindow.h. Drives the Swift core via compositor_session_*
 // and paints the composited RGBA via QImage. Implements file operations using Qt
 // codecs (IO milestone: file-map "IO / codec mapping" tier).
 
 #include "SessionWindow.h"
 #include "PerfTrace.h"
+#include "ProjectPackageLimits.h"
 
 static bool needsUpstreamImporter(const QString &path);
 #include "ImageExporters.h"
@@ -22,6 +25,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QTextDocument>
 #include <QTextOption>
 #include <QTextCursor>
+#include <QTextBlockFormat>
 #include <QPlainTextEdit>
 #include <QLineF>
 #include <cmath>
@@ -29,6 +33,10 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QScrollBar>
 #include <QScreen>
 #include <QSettings>
+#include <QThreadPool>
+#include <QRunnable>
+#include <QEventLoop>
+#include <QScopeGuard>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QMouseEvent>
@@ -131,6 +139,12 @@ int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t 
 int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
+uint64_t compositor_save_capture(uint64_t handle);
+int64_t compositor_save_export_manifest(uint64_t token, uint8_t *output, size_t capacity);
+int64_t compositor_save_export_layer(uint64_t token, const uint8_t *layer_id, size_t count,
+                                    int32_t mask, uint8_t *output, size_t capacity, size_t *width, size_t *height);
+int32_t compositor_save_mark_saved(uint64_t token);
+void compositor_save_release(uint64_t token);
 int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
 int64_t compositor_session_export_layer(uint64_t handle, const uint8_t *layer_id, size_t layer_id_count,
                                         int32_t mask, uint8_t *output, size_t capacity,
@@ -487,25 +501,24 @@ bool SessionWindow::isDocumentModified(uint64_t handle) const {
 
 bool SessionWindow::saveCurrentDocument(bool forceChoosePath) {
     if (m_activeDocumentIndex < 0 || m_activeDocumentIndex >= static_cast<int>(m_documents.size())) return false;
+    const uint64_t handle = m_documents[m_activeDocumentIndex].handle;
     const QString known = m_documents[m_activeDocumentIndex].filePath;
     const QString path = (!forceChoosePath && known.endsWith(".comp", Qt::CaseInsensitive))
         ? known : m_platform.files->chooseProjectSavePath();
     if (path.isEmpty()) return false;
-    if (!saveProject(path)) {
-        m_platform.notifier->warn(tr("Save failed"), tr("Could not save project."));
-        return false;
-    }
-    sendCommand({{"action", "markSaved"}});
-    DocumentTab &doc = m_documents[m_activeDocumentIndex];
-    doc.filePath = path;
-    doc.title = QFileInfo(path).completeBaseName();
-    if (m_documentTabBar) m_documentTabBar->setTabText(m_activeDocumentIndex, doc.title);
-    setWindowTitle(tr("%1 — Compositor").arg(doc.title));
-    return true;
+    return startProjectSave(path, false, [this](bool saved) {
+        if (!saved) m_platform.notifier->warn(tr("Save failed"), tr("Could not save project. The previous file has been preserved."));
+    }, true, handle);
 }
 
-bool SessionWindow::confirmDocumentClose(int index) {
+bool SessionWindow::confirmDocumentClose(int index, bool closingWindow) {
     if (index < 0 || index >= static_cast<int>(m_documents.size())) return true;
+    const uint64_t handle = m_documents[index].handle;
+    if (m_savingDocuments.contains(handle)) {
+        m_closeAfterSave.insert(handle);
+        m_closeWindowAfterSave = m_closeWindowAfterSave || closingWindow;
+        return false;
+    }
     if (!isDocumentModified(m_documents[index].handle)) return true;
     if (index != m_activeDocumentIndex) {
         if (m_documentTabBar) m_documentTabBar->setCurrentIndex(index); // currentChanged -> switchToDocumentTab
@@ -521,7 +534,15 @@ bool SessionWindow::confirmDocumentClose(int index) {
     QPushButton *discard = box.addButton(tr("Don’t Save"), QMessageBox::DestructiveRole);
     box.setDefaultButton(save);
     box.exec();
-    if (box.clickedButton() == save) return saveCurrentDocument(false);
+    if (box.clickedButton() == save) {
+        m_closeAfterSave.insert(handle);
+        m_closeWindowAfterSave = closingWindow;
+        if (!saveCurrentDocument(false)) {
+            m_closeAfterSave.remove(handle);
+            m_closeWindowAfterSave = false;
+        }
+        return false;
+    }
     return box.clickedButton() == discard;
 }
 
@@ -533,8 +554,13 @@ void SessionWindow::closeDocumentTab(int index) {
         close();
         return;
     }
-    if (!confirmDocumentClose(index)) return;
     const uint64_t closedHandle = m_documents[index].handle;
+    if (!confirmDocumentClose(index)) return;
+    // A modal confirmation can dispatch another save's deferred close.
+    const auto closing = std::find_if(m_documents.begin(), m_documents.end(),
+        [closedHandle](const DocumentTab &doc) { return doc.handle == closedHandle; });
+    if (closing == m_documents.end()) return;
+    index = static_cast<int>(closing - m_documents.begin());
     const bool wasActive = (index == m_activeDocumentIndex);
     m_documents.erase(m_documents.begin() + index);
     if (m_activeDocumentIndex > index) --m_activeDocumentIndex;
@@ -1090,7 +1116,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_autosaveTimer = new QTimer(this);
     m_autosaveTimer->setObjectName("autosaveTimer");
     m_autosaveTimer->setInterval(60000);
-    connect(m_autosaveTimer, &QTimer::timeout, this, [this] { performAutosave(); compositor_flush_preferences(); });
+    connect(m_autosaveTimer, &QTimer::timeout, this, [this] { startAutosave(); compositor_flush_preferences(); });
     connect(qApp, &QCoreApplication::aboutToQuit, this, [] { compositor_flush_preferences(); });
     m_autosaveTimer->start();
 
@@ -1153,6 +1179,9 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         if (bytes == m_pumpedState) return;
         const bool first = m_pumpedState.isEmpty();
         m_pumpedState = bytes;
+        const auto currentState = QJsonDocument::fromJson(bytes).object();
+        if (m_textEditor && (currentState.value("textDraft").toObject() != m_textDraft ||
+            !currentState.value("colorPickerTitle").toString().isEmpty() != m_textPreviewingColor)) syncTextEditor(false);
         if (!first) {
             const bool painting = m_upstreamCanvasDrag && (m_tool == Tool::Brush || m_tool == Tool::SpotHealing
                 || m_tool == Tool::CloneStamp || m_tool == Tool::Smear);
@@ -1374,6 +1403,7 @@ void SessionWindow::updateFloatingPanelsPass() {
     // However the picker went away (OK, Cancel, its window's close button, Esc, a session change), the canvas paints
     // again: it samples only while the picker's panel is up.
     m_colorPickerOpen = wanted.contains(QStringLiteral("ColorPickerSheet"));
+    m_colorRangeOpen = wanted.contains(QStringLiteral("ColorRangeSheet"));
     // Closed ones leave the table first; their windows go after, when nothing refers to the table's entries.
     QList<QPointer<QDialog>> closing;
     for (auto it = m_floatingPanels.begin(); it != m_floatingPanels.end();) {
@@ -1953,9 +1983,10 @@ void SessionWindow::keyReleaseEvent(QKeyEvent *event) {
 }
 
 void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
-    const bool canUndo = state.value("canUndo").toBool(false);
+    const bool editingText = m_textEditor && !state.value("textDraft").toObject().isEmpty();
+    const bool canUndo = editingText ? m_textEditor->document()->isUndoAvailable() : state.value("canUndo").toBool(false);
     const QString undoName = state.value("undoName").toString();
-    const bool canRedo = state.value("canRedo").toBool(false);
+    const bool canRedo = editingText ? m_textEditor->document()->isRedoAvailable() : state.value("canRedo").toBool(false);
     const QString redoName = state.value("redoName").toString();
     const bool hasSelection = state.value("hasSelection").toBool(false);
     const bool canTransformSelection = state.value("canTransformSelection").toBool(false);
@@ -1974,11 +2005,11 @@ void SessionWindow::refreshMenuTitles(const QJsonObject &state) {
     // 1. Undo / Redo
     if (m_actUndo) {
         m_actUndo->setEnabled(canUndo);
-        m_actUndo->setText(canUndo && !undoName.isEmpty() ? QString("Undo %1").arg(undoName) : tr("Undo"));
+        m_actUndo->setText(canUndo && !editingText && !undoName.isEmpty() ? QString("Undo %1").arg(undoName) : tr("Undo"));
     }
     if (m_actRedo) {
         m_actRedo->setEnabled(canRedo);
-        m_actRedo->setText(canRedo && !redoName.isEmpty() ? QString("Redo %1").arg(redoName) : tr("Redo"));
+        m_actRedo->setText(canRedo && !editingText && !redoName.isEmpty() ? QString("Redo %1").arg(redoName) : tr("Redo"));
     }
 
     // 2. Invert: isMaskSelected ? "Invert Mask" : "Invert"
@@ -2363,6 +2394,11 @@ void SessionWindow::createMenus() {
     // --- Edit ---
     auto *edit = menuBar()->addMenu(tr("Edit"));
     m_actUndo = edit->addAction(tr("Undo"), QKeySequence::Undo, this, [this] {
+        if (m_textEditor && m_textEditor->isVisible()) {
+            m_textEditor->undo();
+            refreshMenuTitles(sessionState());
+            return;
+        }
         if (cmd(m_sessionHandle, R"({"version":1,"action":"undo"})") == 0) {
             refreshImage();
             refreshLayers();
@@ -2371,6 +2407,11 @@ void SessionWindow::createMenus() {
     m_actUndo->setObjectName("edit.undo");
 
     m_actRedo = edit->addAction(tr("Redo"), QKeySequence::Redo, this, [this] {
+        if (m_textEditor && m_textEditor->isVisible()) {
+            m_textEditor->redo();
+            refreshMenuTitles(sessionState());
+            return;
+        }
         if (cmd(m_sessionHandle, R"({"version":1,"action":"redo"})") == 0) {
             refreshImage();
             refreshLayers();
@@ -3293,7 +3334,9 @@ void SessionWindow::updateInvalidOverlay() {
 /// The tools upstream's CanvasView handles itself here (its EditorCanvas mouse code, unmodified); the rest are still
 /// the shell's. Space held pans, as the shell does it.
 bool SessionWindow::routesToUpstreamCanvas() const {
-    if (m_spaceHandActive || m_colorPickerOpen || m_pixelSampler) return false;
+    if (m_spaceHandActive) return false;
+    if (m_colorRangeOpen) return true;
+    if (m_colorPickerOpen || m_pixelSampler) return false;
     switch (m_tool) {
     case Tool::Move: case Tool::Marquee: case Tool::Lasso: case Tool::Magic: case Tool::Crop:
     case Tool::Brush: case Tool::SpotHealing: case Tool::CloneStamp: case Tool::Smear:
@@ -3463,6 +3506,10 @@ bool SessionWindow::sendCommand(const QJsonObject &command) {
     --m_commandDepth;
     endBusy();
     if (result != 0) statusBar()->showMessage(sessionState().value("error").toString(tr("Could not apply the operation.")), 5000);
+    if (result == 0 && command.value("action").toString().startsWith("text")) {
+        syncToolFromSession();
+        syncTextEditor();
+    }
     return result == 0;
 }
 
@@ -4151,38 +4198,115 @@ bool SessionWindow::canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *can
 
 /// Shows the inline text editor over the session's text draft (or hides it when there is none): the draft's font,
 /// size (at the current zoom), colour and alignment, placed where the text will be, as upstream's InlineTextEditor.
-void SessionWindow::syncTextEditor() {
-    const QJsonObject draft = sessionState().value("textDraft").toObject();
+void SessionWindow::syncTextEditor(bool requestFocus) {
+    const auto state = sessionState();
+    const QJsonObject draft = state.value("textDraft").toObject();
+    m_textPreviewingColor = !state.value("colorPickerTitle").toString().isEmpty();
     if (draft.isEmpty() || !m_canvasWidget || m_image.isNull()) {
         if (m_textEditor) m_textEditor->hide();
         return;
     }
     if (!m_textEditor) {
         m_textEditor = new QPlainTextEdit(m_canvasWidget);
+        m_textHighlighter = new CanvasTextHighlighter(m_textEditor->document());
         m_textEditor->setObjectName("canvas.textEditor");
         m_textEditor->setFrameShape(QFrame::NoFrame);
         m_textEditor->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         m_textEditor->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         m_textEditor->setLineWrapMode(QPlainTextEdit::WidgetWidth);
         m_textEditor->installEventFilter(this);
-        connect(m_textEditor, &QPlainTextEdit::textChanged, this, [this] {
+        connect(m_textEditor, &QPlainTextEdit::undoAvailable, this, [this](bool) { refreshMenuTitles(sessionState()); });
+        connect(m_textEditor, &QPlainTextEdit::redoAvailable, this, [this](bool) { refreshMenuTitles(sessionState()); });
+        connect(m_textEditor->document(), &QTextDocument::undoCommandAdded, this, [this] {
+            if (!m_syncingText) m_textUndoCommandAdded = true;
+        });
+        connect(m_textEditor->document(), &QTextDocument::contentsChange, this, [this](int position, int removed, int added) {
             if (m_syncingText) return;
-            sendCommandQuiet({{"action", "textSetContent"}, {"name", m_textEditor->toPlainText()}});
+            const QString before = m_textDraft.value("content").toString();
+            const QString after = m_textEditor->toPlainText();
+            const int undoPosition = m_textEditor->document()->availableUndoSteps();
+            const bool navigatingHistory = !m_textUndoCommandAdded && undoPosition != m_textUndoPosition;
+            m_textUndoCommandAdded = false;
+            const auto restored = navigatingHistory ? m_textHistory.restore(undoPosition, after) : std::nullopt;
+            if (before == after && !restored) return;
+            // QTextDocument counts its final paragraph separator; plain text does not.
+            const int take = std::min(removed, int(before.size()) - position);
+            const int put = std::min(added, int(after.size()) - position);
+            bool accepted = false;
+            if (restored) {
+                const auto cursor = m_textEditor->textCursor();
+                int start = std::clamp(cursor.selectionStart(), 0, int(after.size()));
+                int end = std::clamp(cursor.selectionEnd(), start, int(after.size()));
+                // QTextDocument may be moving the cursor while this notification is delivered.
+                if ((start < after.size() && after.at(start).isLowSurrogate()) ||
+                    (end < after.size() && after.at(end).isLowSurrogate())) start = end = int(after.size());
+                accepted = sendCommandQuiet({{"action", "textRestore"}, {"draftID", m_textDraft.value("id")},
+                    {"textStyle", *restored}, {"location", start}, {"length", end - start}});
+            } else if (position >= 0 && take >= 0 && put >= 0 &&
+                before.left(position) == after.left(position) && before.mid(position + take) == after.mid(position + put)) {
+                accepted = sendCommandQuiet({{"action", "textReplace"}, {"location", position}, {"length", take}, {"name", after.mid(position, put)}});
+            } else {
+                accepted = sendCommandQuiet({{"action", "textSetContent"}, {"name", after}});
+            }
+            if (accepted) {
+                m_textDraft = sessionState().value("textDraft").toObject();
+                if (!restored) {
+                    m_textHistory.discardAfter(m_textUndoPosition);
+                    m_textHistory.remember(undoPosition, m_textDraft);
+                }
+                m_textUndoPosition = undoPosition;
+            } else QTimer::singleShot(0, this, [this] { syncTextEditor(); });
+        });
+        auto selectionChanged = [this] {
+            if (m_syncingText) return;
+            const QTextCursor cursor = m_textEditor->textCursor();
+            if (sendCommandQuiet({{"action", "textSelect"}, {"location", cursor.selectionStart()},
+                                  {"length", cursor.selectionEnd() - cursor.selectionStart()}})) updateOptionsBar();
+        };
+        connect(m_textEditor, &QPlainTextEdit::cursorPositionChanged, this, selectionChanged);
+        connect(m_textEditor, &QPlainTextEdit::selectionChanged, this, selectionChanged);
+        connect(m_textEditor, &QPlainTextEdit::textChanged, this, [this, selectionChanged] {
+            if (m_syncingText) return;
+            selectionChanged();
+            m_syncingText = true;
             layoutTextEditor();
+            m_syncingText = false;
         });
     }
-    m_textDraft = draft;
+    const bool newDraft = m_textDraft.value("id") != draft.value("id");
     const QString content = draft.value("content").toString();
-    if (m_textEditor->toPlainText() != content) {
-        m_syncingText = true;
+    m_syncingText = true;
+    if (newDraft || m_textEditor->toPlainText() != content) {
         m_textEditor->setPlainText(content);
-        m_textEditor->moveCursor(QTextCursor::End);   // existing text opens with the cursor after it (1.2.9)
-        m_syncingText = false;
+        m_textUndoPosition = m_textEditor->document()->availableUndoSteps();
+        m_textHistory.reset(m_textUndoPosition, draft);
+    } else if (!m_textPreviewingColor && !m_textHistory.matches(m_textUndoPosition, draft)) {
+        // A block property gives formatting its own native undo step without
+        // modifying glyphs, caret, text grouping, or the typing attributes.
+        m_textHistory.discardAfter(m_textUndoPosition);
+        QTextCursor marker(m_textEditor->document());
+        auto format = marker.blockFormat();
+        format.setProperty(QTextFormat::UserProperty + 17, ++m_textFormatRevision);
+        marker.setBlockFormat(format);
+        m_textUndoPosition = m_textEditor->document()->availableUndoSteps();
+        m_textHistory.remember(m_textUndoPosition, draft);
+    }
+    m_textUndoCommandAdded = false;
+    m_textDraft = draft;
+    QTextCursor cursor = m_textEditor->textCursor();
+    const int start = newDraft ? int(content.size()) : draft.value("selectionLocation").toInt();
+    const int length = newDraft ? 0 : draft.value("selectionLength").toInt();
+    if (cursor.selectionStart() != start || cursor.selectionEnd() != start + length) {
+        cursor.setPosition(std::clamp(start, 0, int(content.size())));
+        cursor.setPosition(std::clamp(start + length, 0, int(content.size())), QTextCursor::KeepAnchor);
+        m_textEditor->setTextCursor(cursor);
     }
     layoutTextEditor();
+    m_syncingText = false;
+    if (newDraft) sendCommandQuiet({{"action", "textSelect"}, {"location", start}, {"length", length}});
     m_textEditor->show();
     m_textEditor->raise();
-    m_textEditor->setFocus();
+    if (requestFocus) m_textEditor->setFocus();
 }
 
 void SessionWindow::layoutTextEditor() {
@@ -4191,11 +4315,26 @@ void SessionWindow::layoutTextEditor() {
     const double scale = target.width() / docWidth();
     const QJsonArray origin = m_textDraft.value("origin").toArray(), color = m_textDraft.value("color").toArray();
     const double padding = m_textDraft.value("padding").toDouble(12) * scale;
-    QFont font(m_textDraft.value("fontName").toString());
-    font.setPixelSize(std::max(1, int(std::lround(m_textDraft.value("fontSize").toDouble(72) * scale))));
+    const double fontSize = m_textDraft.value("fontSize").toDouble(72) * scale;
+    const double tracking = m_textDraft.value("tracking").toDouble() * scale;
+    QFont font = fontFor(m_textDraft.value("fontName").toString().toUtf8().constData(), fontSize);
+    font.setLetterSpacing(QFont::AbsoluteSpacing, tracking);
     m_textEditor->setFont(font);
     const QColor ink = QColor::fromRgbF(color.at(0).toDouble(), color.at(1).toDouble(), color.at(2).toDouble());
     m_textEditor->setStyleSheet(QString("QPlainTextEdit { background: transparent; color: %1; border: 1px dashed rgba(0,122,255,0.8); }").arg(ink.name()));
+    QList<QTextEdit::ExtraSelection> colors;
+    for (const QJsonValue &value : m_textDraft.value("colorRuns").toArray()) {
+        const QJsonObject run = value.toObject();
+        QTextEdit::ExtraSelection span;
+        span.cursor = QTextCursor(m_textEditor->document());
+        span.cursor.setPosition(run.value("location").toInt());
+        span.cursor.setPosition(run.value("location").toInt() + run.value("length").toInt(), QTextCursor::KeepAnchor);
+        span.format.setForeground(QColor::fromRgbF(run.value("red").toDouble(), run.value("green").toDouble(), run.value("blue").toDouble()));
+        colors.append(span);
+    }
+    m_textEditor->setExtraSelections(colors);
+    static_cast<CanvasTextHighlighter *>(m_textHighlighter)->setStyle(
+        font, m_textDraft.value("fontRuns").toArray(), fontSize, tracking);
     const QString alignment = m_textDraft.value("alignment").toString();
     QTextOption option = m_textEditor->document()->defaultTextOption();
     option.setAlignment(alignment == "Center" ? Qt::AlignHCenter : alignment == "Right" ? Qt::AlignRight : Qt::AlignLeft);
@@ -4209,9 +4348,20 @@ void SessionWindow::layoutTextEditor() {
         size = QSizeF(box[0].toDouble() * scale - 2 * padding, box[1].toDouble() * scale - 2 * padding);
     } else {   // point text: as wide as its longest line, as tall as its lines
         double widest = metrics.horizontalAdvance(QStringLiteral("M"));
-        const QStringList lines = m_textEditor->toPlainText().split('\n');
-        for (const QString &line : lines) widest = std::max(widest, metrics.horizontalAdvance(line));
-        size = QSizeF(widest + metrics.averageCharWidth() * 2, metrics.lineSpacing() * std::max<qsizetype>(1, lines.size()) + 4);
+        double height = 0;
+        for (QTextBlock block = m_textEditor->document()->begin(); block.isValid(); block = block.next()) {
+            QTextLayout layout(block.text(), font);
+            layout.setFormats(block.layout()->formats());
+            layout.beginLayout();
+            auto line = layout.createLine();
+            if (line.isValid()) {
+                line.setLineWidth(1000000);
+                widest = std::max(widest, line.naturalTextWidth());
+                height += line.height();
+            } else height += metrics.lineSpacing();
+            layout.endLayout();
+        }
+        size = QSizeF(widest + metrics.averageCharWidth() * 2, height + 4);
     }
     m_textEditor->setGeometry(QRectF(topLeft + QPointF(padding, padding), size).toAlignedRect());
 }
@@ -4433,24 +4583,42 @@ bool SessionWindow::loadProject(const QString &path) {
     return true;
 }
 
-bool SessionWindow::writeProjectPackage(const QString &path) {
-    if (m_sessionHandle == 0) return false;
+namespace {
+// Consumes only immutable save data; safe to call from the package worker.
+bool writeFrozenProjectPackage(const QString &path, uint64_t snapshot, QString *savedDocumentID) {
 
     // Export manifest JSON from Swift core
-    int64_t manifestSize = compositor_session_export_manifest(m_sessionHandle, nullptr, 0);
-    if (manifestSize <= 0) return false;
+    int64_t manifestSize = compositor_save_export_manifest(snapshot, nullptr, 0);
+    if (manifestSize <= 0 || manifestSize > compositor::projectMetadataBytes) return false;
 
     std::vector<uint8_t> manifestBytes(static_cast<size_t>(manifestSize));
-    int64_t n = compositor_session_export_manifest(m_sessionHandle, manifestBytes.data(), manifestBytes.size());
+    int64_t n = compositor_save_export_manifest(snapshot, manifestBytes.data(), manifestBytes.size());
     if (n != manifestSize) return false;
 
     QByteArray manifestData(reinterpret_cast<char *>(manifestBytes.data()), manifestSize);
-    if (manifestData.size() > 4 * 1024 * 1024) return false;
+    if (manifestData.size() > compositor::projectMetadataBytes) return false;
     QJsonDocument manifestDoc = QJsonDocument::fromJson(manifestData);
     if (manifestDoc.isNull() || !manifestDoc.isObject()) return false;
 
     const QJsonObject manifest = manifestDoc.object();
+    if (savedDocumentID) *savedDocumentID = manifest.value("documentID").toString();
+    // Account every asset before encoding any of them or touching the destination.
+    size_t imagePixels = 0, maskPixels = 0;
+    for (const QJsonValue &value : manifest.value("layers").toArray()) {
+        const QJsonObject layer = value.toObject();
+        const QByteArray id = layer.value("id").toString().toUtf8();
+        for (const bool isMask : {false, true}) {
+            if (layer.value(isMask ? "maskFile" : "imageFile").toString().isEmpty()) continue;
+            size_t width = 0, height = 0;
+            const int64_t size = compositor_save_export_layer(snapshot,
+                reinterpret_cast<const uint8_t *>(id.constData()), id.size(), isMask ? 1 : 0,
+                nullptr, 0, &width, &height);
+            if (size <= 0 || !compositor::accountProjectAsset(width, height, isMask ? maskPixels : imagePixels)
+                || static_cast<uint64_t>(size) != width * height * (isMask ? 1 : 4)) return false;
+        }
+    }
     const QString temporaryPath = path + ".tmp-" + QString::number(QCoreApplication::applicationPid());
+    const auto cleanup = qScopeGuard([temporaryPath] { QDir(temporaryPath).removeRecursively(); });
     QDir temporary(temporaryPath);
     if (temporary.exists() && !temporary.removeRecursively()) return false;
     if (!temporary.mkpath("images")) return false;
@@ -4458,6 +4626,7 @@ bool SessionWindow::writeProjectPackage(const QString &path) {
     QFile manifestFile(temporary.filePath("manifest.json"));
     if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
     const QByteArray encodedManifest = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+    if (encodedManifest.size() > compositor::projectMetadataBytes) return false;
     if (manifestFile.write(encodedManifest) != encodedManifest.size()) return false;
     manifestFile.close();
 
@@ -4473,12 +4642,14 @@ bool SessionWindow::writeProjectPackage(const QString &path) {
             if (filename != expected || QFileInfo(filename).fileName() != filename) return false;
 
             size_t width = 0, height = 0;
-            const int64_t size = compositor_session_export_layer(m_sessionHandle,
+            const int64_t size = compositor_save_export_layer(snapshot,
                 reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()),
                 isMask ? 1 : 0, nullptr, 0, &width, &height);
-            if (size <= 0 || width == 0 || height == 0 || static_cast<uint64_t>(size) > 512ULL * 1024 * 1024) return false;
+            size_t surfacePixels = 0;
+            if (size <= 0 || !compositor::accountProjectAsset(width, height, surfacePixels)
+                || static_cast<uint64_t>(size) != width * height * (isMask ? 1 : 4)) return false;
             std::vector<uint8_t> bytes(static_cast<size_t>(size));
-            const int64_t copied = compositor_session_export_layer(m_sessionHandle,
+            const int64_t copied = compositor_save_export_layer(snapshot,
                 reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()),
                 isMask ? 1 : 0, bytes.data(), bytes.size(), &width, &height);
             if (copied != size) return false;
@@ -4486,13 +4657,18 @@ bool SessionWindow::writeProjectPackage(const QString &path) {
             QImage image;
             if (isMask) {
                 image = QImage(static_cast<int>(width), static_cast<int>(height), QImage::Format_Grayscale8);
+                if (image.isNull()) return false;
                 for (size_t y = 0; y < height; ++y)
                     std::memcpy(image.scanLine(static_cast<int>(y)), bytes.data() + y * width, width);
             } else {
                 image = straightRGBA(bytes, static_cast<int>(width), static_cast<int>(height));
             }
-            QImageWriter writer(temporary.filePath("images/" + filename), "PNG");
-            if (!writer.write(image)) return false;
+            QFile encodedAsset(temporary.filePath("images/" + filename));
+            if (!encodedAsset.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+            QImageWriter writer(&encodedAsset, "PNG");
+            if (image.isNull() || !writer.write(image) || !encodedAsset.flush()) return false;
+            encodedAsset.close();
+            if (QFileInfo(encodedAsset.fileName()).size() > compositor::projectEncodedAssetBytes) return false;
         }
     }
 
@@ -4506,8 +4682,110 @@ bool SessionWindow::writeProjectPackage(const QString &path) {
         return false;
     }
     if (QFileInfo::exists(backupPath)) backup.removeRecursively();
-    if (!path.endsWith("autosave.comp")) clearAutosave();
     return true;
+}
+
+// A single queue serializes package replacement and recovery cleanup, including
+// saves submitted by other windows. Destination reservations live on the UI thread.
+QThreadPool &projectWriter() {
+    static QThreadPool pool;
+    static const bool configured = [] { pool.setMaxThreadCount(1); return true; }();
+    Q_UNUSED(configured);
+    return pool;
+}
+QSet<QString> &savingPaths() { static QSet<QString> paths; return paths; }
+struct SaveToken {
+    explicit SaveToken(uint64_t token) : value(token) {}
+    uint64_t value;
+    ~SaveToken() { compositor_save_release(value); }
+};
+void removeRecovery(const QString &directory, const QString &documentID) {
+    QFile manifest(directory + "/autosave.comp/manifest.json");
+    if (documentID.isEmpty() || !manifest.open(QIODevice::ReadOnly)) return;
+    const auto saved = QJsonDocument::fromJson(manifest.read(compositor::projectMetadataBytes + 1)).object();
+    manifest.close();
+    if (saved.value("documentID").toString() != documentID) return;
+    QDir(directory + "/autosave.comp").removeRecursively();
+    QFile::remove(directory + "/autosave.info");
+}
+} // namespace
+
+bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave,
+                                     std::function<void(bool)> completion, bool markSaved, uint64_t sourceHandle) {
+    const uint64_t handle = sourceHandle ? sourceHandle : m_sessionHandle;
+    if (!handle || m_commandDepth > 0 || requestedPath.isEmpty()) return false;
+    const QString path = QFileInfo(requestedPath).absoluteFilePath();
+    if (m_savingDocuments.contains(handle) || savingPaths().contains(path)) {
+        if (!autosave) statusBar()->showMessage(tr("A save is already in progress."), 3000);
+        return false;
+    }
+    const uint64_t captured = compositor_save_capture(handle);
+    if (!captured) return false;
+    auto snapshot = std::make_shared<SaveToken>(captured);
+    const QString recovery = autosaveDirectory();
+    const auto state = sessionState();
+    const QJsonObject info{{"savedAt", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+                          {"width", state.value("width")}, {"height", state.value("height")}};
+    m_savingDocuments.insert(handle);
+    savingPaths().insert(path);
+    QPointer<SessionWindow> window(this);
+    projectWriter().start(QRunnable::create([window, snapshot, handle, path, recovery, autosave, markSaved, info,
+                                             completion = std::move(completion)] {
+        bool saved = false;
+        try {
+            QString documentID;
+            saved = (!autosave || QDir().mkpath(recovery)) && writeFrozenProjectPackage(path, snapshot->value, &documentID);
+            if (saved && autosave) {
+                QFile file(recovery + "/autosave.info");
+                if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(QJsonDocument(info).toJson());
+            } else if (saved && path != QFileInfo(recovery + "/autosave.comp").absoluteFilePath()) {
+                removeRecovery(recovery, documentID);
+            }
+        } catch (...) { saved = false; }
+        QMetaObject::invokeMethod(qApp, [window, snapshot, handle, path, autosave, markSaved, saved, completion] {
+            savingPaths().remove(path);
+            if (!window) return;
+            window->m_savingDocuments.remove(handle);
+            if (saved && !autosave && markSaved) {
+                if (compositor_save_mark_saved(snapshot->value) == 0) {
+                    auto &documents = window->m_documents;
+                    const auto it = std::find_if(documents.begin(), documents.end(), [handle](const DocumentTab &doc) { return doc.handle == handle; });
+                    if (it != documents.end()) {
+                        it->filePath = path;
+                        it->title = QFileInfo(path).completeBaseName();
+                        const int index = static_cast<int>(it - documents.begin());
+                        if (window->m_documentTabBar) window->m_documentTabBar->setTabText(index, it->title);
+                        if (window->m_sessionHandle == handle) window->setWindowTitle(window->tr("%1 — Compositor").arg(it->title));
+                    }
+                    compositor_note_recent_project(path.toUtf8().constData());
+                }
+            }
+            const bool closeRequested = window->m_closeAfterSave.remove(handle);
+            const bool closeWindow = window->m_closeWindowAfterSave;
+            if (closeRequested) window->m_closeWindowAfterSave = false;
+            if (completion) completion(saved);
+            if (window && saved && closeRequested) QTimer::singleShot(0, window, [window, handle, closeWindow] {
+                if (!window) return;
+                if (closeWindow) { window->close(); return; }
+                const auto &documents = window->m_documents;
+                const auto it = std::find_if(documents.begin(), documents.end(), [handle](const DocumentTab &doc) { return doc.handle == handle; });
+                if (it != documents.end()) window->closeDocumentTab(static_cast<int>(it - documents.begin()));
+            });
+        }, Qt::QueuedConnection);
+    }));
+    return true;
+}
+
+// Synchronous compatibility hook for package journeys. The writer itself runs
+// on the worker, while this local loop continues servicing the UI event queue.
+bool SessionWindow::writeProjectPackage(const QString &path) {
+    QEventLoop loop;
+    bool saved = false;
+    const auto destroyed = connect(this, &QObject::destroyed, &loop, &QEventLoop::quit);
+    if (!startProjectSave(path, false, [&](bool ok) { saved = ok; loop.quit(); }, false)) return false;
+    loop.exec();
+    disconnect(destroyed);
+    return saved;
 }
 
 // IO milestone: Load project from .compositor package
@@ -4520,10 +4798,11 @@ bool SessionWindow::readProjectPackage(const QString &path) {
     if (!packageInfo.isDir() || packageInfo.isSymLink()) return false;
 
     const QFileInfo manifestInfo(dir.filePath("manifest.json"));
-    if (!manifestInfo.isFile() || manifestInfo.isSymLink() || manifestInfo.size() > 4 * 1024 * 1024) return false;
+    if (!manifestInfo.isFile() || manifestInfo.isSymLink() || manifestInfo.size() > compositor::projectMetadataBytes) return false;
     QFile manifestFile(manifestInfo.filePath());
     if (!manifestFile.open(QIODevice::ReadOnly)) return false;
-    QByteArray manifestData = manifestFile.readAll();
+    QByteArray manifestData = manifestFile.read(compositor::projectMetadataBytes + 1);
+    if (manifestData.size() > compositor::projectMetadataBytes) return false;
     manifestFile.close();
 
     QJsonDocument manifestDoc = QJsonDocument::fromJson(manifestData);
@@ -4544,7 +4823,9 @@ bool SessionWindow::readProjectPackage(const QString &path) {
         compositor_workspace_close_tab(replacement);
         return false;
     }
-    uint64_t imagePixels = 0, maskPixels = 0;
+    size_t imagePixels = 0, maskPixels = 0;
+    struct PendingAsset { QByteArray id; QString path; bool mask; QSize size; };
+    std::vector<PendingAsset> assets;
 
     for (const QJsonValue &value : manifest.value("layers").toArray()) {
         const QJsonObject layer = value.toObject();
@@ -4560,7 +4841,7 @@ bool SessionWindow::readProjectPackage(const QString &path) {
                 return false;
             }
             const QFileInfo assetInfo(QDir(imagesInfo.filePath()).filePath(filename));
-            if (!assetInfo.isFile() || assetInfo.isSymLink() || assetInfo.size() > 512LL * 1024 * 1024) {
+            if (!assetInfo.isFile() || assetInfo.isSymLink() || assetInfo.size() > compositor::projectEncodedAssetBytes) {
                 compositor_workspace_close_tab(replacement);
                 return false;
             }
@@ -4570,46 +4851,52 @@ bool SessionWindow::readProjectPackage(const QString &path) {
                 return false;
             }
             const QSize decodedSize = reader.size();
-            const uint64_t pixels = decodedSize.isValid()
-                ? static_cast<uint64_t>(decodedSize.width()) * static_cast<uint64_t>(decodedSize.height()) : 0;
-            uint64_t &usedPixels = isMask ? maskPixels : imagePixels;
             if (!decodedSize.isValid() || decodedSize.width() <= 0 || decodedSize.height() <= 0 ||
-                decodedSize.width() > 30'000 || decodedSize.height() > 30'000 ||
-                pixels > 100'000'000 || usedPixels > 100'000'000 - pixels) {
+                !compositor::accountProjectAsset(decodedSize.width(), decodedSize.height(), isMask ? maskPixels : imagePixels)) {
                 compositor_workspace_close_tab(replacement);
                 return false;
             }
-            usedPixels += pixels;
-            const QImage decoded = reader.read();
-            if (decoded.isNull()) { compositor_workspace_close_tab(replacement); return false; }
-            if (isMask) {
-                const QImage gray = decoded.convertToFormat(QImage::Format_Grayscale8);
-                std::vector<uint8_t> pixels(static_cast<size_t>(gray.width()) * gray.height());
-                for (int y = 0; y < gray.height(); ++y)
-                    std::memcpy(pixels.data() + static_cast<size_t>(y) * gray.width(), gray.constScanLine(y), gray.width());
-                rc = compositor_session_import_layer(replacement,
-                    reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()), 1,
-                    pixels.data(), pixels.size(), gray.width(), gray.height());
-            } else {
-                const QImage rgba = decoded.convertToFormat(QImage::Format_RGBA8888);
-                std::vector<uint8_t> pixels(static_cast<size_t>(rgba.sizeInBytes()));
-                for (int y = 0; y < rgba.height(); ++y) {
-                    const uint8_t *source = rgba.constScanLine(y);
-                    uint8_t *target = pixels.data() + static_cast<size_t>(y) * rgba.width() * 4;
-                    for (int x = 0; x < rgba.width(); ++x) {
-                        const uint8_t alpha = source[x * 4 + 3];
-                        target[x * 4] = static_cast<uint8_t>((source[x * 4] * alpha + 127) / 255);
-                        target[x * 4 + 1] = static_cast<uint8_t>((source[x * 4 + 1] * alpha + 127) / 255);
-                        target[x * 4 + 2] = static_cast<uint8_t>((source[x * 4 + 2] * alpha + 127) / 255);
-                        target[x * 4 + 3] = alpha;
-                    }
-                }
-                rc = compositor_session_import_layer(replacement,
-                    reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()), 0,
-                    pixels.data(), pixels.size(), rgba.width(), rgba.height());
-            }
-            if (rc != 0) { compositor_workspace_close_tab(replacement); return false; }
+            assets.push_back({id, assetInfo.filePath(), isMask, decodedSize});
         }
+    }
+    // Qt's default allocation ceiling must not silently impose a smaller policy.
+    // Keep it bounded; dimensions and cumulative totals have already been checked.
+    QImageReader::setAllocationLimit(static_cast<int>((compositor_project_max_surface_pixels() * 4 + 1048575) / 1048576));
+    for (const auto &asset : assets) {
+        const auto &id = asset.id;
+        const bool isMask = asset.mask;
+        QImageReader reader(asset.path);
+        const QImage decoded = reader.read();
+        if (decoded.isNull() || decoded.size() != asset.size) { compositor_workspace_close_tab(replacement); return false; }
+        if (isMask) {
+            const QImage gray = decoded.convertToFormat(QImage::Format_Grayscale8);
+            if (gray.isNull()) { compositor_workspace_close_tab(replacement); return false; }
+            std::vector<uint8_t> pixels(static_cast<size_t>(gray.width()) * gray.height());
+            for (int y = 0; y < gray.height(); ++y)
+                std::memcpy(pixels.data() + static_cast<size_t>(y) * gray.width(), gray.constScanLine(y), gray.width());
+            rc = compositor_session_import_layer(replacement,
+                reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()), 1,
+                pixels.data(), pixels.size(), gray.width(), gray.height());
+        } else {
+            const QImage rgba = decoded.convertToFormat(QImage::Format_RGBA8888);
+            if (rgba.isNull()) { compositor_workspace_close_tab(replacement); return false; }
+            std::vector<uint8_t> pixels(static_cast<size_t>(rgba.sizeInBytes()));
+            for (int y = 0; y < rgba.height(); ++y) {
+                const uint8_t *source = rgba.constScanLine(y);
+                uint8_t *target = pixels.data() + static_cast<size_t>(y) * rgba.width() * 4;
+                for (int x = 0; x < rgba.width(); ++x) {
+                    const uint8_t alpha = source[x * 4 + 3];
+                    target[x * 4] = static_cast<uint8_t>((source[x * 4] * alpha + 127) / 255);
+                    target[x * 4 + 1] = static_cast<uint8_t>((source[x * 4 + 1] * alpha + 127) / 255);
+                    target[x * 4 + 2] = static_cast<uint8_t>((source[x * 4 + 2] * alpha + 127) / 255);
+                    target[x * 4 + 3] = alpha;
+                }
+            }
+            rc = compositor_session_import_layer(replacement,
+                reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()), 0,
+                pixels.data(), pixels.size(), rgba.width(), rgba.height());
+        }
+        if (rc != 0) { compositor_workspace_close_tab(replacement); return false; }
     }
 
     // Render the loaded document
@@ -4660,36 +4947,37 @@ bool SessionWindow::hasAutosaveRecovery() const {
     return QFileInfo::exists(manifestPath);
 }
 
+bool SessionWindow::startAutosave() {
+    if (m_commandDepth > 0 || !m_sessionHandle || !sessionState().value("modified").toBool()) return false;
+    return startProjectSave(autosaveDirectory() + "/autosave.comp", true);
+}
+
 bool SessionWindow::performAutosave() {
-    if (m_commandDepth > 0) return false;   // mid-command (the window paints while a long one works): next time
-    if (m_sessionHandle == 0) return false;
-    const auto state = sessionState();
-    if (!state.value("modified").toBool(false)) return false;
-
-    const QString recoveryDir = autosaveDirectory();
-    QDir dir(recoveryDir);
-    if (!dir.exists() && !dir.mkpath(".")) return false;
-
-    const QString packagePath = recoveryDir + "/autosave.comp";
-    if (!saveProject(packagePath)) return false;
-
-    QJsonObject infoObj{
-        {"savedAt", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
-        {"width", state.value("width").toInt()},
-        {"height", state.value("height").toInt()}
-    };
-    QFile infoFile(recoveryDir + "/autosave.info");
-    if (infoFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        infoFile.write(QJsonDocument(infoObj).toJson(QJsonDocument::Indented));
-        infoFile.close();
-    }
-    return true;
+    if (m_commandDepth > 0 || !m_sessionHandle || !sessionState().value("modified").toBool()) return false;
+    QEventLoop loop;
+    bool saved = false;
+    const auto destroyed = connect(this, &QObject::destroyed, &loop, &QEventLoop::quit);
+    if (!startProjectSave(autosaveDirectory() + "/autosave.comp", true,
+                          [&](bool ok) { saved = ok; loop.quit(); })) return false;
+    loop.exec();
+    disconnect(destroyed);
+    return saved;
 }
 
 bool SessionWindow::recoverAutosave() {
     if (!hasAutosaveRecovery()) return false;
     const QString packagePath = autosaveDirectory() + "/autosave.comp";
-    return loadProject(packagePath);
+    if (!readProjectPackage(packagePath)) return false;
+    // Recovery is not a user save destination. Keep it until a real save succeeds.
+    sendCommand({{"action", "markUnsaved"}});
+    if (m_activeDocumentIndex >= 0 && m_activeDocumentIndex < static_cast<int>(m_documents.size())) {
+        auto &doc = m_documents[m_activeDocumentIndex];
+        doc.filePath.clear();
+        doc.title = tr("Recovered");
+        if (m_documentTabBar) m_documentTabBar->setTabText(m_activeDocumentIndex, doc.title);
+        setWindowTitle(tr("%1 — Compositor").arg(doc.title));
+    }
+    return true;
 }
 
 void SessionWindow::clearAutosave() {
@@ -4712,7 +5000,7 @@ void SessionWindow::closeEvent(QCloseEvent *event) {
     for (uint64_t handle : order) {
         const auto it = std::find_if(m_documents.begin(), m_documents.end(),
             [handle](const DocumentTab &doc) { return doc.handle == handle; });
-        if (it != m_documents.end() && !confirmDocumentClose(static_cast<int>(it - m_documents.begin()))) {
+        if (it != m_documents.end() && !confirmDocumentClose(static_cast<int>(it - m_documents.begin()), true)) {
             event->ignore();
             return;
         }

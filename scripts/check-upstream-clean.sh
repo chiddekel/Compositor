@@ -27,6 +27,11 @@ done
 
 if [ "$#" -eq 0 ]; then
   python3 "$ROOT/scripts/gen-smudge-liquify-override.py" --check
+  python3 "$ROOT/scripts/gen-text-format-11.py" --check
+  python3 "$ROOT/scripts/gen-color-range.py" --check
+  bash "$ROOT/scripts/gen-compositorapp-override.sh" --check
+  python3 "$ROOT/scripts/gen-project-validation.py" --check
+  python3 "$ROOT/scripts/gen-preview-renderer.py" --check
   echo "UPSTREAM CLEAN: protected trees match $REF"
   exit 0
 fi

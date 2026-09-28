@@ -1,0 +1,357 @@
+diff --git a/Compositor/Document/ColorRangeSelection.swift b/Compositor/Document/ColorRangeSelection.swift
+new file mode 100644
+index 0000000..af39824
+--- /dev/null
++++ b/Compositor/Document/ColorRangeSelection.swift
+@@ -0,0 +1,157 @@
++import AppKit
++import Observation
++
++/// Select > Color Range: every pixel near the colors clicked on the canvas, anywhere in the image. The panel shows
++/// the selection live; OK keeps it as one undo step, Cancel puts back the one there was.
++@MainActor @Observable
++final class ColorRangeEdit {
++    static let fuzzinessRange: ClosedRange<Double> = 0...200
++    /// The panel's preview fits in this, in points.
++    nonisolated static let previewSize = CGSize(width: 292, height: 200)
++    var fuzziness: Double = 40
++    var invert = false
++    /// What the next click on the canvas does: start over from that color, add it, or take it away.
++    var sampleMode: HueSampleMode = .replace
++    /// Shift (add) or Option (take away) held right now, which a click uses over `sampleMode`.
++    var held: HueSampleMode?
++    var effectiveMode: HueSampleMode { held ?? sampleMode }
++    /// The selection in black and white, small enough for the panel. Nil until a color is picked.
++    var preview: CGImage?
++    var include: [UInt8] = []
++    var exclude: [UInt8] = []
++    var error: String?
++    /// The image as shown, at document size: what the colors are matched against.
++    @ObservationIgnored let image: CGImage
++    @ObservationIgnored let original: DocumentSelection?
++    @ObservationIgnored var generation = 0
++    init(image: CGImage, original: DocumentSelection?) { self.image = image; self.original = original }
++    var hasColors: Bool { !include.isEmpty }
++}
++
++private nonisolated struct ColorRangeJob: @unchecked Sendable {
++    let image: CGImage
++    let include: [UInt8], exclude: [UInt8]
++    let fuzziness: Int32, invert: Bool
++}
++
++private nonisolated struct ColorRangeResult: @unchecked Sendable {
++    var path: CGPath?
++    var preview: CGImage?
++    var error: Error?
++}
++
++extension EditorSession {
++    var canSelectColorRange: Bool { document != nil && colorRange == nil && canEditSelection }
++
++    func beginColorRange() {
++        guard canSelectColorRange, let document, let image = selectionSample(document, sampleAllLayers: true) else { return }
++        colorRange = ColorRangeEdit(image: image, original: selection)
++    }
++
++    /// A click on the canvas while the panel is open. Shift adds the color and Option takes it away, whichever
++    /// eyedropper is chosen.
++    func sampleColorRange(at point: CGPoint, shift: Bool, option: Bool) {
++        guard let edit = colorRange, let color = Self.color(in: edit.image, at: point) else { return }
++        switch option ? .remove : shift ? .add : edit.sampleMode {
++        case .replace: edit.include = color; edit.exclude = []
++        case .add: edit.include += color
++        case .remove: edit.exclude += color
++        }
++        updateColorRange()
++    }
++
++    /// Matches the image against the picked colors off the main thread and shows the result as the selection, without
++    /// an undo step. A newer change supersedes one still being worked out.
++    func updateColorRange() {
++        guard let edit = colorRange, let document else { return }
++        edit.generation += 1
++        let generation = edit.generation
++        guard edit.hasColors else { self.document?.selection = edit.original; edit.preview = nil; return }
++        let job = ColorRangeJob(image: edit.image, include: edit.include, exclude: edit.exclude,
++                                fuzziness: Int32(edit.fuzziness.rounded()), invert: edit.invert)
++        Task {
++            let result = await Task.detached(priority: .userInitiated) { Self.colorRangeResult(job) }.value
++            guard colorRange === edit, edit.generation == generation, self.document?.id == document.id else { return }
++            edit.error = result.error?.localizedDescription
++            edit.preview = result.preview
++            if result.error != nil { return }
++            self.document?.selection = result.path.map { DocumentSelection(path: $0, antialiased: selectionAntialiased) }
++        }
++    }
++
++    func commitColorRange() {
++        guard let edit = colorRange else { return }
++        let result = selection
++        document?.selection = edit.original
++        colorRange = nil
++        guard edit.hasColors, edit.error == nil else { return }
++        if let result { setSelection(result, name: "Color Range") } else { deselect() }
++    }
++
++    func cancelColorRange() {
++        guard let edit = colorRange else { return }
++        document?.selection = edit.original
++        colorRange = nil
++    }
++
++    /// The straight color under `point` (document pixels), averaged over the 3 × 3 pixels around it.
++    private static func color(in image: CGImage, at point: CGPoint) -> [UInt8]? {
++        let x = Int(point.x.rounded(.down)), y = Int(point.y.rounded(.down))
++        guard point.x.isFinite, point.y.isFinite, (0..<image.width).contains(x), (0..<image.height).contains(y),
++              let context = try? BrushRaster.context(width: 3, height: 3, mask: false) else { return nil }
++        BrushRaster.draw(image, in: CGRect(x: 1 - x, y: 1 - y, width: image.width, height: image.height), mask: false, context: context)
++        guard let data = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
++        var sums = [0, 0, 0, 0]
++        for row in 0..<3 {
++            for column in 0..<3 {
++                for channel in 0..<4 { sums[channel] += Int(data[row * context.bytesPerRow + column * 4 + channel]) }
++            }
++        }
++        guard sums[3] > 0 else { return nil }
++        return (0..<3).map { UInt8(min(255, (sums[$0] * 255 + sums[3] / 2) / sums[3])) }
++    }
++
++    private nonisolated static func colorRangeResult(_ job: ColorRangeJob) -> ColorRangeResult {
++        var result = ColorRangeResult()
++        do {
++            let mask = try colorRangeMask(job)
++            result.preview = preview(of: mask, width: job.image.width, height: job.image.height)
++            if mask.contains(where: { $0 != 0 }) { result.path = try MagicWand.outline(of: mask, width: job.image.width, height: job.image.height) }
++        } catch { result.error = error }
++        return result
++    }
++
++    /// The mask shrunk to the panel's preview, white where selected, at twice its size for a sharp Retina picture.
++    private nonisolated static func preview(of mask: [UInt8], width: Int, height: Int) -> CGImage? {
++        let scale = min(ColorRangeEdit.previewSize.width / CGFloat(width), ColorRangeEdit.previewSize.height / CGFloat(height)) * 2
++        let w = max(1, Int(CGFloat(width) * scale)), h = max(1, Int(CGFloat(height) * scale))
++        var bytes = mask
++        guard let provider = CGDataProvider(data: Data(bytes: &bytes, count: bytes.count) as CFData),
++              let full = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: width,
++                                 space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
++                                 provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent),
++              let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
++                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
++        context.interpolationQuality = .medium
++        context.draw(full, in: CGRect(x: 0, y: 0, width: w, height: h))
++        return context.makeImage()
++    }
++
++    private nonisolated static func colorRangeMask(_ job: ColorRangeJob) throws -> [UInt8] {
++        let width = job.image.width, height = job.image.height
++        let context = try BrushRaster.context(width: width, height: height, mask: false)
++        BrushRaster.draw(job.image, in: CGRect(x: 0, y: 0, width: width, height: height), mask: false, context: context)
++        guard let data = context.data else { throw ExportError.render }
++        var mask = [UInt8](repeating: 0, count: width * height)
++        _ = mask.withUnsafeMutableBufferPointer { out in
++            job.include.withUnsafeBufferPointer { include in
++                job.exclude.withUnsafeBufferPointer { exclude in
++                    color_range_mask(data.assumingMemoryBound(to: UInt8.self), width, height, context.bytesPerRow,
++                                     include.baseAddress, Int32(include.count / 3), exclude.baseAddress, Int32(exclude.count / 3),
++                                     job.fuzziness, job.invert ? 1 : 0, out.baseAddress)
++                }
++            }
++        }
++        return mask
++    }
++}
+diff --git a/Compositor/Document/EditorSession.swift b/Compositor/Document/EditorSession.swift
+index aa262ee..5afe655 100644
+--- a/Compositor/Document/EditorSession.swift
++++ b/Compositor/Document/EditorSession.swift
+@@ -150,7 +150,7 @@ final class EditorSession {
+     private var fileRequestWaiters: [CheckedContinuation<Void, Never>] = []
+     var canStartProjectOperation: Bool {
+         _ = showsBusy // Re-evaluate in the UI when a long operation starts or ends.
+-        return selectionAmountOperation == nil && textDraft == nil && !isProjectBusy && !isImporting && brushStroke == nil && warpStroke == nil && levels == nil && !showsNewDocument && !showsImporter && renamingLayerID == nil && importError == nil && adjustmentEditingID == nil && !showsConversionSheet
++        return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && !isProjectBusy && !isImporting && brushStroke == nil && warpStroke == nil && levels == nil && !showsNewDocument && !showsImporter && renamingLayerID == nil && importError == nil && adjustmentEditingID == nil && !showsConversionSheet
+     }
+     func waitForFileRequest() async {
+         while !canStartProjectOperation {
+@@ -263,6 +263,8 @@ final class EditorSession {
+     var selectionAntialiased = true
+     /// How far Feather softens the selection's edge each time it is applied, in document pixels.
+     var selectionAmountOperation: SelectionAmountOperation? { didSet { resumeFileRequests() } }
++    /// Select > Color Range's panel is open; the selection shown is its preview until OK.
++    var colorRange: ColorRangeEdit? { didSet { resumeFileRequests() } }
+     var selectionFeatherAmount = 2
+     var wandSettings = WandSettings()
+     var objectSelectionSettings = ObjectSelectionSettings()
+@@ -568,7 +570,7 @@ final class EditorSession {
+     var isModified: Bool { history.isModified }
+     var canUseHistory: Bool {
+         _ = showsBusy
+-        return selectionAmountOperation == nil && textDraft == nil && !isProjectBusy && !isImporting && brushStroke == nil && warpStroke == nil && levels == nil && !showsNewDocument && !showsImporter && renamingLayerID == nil && importError == nil && transformEdit == nil && !showsConversionSheet
++        return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && !isProjectBusy && !isImporting && brushStroke == nil && warpStroke == nil && levels == nil && !showsNewDocument && !showsImporter && renamingLayerID == nil && importError == nil && transformEdit == nil && !showsConversionSheet
+     }
+     var canUndo: Bool { canUseHistory && (history.canUndo || gradientEdit != nil) }
+     var canRedo: Bool { canUseHistory && history.canRedo }
+@@ -605,7 +607,7 @@ final class EditorSession {
+     var activeLayer: ImageLayer? { document?.layers.first { $0.id == activeLayerID } }
+     var canEditLayers: Bool {
+         _ = showsBusy
+-        return selectionAmountOperation == nil && textDraft == nil && document != nil && brushStroke == nil && warpStroke == nil && !isProjectBusy && !isImporting && !showsNewDocument && !showsImporter && renamingLayerID == nil && transformEdit == nil && cropRect == nil && gradientEdit == nil && pixelMove == nil && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
++        return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && document != nil && brushStroke == nil && warpStroke == nil && !isProjectBusy && !isImporting && !showsNewDocument && !showsImporter && renamingLayerID == nil && transformEdit == nil && cropRect == nil && gradientEdit == nil && pixelMove == nil && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
+     }
+ 
+     func addBlankLayer() {
+diff --git a/Compositor/Rendering/WandPixels.c b/Compositor/Rendering/WandPixels.c
+index 2e51225..33296fb 100644
+--- a/Compositor/Rendering/WandPixels.c
++++ b/Compositor/Rendering/WandPixels.c
+@@ -172,3 +172,34 @@ fail:
+     free(lens);
+     return -1;
+ }
++
++static inline int color_near(const int *rgb, const uint8_t *colors, int count, int fuzziness) {
++    for (int i = 0; i < count; ++i) {
++        const uint8_t *c = colors + i * 3;
++        if (abs(rgb[0] - c[0]) <= fuzziness && abs(rgb[1] - c[1]) <= fuzziness && abs(rgb[2] - c[2]) <= fuzziness) return 1;
++    }
++    return 0;
++}
++
++long color_range_mask(const uint8_t *rgba, size_t width, size_t height, size_t stride,
++                      const uint8_t *include, int includeCount, const uint8_t *exclude, int excludeCount,
++                      int fuzziness, int invert, uint8_t *mask) {
++    long count = 0;
++    for (size_t y = 0; y < height; ++y) {
++        const uint8_t *row = rgba + y * stride;
++        uint8_t *out = mask + y * width;
++        for (size_t x = 0; x < width; ++x) {
++            const uint8_t *px = row + x * 4;
++            int matches = 0;
++            if (px[3]) {
++                int rgb[3];
++                for (int c = 0; c < 3; ++c) rgb[c] = (px[c] * 255 + px[3] / 2) / px[3];
++                matches = color_near(rgb, include, includeCount, fuzziness) && !color_near(rgb, exclude, excludeCount, fuzziness);
++            }
++            if (invert) matches = !matches;
++            out[x] = matches ? 255 : 0;
++            count += matches;
++        }
++    }
++    return count;
++}
+diff --git a/Compositor/Rendering/WandPixels.h b/Compositor/Rendering/WandPixels.h
+index 4ff2d13..09df9a8 100644
+--- a/Compositor/Rendering/WandPixels.h
++++ b/Compositor/Rendering/WandPixels.h
+@@ -10,6 +10,13 @@
+ // `mask` (width * height bytes). Returns the number selected, or -1 when memory runs out.
+ long wand_mask(const uint8_t *rgba, size_t width, size_t height, size_t stride,
+                size_t seedX, size_t seedY, size_t radius, int tolerance, int contiguous, uint8_t *mask);
++// Select > Color Range over premultiplied RGBA (as above). A pixel matches when every color channel is within
++// `fuzziness` of one of the `includeCount` colors in `include` and of none in `exclude` (straight sRGB, 3 bytes
++// each). Transparent pixels never match. With `invert`, the pixels that don't match are selected instead. Writes
++// 255 for selected, 0 elsewhere, into `mask`, and returns the number selected.
++long color_range_mask(const uint8_t *rgba, size_t width, size_t height, size_t stride,
++                      const uint8_t *include, int includeCount, const uint8_t *exclude, int excludeCount,
++                      int fuzziness, int invert, uint8_t *mask);
+ // Outline of the nonzero pixels of `mask`, along pixel edges, as closed loops of corner points
+ // (x, y pairs in pixel-edge coordinates). Outer boundaries run clockwise and holes
+ // counterclockwise in top-left coordinates, so the winding rule fills exactly those pixels.
+diff --git a/Compositor/UI/ColorRangeSheet.swift b/Compositor/UI/ColorRangeSheet.swift
+new file mode 100644
+index 0000000..5a4fdd1
+--- /dev/null
++++ b/Compositor/UI/ColorRangeSheet.swift
+@@ -0,0 +1,91 @@
++import SwiftUI
++
++/// Select > Color Range's panel: the eyedroppers, Fuzziness and Invert, with the selection updating on the canvas.
++struct ColorRangeSheet: View {
++    @Bindable var session: EditorSession
++    private var edit: ColorRangeEdit? { session.colorRange }
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 16) {
++            HStack(spacing: 6) {
++                ForEach(HueSampleMode.allCases, id: \.self) { mode in
++                    Button { edit?.sampleMode = mode } label: { eyedropper(mode) }
++                        .buttonStyle(.plain)
++                        // Holding Shift or Option lights up the eyedropper a click will use.
++                        .background(edit?.effectiveMode == mode ? Color.accentColor.opacity(0.25) : .clear,
++                                    in: RoundedRectangle(cornerRadius: 4))
++                        .help(help(mode))
++                        .accessibilityLabel("\(mode.rawValue) color")
++                }
++                Spacer()
++            }
++            preview
++            Text(edit?.hasColors == true ? "Shift-click adds a color, Option-click takes one away."
++                                         : "Click the image to pick the color to select.")
++                .font(.callout).foregroundStyle(.secondary)
++            HStack(spacing: 10) {
++                Text("Fuzziness").fixedSize()
++                    .scrubbable(sensitivity: 1, value: fuzziness, range: ColorRangeEdit.fuzzinessRange)
++                Slider(value: fuzziness, in: ColorRangeEdit.fuzzinessRange)
++                TextField("Fuzziness", value: fuzziness, format: .number.precision(.fractionLength(0)))
++                    .frame(width: 48).textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing)
++            }
++            .help("How far a color may be from the picked ones and still be selected")
++            Toggle("Invert", isOn: Binding(get: { edit?.invert ?? false }, set: { edit?.invert = $0; session.updateColorRange() }))
++                .help("Select everything except those colors, such as all but a green screen")
++            if let error = edit?.error {
++                Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
++            }
++            Divider()
++            HStack {
++                Button("Cancel") { session.cancelColorRange() }.configuredNativeShortcut(.escape)
++                Spacer()
++                Button("OK") { session.commitColorRange() }
++                    .configuredNativeShortcut(.return).buttonStyle(.borderedProminent)
++            }
++        }
++        .padding(24).frame(width: 340).fixedSize()
++    }
++
++    /// The selection in black and white, white where selected, shaped like the canvas: black until a color is picked.
++    private var preview: some View {
++        let image = edit?.image
++        let size = image.map { CGSize(width: $0.width, height: $0.height) } ?? ColorRangeEdit.previewSize
++        let scale = min(ColorRangeEdit.previewSize.width / size.width, ColorRangeEdit.previewSize.height / size.height)
++        return ZStack {
++            Color.black
++            if let picture = edit?.preview { Image(decorative: picture, scale: 2).resizable() }
++        }
++        .frame(width: size.width * scale, height: size.height * scale)
++        .overlay { Rectangle().strokeBorder(.white.opacity(0.2)) }
++        .frame(maxWidth: .infinity)
++    }
++
++    private var fuzziness: Binding<Double> {
++        Binding(get: { edit?.fuzziness ?? 40 }, set: { value in
++            let clamped = min(ColorRangeEdit.fuzzinessRange.upperBound, max(ColorRangeEdit.fuzzinessRange.lowerBound, value.rounded()))
++            guard let edit, edit.fuzziness != clamped else { return }
++            edit.fuzziness = clamped
++            session.updateColorRange()
++        })
++    }
++
++    private func help(_ mode: HueSampleMode) -> String {
++        switch mode {
++        case .replace: "Click the image to select that color"
++        case .add: "Click the image to add that color to the selection"
++        case .remove: "Click the image to take that color out of the selection"
++        }
++    }
++
++    /// The eyedropper, with a plus or minus badge for Add and Remove, as Hue/Saturation's.
++    private func eyedropper(_ mode: HueSampleMode) -> some View {
++        ZStack(alignment: .bottomTrailing) {
++            Image(systemName: mode.symbol)
++            if let badge = mode.badge {
++                Image(systemName: badge).font(.system(size: 8, weight: .semibold)).offset(x: 3, y: 1)
++            }
++        }
++        .frame(width: 24, height: 20)
++    }
++}

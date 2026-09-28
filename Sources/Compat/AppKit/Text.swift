@@ -1,8 +1,8 @@
 import Foundation
 import CoreGraphics
 
-// The Type tool's text stack. Layout is approximate and drawing is a no-op until the Skia paragraph backend is
-// wired in (Phase 3); the API mirrors what upstream's TypeTool.swift calls.
+// The Type tool's text stack uses Qt for attributed measurement and drawing,
+// with an approximate fallback when the native text engine is unavailable.
 
 open class NSFont: @unchecked Sendable {
     public struct Weight: RawRepresentable, Hashable, Sendable {
@@ -64,13 +64,10 @@ public struct NSStringDrawingOptions: OptionSet, Sendable {
 }
 
 extension NSAttributedString {
-    /// Approximate measure (0.55 em per character, one line height per line) until real shaping is available.
+    /// Measures the same attributed text used by the native glyph renderer.
     public func boundingRect(with size: CGSize, options: NSStringDrawingOptions = []) -> CGRect {
         let attrs = length > 0 ? attributes(at: 0, effectiveRange: nil) : [:]
-        if let font = attrs[.font] as? NSFont,
-           let real = TextBackend.layout(string, font: font, tracking: (attrs[.kern] as? CGFloat) ?? 0,
-                                         lineHeight: (attrs[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0,
-                                         maxWidth: size.width >= 1e5 ? 0 : size.width) {
+        if let real = TextBackend.layout(self, maxWidth: size.width >= 1e5 ? 0 : size.width) {
             return CGRect(x: 0, y: 0, width: min(real.width, size.width), height: min(real.height, size.height))
         }
         let point = (attrs[.font] as? NSFont)?.pointSize ?? 12
@@ -162,10 +159,7 @@ open class NSTextContainer {
     nonisolated open func location(forGlyphAt glyphIndex: Int) -> CGPoint {
         let p = placement(ofGlyphAt: glyphIndex)
         let attrString = textStorage?.attributedString ?? NSAttributedString(string: "")
-        let attrs = attrString.length > 0 ? attrString.attributes(at: 0, effectiveRange: nil) : [:]
-        if let font = attrs[.font] as? NSFont,
-           let real = TextBackend.layout(attrString.string, font: font, tracking: (attrs[.kern] as? CGFloat) ?? 0,
-                                         lineHeight: p.lineHeight, maxWidth: 0) {
+        if let real = TextBackend.layout(attrString, maxWidth: 0) {
             return CGPoint(x: p.x, y: real.baseline)
         }
         return CGPoint(x: p.x, y: p.pointSize * 0.8)
@@ -192,13 +186,7 @@ open class NSTextContainer {
         // upstream's text layers draw (a flipped context, y growing down from the text's top-left).
         let wrapWidth = containerWidth >= 1e5 ? 0 : containerWidth
         let alignment: Int32 = paragraph?.alignment == .center ? 1 : paragraph?.alignment == .right ? 2 : 0
-        // Letters colored on their own (a foreground color run that differs from the first letter's).
-        var runs: [(NSRange, NSColor)] = []
-        attrString.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: attrString.length)) { value, range, _ in
-            if let runColor = value as? NSColor, runColor != color { runs.append((range, runColor)) }
-        }
-        if let image = TextBackend.render(fullString, font: font, tracking: tracking, lineHeight: lineHeight, maxWidth: wrapWidth,
-                                          alignment: alignment, boxWidth: wrapWidth, color: color, runs: runs) {
+        if let image = TextBackend.render(attrString, maxWidth: wrapWidth, alignment: alignment, boxWidth: wrapWidth) {
             let rect = CGRect(x: origin.x, y: origin.y, width: CGFloat(image.width), height: CGFloat(image.height))
             context.saveGState()
             // CGContext draws an image with its first row at the rect's max y; in this y-down space that is upside
@@ -210,6 +198,10 @@ open class NSTextContainer {
             return
         }
 
+        var runs: [(NSRange, NSColor)] = []
+        attrString.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: attrString.length)) { value, range, _ in
+            if let runColor = value as? NSColor, runColor != color { runs.append((range, runColor)) }
+        }
         context.setFillColor(color.cgColor)
 
         let charAdvance = pointSize * 0.55 + tracking

@@ -29,6 +29,15 @@ import AppKit
         if modifiers & 2 != 0 { flags.insert(.option) }
         if modifiers & 4 != 0 { flags.insert(.control) }
         if modifiers & 8 != 0 { flags.insert(.shift) }
+        if let edit = view.session.colorRange, let document = view.session.document {
+            edit.held = flags.contains(.option) ? .remove : flags.contains(.shift) ? .add : nil
+            if kind == 0 || kind == 4 {
+                let point = view.session.viewport.documentPoint(from: CGPoint(x: x, y: y), documentSize: document.size)
+                view.session.sampleColorRange(at: point, shift: flags.contains(.shift), option: flags.contains(.option))
+            }
+            NSCursor.crosshair.set()
+            return
+        }
         let type: NSEvent.EventType = [0: .leftMouseDown, 1: .leftMouseDragged, 2: .leftMouseUp, 3: .mouseMoved][kind] ?? .leftMouseDown
         // The window's space is bottom-left; the view is flipped.
         let location = CGPoint(x: x, y: view.bounds.height - y)
@@ -86,6 +95,11 @@ import AppKit
         if modifiers & 2 != 0 { flags.insert(.option) }
         if modifiers & 4 != 0 { flags.insert(.control) }
         if modifiers & 8 != 0 { flags.insert(.shift) }
+        if view.session.colorRange != nil {
+            if keyCode == 53 { view.session.cancelColorRange() }
+            else if keyCode == 36 || keyCode == 76 { view.session.commitColorRange() }
+            return
+        }
         guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                            context: nil, characters: characters, charactersIgnoringModifiers: characters,

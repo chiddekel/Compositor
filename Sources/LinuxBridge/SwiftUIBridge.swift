@@ -74,6 +74,7 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
     case "TypeControls": resolved = ViewResolver.resolve(TypeControls(session: session))
     case "ColorPaletteControls": resolved = ViewResolver.resolve(ColorPaletteControls(session: session))
     case "LevelsSheet": resolved = ViewResolver.resolve(LevelsSheet(session: session))
+    case "ColorRangeSheet": resolved = ViewResolver.resolve(ColorRangeSheet(session: session))
     case "HueSaturationSheet": resolved = ViewResolver.resolve(HueSaturationSheet(session: session))
     case "FilterSheet": resolved = ViewResolver.resolve(FilterSheet(session: session))
     case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session))

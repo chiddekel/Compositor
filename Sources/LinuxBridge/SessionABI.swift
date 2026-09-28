@@ -42,10 +42,15 @@ final class Entry {
     /// the area painted since the last frame accumulates here (compositor_session_render_dirty takes it). Called after
     /// anything that can advance a stroke: a bridge command, a pointer event on the hosted canvas.
     func noteStrokeProgress() {
-        if let stroke = editor.session.brushStroke {
+        func affected(_ rect: CGRect) -> CGRect {
+            let margin = editor.spatialAdjustmentMargin
+            guard margin > 0, let document = editor.session.document else { return rect }
+            return rect.insetBy(dx: -margin, dy: -margin).integral.intersection(CGRect(origin: .zero, size: document.size))
+        }
+        if let stroke = editor.session.brushStroke ?? editor.session.pixelMove?.raster {
             trackedWarp = nil
             warpPointCount = 0
-            if let dirty = stroke.dirtyDocumentRect { strokeDirty = strokeDirty.map { $0.union(dirty) } ?? dirty }
+            if let dirty = stroke.dirtyDocumentRect.map(affected) { strokeDirty = strokeDirty.map { $0.union(dirty) } ?? dirty }
         } else if let warp = editor.session.warpStroke {
             if trackedWarp !== warp {
                 trackedWarp = warp
@@ -57,8 +62,8 @@ final class Entry {
             let radius = ceil(warp.diameter / 2) + 2
             let canvas = CGRect(x: 0, y: 0, width: warp.width, height: warp.height)
             for point in warp.points.dropFirst(warpPointCount) {
-                let dirty = CGRect(x: point.x - radius, y: point.y - radius,
-                                   width: radius * 2, height: radius * 2).integral.intersection(canvas)
+                let dirty = affected(CGRect(x: point.x - radius, y: point.y - radius,
+                                   width: radius * 2, height: radius * 2).integral.intersection(canvas))
                 if !dirty.isNull, !dirty.isEmpty { strokeDirty = strokeDirty.map { $0.union(dirty) } ?? dirty }
             }
             warpPointCount = warp.points.count
@@ -188,8 +193,14 @@ nonisolated public func compositorSessionClose(_ handle: UInt64) {
 
 @_cdecl("compositor_session_command")
 nonisolated public func compositorSessionCommand(_ handle: UInt64, _ json: UnsafePointer<UInt8>?, _ count: Int) -> Int32 {
-    guard let json, count > 0, count <= 1_048_576 else { return -1 }
+    guard let json, count > 0, count <= 4 * 1_048_576 else { return -1 }
     let data = Data(bytes: json, count: count)
+    // Restoring rich text may carry the same metadata as a valid project. Keep
+    // every other command within its original 1 MiB budget.
+    if count > 1_048_576 {
+        guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              envelope["action"] as? String == "textRestore" else { return -1 }
+    }
     return Int32(withEntry(handle) { entry in
         let code = entry.editor.command(data)
         if code == 0 { entry.rendered = nil }
@@ -263,7 +274,8 @@ nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: U
                                                      _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     guard let rect, let output, capacity >= 0 else { return -1 }
     return withEntry(handle) { entry in
-        guard entry.editor.session.brushStroke != nil || entry.editor.session.warpStroke != nil else { return -3 }
+        guard entry.editor.session.brushStroke != nil || entry.editor.session.warpStroke != nil
+                || entry.editor.session.pixelMove != nil else { return -3 }
         guard let dirty = entry.strokeDirty else { return 0 }
         // At full resolution: shrinking the region through the high-quality downsampler every frame costs more than
         // the stroke; the shell scales the patch into its display image (the committed stroke re-renders properly).
@@ -388,7 +400,7 @@ nonisolated public func compositorSessionRenderScaledAsync(_ handle: UInt64, _ s
         else { return -5 }
         nonisolated(unsafe) let snapshot = prepared.snapshot
         let task = Task.detached(priority: .userInitiated) {
-            guard let made = try? await UpstreamEditor.renderInBackground(snapshot), !Task.isCancelled else { return }
+            guard let made = try? await UpstreamEditor.renderInBackground(snapshot, scale: prepared.scale), !Task.isCancelled else { return }
             await MainActor.run {
                 guard let job = entry.scaledJob, job.key == key, job.scale == scale else { return }
                 entry.scaled = (key, scale, made.bytes, made.width, made.height)

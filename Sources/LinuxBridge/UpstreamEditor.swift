@@ -45,6 +45,10 @@ private struct Command: Decodable {
     var emptyLayer: Bool?
     /// "importFiles": absolute paths of the files to bring in.
     var paths: [String]?
+    var location: Int?
+    var length: Int?
+    var draftID: UUID?
+    var textStyle: LayerTextStyle?
 }
 
 private struct State: Encodable {
@@ -111,6 +115,14 @@ private struct State: Encodable {
     let shapeRect: [Double]?
     let shapeLine: [Double]?
     /// The text being typed (upstream `textDraft`): where it sits and how it looks, for the shell's inline editor.
+    let colorRange: ColorRangeState?
+    struct ColorRangeState: Encodable {
+        let working: Bool
+        let generation: Int
+        let hasColors: Bool
+        let sampleMode: String
+        let error: String?
+    }
     let textDraft: TextDraftState?
     /// Upstream's RAW Develop sheet is up (the shell's dialog closes when this turns false).
     let rawDevelopOpen: Bool
@@ -147,6 +159,13 @@ private struct State: Encodable {
     struct ShortcutState: Encodable { let title: String; let group: String; let key: String; let modifiers: Int; let originalKey: String; let originalModifiers: Int }
     struct AlertState: Encodable { let kind: String; let title: String; let message: String }
     struct TextDraftState: Encodable {
+        let id: UUID
+        let selectionLocation: Int
+        let selectionLength: Int
+        let colorRuns: [LayerTextColorRun]?
+        let fontRuns: [LayerTextFontRun]?
+        let tracking: Double
+        let leading: Double
         let origin: [Double]
         let size: [Double]?
         let rotation: Double
@@ -167,6 +186,8 @@ private func rgb(_ color: PaletteColor) -> [Double] { [Double(color.red), Double
 /// -5 operation failed, -6 unknown handle, -7 command not supported by this bridge yet.
 final class UpstreamEditor {
     let session: EditorSession
+    /// Distinguishes reloading the same document ID from editing that document.
+    var persistenceGeneration = UUID()
     private(set) var error: String?
 
     /// `session` defaults to a fresh one; SessionABI's workspace-backed handles inject the `EditorSession` that
@@ -178,10 +199,11 @@ final class UpstreamEditor {
 
     /// Commands this adapter can run today; the rest report -7 so callers (and the parity tests) see the gap explicitly.
     static let supportedActions: Set<String> = [
-        "new", "addLayer", "addGroup", "groupSelectedLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
+        "markSaved", "markUnsaved", "new", "addLayer", "addGroup", "groupSelectedLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
         "setOpacity", "setBlendMode", "setSelectedOpacity", "cycleBlendMode", "flipLayer", "flipCanvas", "undo", "redo",
         "addRevealMask", "addHideMask", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
         "selectAll", "deselect", "invertSelection", "loadLayerSelection", "loadMaskSelection", "selectSubject", "featherSelection",
+        "colorRangeBegin", "colorRangeSample", "colorRangeUpdate", "colorRangeCommit", "colorRangeCancel",
         "selectRectangle", "selectEllipse", "selectLasso", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
         "duplicateLayer", "layerViaCopy", "toggleClippingMask", "moveActiveLayer", "moveActiveLayerOutOfGroup", "mergeLayers",
@@ -195,7 +217,7 @@ final class UpstreamEditor {
         "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
-        "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textFinish", "textCancel",
+        "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textReplace", "textRestore", "textSelect", "textFinish", "textCancel",
     ]
 
     /// The adjustment as it was when editing began, for cancel.
@@ -324,9 +346,10 @@ final class UpstreamEditor {
         case "cycleBlendMode": s.cycleBlendMode(forward: command.forward ?? true)
         case "flipLayer": s.flipLayers(horizontally: command.horizontally ?? true)
         case "flipCanvas": s.flipCanvas(horizontally: command.horizontally ?? true)
-        // The Qt host writes the .comp package itself (SessionWindow::saveProject); this is ProjectController's
-        // post-save markSaved(), so isModified — and the close/quit "Save changes?" prompt — track the saved revision.
+        // Opening establishes a saved revision; recovery must still require a user save.
+        // Background save completion uses ProjectSaveSnapshot's captured revision instead.
         case "markSaved": s.history.markSaved()
+        case "markUnsaved": s.history.markSaved(UUID())
         case "undo": s.undo()
         case "redo": s.redo()
         case "addRevealMask", "addHideMask":
@@ -364,6 +387,29 @@ final class UpstreamEditor {
                 SelectionMode(rawValue: k) ?? SelectionMode.allCases.first(where: { "\($0)".caseInsensitiveCompare(k) == .orderedSame })
             }) ?? s.displayedSelectionMode
             select(path, mode: resolvedMode)
+        case "colorRangeBegin":
+            guard s.canSelectColorRange else { return fail(-5, "selection cannot be edited") }
+            s.beginColorRange()
+            guard s.colorRange != nil else { return fail(-5, "could not sample document") }
+        case "colorRangeSample":
+            guard s.colorRange != nil, let x = command.x, let y = command.y, x.isFinite, y.isFinite
+            else { return fail(-1, "invalid color sample") }
+            s.sampleColorRange(at: CGPoint(x: x, y: y), shift: (command.parameters?["shift"] ?? 0) != 0,
+                              option: (command.parameters?["option"] ?? 0) != 0)
+        case "colorRangeUpdate":
+            guard let edit = s.colorRange else { return fail(-5, "no color range being edited") }
+            if let value = command.value {
+                guard value.isFinite, ColorRangeEdit.fuzzinessRange.contains(value) else { return fail(-1, "invalid fuzziness") }
+            }
+            if let kind = command.kind, HueSampleMode(rawValue: kind) == nil { return fail(-1, "invalid sample mode") }
+            if let value = command.value { edit.fuzziness = value }
+            if let enabled = command.enabled { edit.invert = enabled }
+            if let kind = command.kind { edit.sampleMode = HueSampleMode(rawValue: kind)! }
+            s.updateColorRange()
+        case "colorRangeCommit":
+            guard let edit = s.colorRange, !edit.isWorking else { return fail(-5, "color range is still updating") }
+            s.commitColorRange()
+        case "colorRangeCancel": s.cancelColorRange()
         case "selectAll": s.selectAll()
         case "deselect": s.deselect()
         case "invertSelection": s.invertSelection()
@@ -500,7 +546,29 @@ final class UpstreamEditor {
             guard s.textDraft != nil else { return fail(-5, s.brushError ?? "text box could not start") }
         case "textSetContent":   // InlineTextEditor.textDidChange
             guard var draft = s.textDraft else { return fail(-5, "no text being edited") }
-            draft.style.content = command.name ?? ""
+            guard LinuxTextEditing.setContent(command.name ?? "", in: &draft) else { return fail(-1, "invalid text edit") }
+            s.textDraft = draft
+        case "textReplace":
+            guard var draft = s.textDraft else { return fail(-5, "no text being edited") }
+            guard let location = command.location, let length = command.length,
+                  LinuxTextEditing.replace(in: &draft, location: location, length: length, with: command.name ?? "")
+            else { return fail(-1, "invalid text edit") }
+            s.textDraft = draft
+        case "textRestore":
+            guard var draft = s.textDraft, draft.id == command.draftID,
+                  let style = command.textStyle, style.isValid,
+                  let location = command.location, let length = command.length,
+                  LinuxTextEditing.validRange(location: location, length: length, in: style.content)
+            else { return fail(-1, "invalid text history state") }
+            draft.style = style
+            draft.selection = NSRange(location: location, length: length)
+            s.textDraft = draft
+        case "textSelect":
+            guard var draft = s.textDraft else { return fail(-5, "no text being edited") }
+            guard let location = command.location, let length = command.length,
+                  LinuxTextEditing.validRange(location: location, length: length, in: draft.style.content)
+            else { return fail(-1, "invalid text selection") }
+            draft.selection = NSRange(location: location, length: length)
             s.textDraft = draft
         case "textFinish":
             guard s.finishText() else { return fail(-5, s.brushError ?? "text could not be applied") }
@@ -832,10 +900,15 @@ final class UpstreamEditor {
 
     /// Installs the project's structure; layer images and masks then arrive through `installLayerAsset`.
     func importManifest(_ data: Data) -> Int32 {
-        guard let manifest = try? JSONDecoder().decode(ProjectManifest.self, from: data), (1...DocumentLimits.maxSide).contains(manifest.width), (1...DocumentLimits.maxSide).contains(manifest.height),
-              manifest.width * manifest.height <= DocumentLimits.maxSurfacePixels, manifest.layers.count <= 10_000,
-              (try? LiveMaskGraph.validate(manifest.layers)) != nil else { return fail(-1, "invalid project manifest") }
+        let manifest: ProjectManifest
+        do {
+            guard data.count <= 4 * 1024 * 1024 else { throw ProjectError.tooLarge }
+            manifest = try JSONDecoder().decode(ProjectManifest.self, from: data)
+            try LinuxProjectValidation.validate(manifest)
+            guard manifest.width * manifest.height <= DocumentLimits.maxSurfacePixels else { throw ProjectError.tooLarge }
+        } catch { return fail(-1, error.localizedDescription) }
         session.installProject(ProjectSnapshot(manifest: manifest, images: [:]), from: URL(fileURLWithPath: "/dev/null"))
+        persistenceGeneration = UUID()
         session.projectURL = nil
         loadingManifest = manifest
         session.history.reset()
@@ -934,9 +1007,14 @@ final class UpstreamEditor {
             shapeKind: s.shapeDraft.map { $0.kind.rawValue },
             shapeRect: s.shapeDraft.map { [Double($0.rect.minX), Double($0.rect.minY), Double($0.rect.width), Double($0.rect.height)] },
             shapeLine: s.shapeLineEnds.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] },
+            colorRange: s.colorRange.map { State.ColorRangeState(working: $0.isWorking, generation: $0.generation,
+                hasColors: $0.hasColors, sampleMode: $0.effectiveMode.rawValue, error: $0.error) },
             textDraft: s.textDraft.map { draft in
                 let style = draft.style
-                return State.TextDraftState(origin: [Double(draft.origin.x), Double(draft.origin.y)],
+                return State.TextDraftState(id: draft.id, selectionLocation: draft.selection.location,
+                    selectionLength: draft.selection.length, colorRuns: style.colorRuns,
+                    fontRuns: style.fontRuns, tracking: Double(style.tracking), leading: Double(style.leading),
+                    origin: [Double(draft.origin.x), Double(draft.origin.y)],
                     size: draft.transform.map { [Double($0.size.width), Double($0.size.height)] },
                     rotation: Double(draft.transform?.rotation ?? 0), content: style.content, fontName: style.fontName,
                     fontSize: Double(style.fontSize), color: [Double(style.red), Double(style.green), Double(style.blue)],
@@ -1008,10 +1086,10 @@ final class UpstreamEditor {
         var manifest = snapshot.manifest
         // A pending gradient previews through its own raster edit, drawn in place of the layer as a stroke is
         // (EditorCanvas draws `gradientEdit?.raster` the same way).
-        let stroke = s.brushStroke ?? s.gradientEdit?.raster
+        let stroke = s.brushStroke ?? s.gradientEdit?.raster ?? s.pixelMove?.raster
         for (index, layer) in document.layers.enumerated() {
             var shown = s.displayedTransform(for: layer)
-            var maskPlacement = layer.mask?.placement
+            var maskPlacement = s.displayedMaskPlacement(for: layer)
             let preview = s.filterEdit?.previewImage(for: layer.id) ?? s.levels?.previewImage(for: layer.id)
                 ?? s.hueSaturation?.previewImage(for: layer.id)
             if let preview, let asset = layer.asset {
@@ -1031,12 +1109,14 @@ final class UpstreamEditor {
                       let painted = Self.paintRegion(of: stroke, in: strokeRegion) {
                 images[layer.id] = painted.asset
                 shown = painted.transform
+                if layer.mask != nil { maskPlacement = maskPlacement ?? layer.transform }
             } else if let stroke, stroke.layer.id == layer.id, !stroke.isMask, let painted = try? stroke.paintSnapshot() {
                 // A stroke can grow the layer's painted bounds beyond its committed transform (a brush dab
                 // outside the current edges); paintSnapshot() reports the new transform for exactly that,
                 // the same value BrushCommit.Input.sourceRect/transform would carry at commit time.
                 images[layer.id] = painted.asset
                 shown = painted.transform
+                if layer.mask != nil { maskPlacement = maskPlacement ?? layer.transform }
             } else if let distorted = s.distortPreview(for: layer), let asset = layer.asset {
                 // A pending distortion shows the layer warped into its new shape (EditorCanvas draws distortPreview).
                 images[layer.id] = ImportedImage(image: distorted.image, thumbnail: asset.thumbnail, name: asset.name)
@@ -1144,25 +1224,56 @@ final class UpstreamEditor {
 
     func renderRegionRGBA(_ region: CGRect, scale: CGFloat = 1) throws -> (bytes: [UInt8], rect: CGRect, width: Int, height: Int) {
         let prepared = try regionSnapshot(region, scale: scale)
-        let raster = try exportRGBA(prepared.snapshot)
-        return (raster.bytes, prepared.rect, raster.width, raster.height)
+        let raster = try exportRGBA(prepared.snapshot, scale: prepared.scale)
+        let crop = prepared.crop
+        let width = Int(crop.width), height = Int(crop.height)
+        if crop == CGRect(x: 0, y: 0, width: raster.width, height: raster.height) {
+            return (raster.bytes, prepared.rect, width, height)
+        }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(width * height * 4)
+        for y in Int(crop.minY)..<Int(crop.maxY) {
+            let start = (y * raster.width + Int(crop.minX)) * 4
+            bytes.append(contentsOf: raster.bytes[start..<start + width * 4])
+        }
+        return (bytes, prepared.rect, width, height)
+    }
+
+    /// Stacked blurs can sample through one another, so add their supports. The
+    /// canvas bounds cap the eventual allocation, including for deeply nested stacks.
+    var spatialAdjustmentMargin: CGFloat {
+        guard let document = session.document else { return 0 }
+        let visible = document.effectiveVisibleIDs
+        return document.layers.filter { visible.contains($0.id) }.reduce(0) { $0 + ($1.adjustment?.samplingMargin ?? 0) }
     }
 
     /// The snapshot `renderRegionRGBA` renders: taken on the main actor (it reads the session), rendered anywhere.
-    func regionSnapshot(_ region: CGRect, scale: CGFloat = 1) throws -> (snapshot: ProjectSnapshot, rect: CGRect) {
+    func regionSnapshot(_ region: CGRect, scale: CGFloat = 1) throws -> (snapshot: ProjectSnapshot, rect: CGRect, scale: CGFloat, crop: CGRect) {
         settle()
-        guard let snapshot = displayedSnapshot(strokeRegion: region) else { throw ExportError.render }
-        let canvas = CGRect(x: 0, y: 0, width: snapshot.manifest.width, height: snapshot.manifest.height)
+        guard scale.isFinite, let document = session.document else { throw ExportError.render }
+        let canvas = CGRect(origin: .zero, size: document.size)
         let rect = region.integral.intersection(canvas)
         guard !rect.isNull, rect.width >= 1, rect.height >= 1 else { throw ExportError.render }
         let k = min(1, max(1.0 / 64, scale))
+        // Align partial draws to the full preview's pixel grid. Otherwise a crop
+        // starting at an odd document pixel changes the downsampling phase.
+        let output = CGRect(x: floor(rect.minX * k), y: floor(rect.minY * k),
+                            width: ceil(rect.maxX * k) - floor(rect.minX * k),
+                            height: ceil(rect.maxY * k) - floor(rect.minY * k))
+        let outputCanvas = CGRect(x: 0, y: 0, width: ceil(canvas.width * k), height: ceil(canvas.height * k))
+        let margin = spatialAdjustmentMargin
+        let padding = margin > 0 ? ceil(min(margin, max(canvas.width, canvas.height)) * k) + 2 : 0
+        let sampled = output.insetBy(dx: -padding, dy: -padding).intersection(outputCanvas)
+        let sampledDocument = CGRect(x: sampled.minX / k, y: sampled.minY / k,
+                                     width: sampled.width / k, height: sampled.height / k)
+        guard let snapshot = displayedSnapshot(strokeRegion: sampledDocument) else { throw ExportError.render }
         func shifted(_ t: LayerTransform) -> LayerTransform {
             var moved = t
-            moved.origin = CGPoint(x: (t.origin.x - rect.minX) * k, y: (t.origin.y - rect.minY) * k)
+            moved.origin = CGPoint(x: (t.origin.x - sampledDocument.minX) * k, y: (t.origin.y - sampledDocument.minY) * k)
             moved.size = CGSize(width: t.size.width * k, height: t.size.height * k)
             return moved
         }
-        let outW = max(1, Int((rect.width * k).rounded(.up))), outH = max(1, Int((rect.height * k).rounded(.up)))
+        let outW = Int(sampled.width), outH = Int(sampled.height)
         let m = snapshot.manifest
         let layers = m.layers.map { r in
             ProjectLayerRecord(id: r.id, name: r.name, isVisible: r.isVisible, transform: shifted(r.transform),
@@ -1174,12 +1285,15 @@ final class UpstreamEditor {
         let manifest = ProjectManifest(format: m.format, version: m.version, colorSpace: m.colorSpace, resolution: m.resolution,
             documentID: m.documentID, width: outW, height: outH, activeLayerID: m.activeLayerID,
             layers: layers, guides: m.guides)
-        return (ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks), rect)
+        let outputDocument = CGRect(x: output.minX / k, y: output.minY / k,
+                                    width: output.width / k, height: output.height / k).intersection(canvas)
+        return (ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks), outputDocument, k,
+                output.offsetBy(dx: -sampled.minX, dy: -sampled.minY))
     }
 
     /// Renders a snapshot off the main thread (upstream's exporter actor), as premultiplied RGBA8.
-    nonisolated static func renderInBackground(_ snapshot: ProjectSnapshot) async throws -> (bytes: [UInt8], width: Int, height: Int) {
-        let image = try await ImageExporter.shared.render(snapshot).image
+    nonisolated static func renderInBackground(_ snapshot: ProjectSnapshot, scale: CGFloat = 1) async throws -> (bytes: [UInt8], width: Int, height: Int) {
+        let image = try await ImageExporter.shared.renderPreview(snapshot, scale: scale).image
         return try rgbaBytes(of: image)
     }
 
@@ -1201,6 +1315,7 @@ final class UpstreamEditor {
             let transform: LayerTransform
             let image: ObjectIdentifier?
             let mask: ObjectIdentifier?
+            let maskEnabled: Bool
             let maskSourceID: UUID?
             let parentID: UUID?
             let isGroup: Bool
@@ -1233,6 +1348,7 @@ final class UpstreamEditor {
                 ?? s.hueSaturation?.previewImage(for: layer.id)
             return RenderKey.Layer(id: layer.id, transform: s.displayedTransform(for: layer),
                 image: layer.asset.map { ObjectIdentifier($0.image) }, mask: layer.mask.map { ObjectIdentifier($0.asset.image) },
+                maskEnabled: layer.mask?.isEnabled ?? false,
                 maskSourceID: layer.maskSourceID, parentID: layer.parentID, isGroup: layer.isGroup,
                 visible: visible.contains(layer.id), opacity: opacities[layer.id] ?? layer.opacity,
                 blendMode: s.displayedBlendMode(for: layer), adjustment: layer.adjustment, effects: layer.effects,
@@ -1250,14 +1366,14 @@ final class UpstreamEditor {
         return try exportRGBA(snapshot)
     }
 
-    private func exportRGBA(_ snapshot: ProjectSnapshot) throws -> (bytes: [UInt8], width: Int, height: Int) {
+    private func exportRGBA(_ snapshot: ProjectSnapshot, scale: CGFloat = 1) throws -> (bytes: [UInt8], width: Int, height: Int) {
         // The exporter is an actor that never needs the main thread, so this blocks the caller on a plain semaphore:
         // safe from a Qt callback and from a main-actor test alike (pumping the main run loop would deadlock in the latter).
         nonisolated(unsafe) var outcome: Result<ExportRaster, Error>?
         let done = DispatchSemaphore(value: 0)
         nonisolated(unsafe) let captured = snapshot
         Task.detached {
-            do { outcome = .success(try await ImageExporter.shared.render(captured)) } catch { outcome = .failure(error) }
+            do { outcome = .success(try await ImageExporter.shared.renderPreview(captured, scale: scale)) } catch { outcome = .failure(error) }
             done.signal()
         }
         done.wait()

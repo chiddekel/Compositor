@@ -28,3 +28,17 @@ excluded here, with a reason; individual tests are never edited.
 | `moveToolNumberKeysSetSelectedLayersOpacityAsOneUndo` (`LayerAppearanceTests`) | Stale upstream test. `setSelectedLayersOpacity` sets every id in `selectedLayerIDs`, and the test selects the folder explicitly, so the folder becomes 0.5; the test expects 1 (pre-folder-opacity, commit `391042d`). The other 7 tests in these two files pass. |
 | `perspectiveMappingHitsTheCornersAndTwistedShapesAreRefused` (`DistortTests`) | Stale upstream test. `DistortWarp.isUsable` documents that a folded shape (bow-tie) is now accepted and "warped as two triangles instead" (`Distort.swift`, `isUsable`/`isConvex`); the test still expects bow-ties refused. Pure geometry, no platform involvement. |
 | `distortingWarpsTheLayerIntoTheShapeAsOneUndoStep` (`DistortTests`) | Same cause: it previews a twisted shape and expects it ignored (`corners[1] == (30, 10)`), but twisted shapes are now valid input. The other two Distort tests pass. |
+
+## Format-11 Linux test mirrors
+
+`TypeToolTests.swift`, `GroupTests.swift`, `LayerMaskTests.swift`, and
+`LayerAppearanceTests.swift` are excluded from `CompositorUpstreamTests` and
+compiled instead from generated Linux-owned copies in `Tests/LinuxOverrideTests`.
+No tests are dropped. `scripts/gen-text-format-11.py --check` verifies the copies:
+TypeToolTests uses the exact upstream 1.3.4 mixed-font diff; the other three suites
+change only their expected writer version from 10 to 11. The original protected
+files remain unchanged. Existing per-test skips above still apply.
+
+The image factory used by GroupTests is copied unchanged from ImageImportTests
+into a generated `ImageImportFixture.swift`; its test cases remain in the original
+test target and are not duplicated.
