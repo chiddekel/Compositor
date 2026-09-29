@@ -233,8 +233,18 @@ extension EditorSession {
         warpStroke = nil
         brushRevision += 1
         guard !warp.points.isEmpty, let result = warp.image,
-              let current = document?.layers.first(where: { $0.id == warp.layer.id }),
+              let index = document?.layers.firstIndex(where: { $0.id == warp.layer.id }),
+              let current = document?.layers[index],
               current.asset?.image === warp.layer.asset?.image, current.transform == warp.layer.transform else { return }
+
+        // Fast path: the working copy is already the finished document pixels. Crop to the stroke
+        // envelope ∪ layer bounds and replace the layer once — tip-replay of a long Liquify was
+        // stalling mouse-up well past 200 ms.
+        if current.mask == nil, current.transform.rotation == 0, !current.transform.flipX, !current.transform.flipY,
+           commitWarpImage(result, warp: warp, layer: current, index: index) {
+            return
+        }
+
         do {
             var settings = brushSettings
             // A hard tip a little wider than the brush covers everything the stroke moved.
@@ -245,8 +255,6 @@ extension EditorSession {
             stroke.clone = (result, CGRect(x: 0, y: 0, width: result.width, height: result.height), false)
             stroke.replacesWithClone = true
             stroke.editName = warp.mode.rawValue
-            // Circling for a few seconds records thousands of dabs. Replaying each through a
-            // full-document clone on mouse-up OOMs / SIGSEGVs on Linux — thin to tip coverage.
             let commitSpacing = max(1, warp.diameter * 0.35)
             var commit: [CGPoint] = []
             for point in warp.points {
@@ -258,5 +266,36 @@ extension EditorSession {
             try stroke.flush()
             if !stroke.patches.isEmpty { try commitPaintSnapshot(stroke) }
         } catch { brushError = error.localizedDescription }
+    }
+
+    /// Replace `layers[index]` with a crop of the warp working copy. Returns false if the crop is empty.
+    private func commitWarpImage(_ result: CGImage, warp: WarpStroke, layer: ImageLayer, index: Int) -> Bool {
+        let pad = ceil(warp.diameter / 2) + 2
+        var minX = CGFloat.greatestFiniteMagnitude, minY = minX
+        var maxX = -CGFloat.greatestFiniteMagnitude, maxY = maxX
+        for point in warp.points {
+            minX = min(minX, point.x - pad)
+            minY = min(minY, point.y - pad)
+            maxX = max(maxX, point.x + pad)
+            maxY = max(maxY, point.y + pad)
+        }
+        let canvas = CGRect(x: 0, y: 0, width: result.width, height: result.height)
+        let dirty = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        let layerRect = CGRect(origin: layer.transform.origin, size: layer.transform.size)
+        let dest = dirty.union(layerRect).integral.intersection(canvas)
+        guard !dest.isNull, !dest.isEmpty, let cropped = result.cropping(to: dest) else { return false }
+        beginEdit(warp.mode.rawValue)
+        let name = layer.asset?.name ?? layer.name
+        let asset = ImportedImage(image: cropped, thumbnail: layer.asset?.thumbnail ?? cropped, name: name)
+        var transform = layer.transform
+        transform.origin = dest.origin
+        transform.size = dest.size
+        document?.layers[index] = ImageLayer(id: layer.id, asset: asset, name: layer.name,
+            isVisible: layer.isVisible, transform: transform, parentID: layer.parentID, isGroup: false,
+            opacity: layer.opacity, blendMode: layer.blendMode, mask: layer.mask,
+            maskSourceID: layer.maskSourceID, adjustment: layer.adjustment, shape: layer.shape,
+            effects: layer.effects, text: layer.text)
+        endEdit()
+        return true
     }
 }

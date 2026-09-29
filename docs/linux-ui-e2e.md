@@ -83,6 +83,7 @@ window focus (required on Xvfb; still applied on a real WM).
 | 2048² bench / stress | Visible Xephyr journeys on a 2048×2048 canvas: soft-brush circle bench, Liquify ≤150 ms feedback, line→effect→Blur ×12, multi-tool cycles (`bench_*_2k`, `stress_*_2k`) |
 | Visible layers + color + smudge demo | Three layers with hex color picks and brush strokes, then ~15–25 s Smudge along shrinking rings toward canvas center (`demo_visible_layers_color_smudge`; opt-in, not in default CI) |
 | Smudge circle mouse-up repro | ~3 s circular Smudge then release must commit without crashing (`repro_smudge_circle_mouseup`; opt-in) |
+| Liquify circle mouse-up repro | ~3 s circular Liquify then release must commit in **&lt;200 ms** (`repro_liquify_circle_mouseup`; opt-in) |
 | Graphics-package E2E | Full Input→Load→Draw→Effects→Export→Save→Validate on 2048² @ **300 PPI** with warm-up, p50/p95/p99 (`bench_e2e_graphics_2k`) — UI satellite; primary engine bench is [`docs/benchmark-e2e-graphics-package.md`](benchmark-e2e-graphics-package.md) |
 | Gaussian / Motion Blur | Full-HD adjustment layers; editor opens within 1500 ms, blur direction, visible slider feedback before release, final value, Preview off/on, Apply, and Undo (`effect_gaussian_blur`, `effect_motion_blur`) |
 | Gradient | Linear/Radial preview, Cancel, Apply, alpha falloff and symmetry; undo |
