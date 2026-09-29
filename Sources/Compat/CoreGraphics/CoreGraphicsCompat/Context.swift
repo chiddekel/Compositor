@@ -531,14 +531,15 @@ public final class CGContext: @unchecked Sendable {
         guard format == .rgba else { return }
         let finalOpacity = opacity * Double(state.alpha)
 
-        // Check injected render closure fallback
+        // Check injected render closure fallback (Vulkan CompRenderer when activated).
         if finalOpacity >= 1, rect.origin == .zero,
            rect.width == CGFloat(image.width),
            rect.height == CGFloat(image.height),
            let render = self.render {
             let pImg = image.portableImage
-            let rc = pImg.bytes.withUnsafeBufferPointer { srcPtr in
-                render(srcPtr.baseAddress!, self.pixelData, pImg.width, pImg.height)
+            let rc = pImg.bytes.withUnsafeBufferPointer { srcPtr -> Int32 in
+                return render(srcPtr.baseAddress!, self.pixelData, pImg.width, pImg.height,
+                              state.blendMode.rawValue)
             }
             if rc == 0 { return }
         }

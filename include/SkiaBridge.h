@@ -95,6 +95,18 @@ int compositor_render_rgba(CompRenderer *renderer,
                            size_t width, size_t height);
 
 /*
+ * Like compositor_render_rgba, but composites with a Core Graphics blend mode
+ * (CGBlendMode raw value: Soft Light=8, Multiply=1, Color=14, …). Used so colour
+ * blend tools and layer modes ride the Vulkan path instead of silent SrcOver.
+ * Unsupported modes on a compute-only build return -2 (caller falls back to Skia CPU).
+ */
+int compositor_render_rgba_blend(CompRenderer *renderer,
+                                 const uint8_t *src_rgba,
+                                 uint8_t *dst_rgba,
+                                 size_t width, size_t height,
+                                 int cg_blend_mode);
+
+/*
  * Create a raster surface of the given size and fill it with the src pixels,
  * returning the result in dst. Equivalent to compositor_render_rgba for the
  * Raster backend; for Vulkan it exercises the GPU upload + readback path.
@@ -126,14 +138,15 @@ int compositor_vulkan_gpu_available(void);
  * LayerRenderer (plan §6 failsafe). The host calls this once at startup
  * after creating a CompRenderer.
  *
- * fn signature matches compositor_render_rgba minus the renderer handle:
- *   fn(src, dst, width, height) -> int32_t
+ * fn signature matches compositor_render_rgba_blend minus the renderer handle:
+ *   fn(src, dst, width, height, cg_blend_mode) -> int32_t
  * The C++ side wraps a CompRenderer* into this signature via a static
  * trampoline (one active renderer at a time; the factory replaces it on
- * device loss).
+ * device loss). Colour blend modes (Soft Light, Multiply, …) pass through
+ * cg_blend_mode so tools stay on Vulkan when Ganesh is available.
  */
 typedef int32_t (*CompRenderFn)(const uint8_t *src, uint8_t *dst,
-                                size_t width, size_t height);
+                                size_t width, size_t height, int32_t cg_blend_mode);
 void compositor_compat_set_render_fn(CompRenderFn fn);
 
 /* ── Stage 4/5: Canvas C ABI (CoreGraphics-shaped Skia Bridge) ──────────── */

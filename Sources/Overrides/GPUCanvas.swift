@@ -1,10 +1,10 @@
 // OVERRIDE for Compositor/Rendering/GPUCanvas.swift (excluded from the Linux build).
 //
 // Metal → Vulkan: `GPUCanvasRenderer.shared` drives tip `EditorCanvas.drawOnGPU`. Constraint: look, feel,
-// and UX must match Mac (sRGB, orientation, sampling, brush response) — not API-only stubs. The CI
-// placement/present path is not yet GPU↔CPU pixel-parity on Linux, so `shared` stays nil unless
-// COMPOSITOR_FORCE_GPU_CANVAS=1 (smoke / parity work). Default canvas is Core Graphics (same look as
-// Mac failover). CompRenderer's Vulkan composite via SkiaBridge is independent and stays on.
+// and UX must match Mac (sRGB, orientation, sampling, brush response) — not API-only stubs. When a Vulkan
+// ICD is present, `shared` is non-nil so colour tools (adjustments, Soft Light, warp, noise) use the GPU
+// path; set COMPOSITOR_CPU_CANVAS=1 or COMPOSITOR_FORCE_GPU_CANVAS=0 to stay on Core Graphics.
+// CompRenderer's Vulkan composite via SkiaBridge is independent and stays on.
 
 import Foundation
 import AppKit
@@ -50,13 +50,18 @@ final class CAMetalLayer {
     }
 
     private static func vulkanAvailable() -> Bool {
-        // UX/look gate: the CI placement/present path must pixel-match Core Graphics (GPUCanvasTests)
-        // before drawOnGPU is the default. Until then only COMPOSITOR_FORCE_GPU_CANVAS opts in — for
-        // API smoke (GPUCanvasLinuxTests) and intentional parity work. CompRenderer's Vulkan blit is
-        // independent and stays available via SkiaBridge.
+        // Opt out: CPU canvas forever (Settings / CI).
         if ProcessInfo.processInfo.environment["COMPOSITOR_CPU_CANVAS"] == "1" { return false }
         if UserDefaults.standard.bool(forKey: "CompositorCPUCanvas") { return false }
-        return ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1"
+        // Explicit force / deny for parity work.
+        if let forced = ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] {
+            if forced == "1" { return true }
+            if forced == "0" { return false }
+        }
+        // Metal → Vulkan: when a Vulkan ICD exists, enable the GPU canvas path so colour
+        // adjustments (Hue/Saturation, Levels, …), Soft Light, warp and noise tools match tip's
+        // Metal drawOnGPU. CompRenderer / SkiaBridge stay the composite backend underneath.
+        return CanvasBackends.vulkanGPUAvailable
     }
 
     private func release(keepingLastFrame: Bool) {

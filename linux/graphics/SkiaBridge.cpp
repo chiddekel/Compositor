@@ -151,7 +151,11 @@ static void vulkan_device_destroy(CompRenderer* r);
 static int vulkan_render_rgba(CompRenderer* r,
                               const uint8_t* src_rgba,
                               uint8_t* dst_rgba,
-                              size_t width, size_t height);
+                              size_t width, size_t height,
+                              int cg_blend_mode);
+#if defined(COMPOSITOR_HAS_SKIA)
+static SkBlendMode map_cg_blend_mode(int cg_mode);
+#endif
 
 // ── Availability and Kind Queries ──────────────────────────────────────
 
@@ -226,9 +230,10 @@ void compositor_renderer_simulate_device_lost(CompRenderer *renderer) {
 static CompRenderer* g_active_renderer = nullptr;
 
 static int32_t compositor_active_render_trampoline(const uint8_t* src, uint8_t* dst,
-                                                   size_t width, size_t height) {
+                                                   size_t width, size_t height,
+                                                   int32_t cg_blend_mode) {
     if (!g_active_renderer) return -2;
-    return compositor_render_rgba(g_active_renderer, src, dst, width, height);
+    return compositor_render_rgba_blend(g_active_renderer, src, dst, width, height, cg_blend_mode);
 }
 
 // Declared in Swift (RenderDeviceBinding.swift); resolved when the host links the Compositor module.
@@ -261,10 +266,19 @@ int compositor_render_rgba(CompRenderer *renderer,
                            const uint8_t *src_rgba,
                            uint8_t *dst_rgba,
                            size_t width, size_t height) {
+    return compositor_render_rgba_blend(renderer, src_rgba, dst_rgba, width, height, 0);
+}
+
+int compositor_render_rgba_blend(CompRenderer *renderer,
+                                 const uint8_t *src_rgba,
+                                 uint8_t *dst_rgba,
+                                 size_t width, size_t height,
+                                 int cg_blend_mode) {
     if (!renderer || !src_rgba || !dst_rgba) return -1;
     if (width == 0 || height == 0) return -1;
 
 #if !defined(COMPOSITOR_HAS_SKIA)
+    (void)cg_blend_mode;
     return -3;
 #else
     CompRenderer* r = (CompRenderer*)renderer;
@@ -273,10 +287,12 @@ int compositor_render_rgba(CompRenderer *renderer,
         raster_device_create(r, static_cast<int>(width), static_cast<int>(height));
     }
     if (r->is_raster) {
+        // Raster path only implements SrcOver; colour blends stay on CompCanvas / SeparableBlend.
+        if (cg_blend_mode != 0) return -2;
         return raster_render_rgba(r, src_rgba, dst_rgba, width, height);
     } else {
-        int rc = vulkan_render_rgba(r, src_rgba, dst_rgba, width, height);
-        if (rc == -2) {
+        int rc = vulkan_render_rgba(r, src_rgba, dst_rgba, width, height, cg_blend_mode);
+        if (rc == -2 && cg_blend_mode == 0) {
             // Plan §6 runtime loss failsafe: automatic dynamic fallback to Raster CPU
             vulkan_device_destroy(r);
             raster_device_create(r, static_cast<int>(width), static_cast<int>(height));
@@ -688,9 +704,10 @@ static int vulkan_ensure_compute(CompRenderer* r) {
 static int vulkan_render_rgba(CompRenderer* r,
                               const uint8_t* src_rgba,
                               uint8_t* dst_rgba,
-                              size_t width, size_t height) {
+                              size_t width, size_t height,
+                              int cg_blend_mode) {
 #if !defined(COMPOSITOR_HAS_VULKAN)
-    (void)r; (void)src_rgba; (void)dst_rgba; (void)width; (void)height;
+    (void)r; (void)src_rgba; (void)dst_rgba; (void)width; (void)height; (void)cg_blend_mode;
     return -2;
 #else
     if (!r || r->vk_device == VK_NULL_HANDLE || r->is_device_lost) return -2;
@@ -698,7 +715,8 @@ static int vulkan_render_rgba(CompRenderer* r,
     if (vulkan_ensure_compute(r) != 0) return -2;
 
 #if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
-    // Prefer Skia Ganesh when the Flatpak GPU Skia build is linked.
+    // Prefer Skia Ganesh when the Flatpak GPU Skia build is linked — colour blend modes
+    // (Soft Light, Multiply, Hue/…/Luminosity) run on the GPU here.
     if (r->gr_context) {
         const size_t stride = width * 4;
         SkImageInfo info = SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height),
@@ -714,7 +732,7 @@ static int vulkan_render_rgba(CompRenderer* r,
         canvas->clear(SK_ColorTRANSPARENT);
         canvas->drawImage(dstImage, 0, 0);
         SkPaint paint;
-        paint.setBlendMode(SkBlendMode::kSrcOver);
+        paint.setBlendMode(map_cg_blend_mode(cg_blend_mode));
         canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
         if (!surface->readPixels(dstPixmap, 0, 0)) return -2;
         r->gr_context->flushAndSubmit(true);
@@ -722,6 +740,9 @@ static int vulkan_render_rgba(CompRenderer* r,
         return 0;
     }
 #endif
+
+    // Compute SrcOver kernel only — non-normal blends need Ganesh or Skia CPU fallback.
+    if (cg_blend_mode != 0) return -2;
 
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width * height * 4u);
     VulkanHostBuffer srcBuf, dstBuf;

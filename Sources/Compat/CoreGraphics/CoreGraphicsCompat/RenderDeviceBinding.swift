@@ -14,10 +14,10 @@ import Foundation
 import Glibc
 #endif
 
-/// Render function injected by the C++ SkiaBridge for simple composite.
+/// Render function injected by the C++ SkiaBridge for composite (last arg = CGBlendMode).
 public typealias CompRenderFn =
     @convention(c) (UnsafePointer<UInt8>, UnsafeMutablePointer<UInt8>,
-                    Int, Int) -> Int32
+                    Int, Int, Int32) -> Int32
 
 nonisolated(unsafe) private var _compatRenderFn: CompRenderFn?
 

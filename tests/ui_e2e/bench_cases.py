@@ -586,6 +586,12 @@ def _run_e2e_graphics_scenario(app, *, iteration, warmup, asset_path):
     _phase(record, "load_assets", load)
 
     def draw():
+        # Leftover Effect/Filter sheets make palette()'s OK ambiguous.
+        for _ in range(4):
+            if not app.inspect()["state"].get("floatingPanels"):
+                break
+            app.desktop.key("Escape")
+            time.sleep(0.15)
         app.palette("#e11d48")
         app.tool("brush")
         app.brush(size=64, hardness=80, opacity=100)

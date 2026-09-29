@@ -194,7 +194,7 @@ class App:
     def palette(self, color):
         self.click(self.widget(label="Foreground color", kind="button", ancestor="swiftUIToolRailContainer"))
         self.field(color, label="Hex color", commit=False)
-        self.click(self.widget(text="OK", kind="button"))
+        self.click(self.widget(text="OK", kind="button", ancestor="floatingPanel.ColorPickerSheet"))
         self.wait(lambda s: not s["state"].get("colorPickerTitle"), "closed color picker")
 
     def stroke(self, points, interval=0.003, stall=False, undo_name="Brush Stroke"):
@@ -471,7 +471,7 @@ def main():
     parser.add_argument("--binary", default=str(ROOT / ".build/release/CompositorHostBootstrap"))
     parser.add_argument("--artifacts", required=True)
     parser.add_argument("--case", action="append", choices=CASES)
-    parser.add_argument("--backend", choices=["cpu", "auto"], default="cpu")
+    parser.add_argument("--backend", choices=["cpu", "auto"], default="auto")
     parser.add_argument("--large-psb", help="Path to the pinned 1.27 GiB PhotoshopAPI benchmark; enables psb_large_import")
     parser.add_argument("--compress-input", action="store_true")
     parser.add_argument("--check-input-regression", action="store_true",

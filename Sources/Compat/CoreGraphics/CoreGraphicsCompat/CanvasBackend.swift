@@ -8,6 +8,9 @@
 
 import Foundation
 import CompatSupport
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// One drawable surface over caller-owned pixel memory. Coordinates are in the backend's own user space; `CGContext`
 /// applies Core Graphics's orientation on top with `translate`/`scale` before drawing.
@@ -80,6 +83,24 @@ public enum CanvasBackends {
 
     /// True when at least one backend can draw; callers that would otherwise fall back to pure Swift ask this.
     public static var isAvailable: Bool { factories.contains { $0.isAvailable } }
+
+    /// True when a Vulkan ICD is present (Skia bridge loaded and `compositor_vulkan_gpu_available`).
+    /// Used by `GPUCanvasRenderer` so colour / adjustment tools opt into the GPU canvas path.
+    public static var vulkanGPUAvailable: Bool {
+        VulkanGPUCanvasFactory().isAvailable || Self.probeVulkanGPU()
+    }
+
+    private static func probeVulkanGPU() -> Bool {
+        #if canImport(Glibc)
+        typealias Fn = @convention(c) () -> Int32
+        _ = CompCanvasBridge.shared.isAvailable
+        if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "compositor_vulkan_gpu_available")
+            ?? CompCanvasBridge.loadedHandle.flatMap({ dlsym($0, "compositor_vulkan_gpu_available") }) {
+            return unsafeBitCast(sym, to: Fn.self)() != 0
+        }
+        #endif
+        return false
+    }
 
     static func make(pixels: UnsafeMutablePointer<UInt8>, width: Int, height: Int, bytesPerRow: Int,
                      format: CGContext.PixelFormat) -> CanvasBackend? {
