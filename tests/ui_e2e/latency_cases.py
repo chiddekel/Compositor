@@ -295,20 +295,26 @@ def latency_wand(app):
     snapshot = app.inspect()
     app.desktop.focus(snapshot["windowID"])
     mapping = snapshot["canvasMapping"]
-    point = (mapping[0] + 240 * mapping[2], mapping[1] + 220 * mapping[3])
+    # Alternate black-block vs red-patch clicks so each sample must build a new selection.
+    targets = [(240, 220), (460, 180), (240, 220), (460, 360), (240, 220), (460, 180)]
     samples_out = []
     total = SAMPLES + WARMUP
     try:
         for repetition in range(total):
             _deselect(app)
             assert not app.inspect()["state"].get("hasSelection"), "selection survived deselect"
+            before_undo = app.inspect()["state"]["undoName"]
+            x, y = targets[repetition % len(targets)]
+            point = (mapping[0] + x * mapping[2], mapping[1] + y * mapping[3])
             app.desktop.move(*point)
             started = time.perf_counter()
             app.desktop.button(True)
             app.desktop.button(False)
             while True:
                 elapsed = (time.perf_counter() - started) * 1000
-                if app.inspect()["state"].get("hasSelection"):
+                state = app.inspect()["state"]
+                # Require a new history entry so a leftover selection cannot pass as 0 ms.
+                if state.get("hasSelection") and state.get("undoName") != before_undo:
                     break
                 assert elapsed < 1000, "wand did not respond within one second"
                 time.sleep(0.002)

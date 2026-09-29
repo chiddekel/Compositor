@@ -140,6 +140,19 @@ inline void installUIE2EBridge(SessionWindow &window) {
             }
             reply["ok"] = found;
             if (!found) reply["error"] = "No enabled action titled " + title;
+        } else if (action == "command" && qEnvironmentVariableIsSet("COMPOSITOR_BENCH_ALLOW_COMMANDS")) {
+            // Engine-bench opt-in: forward a session command JSON object (no desktop typing).
+            // Kept behind an env gate so ordinary UI E2E stays observation-only.
+            const QJsonObject command = request.value("command").toObject();
+            if (command.isEmpty() || !command.contains("action")) {
+                reply["ok"] = false;
+                reply["error"] = "command action requires a non-empty command.action object";
+            } else {
+                reply["ok"] = window.sendCommand(command);
+                if (!reply["ok"].toBool())
+                    reply["error"] = window.sessionState().value("error").toString();
+                reply["state"] = window.sessionState();
+            }
         } else if (action == "stall") {
             // Simulate a busy UI while the independent driver queues real desktop pointer events.
             // Publish the acknowledgement first so the driver knows when the stall begins.

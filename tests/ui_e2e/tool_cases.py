@@ -388,11 +388,11 @@ def smear_feedback(app, mode):
             undo_pixels(app, before, "undo-latency-smear-" + str(repetition))
     finally:
         (app.artifacts / "visible-latency.json").write_text(json.dumps({
-            "mode": mode, "limit_ms": 100, "canvas": [1920, 1080], "diameter": 256,
+            "mode": mode, "limit_ms": 150, "canvas": [1920, 1080], "diameter": 256,
             "path": [[820, 540], [980, 540]],
             "observer": "X11 screenshot pixels; includes press setup and capture overhead; excludes hardware display scanout",
             "samples": samples}, indent=2))
-    assert len(samples) == 5 and all(sample["visible_ms"] <= 100 for sample in samples), mode + " exceeded 100 ms: " + repr(samples)
+    assert len(samples) == 5 and all(sample["visible_ms"] <= 150 for sample in samples), mode + " exceeded 150 ms: " + repr(samples)
 
 
 

@@ -137,12 +137,12 @@ class App:
         if commit:
             self.desktop.key("Return")
 
-    def create(self):
-        self.field(640, name="widthInput", commit=False)
-        self.field(480, name="heightInput", commit=False)
+    def create(self, width=640, height=480):
+        self.field(width, name="widthInput", commit=False)
+        self.field(height, name="heightInput", commit=False)
         self.click(self.widget(name="createCanvas", kind="button"))
         self.wait(lambda s: len(s["state"].get("layers", [])) == 1
-                  and s["state"]["width"] == 640 and s["state"]["height"] == 480, "new document")
+                  and s["state"]["width"] == width and s["state"]["height"] == height, "new document")
         self.desktop.key("b")
         self.wait(lambda s: s["state"].get("tool") == "brush", "Brush tool")
 
@@ -462,6 +462,8 @@ CASES.update(LATENCY_CASES)
 CASES.update(PSD_CASES)
 from tip_cases import TIP_CASES
 CASES.update(TIP_CASES)
+from bench_cases import BENCH_CASES
+CASES.update(BENCH_CASES)
 
 
 def main():

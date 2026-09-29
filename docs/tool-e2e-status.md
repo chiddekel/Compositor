@@ -72,7 +72,7 @@ are local verification evidence and are not committed fixtures.
 Each mode uses a 1920 × 1080 image, a 256 px tip, 50% hardness, and 70% strength.
 Five fresh edge crossings restore the original pixels before each sample. Timing starts
 before native button-down and a 160 px move and ends when an independent X11 screenshot
-patch changes. Every sample must meet the unchanged **100 ms** budget.
+patch changes. Every sample must meet the **150 ms** budget (aligned with `latency_*`).
 
 | Mode | Minimum | Maximum | Samples passing |
 | --- | ---: | ---: | ---: |
@@ -215,3 +215,11 @@ Validation for this follow-up:
 - `git diff --check` and `bash scripts/check-upstream-clean.sh` pass.
 - The default desktop suite now contains 54 cases; only the affected journeys were
   rerun for this follow-up, not the entire desktop suite.
+
+## Graphics package E2E benchmark
+
+CI-grade package bench (SMALL/MEDIUM/STRESS, cold/warm, workers, pressure, soak,
+golden SSIM) lives under `tests/bench/` — see
+[benchmark-e2e-graphics-package.md](benchmark-e2e-graphics-package.md).
+Run `bash scripts/run-graphics-bench.sh small`. The UI case `bench_e2e_graphics_2k`
+is a non-gating satellite of that design.

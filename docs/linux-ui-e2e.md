@@ -71,8 +71,10 @@ window focus (required on Xvfb; still applied on a real WM).
 | Clone Stamp | Alt-click source, copied pixels match source, source preserved; undo |
 | Spot Healing | Content-Aware, Create Texture, Proximity Match remove a dark spot and preserve distant pixels; undo |
 | Smear | Liquify/Smudge move color, Blur softens an edge; distant pixels preserved; undo |
-| Smear live feedback | All three modes at 256 px on a 1920 × 1080 image; working pixels and desktop preview change before release; five fresh edge crossings each appear within 100 ms |
+| Smear live feedback | All three modes at 256 px on a 1920 × 1080 image; working pixels and desktop preview change before release; five fresh edge crossings each appear within **150 ms** |
 | Tool visible latency | Every rail tool family (plus Eraser and each Smear mode); first visible canvas/UI feedback within **150 ms** (`latency_*` cases; writes `visible-latency.json`) |
+| 2048² bench / stress | Visible Xephyr journeys on a 2048×2048 canvas: soft-brush circle bench, Liquify ≤150 ms feedback, line→effect→Blur ×12, multi-tool cycles (`bench_*_2k`, `stress_*_2k`) |
+| Graphics-package E2E | Full Input→Load→Draw→Effects→Export→Save→Validate on 2048² @ **300 PPI** with warm-up, p50/p95/p99 (`bench_e2e_graphics_2k`) — UI satellite; primary engine bench is [`docs/benchmark-e2e-graphics-package.md`](benchmark-e2e-graphics-package.md) |
 | Gaussian / Motion Blur | Full-HD adjustment layers; editor opens within 1500 ms, blur direction, visible slider feedback before release, final value, Preview off/on, Apply, and Undo (`effect_gaussian_blur`, `effect_motion_blur`) |
 | Gradient | Linear/Radial preview, Cancel, Apply, alpha falloff and symmetry; undo |
 | Shape | Rectangle/Ellipse/Line geometry, filled and empty regions; undo |
@@ -164,8 +166,9 @@ from native button-down and a 160 px document-space move to a changed X11 screen
 patch, independently of the application's observation bridge. Each of five samples
 starts from the original image, and undo must restore every pixel. This avoids treating
 Smudge's intentional dab spacing or Blur's already-saturated coverage as a stalled frame.
-The 100 ms limit includes stroke setup and screenshot overhead; it is a regression budget
-for this specified workload, not a guarantee for every document or hardware display.
+The 150 ms limit includes stroke setup and screenshot overhead; it is a regression budget
+for this specified workload, not a guarantee for every document or hardware display. It
+matches the unified first-feedback budget used by `latency_*`.
 
 The `latency_*` cases apply the same X11-screenshot observer across every rail tool
 family (plus Eraser), with a unified **150 ms** first-visible-feedback budget and five

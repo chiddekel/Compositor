@@ -222,6 +222,99 @@ def tab_reorder_drag(app):
     assert tabs_after["tabs"] != names_before or tabs_after["currentTab"] in (0, 1)
 
 
+# LayerEffectKind.allCases order in the Layers panel fx menu.
+_EFFECT_KINDS = [
+    "Stroke", "Drop Shadow", "Color Overlay", "Inner Shadow", "Outer Glow", "Inner Glow",
+]
+
+
+def _add_layer_effect(app, kind):
+    """Open the Layers fx menu, choose kind, commit the effect sheet with OK."""
+    button = app.wait(
+        lambda s: next((w for w in s["widgets"]
+                        if w.get("name") == "layerEffects" or w.get("label") == "Layer effects"
+                        or w.get("help") == "Layer effects: stroke and drop shadow"), None),
+        "Layer effects button",
+    )
+    app.click(button)
+    menu = app.wait(lambda s: next((w for w in s["widgets"] if w["class"] == "QMenu"), None),
+                    "layer effects menu")
+    app.desktop.focus(menu["windowID"])
+    index = _EFFECT_KINDS.index(kind)
+    for _ in range(index + 1):  # First Down selects the first item.
+        app.desktop.key("Down")
+    app.desktop.key("Return")
+    app.wait(lambda s: any(p.get("title") == kind for p in s["state"].get("floatingPanels", [])),
+             kind + " effect sheet", timeout=15)
+    app.click(app.widget(text="OK", kind="button", ancestor="floatingPanel.EffectsSheet"))
+    app.wait(lambda s: not s["state"].get("floatingPanels") and not s["state"]["busy"],
+             kind + " effect committed", timeout=20)
+
+
+def line_effects_smear_stress(app):
+    """Paint a line, add a layer effect, smear it — a dozen times without hanging."""
+    from tool_cases import line
+
+    repeats = 12
+    app.create()
+    app.click(app.widget(name="actualPixels", kind="button"))
+    app.palette("#e11d48")
+    app.brush(size=18, hardness=100, opacity=100)
+
+    for i in range(repeats):
+        y = 50 + i * 32
+        kind = _EFFECT_KINDS[i % len(_EFFECT_KINDS)]
+        # 1) Draw a horizontal line.
+        app.tool("brush")
+        app.brush(size=18, hardness=100, opacity=100)
+        before = app.image(f"stress-{i}-before-line")
+        previous = app.inspect()["state"]["undoName"]
+        app.stroke(line((40, y), (600, y), 50), undo_name="Brush Stroke")
+        app.wait(lambda s: s["state"]["undoName"] != previous and not s["state"]["busy"],
+                 f"line {i} painted")
+        painted = app.image(f"stress-{i}-line")
+        assert painted.tobytes() != before.tobytes(), f"iteration {i}: brush left no paint"
+        assert painted.getpixel((320, y))[3] > 200, f"iteration {i}: line missing at center"
+
+        # 2) Add / re-open a layer effect and commit.
+        previous = app.inspect()["state"]["undoName"]
+        _add_layer_effect(app, kind)
+        after_fx = app.image(f"stress-{i}-effect")
+        # First time a kind is added the composite must change; re-opening an existing
+        # effect and hitting OK can leave pixels identical (iteration 6+).
+        if i < len(_EFFECT_KINDS):
+            assert after_fx.tobytes() != painted.tobytes(), (
+                f"iteration {i}: new {kind} did not change the composite")
+        assert not app.inspect()["state"].get("floatingPanels"), f"iteration {i}: effect sheet stuck open"
+
+        # 3) Smear tool (rozmazywanie): Blur across the stroke so the edge softens.
+        app.tool("blur")
+        app.option("Blur")
+        for label, value, key, expected in [("Size", 64, "brushDiameter", 64),
+                                           ("Hardness", 50, "brushHardness", 0.5),
+                                           ("Opacity", 100, "brushOpacity", 1.0)]:
+            app.field(value, label=label, ancestor="swiftUIOptionsContainer")
+            app.wait(lambda s, k=key, e=expected: abs(s["state"].get(k, -999) - e) < 0.001,
+                     f"Smear {label} iter {i}")
+        previous = app.inspect()["state"]["undoName"]
+        # Cross the painted line vertically — along-stroke smudge can look identical.
+        app.gesture(line((320, y - 40), (320, y + 40), 30))
+        app.wait(lambda s: s["state"]["undoName"] != previous and not s["state"]["busy"],
+                 f"smear {i} committed", timeout=30)
+        smeared = app.image(f"stress-{i}-smear")
+        assert smeared.tobytes() != after_fx.tobytes(), f"iteration {i}: Blur left pixels unchanged"
+        # Softened stroke: center still opaque-ish, but not a hard 1-px ridge anymore.
+        center = smeared.getpixel((320, y))
+        assert center[3] > 0, f"iteration {i}: Blur erased the line"
+        assert smeared.getpixel((20, 20)) == after_fx.getpixel((20, 20)), (
+            f"iteration {i}: Blur damaged distant pixels")
+
+    # Final: app still answers inspect after the loop (no hang / crash).
+    snap = app.inspect(timeout=10)
+    assert snap["state"].get("width") == 640 and not snap["state"]["busy"]
+    assert len(snap["state"].get("layers", [])) >= 1
+
+
 TIP_CASES = {
     "tip_select_all_inverse": select_all_then_inverse_deselects,
     "tip_paint_refusal_folder": paint_refusal_on_folder,
@@ -229,6 +322,7 @@ TIP_CASES = {
     "tip_mask_alone": mask_alone_option_click,
     "tip_mask_reveal_selection": mask_reveals_selection,
     "tip_tab_reorder": tab_reorder_drag,
+    "tip_line_effects_smear_stress": line_effects_smear_stress,
     # Opt-in: menu discovery is sensitive to in-window Select menu layout.
     "tip_color_range": color_range_selects,
 }
