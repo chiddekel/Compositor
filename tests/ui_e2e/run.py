@@ -344,7 +344,8 @@ def brush_parameters(app):
     assert image.getpixel((320, 231))[3] > 100, "Brush narrower than requested"
     original = image.tobytes()
     app.undo()
-    app.wait(lambda s: s["state"]["undoName"] == "New Canvas", "stroke undo")
+    # Linux omits New Canvas from the undo stack (baseline); Mac keeps the name.
+    app.wait(lambda s: s["state"]["undoName"] in ("New Canvas", ""), "stroke undo")
     assert app.image("undo").getchannel("A").getbbox() is None, "Undo left painted pixels"
     app.redo()
     app.wait(lambda s: s["state"]["undoName"] == "Brush Stroke", "stroke redo")
@@ -373,7 +374,7 @@ def smoothing(app):
     app.stroke(points)
     raw = app.image("raw")
     app.undo()
-    app.wait(lambda s: s["state"]["undoName"] == "New Canvas", "raw stroke undo")
+    app.wait(lambda s: s["state"]["undoName"] in ("New Canvas", ""), "raw stroke undo")
     app.brush(size=6, smoothing=30)
     app.stroke(points)
     smooth = app.image("smooth")
@@ -440,7 +441,8 @@ def brush_performance(app):
                 assert painted.tobytes() == reference, "Repeated input produced different pixels"
             reference = painted.tobytes()
             app.undo()
-            app.wait(lambda s: s["state"]["undoName"] == "New Canvas", "benchmark stroke undo")
+            # Linux: New Canvas is the undo floor and is not named on the stack.
+            app.wait(lambda s: s["state"]["undoName"] in ("New Canvas", ""), "benchmark stroke undo")
             assert app.image("benchmark-undo").getchannel("A").getbbox() is None, "Benchmark undo left paint"
 
 

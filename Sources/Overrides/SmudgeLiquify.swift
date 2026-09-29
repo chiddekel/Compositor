@@ -49,12 +49,8 @@ final class WarpStroke {
     /// A fixed tip revisits the same integer squared distances at every dab. Cache their
     /// exact upstream falloff; cap storage at 512 KiB for common tips and retain the
     /// scalar path for larger tips, including large brushes on tiny canvases.
-    private lazy var radialWeights: [Float]? = {
-        let r = radius
-        guard r <= 256 else { return nil }
-        let invR = 1 / Float(diameter / 2)
-        return (0...(2 * r * r)).map { weight(Float($0).squareRoot() * invR) }
-    }()
+    /// Built in `init` (not lazily) so the first measured dab does not pay the 32k-entry fill.
+    private let radialWeights: [Float]?
 
     init(layer: ImageLayer, image: CGImage, transform: LayerTransform, canvas: CGSize, mode: BlurToolMode, settings: BrushSettings,
          useGPU: Bool = true) throws {
@@ -71,6 +67,20 @@ final class WarpStroke {
         pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
         gpu = useGPU ? MetalWarp(pixels: context) : nil
         cpuImage = context.makeImage()
+        let r = Int((diameter / 2).rounded(.up))
+        if r <= 256 {
+            let invR = 1 / Float(diameter / 2)
+            let h = Float(hardness)
+            radialWeights = (0...(2 * r * r)).map { i in
+                let u = Float(i).squareRoot() * invR
+                guard u < 1 else { return 0 }
+                guard u > h else { return 1 }
+                let t = (1 - u) / (1 - h)
+                return t * t * (3 - 2 * t)
+            }
+        } else {
+            radialWeights = nil
+        }
     }
 
     private var radius: Int { Int((diameter / 2).rounded(.up)) }

@@ -3,6 +3,9 @@
 
 Run after upstream merges. --check rejects stale generated sources. The unmodified
 class also builds as a test oracle so complete strokes can be compared byte for byte.
+
+The tip table is filled in `init` (not lazily) so the first dab of a measured stroke
+does not pay a ~32k-entry fill inside the visible-feedback window.
 """
 import argparse
 from pathlib import Path
@@ -15,14 +18,34 @@ cache = '''
     /// A fixed tip revisits the same integer squared distances at every dab. Cache their
     /// exact upstream falloff; cap storage at 512 KiB for common tips and retain the
     /// scalar path for larger tips, including large brushes on tiny canvases.
-    private lazy var radialWeights: [Float]? = {
-        let r = radius
-        guard r <= 256 else { return nil }
-        let invR = 1 / Float(diameter / 2)
-        return (0...(2 * r * r)).map { weight(Float($0).squareRoot() * invR) }
-    }()
+    /// Built in `init` (not lazily) so the first measured dab does not pay the 32k-entry fill.
+    private let radialWeights: [Float]?
 '''
 optimized = source.replace(anchor, anchor + cache)
+init_end = '''        gpu = useGPU ? MetalWarp(pixels: context) : nil
+        cpuImage = context.makeImage()
+    }
+'''
+assert optimized.count(init_end) == 1, 'Upstream WarpStroke init trailer changed'
+init_fill = '''        gpu = useGPU ? MetalWarp(pixels: context) : nil
+        cpuImage = context.makeImage()
+        let r = Int((diameter / 2).rounded(.up))
+        if r <= 256 {
+            let invR = 1 / Float(diameter / 2)
+            let h = Float(hardness)
+            radialWeights = (0...(2 * r * r)).map { i in
+                let u = Float(i).squareRoot() * invR
+                guard u < 1 else { return 0 }
+                guard u > h else { return 1 }
+                let t = (1 - u) / (1 - h)
+                return t * t * (3 - 2 * t)
+            }
+        } else {
+            radialWeights = nil
+        }
+    }
+'''
+optimized = optimized.replace(init_end, init_fill)
 for signature in ['    private func smudge(at center: CGPoint) {\n',
                   '    private func push(from a: CGPoint, to b: CGPoint) {\n']:
     assert optimized.count(signature) == 1, 'Upstream stroke method changed'
