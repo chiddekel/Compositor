@@ -221,8 +221,9 @@ extension EditorSession {
         }
         finishOpacityEdit()
         do {
+            // Linux MetalWarp shares the CGContext buffer; GPU pickUp/smudge here still segfaults under the Qt host in some builds.
             let stroke = try WarpStroke(layer: layer, image: image, transform: displayedTransform(for: layer),
-                                        canvas: document.size, mode: blurMode, settings: brushSettings)
+                                        canvas: document.size, mode: blurMode, settings: brushSettings, useGPU: false)
             stroke.append(point)
             warpStroke = stroke
             lastBrushPoint = (point, layer.id, false)
