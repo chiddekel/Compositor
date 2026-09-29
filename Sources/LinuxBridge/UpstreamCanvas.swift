@@ -232,7 +232,10 @@ nonisolated public func compositorCanvasKey(_ handle: UInt64, _ keyCode: Int32, 
 @_cdecl("compositor_layer_list_key")
 nonisolated public func compositorLayerListKey(_ handle: UInt64, _ keyCode: Int32, _ modifiers: Int32) -> Int32 {
     Int32(withEntry(handle) { entry in
-        LayerListKeys.arrow(entry.editor.session, keyCode: Int(keyCode), modifiers: Int(modifiers)) ? 1 : 0
+        // Mac keyCode 0 with Command is unused here; arrows stay 125/126. Select-All is routed from the shell when
+        // layerListFocused (SessionWindow) and from NSApp.sendAction via selectAllHandler.
+        if LayerListKeys.arrow(entry.editor.session, keyCode: Int(keyCode), modifiers: Int(modifiers)) { return 1 }
+        return 0
     })
 }
 

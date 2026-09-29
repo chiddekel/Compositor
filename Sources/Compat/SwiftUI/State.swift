@@ -188,10 +188,16 @@ public struct OpenWindowAction {
 
 public struct EnvironmentValues {
     public var openWindow: OpenWindowAction { OpenWindowAction() }
+    public var displayScale: CGFloat { 1 }
 }
 
-/// `@Environment(\.openWindow)` — only the one key path upstream code actually reads is implemented; real SwiftUI's
-/// `EnvironmentValues` machinery (dependency injection through the view tree) isn't needed for that.
+/// Scroll view camera for `.scrollPosition` (JPEG export preview); Linux only needs the type.
+public struct ScrollPosition: Equatable {
+    public init() {}
+    public mutating func scrollTo(point: CGPoint) { _ = point }
+    public mutating func scrollTo(edge: Any) { _ = edge }
+}
+
 @propertyWrapper public struct Environment<Value> {
     private let value: Value
     public init(_ keyPath: KeyPath<EnvironmentValues, Value>) { value = EnvironmentValues()[keyPath: keyPath] }

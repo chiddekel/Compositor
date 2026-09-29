@@ -143,6 +143,7 @@ extension StyleToken {
     public static let radioGroup = StyleToken("radioGroup")
     public static let capsule = StyleToken("capsule")
     public static let borderlessButton = StyleToken("borderlessButton")
+    public static let inline = StyleToken("inline"), none = StyleToken("none"), high = StyleToken("high")
     // ScrollIndicatorVisibility-shaped members.
     public static let hidden = StyleToken("hidden"), visible = StyleToken("visible")
     public func weight(_ weight: StyleToken) -> StyleToken { StyleToken("\(name)+weight:\(weight.name)") }

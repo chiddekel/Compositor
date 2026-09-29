@@ -71,6 +71,12 @@ struct NativeLayerList: View {
                 + (session.canEditLayers ? "d" : "-")
         })
         .accessibilityIdentifier("layersList")
+        .onAppear {
+            // Keep a LayerTableView.selectAllResponder so NSApp.sendAction("selectAll:") matches Mac
+            // (Qt draws this List, never the hosted NSTableView).
+            let table = LayerTableView(frame: .zero)
+            table.session = session
+        }
     }
 
     /// NativeLayerList's `validateDrop` + `acceptDrop` + `place`, from list rows: the middle of a folder row drops into
@@ -534,6 +540,13 @@ enum LayerListKeys {
         let next = min(max(current + (keyCode == 125 ? 1 : -1), 0), rows.count - 1)
         let id = rows[next]
         session.selectLayers(modifiers & 8 != 0 ? session.selectedLayerIDs.union([id]) : [id], primary: id)
+        return true
+    }
+
+    /// Cmd-A while the layers list holds focus: select the canvas, never every layer (LayerTableView.selectAll).
+    static func selectAll(_ session: EditorSession) -> Bool {
+        guard session.document != nil else { return false }
+        session.selectAll()
         return true
     }
 }

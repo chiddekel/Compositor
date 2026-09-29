@@ -1,7 +1,7 @@
 // OVERRIDE for Compositor/UI/TypeControls.swift:
 // The upstream file's TypeFontPicker uses NSPopUpButton with #selector and NSFontManager, which
 // requires the Objective-C runtime (-disable-objc-interop is active on Linux).
-// This override replicates upstream's TypeControls exactly, substituting a pure SwiftUI font picker.
+// This override keeps tip TypeControls (including font previews) and substitutes a pure SwiftUI font menu.
 
 import SwiftUI
 import AppKit
@@ -33,7 +33,13 @@ struct TypeControls: View {
                     }, set: { name in
                         let selection = session.textDraft?.selection ?? NSRange()
                         session.changeTextStyle { $0.setFont(name, in: selection) }
-                    }))
+                    }), preview: { step in
+                        switch step {
+                        case .show(let name): session.previewFont(name)
+                        case .revert: session.endFontPreview()
+                        case .keep: session.keepFontPreview()
+                        }
+                    })
                         .frame(width: 210).help("Font face, including bold and italic variants")
                     TextField("Size", value: number(\.fontSize), format: .number).frame(width: 52)
                         .unitSuffix("px", scrubValue: value(\.fontSize), sensitivity: 1, range: 1...2000, step: 1)
@@ -96,16 +102,32 @@ struct TypeControls: View {
     }
 }
 
-/// Upstream's font menu (an NSPopUpButton filled from NSFontManager.availableFonts plus the current face, sorted), as a
-/// Picker: the same list and choice, without AppKit's target-action.
+/// Upstream's font menu as a Menu: faces preview on the text while hovered, then keep or revert.
 private struct TypeFontPicker: View {
     @Binding var fontName: String
+    enum PreviewStep { case show(String), revert, keep }
+    var preview: (PreviewStep) -> Void = { _ in }
+
     var body: some View {
         let names = Array(Set(NSFontManager.shared.availableFonts + (fontName.isEmpty ? [] : [fontName]))).sorted()
-        Picker("Font", selection: $fontName) {
-            if fontName.isEmpty { Text("(Multiple)").tag("") }
-            ForEach(names, id: \.self) { Text($0).tag($0) }
+        Menu {
+            if fontName.isEmpty {
+                Button("(Multiple)") {}.disabled(true)
+            }
+            ForEach(names, id: \.self) { name in
+                Button(name) {
+                    fontName = name
+                    preview(.keep)
+                }
+                .onHover { hovering in
+                    if hovering { preview(.show(name)) } else { preview(.revert) }
+                }
+            }
+        } label: {
+            Text(fontName.isEmpty ? "(Multiple)" : fontName)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .labelsHidden()
+        .onDisappear { preview(.revert) }
     }
 }

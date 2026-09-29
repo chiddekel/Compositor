@@ -11,3 +11,10 @@ public typealias CFURL = URL
 public typealias CFData = Data
 public typealias CFMutableData = NSMutableData
 public typealias CFTypeRef = AnyObject
+
+public func CFDataGetBytePtr(_ data: CFData) -> UnsafePointer<UInt8>? {
+    // Valid while `data` lives — same contract as Apple's CFDataGetBytePtr for toll-free Data.
+    UnsafeRawPointer((data as NSData).bytes).assumingMemoryBound(to: UInt8.self)
+}
+
+public func CFDataGetLength(_ data: CFData) -> Int { data.count }

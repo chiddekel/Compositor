@@ -63,4 +63,6 @@ extension ImageExporter {
         }
     }
 
+    /// The Space-bar preview, saved in the project's QuickLook folder: the flattened image on white, a JPEG up to
+    /// 1,024 px on the long side, about 100–200 KB. Nil for canvases too large to flatten on every save.
 }

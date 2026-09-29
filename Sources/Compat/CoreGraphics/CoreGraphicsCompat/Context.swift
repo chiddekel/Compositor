@@ -54,6 +54,11 @@ public final class CGContext: @unchecked Sendable {
         return externalData ?? UnsafeMutableRawPointer(pixelData)
     }
 
+    /// Matches Apple's bitmap-context layout flag; used when copying pixels byte-for-byte from a CGImage.
+    public var bitmapInfo: CGBitmapInfo {
+        CGBitmapInfo(rawValue: (format == .gray ? CGImageAlphaInfo.none : CGImageAlphaInfo.premultipliedLast).rawValue)
+    }
+
     public var buffer: PixelBuffer {
         if format == .gray {
             // Legacy RGBA view of a gray plane (opaque, r = g = b).

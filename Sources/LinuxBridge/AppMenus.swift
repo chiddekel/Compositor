@@ -12,6 +12,15 @@ import Sparkle
     static func commands() -> (any View)? {
         NSApplicationDelegateStorage.delegate = delegate
         SPUStandardUpdaterController.checkHandler = { ShellProjects.pending.append("checkForUpdates") }
+        // Select > All: same as a focused LayerTableView — canvas selectAll, never every layer.
+        // While a layer is being renamed, leave the chord to the field (return true without selecting the canvas).
+        NSApp.selectAllHandler = {
+            let session = delegate.session
+            if session.renamingLayerID != nil { return true }
+            guard session.document != nil else { return false }
+            session.selectAll()
+            return true
+        }
         return CompositorApp().body.commandsContent?()
     }
 
@@ -212,6 +221,7 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
         request(suppliedURL.map { "open:" + $0.path } ?? "open"); return true
     }
     func newCanvas() async { request("newCanvas") }
+    func gridSettings() async { request("gridSettings") }
     func close(_ window: NSWindow?) async { request("close") }
 }
 

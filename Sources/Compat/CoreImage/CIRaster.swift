@@ -352,6 +352,45 @@ enum RasterFilters {
     }
     static func colorDodge(_ cb: Float, _ cs: Float) -> Float { cb == 0 ? 0 : (cs >= 1 ? 1 : min(1, cb / (1 - cs))) }
     static func colorBurn(_ cb: Float, _ cs: Float) -> Float { cb >= 1 ? 1 : (cs <= 0 ? 0 : 1 - min(1, (1 - cb) / cs)) }
+    /// W3C / PDF soft-light separable blend (matches Core Image's CISoftLightBlendMode closely enough for canvas parity).
+    static func softLight(_ cb: Float, _ cs: Float) -> Float {
+        if cs <= 0.5 {
+            return cb - (1 - 2 * cs) * cb * (1 - cb)
+        }
+        let d: Float = cb <= 0.25
+            ? ((16 * cb - 12) * cb + 4) * cb
+            : sqrt(cb)
+        return cb + (2 * cs - 1) * (d - cb)
+    }
+    static func linearBurn(_ cb: Float, _ cs: Float) -> Float { max(0, cb + cs - 1) }
+    static func linearDodge(_ cb: Float, _ cs: Float) -> Float { min(1, cb + cs) }
+    static func vividLight(_ cb: Float, _ cs: Float) -> Float {
+        cs <= 0.5 ? colorBurn(cb, max(cs * 2, 1e-6)) : colorDodge(cb, min(2 * (cs - 0.5), 1 - 1e-6))
+    }
+    static func linearLight(_ cb: Float, _ cs: Float) -> Float { min(1, max(0, cb + 2 * cs - 1)) }
+    static func pinLight(_ cb: Float, _ cs: Float) -> Float {
+        cs <= 0.5 ? min(cb, 2 * cs) : max(cb, 2 * cs - 1)
+    }
+    static func hardMix(_ cb: Float, _ cs: Float) -> Float { vividLight(cb, cs) < 0.5 ? 0 : 1 }
+    static func subtract(_ cb: Float, _ cs: Float) -> Float { max(0, cb - cs) }
+    static func divide(_ cb: Float, _ cs: Float) -> Float { cs <= 0 ? 1 : min(1, cb / cs) }
+
+    static func separableFormula(_ filterName: String) -> (Float, Float) -> Float {
+        switch filterName {
+        case "CIColorBurnBlendMode": return colorBurn
+        case "CIColorDodgeBlendMode": return colorDodge
+        case "CISoftLightBlendMode": return softLight
+        case "CILinearBurnBlendMode": return linearBurn
+        case "CILinearDodgeBlendMode": return linearDodge
+        case "CIVividLightBlendMode": return vividLight
+        case "CILinearLightBlendMode": return linearLight
+        case "CIPinLightBlendMode": return pinLight
+        case "CIHardMixBlendMode": return hardMix
+        case "CISubtractBlendMode": return subtract
+        case "CIDivideBlendMode": return divide
+        default: return { cb, _ in cb }
+        }
+    }
 
     /// Inverse-maps `output` through a projective transform given by the 3x3 matrix `inverse` (device -> source).
     static func projective(_ input: Raster, inverse m: [Double], output region: CGRect) -> Raster {

@@ -115,6 +115,17 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
     case "JPEGExportSheet":
         guard let sheet = entry.editor.jpegExportSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)
+    case "GridSettingsSheet":
+        guard let backup = entry.editor.gridSettingsBackup else { return nil }
+        let editor = entry.editor
+        let session = entry.editor.session
+        resolved = ViewResolver.resolve(GridSettingsSheet(
+            session: session, grid: backup.grid, appearance: backup.appearance,
+            preview: { grid, appearance in
+                session.layoutGrid = grid
+                session.gridAppearance = appearance
+            },
+            finish: { editor.finishGridSettings($0) }))
     case "TrimSheet":
         guard let sheet = entry.editor.trimSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)

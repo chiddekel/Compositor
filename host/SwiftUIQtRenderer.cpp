@@ -3106,9 +3106,41 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                     }
                     const QString itemId = item.value("id").toString();
                     auto *act = menu->addAction(itemText);
+                    act->setData(itemId);
                     QObject::connect(act, &QAction::triggered, btn, [handle, panel, itemId] {
                         dispatch(handle, panel, itemId, QStringLiteral("action"));
                     });
+                    // Font menus (and similar) use onHover/onContinuousHover for live preview while the pointer
+                    // walks the list — QAction has no hover widget, so QMenu::hovered drives it.
+                    const QJsonArray handlerKeys = item.value("handlerKeys").toArray();
+                    bool wantsHover = false;
+                    for (const auto &k : handlerKeys) {
+                        if (k.toString() == QLatin1String("onContinuousHover")) { wantsHover = true; break; }
+                    }
+                    if (wantsHover) {
+                        // Remember the last hovered item so aboutToHide can end its preview.
+                        if (!menu->property("compatHoverWired").toBool()) {
+                            menu->setProperty("compatHoverWired", true);
+                            QObject::connect(menu, &QMenu::aboutToHide, btn, [handle, panel, menu] {
+                                const QString id = menu->property("compatHoverID").toString();
+                                if (id.isEmpty()) return;
+                                menu->setProperty("compatHoverID", QString());
+                                dispatch(handle, panel, id, QStringLiteral("onContinuousHover"), QByteArrayLiteral("\"ended\""));
+                            });
+                        }
+                        QObject::connect(menu, &QMenu::hovered, btn, [handle, panel, act, menu](QAction *hovered) {
+                            if (hovered != act) return;
+                            const QString id = act->data().toString();
+                            if (id.isEmpty()) return;
+                            const QString previous = menu->property("compatHoverID").toString();
+                            if (previous == id) return;
+                            if (!previous.isEmpty())
+                                dispatch(handle, panel, previous, QStringLiteral("onContinuousHover"), QByteArrayLiteral("\"ended\""));
+                            menu->setProperty("compatHoverID", id);
+                            // Same payload shape as HoverFilter: [x,y] → .active, else .ended.
+                            dispatch(handle, panel, id, QStringLiteral("onContinuousHover"), QByteArrayLiteral("[0,0]"));
+                        });
+                    }
                 } else {
                     populateActions(item.value("children").toArray());
                 }

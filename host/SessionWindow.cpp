@@ -1763,6 +1763,17 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
+    // Cmd-A with the layers list focused: select the canvas (LayerTableView.selectAll), never every layer.
+    if (event->key() == Qt::Key_A && qApp->property("layerListFocused").toBool()
+        && (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
+        && !(event->modifiers() & Qt::AltModifier)) {
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"selectAll"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
+        event->accept();
+        return;
+    }
     if (routesToUpstreamCanvas()) {
         static const QHash<int, int> codes{{Qt::Key_Return, 36}, {Qt::Key_Enter, 76}, {Qt::Key_Escape, 53}, {Qt::Key_Backspace, 51},
             {Qt::Key_Delete, 117}, {Qt::Key_Tab, 48}, {Qt::Key_Backtab, 48}, {Qt::Key_Left, 123}, {Qt::Key_Right, 124}, {Qt::Key_Down, 125}, {Qt::Key_Up, 126}};
@@ -2261,6 +2272,11 @@ void SessionWindow::handleShellRequests() {
             // Upstream's own sheet (CanvasSizeSheet / ImageSizeSheet) and resizer.
             if (sendCommand({{"action", request == QLatin1String("canvasSize") ? "canvasSizeSheet" : "imageSizeSheet"}})) {
                 refreshImage(); refreshLayers(); updateLayersPanel(); updateStatusTelemetry();
+            }
+        }
+        else if (request == QLatin1String("gridSettings")) {
+            if (sendCommand({{"action", "gridSettingsSheet"}})) {
+                refreshImage();
             }
         }
         else if (request == QLatin1String("trim")) trigger("image.trim");

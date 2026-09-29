@@ -5,6 +5,8 @@ import CoreGraphics
 public final class NSGraphicsContext: @unchecked Sendable {
     public let cgContext: CGContext
     public let isFlipped: Bool
+    /// Always true for the Qt-backed canvas (never printing / PDF).
+    public var isDrawingToScreen: Bool { true }
 
     nonisolated(unsafe) private static var stack: [NSGraphicsContext?] = []
     nonisolated(unsafe) public static var current: NSGraphicsContext?

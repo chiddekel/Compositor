@@ -9,6 +9,8 @@ public struct Selector: Hashable, ExpressibleByStringLiteral, Sendable {
     public init(stringLiteral value: String) { name = value }
 }
 
+public func NSSelectorFromString(_ name: String) -> Selector { Selector(name) }
+
 /// The AppKit responder chain, headless: enough hierarchy, geometry and event dispatch for the editor's canvas view to be
 /// driven by synthesised events (from tests, or from Qt translating its own events).
 @MainActor open class NSResponder {
@@ -109,6 +111,18 @@ public final class NSTrackingArea {
     open func addSubview(_ view: NSView) {
         view.removeFromSuperview()
         view.superview = self; subviews.append(view)
+        view.windowDidChange()
+    }
+    open func addSubview(_ view: NSView, positioned place: NSWindow.OrderingMode, relativeTo other: NSView?) {
+        view.removeFromSuperview()
+        view.superview = self
+        if let other, let index = subviews.firstIndex(where: { $0 === other }) {
+            subviews.insert(view, at: place == .below ? index : index + 1)
+        } else if place == .below {
+            subviews.insert(view, at: 0)
+        } else {
+            subviews.append(view)
+        }
         view.windowDidChange()
     }
     /// Whether this view is `view` or lies inside it.
@@ -268,6 +282,7 @@ public enum NSAccessibility {
 @MainActor public protocol SheetAutoResolving { func resolveWithoutHost() }
 
 @MainActor open class NSWindow: NSResponder {
+    public enum OrderingMode: Int { case above = 1, below = -1, out = 0 }
     public struct StyleMask: OptionSet, Sendable {
         public let rawValue: UInt
         public init(rawValue: UInt) { self.rawValue = rawValue }
@@ -282,6 +297,11 @@ public enum NSAccessibility {
     nonisolated(unsafe) private static var counter = 100
     private final class WeakWindow { weak var window: NSWindow?; init(_ w: NSWindow) { window = w } }
     nonisolated static func window(numbered n: Int) -> NSWindow? { registry[n]?.window }
+    /// Frontmost window under `point` in screen space (Linux has no window-server z-order; prefer the key window).
+    public nonisolated static func windowNumber(at point: NSPoint, belowWindowWithWindowNumber number: Int) -> Int {
+        _ = (point, number)
+        return registry.values.compactMap(\.window).first(where: \.isKeyWindow)?.windowNumber ?? 0
+    }
     static var allWindows: [NSWindow] { registry.keys.sorted().compactMap { registry[$0]?.window } }
 
     public var title = ""
@@ -424,8 +444,23 @@ public struct NSScreen {
     public func activate(ignoringOtherApps: Bool = true) {}
     /// A responder-chain action by name ("cut:", "undo:", ...); the host's text editing answers these (`actionHandler`).
     public var actionHandler: ((Selector) -> Bool)?
+    /// When set, answers `selectAll:` the way a focused `LayerTableView` would (canvas select, not every layer).
+    public var selectAllHandler: (() -> Bool)?
     @discardableResult public func sendAction(_ action: Selector, to target: Any?, from sender: Any?) -> Bool {
-        actionHandler?(action) ?? false
+        if actionHandler?(action) == true { return true }
+        // Walk the key window's responder chain for selectAll: (field editor, LayerTableView, ...).
+        if action.name == "selectAll:" || action.name == "selectAll" {
+            var responder: NSResponder? = keyWindow?.firstResponder
+            while let current = responder {
+                if let table = current as? NSTableView {
+                    table.selectAll(sender)
+                    return true
+                }
+                responder = current.nextResponder
+            }
+            if selectAllHandler?() == true { return true }
+        }
+        return false
     }
     /// Hide / Hide Others / Show All: window-manager business on Linux (the host may set these).
     public var hideHandler: (() -> Void)?
@@ -480,6 +515,10 @@ public struct NSUserInterfaceItemIdentifier: Hashable, RawRepresentable, Express
     open func addTableColumn(_ column: NSTableColumn) { tableColumns.append(column) }
     open func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool) {
         selectedRowIndexes = extend ? selectedRowIndexes.union(indexes) : indexes
+    }
+    /// AppKit's Select All: every row. `LayerTableView` overrides this to select the canvas instead.
+    open func selectAll(_ sender: Any?) {
+        selectRowIndexes(IndexSet(integersIn: 0..<numberOfRows), byExtendingSelection: false)
     }
     open func reloadData() {}
     open var numberOfRows: Int { 0 }

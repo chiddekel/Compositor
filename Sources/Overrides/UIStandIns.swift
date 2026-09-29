@@ -59,7 +59,19 @@ struct BlendModePicker: View {
 /// unmodified) constructs this directly, and `NativeLayerListOverride.swift` hosts it (via `HostedNativeContent`) as
 /// the AppKit subview of an `NSHostingView` of `LayersPanel`; the Qt renderer draws that override's `List` instead.
 @MainActor final class LayerTableView: NSTableView {
-    weak var session: EditorSession?
+    weak var session: EditorSession? {
+        didSet { if session != nil { Self.selectAllResponder = self } }
+    }
+    /// The layers list that should answer `selectAll:` (Qt draws a SwiftUI List, so the hosted table is rarely first responder).
+    static weak var selectAllResponder: LayerTableView?
+
+    /// Cmd-A selects the whole canvas, as Select > All does, even with the Layers panel just clicked — never every layer.
+    /// A layer's name being edited keeps its own Select All: its field editor answers first.
+    override func selectAll(_ sender: Any?) {
+        guard let session, session.document != nil else { return }
+        session.selectAll()
+    }
+
     override func keyDown(with event: NSEvent) {
         let plain = event.modifierFlags.intersection([.command, .control, .option]).isEmpty
         if event.keyCode == 53, session?.transformEdit != nil {

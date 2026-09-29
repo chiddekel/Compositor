@@ -37,6 +37,10 @@ public struct CIColor: Sendable, Equatable {
     public init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) { self.red = red; self.green = green; self.blue = blue; self.alpha = alpha }
     public init(red: CGFloat, green: CGFloat, blue: CGFloat) { self.init(red: red, green: green, blue: blue, alpha: 1) }
     public init(cgColor: CGColor) { self.init(red: cgColor.red, green: cgColor.green, blue: cgColor.blue, alpha: cgColor.alpha) }
+    public init?(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat, colorSpace: CGColorSpace) {
+        _ = colorSpace
+        self.init(red: red, green: green, blue: blue, alpha: alpha)
+    }
     public static let clear = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
     public static let black = CIColor(red: 0, green: 0, blue: 0, alpha: 1)
     public static let white = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
@@ -54,6 +58,8 @@ public let kCIInputMaskImageKey = "inputMaskImage"
 public let kCIInputRadiusKey = "inputRadius"
 public let kCIInputAngleKey = "inputAngle"
 public let kCIInputIntensityKey = "inputIntensity"
+public let kCIInputTransformKey = "inputTransform"
+public let kCIInputCenterKey = "inputCenter"
 
 // MARK: - Graph
 
@@ -76,7 +82,8 @@ private indirect enum Node {
     case colorClamp(Node, [Float], [Float])
     case cube(Node, Int, [Float])
     case blendMask(Node, Node, Node)
-    case separable(Node, Node, Bool)          // source, backdrop, isBurn
+    /// Separable PDF/W3C blend of source over backdrop (`mode` is the Core Image filter name).
+    case separable(Node, Node, String)
     case transform(Node, CGAffineTransform)
     case perspective(Node, [CGPoint])          // target corners TL, TR, BR, BL in CI space
     case upsample(guide: Node, small: Node, Double, Double)
@@ -166,13 +173,13 @@ private indirect enum Node {
         case .cube(let n, let dim, let data): return RasterFilters.colorCube(n.eval(region, env), dimension: dim, cube: data)
         case .blendMask(let n, let bg, let mask):
             return RasterFilters.blendWithMask(n.eval(region, env), background: bg.eval(region, env), mask: mask.eval(region, env))
-        case .separable(let s, let b, let burn):
+        case .separable(let s, let b, let mode):
             // Separable blend modes (PDF 1.7 / W3C Compositing & Blending) are defined on non-linear perceptual
             // (sRGB) color components. When linear working space is active, evaluate inputs in sRGB and map the
             // blended result into linear space so the caller receives the linear values it expects.
             let sRGB_s = s.eval(region, Env(linear: false))
             let sRGB_b = b.eval(region, Env(linear: false))
-            var res = RasterFilters.separableBlend(sRGB_s, backdrop: sRGB_b, burn ? RasterFilters.colorBurn : RasterFilters.colorDodge)
+            var res = RasterFilters.separableBlend(sRGB_s, backdrop: sRGB_b, RasterFilters.separableFormula(mode))
             if env.linear {
                 Gamma.map(&res, Gamma.toLinear)
             }
@@ -272,10 +279,15 @@ public final class CIImage: @unchecked Sendable {
 
     public convenience init(color: CIColor) { self.init(node: .color(color)) }
 
+    public static func empty() -> CIImage { CIImage(color: .clear) }
+    public static var black: CIImage { CIImage(color: .black) }
+    public static var clear: CIImage { CIImage(color: .clear) }
+
     public func cropped(to rect: CGRect) -> CIImage { CIImage(node: .crop(node, rect)) }
     public func clampedToExtent() -> CIImage { CIImage(node: .clamp(node)) }
     public func applyingGaussianBlur(sigma: Double) -> CIImage { sigma > 0 ? CIImage(node: .gaussian(node, sigma)) : self }
     public func transformed(by matrix: CGAffineTransform) -> CIImage { CIImage(node: .transform(node, matrix)) }
+    public func samplingNearest() -> CIImage { self }
 
     /// EXIF orientation 1...8, keeping the result's origin at (0, 0) like Core Image.
     public func oriented(forExifOrientation orientation: Int32) -> CIImage {
@@ -314,7 +326,10 @@ public class CIFilter {
     public let name: String
     private var inputs: [String: Any] = [:]
     public static let supportedNames: Set<String> = ["CIGaussianBlur", "CIBloom", "CIMotionBlur", "CIColorMatrix", "CIColorClamp", "CIColorCube",
-        "CIBlendWithMask", "CIColorBurnBlendMode", "CIColorDodgeBlendMode", "CIPerspectiveTransform", "CIEdgePreserveUpsampleFilter"]
+        "CIBlendWithMask", "CIColorBurnBlendMode", "CIColorDodgeBlendMode", "CISoftLightBlendMode",
+        "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CIVividLightBlendMode", "CILinearLightBlendMode",
+        "CIPinLightBlendMode", "CIHardMixBlendMode", "CISubtractBlendMode", "CIDivideBlendMode",
+        "CIPerspectiveTransform", "CIEdgePreserveUpsampleFilter", "CILinearGradient", "CIRadialGradient", "CIAffineTile"]
 
     public init?(name: String) {
         guard Self.supportedNames.contains(name) else { return nil }
@@ -360,9 +375,17 @@ public class CIFilter {
         case "CIBlendWithMask":
             guard let bg = image(kCIInputBackgroundImageKey), let mask = image(kCIInputMaskImageKey) else { return nil }
             return CIImage(node: .blendMask(input.node, bg.node, mask.node))
-        case "CIColorBurnBlendMode", "CIColorDodgeBlendMode":
+        case "CIColorBurnBlendMode", "CIColorDodgeBlendMode", "CISoftLightBlendMode",
+             "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CIVividLightBlendMode",
+             "CILinearLightBlendMode", "CIPinLightBlendMode", "CIHardMixBlendMode",
+             "CISubtractBlendMode", "CIDivideBlendMode":
             guard let bg = image(kCIInputBackgroundImageKey) else { return nil }
-            return CIImage(node: .separable(input.node, bg.node, name == "CIColorBurnBlendMode"))
+            return CIImage(node: .separable(input.node, bg.node, name))
+        case "CILinearGradient", "CIRadialGradient":
+            // Used by the GPU canvas path; Linux keeps Core Graphics for those fills.
+            return input
+        case "CIAffineTile":
+            return input
         case "CIPerspectiveTransform":
             func corner(_ k: String) -> CGPoint { (inputs[k] as? CIVector)?.cgPointValue ?? .zero }
             return CIImage(node: .perspective(input.node, [corner("inputTopLeft"), corner("inputTopRight"),

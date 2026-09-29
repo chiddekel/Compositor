@@ -6,7 +6,13 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 source = (root / "Compositor/IO/ImageExporter.swift").read_text()
 start = source.index("    func render(_ snapshot: ProjectSnapshot)")
-end = source.index("    func pngData(", start)
+# Tip 1.4 inserts Quick Look helpers between render and pngData; only the render body is mirrored.
+for marker in ("    func quickLookImages(", "    func pngData("):
+    if marker in source[start:]:
+        end = source.index(marker, start)
+        break
+else:
+    raise SystemExit("Upstream ImageExporter layout changed (no quickLookImages/pngData after render)")
 method = source[start:end]
 signature = "func render(_ snapshot: ProjectSnapshot)"
 anchor = "            live.adjustment = { records[$0]?.adjustment }"

@@ -216,7 +216,7 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textReplace", "textRestore", "textSelect", "textFinish", "textCancel",
@@ -233,6 +233,8 @@ final class UpstreamEditor {
     private(set) var imageSizeSheet: ImageSizeSheet?
     /// Upstream's Export JPEG sheet while File > Export JPEG… waits for its answer.
     private(set) var jpegExportSheet: JPEGExportSheet?
+    /// View > Grid Settings…: values as they were when the sheet opened (Cancel puts them back).
+    private(set) var gridSettingsBackup: (grid: LayoutGrid, appearance: GridAppearance, shown: Bool)?
     private var sizeAnswer: ((Any?) -> Void)?
     private var pendingJPEG: Data?
     private var trimAnswer: ((TrimOptions?) -> Void)?
@@ -269,6 +271,20 @@ final class UpstreamEditor {
         answer?(options)
     }
 
+    /// Ends View > Grid Settings…: `settings` nil restores the backup (Cancel); otherwise keeps the previewed values.
+    func finishGridSettings(_ settings: (LayoutGrid, GridAppearance)?) {
+        guard let backup = gridSettingsBackup else { return }
+        session.showsGrid = backup.shown
+        if let settings {
+            session.layoutGrid = settings.0
+            session.gridAppearance = settings.1
+        } else {
+            session.layoutGrid = backup.grid
+            session.gridAppearance = backup.appearance
+        }
+        gridSettingsBackup = nil
+    }
+
     /// Modal upstream sheets open now, by panel name (the shell shows each while it is listed).
     var openSheets: [String] {
         var sheets: [String] = []
@@ -278,6 +294,7 @@ final class UpstreamEditor {
         if canvasSizeSheet != nil { sheets.append("CanvasSizeSheet") }
         if imageSizeSheet != nil { sheets.append("ImageSizeSheet") }
         if jpegExportSheet != nil { sheets.append("JPEGExportSheet") }
+        if gridSettingsBackup != nil { sheets.append("GridSettingsSheet") }
         return sheets
     }
     /// The manifest of a project being loaded; its layers' images and masks arrive through `installLayerAsset`.
@@ -679,7 +696,7 @@ final class UpstreamEditor {
             guard let document = s.document else { return fail(-2, "no document") }
             let options: CanvasSizeOptions? = await withCheckedContinuation { continuation in
                 sizeAnswer = { continuation.resume(returning: $0 as? CanvasSizeOptions) }
-                canvasSizeSheet = CanvasSizeSheet(document: document, foreground: s.foregroundColor, background: s.backgroundColor) { [weak self] in
+                canvasSizeSheet = CanvasSizeSheet(document: document, session: s) { [weak self] in
                     self?.finishSizeSheet($0)
                 }
             }
@@ -711,11 +728,17 @@ final class UpstreamEditor {
                 let raster = try await ImageExporter.shared.render(snapshot)
                 let data: Data? = await withCheckedContinuation { continuation in
                     sizeAnswer = { continuation.resume(returning: $0 as? Data) }
-                    jpegExportSheet = JPEGExportSheet(raster: raster) { [weak self] in self?.finishJPEGSheet($0) }
+                    jpegExportSheet = JPEGExportSheet(raster: raster, session: s) { [weak self] in self?.finishJPEGSheet($0) }
                 }
                 pendingJPEG = data
                 guard data != nil else { return fail(-7, "cancelled") }
             } catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
+        case "gridSettingsSheet":
+            // ProjectController.gridSettings(): live preview while open; Cancel restores the backup.
+            guard gridSettingsBackup == nil else { return fail(-5, "grid settings already open") }
+            let original = (grid: s.layoutGrid, appearance: s.gridAppearance, shown: s.showsGrid)
+            gridSettingsBackup = original
+            s.showsGrid = true
         case "writeJPEG":
             guard let path = command.paths?.first, let data = pendingJPEG else { return fail(-1, "nothing to write") }
             pendingJPEG = nil

@@ -131,6 +131,7 @@ public struct Image: View, PrimitiveView {
         }
     }
     public func resizable() -> Image { var copy = self; copy.isResizable = true; return copy }
+    public func interpolation(_ quality: StyleToken) -> Image { _ = quality; return self }
     public func scaledToFit() -> some View {
         var copy = self
         copy.contentMode = .fit

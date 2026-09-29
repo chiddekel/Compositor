@@ -216,6 +216,13 @@ extension View {
     }
     public func pickerStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.pickerStyle(style.name)) } }
     public func menuStyle(_ style: StyleToken) -> some View { modified { $0.modifiers.append(.menuStyle(style.name)) } }
+    public func menuIndicator(_ visibility: StyleToken) -> some View {
+        modified { $0.modifiers.append(.menuStyle("indicator:\(visibility.name)")) }
+    }
+    public func scrollPosition(_ position: Binding<ScrollPosition>) -> some View {
+        _ = position
+        return modified { $0.modifiers.append(.identifier("scrollPosition")) }
+    }
     public func onDisappear(perform action: @escaping () -> Void = {}) -> some View {
         modified { $0.modifiers.append(.onDisappear(action)) }
     }
@@ -794,6 +801,8 @@ public struct PointerStyle: Sendable {
     public static let columnResize = PointerStyle("columnResize")
     public static let horizontalResize = PointerStyle("horizontalResize")
     public static let verticalResize = PointerStyle("verticalResize")
+    public static let grabIdle = PointerStyle("grabIdle")
+    public static let grabActive = PointerStyle("grabActive")
 }
 
 

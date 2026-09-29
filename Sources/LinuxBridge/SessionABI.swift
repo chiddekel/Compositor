@@ -355,6 +355,7 @@ nonisolated public func compositorSessionRawDevelopCancel(_ handle: UInt64) {
         if entry.editor.trimSheet != nil { entry.editor.finishTrim(nil) }
         if entry.editor.canvasSizeSheet != nil || entry.editor.imageSizeSheet != nil { entry.editor.finishSizeSheet(nil) }
         if entry.editor.jpegExportSheet != nil { entry.editor.finishJPEGSheet(nil) }
+        if entry.editor.gridSettingsBackup != nil { entry.editor.finishGridSettings(nil) }
         return 0
     }
 }

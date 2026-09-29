@@ -74,17 +74,17 @@ public struct CGColor: Equatable, Sendable {
     public var green: CGFloat
     public var blue: CGFloat
     public var alpha: CGFloat
-    public var colorSpace: CGColorSpace
+    public var colorSpace: CGColorSpace?
 
     public var components: [CGFloat]? {
-        if colorSpace.model == .monochrome {
+        if (colorSpace ?? .srgbSpace).model == .monochrome {
             return [red, alpha]
         }
         return [red, green, blue, alpha]
     }
 
     public var numberOfComponents: Int {
-        colorSpace.model == .monochrome ? 2 : 4
+        (colorSpace ?? .srgbSpace).model == .monochrome ? 2 : 4
     }
 
     public init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
@@ -128,6 +128,18 @@ public struct CGColor: Equatable, Sendable {
             self.blue = components.count > 2 ? components[2] : 0
             self.alpha = components.count > 3 ? components[3] : 1
         }
+    }
+
+    public enum RenderingIntent: Int32, Sendable {
+        case defaultIntent = 0, absoluteColorimetric, relativeColorimetric, perceptual, saturation
+    }
+
+    /// Colour-managed conversion; Linux stores everything in sRGB-like 8-bit, so this is identity.
+    public func converted(to space: CGColorSpace, intent: RenderingIntent, options: [AnyHashable: Any]?) -> CGColor? {
+        _ = (intent, options)
+        var copy = self
+        copy.colorSpace = space
+        return copy
     }
 
     public static let white = CGColor(gray: 1, alpha: 1)
