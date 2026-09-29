@@ -14,6 +14,7 @@ root = Path(__file__).resolve().parents[1]
 shaders = [
     ('backends/brush/shaders/continuous_brush.comp', 'backends/brush/shaders/continuous_brush_spv.h', 'compositor_brush_spv'),
     ('backends/effects/shaders/effects.comp', 'backends/effects/shaders/effects_spv.h', 'compositor_effects_spv'),
+    ('linux/graphics/shaders/composite_over.comp', 'linux/graphics/shaders/composite_over_spv.h', 'compositor_composite_spv'),
 ]
 words = lambda text: re.findall(r'0x[0-9a-fA-F]+', text)
 for source_path, header_path, name in shaders:

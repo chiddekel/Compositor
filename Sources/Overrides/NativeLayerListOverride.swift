@@ -174,14 +174,16 @@ struct NativeLayerList: View {
                         ZStack {
                             Image(nsImage: LayerThumbnails.mask(mask, transform: layer.maskTransform, layerID: layer.id, canvas: canvas))
                                 .frame(width: maskSize.width, height: maskSize.height)
-                                .border(session.activeLayerID == layer.id && session.isMaskSelected ? Color.accentColor : Color.clear, width: 2)
+                                // Shown alone on the canvas, the mask is outlined in white rather than the accent.
+                                .border(session.maskAloneLayer?.id == layer.id ? Color.white
+                                        : (session.activeLayerID == layer.id && session.isMaskSelected ? Color.accentColor : Color.clear), width: 2)
                             // MaskDisabledMark: a red stroke across a disabled mask.
                             if !mask.isEnabled {
                                 Text("╱").font(.system(size: 32, weight: .medium)).foregroundStyle(.red)
                             }
                         }
                         .frame(width: 30, height: 51)
-                        .help("Select layer mask; Shift-click to enable/disable; Cmd-click to select its black areas (Cmd-Shift adds, Cmd-Option subtracts)")
+                        .help("Select layer mask; Option-click to view it alone; Shift-click to enable/disable; Cmd-click to select its black areas (Cmd-Shift adds, Cmd-Option subtracts)")
                         .accessibilityIdentifier("layerMaskThumb:\(layer.id.uuidString)")
                         .onTapGesture { maskThumbnailTapped(layer.id, modifiers: CompatInput.clickModifiers) }
                     }
@@ -308,6 +310,11 @@ struct NativeLayerList: View {
             session.loadMaskSelection(layerID: id, mode: mode)
             return
         }
+        // Option-click shows the mask alone (Option-drag onto another layer still copies it — drag path separate).
+        if modifiers & 2 != 0, modifiers & 1 == 0 {
+            session.toggleMaskAlone(id)
+            return
+        }
         session.selectLayerTarget(id, mask: true)
         if modifiers & 8 != 0 { session.toggleLayerMask() }
     }
@@ -336,6 +343,8 @@ struct NativeLayerList: View {
         Button("Group Selected Layers") { prepare(); session.groupSelectedLayers() }
             .disabled(!(session.canEditLayers && session.document != nil && (session.document?.layers.count ?? 0) < 10_000
                         && !session.selectedLayerIDs.isEmpty))
+        Button("Ungroup Layers") { prepare(); session.ungroupLayers() }
+            .disabled(!session.canUngroupLayers)
         Button("Move Out of Folder") { prepare(); session.moveActiveLayerOutOfGroup() }
             .disabled(!(session.canEditLayers && active?.parentID != nil))
         Button(session.mergeTitle) { prepare(); session.mergeLayers() }
@@ -504,10 +513,31 @@ struct LayerRenameField: View {
         }
         return NSCursor(image: image, hotSpot: NSPoint(x: 3, y: 3))
     }
+
+    /// Option over a mask thumbnail: the duplicate pointer with a small eye — Option-click shows the mask alone.
+    static let showMaskAlone: NSCursor = {
+        let base = CanvasView.duplicateCursor
+        let eye = NSRect(x: base.hotSpot.x + 15, y: base.hotSpot.y + 18, width: 7.5, height: 5.5)
+        let size = NSSize(width: max(base.image.size.width, eye.maxX + 2), height: max(base.image.size.height, eye.maxY + 2))
+        let image = NSImage(size: size, flipped: true) { _ in
+            let symbol = NSImage(systemSymbolName: "eye.fill", accessibilityDescription: nil)!
+            let white = symbol.withSymbolConfiguration(.init(paletteColors: [.white]))!
+            let black = symbol.withSymbolConfiguration(.init(paletteColors: [.black]))!
+            for step in 0..<16 {
+                let angle = CGFloat(step) * .pi / 8
+                white.draw(in: eye.offsetBy(dx: cos(angle), dy: sin(angle)))
+            }
+            black.draw(in: eye)
+            base.image.draw(in: NSRect(origin: .zero, size: base.image.size), from: .zero, operation: .sourceOver,
+                            fraction: 1, respectFlipped: true, hints: nil)
+            return true
+        }
+        return NSCursor(image: image, hotSpot: base.hotSpot)
+    }()
 }
 
 /// Makes one of the layer list's cursors current (0 arrow, 1 duplicate, 2 create clipping, 3 release clipping,
-/// 4 load selection) and returns its code as the canvas's cursors do (10: a picture, read with
+/// 4 load selection, 5 show mask alone) and returns its code as the canvas's cursors do (10: a picture, read with
 /// compositor_canvas_cursor_image).
 @_cdecl("compositor_layer_list_cursor")
 nonisolated public func compositorLayerListCursor(_ kind: Int32) -> Int32 {
@@ -518,6 +548,7 @@ nonisolated public func compositorLayerListCursor(_ kind: Int32) -> Int32 {
         case 2: cursor = LayerListCursors.createClipping
         case 3: cursor = LayerListCursors.releaseClipping
         case 4: cursor = CanvasView.loadSelectionCursor
+        case 5: cursor = LayerListCursors.showMaskAlone
         default: cursor = .arrow
         }
         NSCursor.current = cursor

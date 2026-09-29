@@ -1,4 +1,4 @@
-"""Native X11 input on a private Xvfb display; no Qt event or editor-command injection."""
+"""Native X11 input via XTest — private Xvfb (default), nested Xephyr (`--visible`), or a host DISPLAY."""
 import ctypes as C
 import ctypes.util
 import json
@@ -8,27 +8,55 @@ import subprocess
 import time
 
 
+def _free_display():
+    for number in range(20, 80):
+        if not os.path.exists(f"/tmp/.X{number}-lock"):
+            return number
+    raise RuntimeError("No free X display for visible e2e")
+
+
 class Desktop:
-    def __init__(self, artifacts):
-        read_fd, write_fd = os.pipe()
+    def __init__(self, artifacts, mode="xvfb", display=None):
+        """mode: 'xvfb' | 'xephyr' (visible nested) | 'host' (session DISPLAY)."""
         self.log = open(artifacts / "xvfb.log", "w")
         self.events = open(artifacts / "input.jsonl", "w")
-        try:
+        self.server = None
+        self.visible = mode != "xvfb"
+        if mode == "host":
+            self.display_name = display or os.environ.get("DISPLAY")
+            if not self.display_name:
+                raise RuntimeError("host visible mode requires DISPLAY")
+            self.log.write(f"host display {self.display_name}\n")
+            self.log.flush()
+        else:
+            read_fd, write_fd = os.pipe()
             try:
-                self.server = subprocess.Popen(
-                    ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1600x1000x24",
-                     "-nolisten", "tcp", "-ac", "-noreset"], pass_fds=(write_fd,),
-                    stdout=self.log, stderr=self.log)
+                try:
+                    if mode == "xephyr":
+                        xephyr = os.environ.get("COMPOSITOR_XEPHYR", "Xephyr")
+                        number = _free_display()
+                        # Nested server window on the user's desktop — not headless, same focus model as Xvfb.
+                        self.server = subprocess.Popen(
+                            [xephyr, f":{number}", "-screen", "1600x1000x24", "-ac", "-br",
+                             "-title", "Compositor UI E2E", "-resizeable", "-displayfd", str(write_fd)],
+                            pass_fds=(write_fd,), stdout=self.log, stderr=self.log)
+                    else:
+                        self.server = subprocess.Popen(
+                            ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1600x1000x24",
+                             "-nolisten", "tcp", "-ac", "-noreset"], pass_fds=(write_fd,),
+                            stdout=self.log, stderr=self.log)
+                finally:
+                    os.close(write_fd)
+                if not select.select([read_fd], [], [], 15)[0]:
+                    raise RuntimeError(f"{mode} did not become ready")
+                number = os.read(read_fd, 64).decode().strip()
+                if not number.isdigit():
+                    raise RuntimeError(f"{mode} exited before assigning a display")
             finally:
-                os.close(write_fd)
-            if not select.select([read_fd], [], [], 10)[0]:
-                raise RuntimeError("Xvfb did not become ready")
-            number = os.read(read_fd, 64).decode().strip()
-            if not number.isdigit():
-                raise RuntimeError("Xvfb exited before assigning a display")
-        finally:
-            os.close(read_fd)
-        self.display_name = ":" + number
+                os.close(read_fd)
+            self.display_name = ":" + number
+            self.log.write(f"{mode} display {self.display_name}\n")
+            self.log.flush()
         self.x = C.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
         self.xt = C.CDLL(ctypes.util.find_library("Xtst") or "libXtst.so.6")
         self.x.XOpenDisplay.argtypes = [C.c_char_p]
@@ -36,7 +64,14 @@ class Desktop:
         self.x.XCloseDisplay.argtypes = [C.c_void_p]
         self.x.XFlush.argtypes = [C.c_void_p]
         self.x.XSync.argtypes = [C.c_void_p, C.c_int]
+        self.x.XDefaultRootWindow.argtypes = [C.c_void_p]
+        self.x.XDefaultRootWindow.restype = C.c_ulong
+        self.x.XRaiseWindow.argtypes = [C.c_void_p, C.c_ulong]
+        self.x.XMapRaised.argtypes = [C.c_void_p, C.c_ulong]
         self.x.XSetInputFocus.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_ulong]
+        self.x.XInternAtom.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
+        self.x.XInternAtom.restype = C.c_ulong
+        self.x.XSendEvent.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_long, C.c_void_p]
         self.x.XStringToKeysym.argtypes = [C.c_char_p]
         self.x.XStringToKeysym.restype = C.c_ulong
         self.x.XKeysymToKeycode.argtypes = [C.c_void_p, C.c_ulong]
@@ -48,11 +83,32 @@ class Desktop:
         self.xt.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
         self.display = self.x.XOpenDisplay(self.display_name.encode())
         if not self.display:
-            raise RuntimeError("Cannot connect to private Xvfb display")
+            raise RuntimeError(f"Cannot connect to {mode} display {self.display_name}")
+        self.root = self.x.XDefaultRootWindow(self.display)
+        self._net_active = self.x.XInternAtom(self.display, b"_NET_ACTIVE_WINDOW", False) if mode == "host" else 0
+        self.host_mode = mode == "host"
 
     def focus(self, window):
-        # Xvfb has no window manager to assign keyboard focus when a window is clicked.
         self.record("focus", window=window)
+        self.x.XMapRaised(self.display, window)
+        self.x.XRaiseWindow(self.display, window)
+        if self.host_mode and self._net_active:
+            class XClientMessageEvent(C.Structure):
+                _fields_ = [
+                    ("type", C.c_int), ("serial", C.c_ulong), ("send_event", C.c_int),
+                    ("display", C.c_void_p), ("window", C.c_ulong), ("message_type", C.c_ulong),
+                    ("format", C.c_int), ("data", C.c_long * 5),
+                ]
+            event = XClientMessageEvent()
+            event.type = 33
+            event.send_event = 1
+            event.display = self.display
+            event.window = window
+            event.message_type = self._net_active
+            event.format = 32
+            event.data[0] = 1
+            mask = (1 << 20) | (1 << 19)
+            self.x.XSendEvent(self.display, self.root, False, mask, C.byref(event))
         self.x.XSetInputFocus(self.display, window, 2, 0)
         self.x.XSync(self.display, False)
 

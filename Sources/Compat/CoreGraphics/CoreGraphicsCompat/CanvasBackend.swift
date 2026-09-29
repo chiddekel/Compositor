@@ -62,7 +62,10 @@ public protocol CanvasBackendFactory {
 
 /// The ordered list of backends a new `CGContext` tries. The default is Skia; hosts and tests install their own.
 public enum CanvasBackends {
-    public static let slot = ServiceSlot<[CanvasBackendFactory]>(fallback: { [SkiaCanvasFactory()] })
+    public static let slot = ServiceSlot<[CanvasBackendFactory]>(fallback: {
+        // Metal → Vulkan: prefer the Vulkan-accelerated factory when a GPU exists; Skia CPU remains failover.
+        [VulkanGPUCanvasFactory(), SkiaCanvasFactory()]
+    })
 
     /// The backends a new context tries, in order.
     public static var factories: [CanvasBackendFactory] {

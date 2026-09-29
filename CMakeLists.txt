@@ -181,9 +181,16 @@ target_link_libraries(CompositorCoreRef PUBLIC CompositorCoreAbi)
 
 find_package(Vulkan QUIET)
 
+option(COMPOSITOR_ENABLE_SKIA_GPU "Link Skia Ganesh Vulkan into CompRenderer when the Skia build has it" OFF)
+
 add_library(CompositorSkiaBridge SHARED linux/graphics/SkiaBridge.cpp)
 target_include_directories(CompositorSkiaBridge PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_include_directories(CompositorSkiaBridge PRIVATE ${CMAKE_SOURCE_DIR}/backends/effects/include)
+target_include_directories(CompositorSkiaBridge PRIVATE
+    ${CMAKE_SOURCE_DIR}/backends/effects/include
+    ${CMAKE_SOURCE_DIR}/linux/graphics)
+if(COMPOSITOR_ENABLE_SKIA_GPU)
+    target_compile_definitions(CompositorSkiaBridge PRIVATE COMPOSITOR_ENABLE_SKIA_GPU=1)
+endif()
 if(Skia_FOUND)
     target_include_directories(CompositorSkiaBridge PRIVATE ${Skia_INCLUDE_DIR})
     # SkPathOps (path booleans for CGPath.union/intersection/...) is a separate GN source set that plain

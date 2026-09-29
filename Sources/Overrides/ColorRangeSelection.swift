@@ -106,9 +106,8 @@ extension EditorSession {
 
     /// The straight color under `point` (document pixels), averaged over the 3 × 3 pixels around it.
     private static func color(in image: CGImage, at point: CGPoint) -> [UInt8]? {
-        guard point.x.isFinite, point.y.isFinite else { return nil }
         let x = Int(point.x.rounded(.down)), y = Int(point.y.rounded(.down))
-        guard (0..<image.width).contains(x), (0..<image.height).contains(y),
+        guard point.x.isFinite, point.y.isFinite, (0..<image.width).contains(x), (0..<image.height).contains(y),
               let context = try? BrushRaster.context(width: 3, height: 3, mask: false) else { return nil }
         BrushRaster.draw(image, in: CGRect(x: 1 - x, y: 1 - y, width: image.width, height: image.height), mask: false, context: context)
         guard let data = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }

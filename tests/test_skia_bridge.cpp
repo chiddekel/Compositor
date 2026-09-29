@@ -156,8 +156,17 @@ static int test_vulkan_device_creation_and_device_lost_fallback() {
         compositor_renderer_close(r);
         return 1;
     }
-    // Vulkan falls back to Raster until Stage 8, so last_executed must be RASTER.
-    if (compositor_renderer_last_executed(r) != COMP_RENDERER_RASTER) {
+    // Vulkan path must leave last_executed = VULKAN (proves GPU ran, not silent raster).
+    // Raster-only machines keep last_executed = RASTER.
+    if (kind == COMP_RENDERER_VULKAN) {
+        if (compositor_renderer_last_executed(r) != COMP_RENDERER_VULKAN) {
+            std::fprintf(stderr, "expected last_executed VULKAN after GPU render, got %d\n",
+                         compositor_renderer_last_executed(r));
+            compositor_renderer_close(r);
+            return 1;
+        }
+        std::printf("Vulkan GPU composite executed (last_executed=VULKAN)\n");
+    } else if (compositor_renderer_last_executed(r) != COMP_RENDERER_RASTER) {
         std::fprintf(stderr, "expected last_executed RASTER, got %d\n",
                      compositor_renderer_last_executed(r));
         compositor_renderer_close(r);

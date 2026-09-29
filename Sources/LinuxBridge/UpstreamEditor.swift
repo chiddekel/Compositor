@@ -82,14 +82,18 @@ private struct State: Encodable {
     let hasSelection: Bool
     let canTransformSelection: Bool
     let isMaskSelected: Bool
+    /// Option-click mask thumbnail: canvas shows that mask alone (Photoshop).
+    let viewsMaskAlone: Bool
     let activeLayerIsVisible: Bool
     let activeLayerIsGroup: Bool
     let activeLayerHasMask: Bool
     let activeLayerHasParent: Bool
     let activeLayerIsClipped: Bool
     let canToggleClippingMask: Bool
+    let canUngroupLayers: Bool
     let canMergeLayers: Bool
     let mergeTitle: String
+    let brushError: String?
     let canMoveActiveLayerUp: Bool
     let canMoveActiveLayerDown: Bool
     let tool: String
@@ -201,9 +205,9 @@ final class UpstreamEditor {
 
     /// Commands this adapter can run today; the rest report -7 so callers (and the parity tests) see the gap explicitly.
     static let supportedActions: Set<String> = [
-        "markSaved", "markUnsaved", "new", "addLayer", "addGroup", "groupSelectedLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
+        "markSaved", "markUnsaved", "new", "addLayer", "addGroup", "groupSelectedLayers", "ungroupLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
         "setOpacity", "setBlendMode", "setSelectedOpacity", "cycleBlendMode", "flipLayer", "flipCanvas", "undo", "redo",
-        "addRevealMask", "addHideMask", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
+        "addRevealMask", "addHideMask", "toggleMaskAlone", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
         "selectAll", "deselect", "invertSelection", "loadLayerSelection", "loadMaskSelection", "selectSubject", "featherSelection",
         "colorRangeBegin", "colorRangeSample", "colorRangeUpdate", "colorRangeCommit", "colorRangeCancel",
         "selectRectangle", "selectEllipse", "selectLasso", "expandSelection", "contractSelection",
@@ -340,6 +344,7 @@ final class UpstreamEditor {
             s.addBlankLayer()
         case "addGroup": s.addGroup()
         case "groupSelectedLayers": s.groupSelectedLayers()
+        case "ungroupLayers": s.ungroupLayers()
         case "selectLayer":
             guard let id = command.layerID else { return fail(-1, "layerID required") }
             guard s.document?.layers.contains(where: { $0.id == id }) == true else { return fail(-5, "no such layer") }
@@ -373,7 +378,10 @@ final class UpstreamEditor {
         case "redo": s.redo()
         case "addRevealMask", "addHideMask":
             guard s.activeLayer != nil else { return fail(-5, "no layer") }
-            s.addLayerMask(revealing: command.action == "addRevealMask")
+            s.addMask(revealing: command.action == "addRevealMask")
+        case "toggleMaskAlone":
+            guard let id = command.layerID ?? s.activeLayerID else { return fail(-5, "no layer") }
+            s.toggleMaskAlone(id)
         case "deleteMask": s.deleteLayerMask()
         case "setMaskEnabled":
             guard let enabled = command.enabled, let mask = s.activeLayer?.mask else { return fail(-1, "no mask") }
@@ -1016,14 +1024,17 @@ final class UpstreamEditor {
             hasSelection: s.selection != nil,
             canTransformSelection: s.canTransformSelection,
             isMaskSelected: s.isMaskSelected,
+            viewsMaskAlone: s.viewsMaskAlone,
             activeLayerIsVisible: active?.isVisible ?? true,
             activeLayerIsGroup: active?.isGroup ?? false,
             activeLayerHasMask: active?.mask != nil,
             activeLayerHasParent: active?.parentID != nil,
             activeLayerIsClipped: active?.maskSourceID != nil,
             canToggleClippingMask: s.activeLayerID.map { s.canToggleClippingMask($0) } ?? false,
+            canUngroupLayers: s.canUngroupLayers,
             canMergeLayers: s.canMergeLayers,
             mergeTitle: s.mergeTitle,
+            brushError: s.brushError,
             canMoveActiveLayerUp: s.canMoveActiveLayer(by: 1),
             canMoveActiveLayerDown: s.canMoveActiveLayer(by: -1),
             tool: s.tool.rawValue,

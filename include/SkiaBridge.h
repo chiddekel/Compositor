@@ -114,6 +114,12 @@ int compositor_skia_raster_surface(const uint8_t *src_rgba,
 int compositor_vulkan_enumerate_devices(void);
 
 /*
+ * 1 when CompRenderer can run Vulkan compute (or Skia Ganesh) for compositor_render_rgba;
+ * 0 when only Raster is available. Used by Swift CanvasBackends / GPUCanvasRenderer.
+ */
+int compositor_vulkan_gpu_available(void);
+
+/*
  * Register a render function with the Swift CoreGraphicsCompat shim. The
  * Swift CGContextCompat draws route through this function when set; when
  * NULL (or on non-zero return), draws fall back to the pure-Swift

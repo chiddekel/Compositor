@@ -152,6 +152,9 @@ let package = Package(
         .target(name: "SwiftUI", dependencies: ["CoreGraphics", "AppKit", "Combine", "FoundationCompat", "CompatSupport"], path: "Sources/Compat/SwiftUI",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        // Metal type surface for Linux (CPU-backed MTLTexture/Device) so tip GPUCanvasTests compile.
+        .target(name: "Metal", dependencies: ["CoreGraphics"], path: "Sources/Compat/Metal",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreImageKernels", path: "backends/coreimage", sources: ["Gaussian.c", "GaussianFFT.c", "Motion.c"],
                 publicHeadersPath: "include", cSettings: [.unsafeFlags(["-ffp-contract=off"])]),
         .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport", "CoreImageKernels"], path: "Sources/Compat/CoreImage",
@@ -178,7 +181,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
@@ -209,7 +212,9 @@ let package = Package(
                      "Rendering/GPUCanvas.swift",
                      "Rendering/GPUNoise.swift",
                      "Rendering/InlineTextEditor.swift",
-                     "UI/JPEGExportSheet.swift"],
+                     "UI/JPEGExportSheet.swift",
+                     "UI/ProjectTabs.swift",
+                     "UI/LayerMaskMenu.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),
@@ -220,6 +225,7 @@ let package = Package(
                 .unsafeFlags([                              "-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat",
                               "-Xfrontend", "-import-module", "-Xfrontend", "CompositorKernels",
                               "-Xfrontend", "-import-module", "-Xfrontend", "CoreImage",
+                              "-Xfrontend", "-import-module", "-Xfrontend", "Metal",
                               // Apple's closure-taking APIs (Timer, Dispatch) do not check main-actor state against
                               // Sendable in Swift 5 mode; corelibs' do. Minimal checking matches Xcode's behaviour.
                               "-strict-concurrency=minimal"]),
@@ -228,7 +234,7 @@ let package = Package(
         // Upstream's own test suite, unmodified (Swift Testing), run against the module above.
         .testTarget(
             name: "CompositorUpstreamTests",
-            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat"],
+            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal"],
             path: "CompositorTests",
             // Tests of macOS-only UI code (ObjC-runtime NSSlider swizzling, floating panels, SwiftUI thumbnails):
             // listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
@@ -236,13 +242,13 @@ let package = Package(
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
                       "TypeToolTests.swift", "GroupTests.swift", "LayerMaskTests.swift", "LayerAppearanceTests.swift",
-                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift",
-                      "GPUCanvasTests.swift", "MetalWarpTests.swift"],
+                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
                 .enableUpcomingFeature("InferSendableFromCaptures"),
-                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat"]),
+                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat",
+                              "-Xfrontend", "-import-module", "-Xfrontend", "Metal"]),
             ]
         ),
         // Tests of Linux-owned code that lives inside the Compositor module (the Sources/Overrides stand-ins), checked

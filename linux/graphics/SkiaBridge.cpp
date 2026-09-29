@@ -78,6 +78,27 @@
 #define COMPOSITOR_HAS_VULKAN 1
 #include <vulkan/vulkan.h>
 #endif
+#if defined(COMPOSITOR_ENABLE_SKIA_GPU) && defined(COMPOSITOR_HAS_SKIA) && defined(COMPOSITOR_HAS_VULKAN)
+#if __has_include("include/gpu/ganesh/vk/GrVkDirectContext.h")
+#define COMPOSITOR_HAS_SKIA_GANESH_VK 1
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/vk/GrVkDirectContext.h"
+#include "include/gpu/vk/VulkanBackendContext.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
+#include "include/core/SkColorSpace.h"
+#elif __has_include(<skia/gpu/ganesh/vk/GrVkDirectContext.h>)
+#define COMPOSITOR_HAS_SKIA_GANESH_VK 1
+#include <skia/gpu/ganesh/GrDirectContext.h>
+#include <skia/gpu/ganesh/vk/GrVkDirectContext.h>
+#include <skia/gpu/vk/VulkanBackendContext.h>
+#include <skia/gpu/ganesh/SkSurfaceGanesh.h>
+#include <skia/core/SkColorSpace.h>
+#endif
+#endif
+#endif
+
+#if defined(COMPOSITOR_HAS_VULKAN)
+#include "shaders/composite_over_spv.h"
 #endif
 
 // ── CompRenderer ────────────────────────────────────────────────────────
@@ -93,6 +114,19 @@ struct CompRenderer {
     VkQueue vk_queue = VK_NULL_HANDLE;
     uint32_t vk_queue_family = 0;
     VkFormat vk_format = VK_FORMAT_R8G8B8A8_UNORM;
+
+    // Lazy compute pipeline for source-over (Metal → Vulkan canvas path).
+    VkDescriptorSetLayout vk_descriptor_layout = VK_NULL_HANDLE;
+    VkPipelineLayout vk_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline vk_pipeline = VK_NULL_HANDLE;
+    VkShaderModule vk_shader = VK_NULL_HANDLE;
+    VkCommandPool vk_command_pool = VK_NULL_HANDLE;
+    VkFence vk_fence = VK_NULL_HANDLE;
+    bool vk_compute_ready = false;
+#endif
+
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    sk_sp<GrDirectContext> gr_context;
 #endif
 
     bool is_raster = false;
@@ -188,17 +222,37 @@ void compositor_renderer_simulate_device_lost(CompRenderer *renderer) {
 
 // ── compositor_renderer_activate / deactivate ──────────────────────────
 
+#if defined(COMPOSITOR_HAS_SKIA)
+static CompRenderer* g_active_renderer = nullptr;
+
+static int32_t compositor_active_render_trampoline(const uint8_t* src, uint8_t* dst,
+                                                   size_t width, size_t height) {
+    if (!g_active_renderer) return -2;
+    return compositor_render_rgba(g_active_renderer, src, dst, width, height);
+}
+
+// Declared in Swift (RenderDeviceBinding.swift); resolved when the host links the Compositor module.
+extern "C" void compositor_compat_set_render_fn(CompRenderFn fn) __attribute__((weak));
+#endif
+
 void compositor_renderer_activate(CompRenderer *renderer) {
-    if (!renderer) return;
-    // No-op on the C side; the Swift shim (CGContextCompat) checks
-    // compositor_compat_set_render_fn which the host sets once at startup.
-    // Activation is a signal for the Swift side to route through Skia.
+#if defined(COMPOSITOR_HAS_SKIA)
+    g_active_renderer = renderer;
+    if (compositor_compat_set_render_fn) {
+        compositor_compat_set_render_fn(renderer ? compositor_active_render_trampoline : nullptr);
+    }
+#else
     (void)renderer;
+#endif
 }
 
 void compositor_renderer_deactivate(void) {
-    // Swift side will fall back to pure-Swift LayerRenderer on device loss.
-    (void)0;
+#if defined(COMPOSITOR_HAS_SKIA)
+    g_active_renderer = nullptr;
+    if (compositor_compat_set_render_fn) {
+        compositor_compat_set_render_fn(nullptr);
+    }
+#endif
 }
 
 // ── compositor_render_rgba ─────────────────────────────────────────────
@@ -214,6 +268,10 @@ int compositor_render_rgba(CompRenderer *renderer,
     return -3;
 #else
     CompRenderer* r = (CompRenderer*)renderer;
+    if (r->is_device_lost && !r->is_raster) {
+        vulkan_device_destroy(r);
+        raster_device_create(r, static_cast<int>(width), static_cast<int>(height));
+    }
     if (r->is_raster) {
         return raster_render_rgba(r, src_rgba, dst_rgba, width, height);
     } else {
@@ -264,6 +322,14 @@ int compositor_skia_raster_surface(const uint8_t *src_rgba,
 }
 
 // ── compositor_vulkan_enumerate_devices ────────────────────────────────
+
+int compositor_vulkan_gpu_available(void) {
+#if defined(COMPOSITOR_HAS_VULKAN)
+    return compositor_vulkan_enumerate_devices() > 0 ? 1 : 0;
+#else
+    return 0;
+#endif
+}
 
 int compositor_vulkan_enumerate_devices(void) {
 #if defined(COMPOSITOR_HAS_VULKAN)
@@ -455,7 +521,24 @@ static void vulkan_device_create(CompRenderer* r, int force_raster) {
 
 static void vulkan_device_destroy(CompRenderer* r) {
 #if defined(COMPOSITOR_HAS_VULKAN)
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    r->gr_context.reset();
+#endif
     if (r->vk_device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(r->vk_device);
+        if (r->vk_fence) vkDestroyFence(r->vk_device, r->vk_fence, nullptr);
+        if (r->vk_command_pool) vkDestroyCommandPool(r->vk_device, r->vk_command_pool, nullptr);
+        if (r->vk_pipeline) vkDestroyPipeline(r->vk_device, r->vk_pipeline, nullptr);
+        if (r->vk_pipeline_layout) vkDestroyPipelineLayout(r->vk_device, r->vk_pipeline_layout, nullptr);
+        if (r->vk_descriptor_layout) vkDestroyDescriptorSetLayout(r->vk_device, r->vk_descriptor_layout, nullptr);
+        if (r->vk_shader) vkDestroyShaderModule(r->vk_device, r->vk_shader, nullptr);
+        r->vk_fence = VK_NULL_HANDLE;
+        r->vk_command_pool = VK_NULL_HANDLE;
+        r->vk_pipeline = VK_NULL_HANDLE;
+        r->vk_pipeline_layout = VK_NULL_HANDLE;
+        r->vk_descriptor_layout = VK_NULL_HANDLE;
+        r->vk_shader = VK_NULL_HANDLE;
+        r->vk_compute_ready = false;
         vkDestroyDevice(r->vk_device, nullptr);
         r->vk_device = VK_NULL_HANDLE;
     }
@@ -470,14 +553,269 @@ static void vulkan_device_destroy(CompRenderer* r) {
 #endif
 }
 
+#if defined(COMPOSITOR_HAS_VULKAN)
+static uint32_t vulkan_find_host_memory(VkPhysicalDevice physical, uint32_t type_bits) {
+    VkPhysicalDeviceMemoryProperties props{};
+    vkGetPhysicalDeviceMemoryProperties(physical, &props);
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        if ((type_bits & (1u << i)) == 0) continue;
+        const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+        if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) return i;
+    }
+    return UINT32_MAX;
+}
+
+struct VulkanHostBuffer {
+    VkDevice device = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    bool coherent = false;
+    ~VulkanHostBuffer() {
+        if (mapped) vkUnmapMemory(device, memory);
+        if (buffer) vkDestroyBuffer(device, buffer, nullptr);
+        if (memory) vkFreeMemory(device, memory, nullptr);
+    }
+    int create(VkDevice dev, VkPhysicalDevice physical, VkDeviceSize bytes) {
+        device = dev;
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = bytes;
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(device, &info, nullptr, &buffer) != VK_SUCCESS) return -1;
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(device, buffer, &req);
+        uint32_t type = vulkan_find_host_memory(physical, req.memoryTypeBits);
+        if (type == UINT32_MAX) return -1;
+        VkPhysicalDeviceMemoryProperties props{};
+        vkGetPhysicalDeviceMemoryProperties(physical, &props);
+        coherent = (props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+        VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        alloc.allocationSize = req.size;
+        alloc.memoryTypeIndex = type;
+        if (vkAllocateMemory(device, &alloc, nullptr, &memory) != VK_SUCCESS) return -1;
+        if (vkBindBufferMemory(device, buffer, memory, 0) != VK_SUCCESS) return -1;
+        if (vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) return -1;
+        return 0;
+    }
+    void flush(VkDeviceSize size) {
+        if (coherent) return;
+        VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = memory;
+        range.size = size;
+        vkFlushMappedMemoryRanges(device, 1, &range);
+    }
+    void invalidate(VkDeviceSize size) {
+        if (coherent) return;
+        VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = memory;
+        range.size = size;
+        vkInvalidateMappedMemoryRanges(device, 1, &range);
+    }
+};
+
+static int vulkan_ensure_compute(CompRenderer* r) {
+    if (r->vk_compute_ready) return 0;
+    if (r->vk_device == VK_NULL_HANDLE) return -2;
+
+    VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    smci.codeSize = sizeof(compositor_composite_spv);
+    smci.pCode = compositor_composite_spv;
+    if (vkCreateShaderModule(r->vk_device, &smci, nullptr, &r->vk_shader) != VK_SUCCESS) return -2;
+
+    VkDescriptorSetLayoutBinding binds[2]{};
+    binds[0].binding = 0;
+    binds[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    binds[0].descriptorCount = 1;
+    binds[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    binds[1] = binds[0];
+    binds[1].binding = 1;
+    VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dlci.bindingCount = 2;
+    dlci.pBindings = binds;
+    if (vkCreateDescriptorSetLayout(r->vk_device, &dlci, nullptr, &r->vk_descriptor_layout) != VK_SUCCESS) return -2;
+
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push.offset = 0;
+    push.size = sizeof(uint32_t) * 2;
+    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &r->vk_descriptor_layout;
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges = &push;
+    if (vkCreatePipelineLayout(r->vk_device, &plci, nullptr, &r->vk_pipeline_layout) != VK_SUCCESS) return -2;
+
+    VkComputePipelineCreateInfo pci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pci.stage.module = r->vk_shader;
+    pci.stage.pName = "main";
+    pci.layout = r->vk_pipeline_layout;
+    if (vkCreateComputePipelines(r->vk_device, VK_NULL_HANDLE, 1, &pci, nullptr, &r->vk_pipeline) != VK_SUCCESS) return -2;
+
+    VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    cpci.queueFamilyIndex = r->vk_queue_family;
+    if (vkCreateCommandPool(r->vk_device, &cpci, nullptr, &r->vk_command_pool) != VK_SUCCESS) return -2;
+
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateFence(r->vk_device, &fci, nullptr, &r->vk_fence) != VK_SUCCESS) return -2;
+
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    if (!r->gr_context) {
+        skgpu::VulkanBackendContext backend{};
+        backend.fInstance = r->vk_instance;
+        backend.fPhysicalDevice = r->vk_physical_device;
+        backend.fDevice = r->vk_device;
+        backend.fQueue = r->vk_queue;
+        backend.fGraphicsQueueIndex = r->vk_queue_family;
+        backend.fGetProc = [](const char* name, VkInstance instance, VkDevice device) -> PFN_vkVoidFunction {
+            if (device != VK_NULL_HANDLE) {
+                if (PFN_vkVoidFunction p = vkGetDeviceProcAddr(device, name)) return p;
+            }
+            return vkGetInstanceProcAddr(instance, name);
+        };
+        r->gr_context = GrDirectContexts::MakeVulkan(backend);
+    }
+#endif
+
+    r->vk_compute_ready = true;
+    return 0;
+}
+#endif
+
 static int vulkan_render_rgba(CompRenderer* r,
                               const uint8_t* src_rgba,
                               uint8_t* dst_rgba,
                               size_t width, size_t height) {
+#if !defined(COMPOSITOR_HAS_VULKAN)
     (void)r; (void)src_rgba; (void)dst_rgba; (void)width; (void)height;
-    // Stage 8 will implement Vulkan rendering via Skia GrDirectContext.
-    // Until then, return -2 to trigger dynamic fallback to Raster.
     return -2;
+#else
+    if (!r || r->vk_device == VK_NULL_HANDLE || r->is_device_lost) return -2;
+    if (!src_rgba || !dst_rgba || width == 0 || height == 0) return -1;
+    if (vulkan_ensure_compute(r) != 0) return -2;
+
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    // Prefer Skia Ganesh when the Flatpak GPU Skia build is linked.
+    if (r->gr_context) {
+        const size_t stride = width * 4;
+        SkImageInfo info = SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height),
+                                             kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+        sk_sp<SkSurface> surface = SkSurfaces::RenderTarget(r->gr_context.get(), skgpu::Budgeted::kNo, info);
+        if (!surface) return -2;
+        SkPixmap dstPixmap(info, dst_rgba, stride);
+        sk_sp<SkImage> dstImage = SkImages::RasterFromPixmap(dstPixmap, nullptr, nullptr);
+        SkPixmap srcPixmap(info, src_rgba, stride);
+        sk_sp<SkImage> srcImage = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
+        if (!dstImage || !srcImage) return -2;
+        SkCanvas* canvas = surface->getCanvas();
+        canvas->clear(SK_ColorTRANSPARENT);
+        canvas->drawImage(dstImage, 0, 0);
+        SkPaint paint;
+        paint.setBlendMode(SkBlendMode::kSrcOver);
+        canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
+        if (!surface->readPixels(dstPixmap, 0, 0)) return -2;
+        r->gr_context->flushAndSubmit(true);
+        r->last_executed = COMP_RENDERER_VULKAN;
+        return 0;
+    }
+#endif
+
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width * height * 4u);
+    VulkanHostBuffer srcBuf, dstBuf;
+    if (srcBuf.create(r->vk_device, r->vk_physical_device, bytes) != 0) return -2;
+    if (dstBuf.create(r->vk_device, r->vk_physical_device, bytes) != 0) return -2;
+    std::memcpy(srcBuf.mapped, src_rgba, static_cast<size_t>(bytes));
+    std::memcpy(dstBuf.mapped, dst_rgba, static_cast<size_t>(bytes));
+    srcBuf.flush(bytes);
+    dstBuf.flush(bytes);
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 2;
+    VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    dpci.maxSets = 1;
+    dpci.poolSizeCount = 1;
+    dpci.pPoolSizes = &poolSize;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(r->vk_device, &dpci, nullptr, &pool) != VK_SUCCESS) return -2;
+
+    VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    dsai.descriptorPool = pool;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &r->vk_descriptor_layout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(r->vk_device, &dsai, &set) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    VkDescriptorBufferInfo srcInfo{};
+    srcInfo.buffer = srcBuf.buffer;
+    srcInfo.range = bytes;
+    VkDescriptorBufferInfo dstInfo{};
+    dstInfo.buffer = dstBuf.buffer;
+    dstInfo.range = bytes;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].pBufferInfo = &srcInfo;
+    writes[1] = writes[0];
+    writes[1].dstBinding = 1;
+    writes[1].pBufferInfo = &dstInfo;
+    vkUpdateDescriptorSets(r->vk_device, 2, writes, 0, nullptr);
+
+    VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cbai.commandPool = r->vk_command_pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(r->vk_device, &cbai, &cmd) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, r->vk_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, r->vk_pipeline_layout, 0, 1, &set, 0, nullptr);
+    uint32_t push[2] = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+    vkCmdPushConstants(cmd, r->vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+    vkCmdDispatch(cmd, (static_cast<uint32_t>(width) + 15u) / 16u, (static_cast<uint32_t>(height) + 15u) / 16u, 1);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    vkResetFences(r->vk_device, 1, &r->vk_fence);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    if (vkQueueSubmit(r->vk_queue, 1, &submit, r->vk_fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    if (vkWaitForFences(r->vk_device, 1, &r->vk_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    dstBuf.invalidate(bytes);
+    std::memcpy(dst_rgba, dstBuf.mapped, static_cast<size_t>(bytes));
+    vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+    vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+    r->last_executed = COMP_RENDERER_VULKAN;
+    return 0;
+#endif
 }
 
 // ── Stage 4/5: Canvas C ABI (CoreGraphics-shaped Skia Bridge) ────────────

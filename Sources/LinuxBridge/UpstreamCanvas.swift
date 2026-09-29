@@ -24,6 +24,7 @@ import AppKit
     /// A pointer event (returns the cursor code, see cursorCode): `kind` 0 press, 1 drag, 2 release, 3 move (no button), 4 double press; `modifiers` in
     /// ShortcutChord bits as the shell sends them (Ctrl 1 → ⌘, Alt 2 → ⌥, Meta 4 → ⌃, Shift 8).
     func mouse(kind: Int, x: Double, y: Double, modifiers: Int, clickCount: Int) {
+        NSEvent.applyChordModifiers(modifiers)
         var flags: NSEvent.ModifierFlags = []
         if modifiers & 1 != 0 { flags.insert(.command) }
         if modifiers & 2 != 0 { flags.insert(.option) }
@@ -90,6 +91,7 @@ import AppKit
     }
     /// A key press for the canvas: `keyCode` a Mac virtual key code, `characters` what it types.
     func key(keyCode: Int, characters: String, modifiers: Int, isRepeat: Bool) {
+        NSEvent.applyChordModifiers(modifiers)
         var flags: NSEvent.ModifierFlags = []
         if modifiers & 1 != 0 { flags.insert(.command) }
         if modifiers & 2 != 0 { flags.insert(.option) }
@@ -285,6 +287,16 @@ nonisolated public func compositorCanvasOverlayInvalid(_ handle: UInt64, _ rect:
         if let rect { rect[0] = dirty.minX; rect[1] = dirty.minY; rect[2] = dirty.width; rect[3] = dirty.height }
         return 1
     })
+}
+
+/// Pure modifier-key changes (Shift / Ctrl / Alt / Meta with no character): keep HeldModifiers live for the options bar.
+@_cdecl("compositor_modifiers_changed")
+nonisolated public func compositorModifiersChanged(_ modifiers: Int32) {
+    onMain {
+        // Touch HeldModifiers so its local monitor is registered before the first flagsChanged.
+        _ = HeldModifiers.shared
+        NSEvent.applyChordModifiers(Int(modifiers))
+    }
 }
 
 /// The shell's SF Symbol renderer: (name, width, height, r, g, b, a, output) → 0 when it drew the symbol into `output`

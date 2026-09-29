@@ -127,6 +127,19 @@ inline void installUIE2EBridge(SessionWindow &window) {
                     : QGuiApplication::primaryScreen()->grabWindow(0).save(path);
                 reply["path"] = path;
             }
+        } else if (action == "triggerAction") {
+            // Activate a QAction by its menu title (same objects the menubar / AppMenus sync owns).
+            const QString title = request.value("text").toString();
+            bool found = false;
+            for (QAction *act : window.findChildren<QAction *>()) {
+                if (act->text() == title && act->isEnabled()) {
+                    act->trigger();
+                    found = true;
+                    break;
+                }
+            }
+            reply["ok"] = found;
+            if (!found) reply["error"] = "No enabled action titled " + title;
         } else if (action == "stall") {
             // Simulate a busy UI while the independent driver queues real desktop pointer events.
             // Publish the acknowledgement first so the driver knows when the stall begins.

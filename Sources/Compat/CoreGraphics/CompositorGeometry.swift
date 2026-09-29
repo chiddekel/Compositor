@@ -104,7 +104,7 @@ public struct CGAffineTransform: Equatable, Sendable, Codable {
     }
 }
 
-// MARK: - CGPoint / CGRect applying
+// MARK: - CGPoint / CGRect / CGSize applying
 
 extension CGPoint {
     /// Apply an affine transform to this point, matching CoreGraphics' `applying(_:)`.
@@ -112,6 +112,13 @@ extension CGPoint {
     public func applying(_ t: CGAffineTransform) -> CGPoint {
         CGPoint(x: t.a * x + t.c * y + t.tx,
                 y: t.b * x + t.d * y + t.ty)
+    }
+}
+
+extension CGSize {
+    /// Apply an affine transform's linear part to this size (no translation), matching CoreGraphics.
+    public func applying(_ t: CGAffineTransform) -> CGSize {
+        CGSize(width: t.a * width + t.c * height, height: t.b * width + t.d * height)
     }
 }
 

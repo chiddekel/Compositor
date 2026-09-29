@@ -17,6 +17,11 @@ extension NSApplication {
     public static let didResignActiveNotification = Notification.Name("NSApplicationDidResignActiveNotification")
 }
 
+/// Menu tracking notifications HeldModifiers observes (a key released while a menu is open never reaches the app).
+public enum NSMenu {
+    public static let didEndTrackingNotification = Notification.Name("NSMenuDidEndTrackingNotification")
+}
+
 /// Model code asks questions through alerts; the host installs `handler` (Qt message box). Headless default:
 /// choose the first button, like pressing Return.
 @MainActor open class NSAlert {

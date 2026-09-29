@@ -163,4 +163,21 @@ public final class NSEvent: @unchecked Sendable {
         }
         return current
     }
+
+    /// ShortcutChord bits from the Qt shell (Ctrl→⌘ 1, Alt→⌥ 2, Meta→⌃ 4, Shift 8) → `modifierFlags`, and a
+    /// synthesized `flagsChanged` through local monitors so HeldModifiers (and anything else) stays live.
+    public static func applyChordModifiers(_ bits: Int) {
+        var flags: ModifierFlags = []
+        if bits & 1 != 0 { flags.insert(.command) }
+        if bits & 2 != 0 { flags.insert(.option) }
+        if bits & 4 != 0 { flags.insert(.control) }
+        if bits & 8 != 0 { flags.insert(.shift) }
+        guard flags != modifierFlags else { return }
+        modifierFlags = flags
+        guard let event = keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags,
+                                   timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+                                   context: nil, characters: "", charactersIgnoringModifiers: "",
+                                   isARepeat: false, keyCode: 0) else { return }
+        _ = filterThroughLocalMonitors(event)
+    }
 }

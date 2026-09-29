@@ -114,7 +114,8 @@ final class CompCanvasBridge: @unchecked Sendable {
             "/app/lib/libCompositorSkiaBridge.so"
         ]
         for path in candidates where !path.isEmpty {
-            if dlopen(path, RTLD_NOW | RTLD_GLOBAL) != nil {
+            if let handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL) {
+                CompCanvasBridge.loadedHandle = handle
                 break
             } else if path == ProcessInfo.processInfo.environment["COMPOSITOR_SKIA_BRIDGE"], let reason = dlerror() {
                 // An explicitly requested bridge that cannot load is worth saying so.
@@ -156,6 +157,9 @@ final class CompCanvasBridge: @unchecked Sendable {
         self.pathClose = Self.lookup("compositor_path_close")
         self.pathReset = Self.lookup("compositor_path_reset")
     }
+
+    /// Handle from the successful dlopen of libCompositorSkiaBridge.so, if any.
+    nonisolated(unsafe) static var loadedHandle: UnsafeMutableRawPointer?
 
     private static func lookup<T>(_ name: String) -> T? {
         #if canImport(Glibc)

@@ -270,6 +270,7 @@ public final class NSTrackingArea {
 public enum NSAccessibility {
     public struct Role: RawRepresentable, Sendable { public let rawValue: String; public init(rawValue: String) { self.rawValue = rawValue }
         public static let button = Role(rawValue: "AXButton"), image = Role(rawValue: "AXImage"), group = Role(rawValue: "AXGroup")
+        public static let popUpButton = Role(rawValue: "AXPopUpButton")
         public static let unknown = Role(rawValue: "AXUnknown") }
 }
 

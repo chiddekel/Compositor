@@ -24,6 +24,7 @@ public struct CIVector: Sendable {
     public init(x: CGFloat, y: CGFloat, z: CGFloat) { values = [x, y, z] }
     public init(x: CGFloat, y: CGFloat, z: CGFloat, w: CGFloat) { values = [x, y, z, w] }
     public init(cgPoint: CGPoint) { values = [cgPoint.x, cgPoint.y] }
+    public init(cgRect: CGRect) { values = [cgRect.origin.x, cgRect.origin.y, cgRect.size.width, cgRect.size.height] }
     public subscript(index: Int) -> CGFloat { index < values.count ? values[index] : 0 }
     public var x: CGFloat { self[0] }
     public var y: CGFloat { self[1] }
@@ -60,6 +61,8 @@ public let kCIInputAngleKey = "inputAngle"
 public let kCIInputIntensityKey = "inputIntensity"
 public let kCIInputTransformKey = "inputTransform"
 public let kCIInputCenterKey = "inputCenter"
+public let kCIInputScaleKey = "inputScale"
+public let kCIInputAspectRatioKey = "inputAspectRatio"
 
 // MARK: - Graph
 
@@ -372,13 +375,28 @@ public class CIFilter {
             let dim = Int(number("inputCubeDimension", 2))
             let floats = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
             return CIImage(node: .cube(input.node, dim, floats))
-        case "CIBlendWithMask":
+        case "CIBlendWithMask", "CIBlendWithRedMask":
             guard let bg = image(kCIInputBackgroundImageKey), let mask = image(kCIInputMaskImageKey) else { return nil }
             return CIImage(node: .blendMask(input.node, bg.node, mask.node))
+        case "CILanczosScaleTransform":
+            let scale = number(kCIInputScaleKey, 1)
+            let aspect = number(kCIInputAspectRatioKey, 1)
+            let sx = scale * aspect, sy = scale
+            return input.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        case "CIPerspectiveTransform", "CIPerspectiveTransformWithExtent":
+            func corner(_ k: String) -> CGPoint { (inputs[k] as? CIVector)?.cgPointValue ?? .zero }
+            return CIImage(node: .perspective(input.node, [corner("inputTopLeft"), corner("inputTopRight"),
+                                                           corner("inputBottomRight"), corner("inputBottomLeft")]))
+        case "CIColorCurves":
+            // Approximate with identity when curves payload present; Levels still uses cube path on GPUAdjustment.
+            return input
         case "CIColorBurnBlendMode", "CIColorDodgeBlendMode", "CISoftLightBlendMode",
              "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CIVividLightBlendMode",
              "CILinearLightBlendMode", "CIPinLightBlendMode", "CIHardMixBlendMode",
-             "CISubtractBlendMode", "CIDivideBlendMode":
+             "CISubtractBlendMode", "CIDivideBlendMode",
+             "CIDarkenBlendMode", "CIMultiplyBlendMode", "CILightenBlendMode", "CIScreenBlendMode",
+             "CIOverlayBlendMode", "CIHardLightBlendMode", "CIDifferenceBlendMode", "CIExclusionBlendMode",
+             "CIHueBlendMode", "CISaturationBlendMode", "CIColorBlendMode", "CILuminosityBlendMode":
             guard let bg = image(kCIInputBackgroundImageKey) else { return nil }
             return CIImage(node: .separable(input.node, bg.node, name))
         case "CILinearGradient", "CIRadialGradient":
@@ -386,10 +404,6 @@ public class CIFilter {
             return input
         case "CIAffineTile":
             return input
-        case "CIPerspectiveTransform":
-            func corner(_ k: String) -> CGPoint { (inputs[k] as? CIVector)?.cgPointValue ?? .zero }
-            return CIImage(node: .perspective(input.node, [corner("inputTopLeft"), corner("inputTopRight"),
-                                                           corner("inputBottomRight"), corner("inputBottomLeft")]))
         case "CIEdgePreserveUpsampleFilter":
             guard let small = image("inputSmallImage") else { return nil }
             return CIImage(node: .upsample(guide: input.node, small: small.node, number("inputSpatialSigma", 3), number("inputLumaSigma", 0.15)))

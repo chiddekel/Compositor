@@ -27,8 +27,13 @@ class App:
         self.artifacts = artifacts
         self.large_psb = args.large_psb
         artifacts.mkdir(parents=True, exist_ok=False, mode=0o700)
+        host_display = None
+        desktop_mode = "xvfb"
+        if getattr(args, "visible", False):
+            # Nested Xephyr window on the desktop (not headless). Host DISPLAY focus is unreliable on Xwayland.
+            desktop_mode = "xephyr"
         self.desktop = Desktop.__new__(Desktop)
-        self.desktop.__init__(artifacts)
+        self.desktop.__init__(artifacts, mode=desktop_mode, display=host_display)
         self.sequence = 0
         self.log = open(artifacts / "app.log", "w")
         sdk = re.search(r"^runtime-version:\s*['\"]?([^'\"\s]+)",
@@ -53,8 +58,8 @@ class App:
         # Flatpak selects the X11 socket from its own environment before applying --env overrides.
         environment["DISPLAY"] = self.desktop.display_name
         environment.pop("WAYLAND_DISPLAY", None)
-        environment.pop("XAUTHORITY", None)
         environment.pop("SESSION_MANAGER", None)
+        environment.pop("XAUTHORITY", None)
         environment.update({k: env[k] for k in ("QT_IM_MODULE", "QT_ACCESSIBILITY", "NO_AT_BRIDGE", "XDG_CURRENT_DESKTOP")})
         command = ["flatpak", "run", "--command=bash", "--devel", "--filesystem=" + str(ROOT),
                    "--filesystem=" + str(artifacts), "--filesystem=/tmp", "--share=ipc", "--device=dri",
@@ -453,6 +458,8 @@ CASES = {"inspect": inspect_only, "brush_burst": brush_burst, "brush_curve": bru
          "smoothing": smoothing, "save_reopen": save_reopen, "brush_performance": brush_performance}
 CASES.update(TOOL_CASES)
 CASES.update(PSD_CASES)
+from tip_cases import TIP_CASES
+CASES.update(TIP_CASES)
 
 
 def main():
@@ -465,6 +472,8 @@ def main():
     parser.add_argument("--compress-input", action="store_true")
     parser.add_argument("--check-input-regression", action="store_true",
                         help="Also prove that restoring event compression breaks the circle test")
+    parser.add_argument("--visible", action="store_true",
+                        help="Show UI in a nested Xephyr window (non-headless); default is private Xvfb")
     args = parser.parse_args()
     if args.case and "psb_large_import" in args.case and not args.large_psb:
         parser.error("psb_large_import requires --large-psb PATH")
@@ -473,7 +482,7 @@ def main():
     suite = ET.Element("testsuite", name="Compositor desktop UI")
     failures = 0
     report = {"environment": metadata(args.binary, args.backend), "cases": {}}
-    names = args.case or [key for key in CASES if key not in ("inspect", "psb_large_import")]
+    names = args.case or [key for key in CASES if key not in ("inspect", "psb_large_import", "tip_color_range")]
     if args.large_psb and "psb_large_import" not in names:
         names.append("psb_large_import")
     if args.check_input_regression:

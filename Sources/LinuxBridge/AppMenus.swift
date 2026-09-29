@@ -21,6 +21,8 @@ import Sparkle
             session.selectAll()
             return true
         }
+        // Register HeldModifiers' local monitor before the first flagsChanged from the shell.
+        _ = HeldModifiers.shared
         return CompositorApp().body.commandsContent?()
     }
 

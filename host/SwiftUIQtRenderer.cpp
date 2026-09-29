@@ -665,7 +665,13 @@ private:
             if (row >= 0 && keys.testFlag(Qt::AltModifier) && !keys.testFlag(Qt::ControlModifier)) {
                 const QRect r = m_rows[row]->geometry();
                 const bool strip = pos.y() >= r.bottom() + 1 - std::min(10, r.height() / 3);
-                if (strip && flags.startsWith(QLatin1Char('c'))) kind = 2;
+                // Option over a mask thumbnail: show-mask-alone cursor (duplicate + eye), as NativeLayerList.
+                QWidget *under = m_content->childAt(pos);
+                bool overMask = false;
+                for (QWidget *w = under; w && w != m_content; w = w->parentWidget())
+                    if (w->objectName().startsWith(QStringLiteral("layerMaskThumb:"))) { overMask = true; break; }
+                if (overMask) kind = 5;
+                else if (strip && flags.startsWith(QLatin1Char('c'))) kind = 2;
                 else if (strip && flags.startsWith(QLatin1Char('r'))) kind = 3;
                 else if (flags.endsWith(QLatin1Char('d'))) kind = 1;
             } else if (row >= 0 && keys.testFlag(Qt::ControlModifier)) {

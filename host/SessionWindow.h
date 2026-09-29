@@ -43,6 +43,7 @@ class QStandardItem;
 class QSlider;
 class QComboBox;
 class QPushButton;
+class QToolButton;
 class QCheckBox;
 class QMenu;
 class QColor;
@@ -511,6 +512,8 @@ private:
     QHash<QString, QAction *> m_appMenuActions;
     bool m_handlingFileRequests = false;
     QTabBar *m_documentTabBar = nullptr;
+    QToolButton *m_tabOverflowButton = nullptr;
+    void refreshTabOverflow();
     QLabel *m_statusZoomLabel = nullptr;
     QLabel *m_statusDimsLabel = nullptr;
     QLabel *m_statusProfileLabel = nullptr;

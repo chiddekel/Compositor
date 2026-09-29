@@ -142,6 +142,16 @@ nonisolated public func compositorWorkspaceCloseTab(_ handle: UInt64) -> UInt64 
     }
 }
 
+/// Reorders `handle`'s tab by dragging it in the strip (`ProjectWorkspace.moveTab`). Chrome, not a document edit.
+@_cdecl("compositor_workspace_move_tab")
+nonisolated public func compositorWorkspaceMoveTab(_ handle: UInt64, _ toIndex: Int32) -> Int32 {
+    onMain {
+        guard let id = Sessions.entries[handle]?.workspaceTabID else { return -6 }
+        Workspace.shared.moveTab(id, to: Int(toIndex))
+        return 0
+    }
+}
+
 /// UTF-8 title for `handle`'s tab (upstream's `ProjectTab.title`: the project filename, or "Untitled"/"Untitled N"),
 /// same output-buffer convention as `compositor_session_state`: call with `capacity` 0 first to size the buffer.
 @_cdecl("compositor_workspace_tab_title")

@@ -32,14 +32,26 @@ UI_E2E_ARTIFACTS=/tmp/compositor-ui-color-1 \
   bash scripts/run-ui-e2e.sh --no-build --case color_accept
 ```
 
+**Visible (non-headless) mode** — nested **Xephyr** window titled “Compositor UI E2E” on your
+desktop (same XTest focus model as Xvfb; not the host Mutter/Xwayland seat, which cannot take
+reliable keyboard focus from XTest):
+
+```sh
+UI_E2E_ARTIFACTS=/tmp/compositor-ui-visible \
+  bash scripts/run-ui-e2e.sh --no-build --visible --case tool_move
+```
+
+Requires `Xephyr` on `PATH` (or `COMPOSITOR_XEPHYR`). Do not interact with the Xephyr window while tests run.
+
 ## What is tested
 
-Each case opens a fresh application with isolated preferences, a private Xvfb display
-and a private D-Bus session. XTest supplies native mouse and keyboard input. Document
-creation, tool selection, field editing, dialog confirmation, painting and shortcuts
-go through the visible UI. Coordinates are resolved from visible widgets; selectors
-fail when ambiguous. Document coordinates are converted through the current canvas
-mapping. The driver assigns X11 window focus because Xvfb has no window manager.
+Each case opens a fresh application with isolated preferences, a display (private Xvfb
+by default, or the host `DISPLAY` with `--visible`) and a private D-Bus session. XTest
+supplies native mouse and keyboard input. Document creation, tool selection, field
+editing, dialog confirmation, painting and shortcuts go through the visible UI.
+Coordinates are resolved from visible widgets; selectors fail when ambiguous. Document
+coordinates are converted through the current canvas mapping. The driver assigns X11
+window focus (required on Xvfb; still applied on a real WM).
 
 | Journey | Assertions |
 | --- | --- |

@@ -80,6 +80,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QDateTime>
 #include <QCloseEvent>
 #include <QStackedWidget>
+#include <QToolButton>
 #include <QTabBar>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -161,7 +162,9 @@ uint64_t compositor_workspace_bootstrap(void);
 uint64_t compositor_workspace_add_tab(void);
 int32_t compositor_workspace_select_tab(uint64_t handle);
 uint64_t compositor_workspace_close_tab(uint64_t handle);
+int32_t compositor_workspace_move_tab(uint64_t handle, int32_t toIndex);
 int64_t compositor_workspace_tab_title(uint64_t handle, uint8_t *output, size_t capacity);
+void compositor_modifiers_changed(int32_t modifiers);
 }
 
 static int32_t cmd(uint64_t h, const char *json) {
@@ -468,10 +471,57 @@ void SessionWindow::addDocumentTab(uint64_t handle, const QString &title, const 
         m_documentTabBar->addTab(title);
         // Emits currentChanged(index) -> switchToDocumentTab(index), which does the actual UI refresh.
         m_documentTabBar->setCurrentIndex(index);
+        refreshTabOverflow();
     } else {
         // Constructor path: the header bar (and thus the tab bar) doesn't exist yet.
         switchToDocumentTab(index);
     }
+}
+
+/// When many tabs crowd the header, offer an overflow menu listing every project (ProjectTabStrip's "N more tabs").
+void SessionWindow::refreshTabOverflow() {
+    if (!m_tabOverflowButton || !m_documentTabBar) return;
+    const int count = m_documentTabBar->count();
+    // Keep the pill strip from shoving zoom controls off-screen: cap width and spill the rest into the menu.
+    const int maxStrip = qMax(180, width() - 420);
+    m_documentTabBar->setMaximumWidth(maxStrip);
+    // Show every tab first so size hints are honest, then drop oldest from the front until the rest fit.
+    for (int i = 0; i < count; ++i) m_documentTabBar->setTabVisible(i, true);
+    int shown = count;
+    auto span = [&](int first, int n) {
+        int width = 0;
+        for (int i = first; i < first + n; ++i) width += m_documentTabBar->tabRect(i).width();
+        return width;
+    };
+    while (shown > 1 && span(count - shown, shown) + 90 > maxStrip) --shown;
+    const int hidden = count - shown;
+    for (int i = 0; i < count; ++i) m_documentTabBar->setTabVisible(i, i >= hidden);
+    if (hidden <= 0) {
+        m_tabOverflowButton->hide();
+        m_tabOverflowButton->setMenu(nullptr);
+        return;
+    }
+    // Keep the selected tab visible: if it was among the hidden, bump it into the first visible slot.
+    const int current = m_documentTabBar->currentIndex();
+    if (current >= 0 && current < hidden) {
+        m_documentTabBar->setTabVisible(current, true);
+        if (hidden < count) m_documentTabBar->setTabVisible(hidden, false);
+    }
+    auto *menu = new QMenu(m_tabOverflowButton);
+    for (int i = 0; i < count; ++i) {
+        if (m_documentTabBar->isTabVisible(i)) continue;
+        QAction *action = menu->addAction(m_documentTabBar->tabText(i));
+        connect(action, &QAction::triggered, this, [this, i] {
+            if (m_documentTabBar) m_documentTabBar->setCurrentIndex(i);
+            switchToDocumentTab(i);
+            refreshTabOverflow();
+        });
+    }
+    const int menuCount = menu->actions().size();
+    m_tabOverflowButton->setMenu(menu);
+    m_tabOverflowButton->setText(menuCount == 1 ? tr("1 more tab") : tr("%1 more tabs").arg(menuCount));
+    m_tabOverflowButton->setToolTip(m_tabOverflowButton->text());
+    m_tabOverflowButton->setVisible(menuCount > 0);
 }
 
 void SessionWindow::switchToDocumentTab(int index) {
@@ -579,6 +629,7 @@ void SessionWindow::closeDocumentTab(int index) {
             const QSignalBlocker blocker(m_documentTabBar);
             m_documentTabBar->removeTab(index);
         }
+        refreshTabOverflow();
     } else {
         // Upstream minted a brand-new replacement tab (the closed one was the last document open).
         m_documents.push_back({currentHandle, workspaceTabTitle(currentHandle), QString(), 0.0, QPointF(0, 0)});
@@ -588,6 +639,7 @@ void SessionWindow::closeDocumentTab(int index) {
             m_documentTabBar->removeTab(index);
             m_documentTabBar->addTab(m_documents[target].title);
         }
+        refreshTabOverflow();
     }
 
     if (m_documentTabBar) m_documentTabBar->setCurrentIndex(target);
@@ -892,7 +944,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     btnLayout->setSpacing(6);
     auto *btnAddLayer = makeIconButton(0, "layer.add", tr("Add blank layer"));
     auto *btnAddGroup = makeIconButton(1, "layer.addGroup", tr("Add new group/folder"));
-    auto *btnAddMask = makeIconButton(2, "layer.addMask", tr("Add reveal layer mask"));
+    auto *btnAddMask = makeIconButton(2, "layer.addMask",
+        tr("Add layer mask (Option-click for a black mask / hide selection)"));
     auto *btnAdjustment = makeIconButton(3, "layer.addAdjustment", tr("Add adjustment layer"));
     auto *btnDelete = makeIconButton(4, "layer.delete", tr("Delete active layer or group"));
     auto *adjustmentMenu = new QMenu(btnAdjustment);
@@ -917,7 +970,10 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         if (cmd(m_sessionHandle, R"({"version":1,"action":"addGroup"})") == 0) { refreshImage(); refreshLayers(); }
     });
     connect(btnAddMask, &QToolButton::clicked, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"addRevealMask"})") == 0) { refreshImage(); refreshLayers(); }
+        // Photoshop: click reveals (white / reveal selection); Option-click hides (black / hide selection).
+        const bool hide = QApplication::keyboardModifiers().testFlag(Qt::AltModifier);
+        const char *action = hide ? R"({"version":1,"action":"addHideMask"})" : R"({"version":1,"action":"addRevealMask"})";
+        if (cmd(m_sessionHandle, action) == 0) { refreshImage(); refreshLayers(); }
     });
     connect(btnDelete, &QToolButton::clicked, this, [this] {
         deleteSelectedLayers();
@@ -1727,6 +1783,12 @@ void SessionWindow::pickBackgroundColor() {
 }
 
 void SessionWindow::keyPressEvent(QKeyEvent *event) {
+    // HeldModifiers (options bar Auto Select / aspect lock): every key press updates the chord bits.
+    compositor_modifiers_changed(chordBits(event->modifiers()));
+    if (event->key() == Qt::Key_Shift || event->key() == Qt::Key_Control || event->key() == Qt::Key_Alt
+        || event->key() == Qt::Key_Meta) {
+        updateOptionsBar();
+    }
     // Responder check: editable text controls handle their own keys
     QWidget *focus = QApplication::focusWidget();
     if (focus && (qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus) || qobject_cast<QTextEdit *>(focus))) {
@@ -1984,6 +2046,9 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
 }
 
 void SessionWindow::keyReleaseEvent(QKeyEvent *event) {
+    // A released Shift/Ctrl must flip Auto Select / aspect lock back without waiting for a mouse move.
+    compositor_modifiers_changed(chordBits(event->modifiers()));
+    updateOptionsBar();
     if (event->key() == Qt::Key_Space && m_spaceHandActive && !event->isAutoRepeat()) {
         m_spaceHandActive = false;
         setTool(m_preSpaceTool);
@@ -3589,6 +3654,13 @@ void SessionWindow::refreshImage() {
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
     syncCanvasChrome(state);
+    // Why a brush can't paint (paintRefusal), and mask-alone mode, as status feedback.
+    if (const QString brushError = state.value("brushError").toString(); !brushError.isEmpty())
+        statusBar()->showMessage(brushError, 4000);
+    else if (state.value("viewsMaskAlone").toBool(false))
+        statusBar()->showMessage(tr("Viewing mask alone — Option-click the mask thumbnail again to show the image"), 0);
+    else if (statusBar() && statusBar()->currentMessage().contains(QLatin1String("Viewing mask alone")))
+        statusBar()->clearMessage();
     // ContentView's toolbar: Fit, 100% and the zoom buttons need a document.
     for (const char *name : {"fitCanvas", "actualPixels", "zoomIn", "zoomOut"})
         if (auto *button = m_headerToolBar ? m_headerToolBar->findChild<QPushButton *>(QLatin1String(name)) : nullptr)
@@ -5629,11 +5701,44 @@ void SessionWindow::setupHeaderBar() {
     m_documentTabBar->setDrawBase(false);
     m_documentTabBar->setExpanding(false);
     m_documentTabBar->setUsesScrollButtons(false);
+    // Drag to reorder, as ProjectTabStrip does on the Mac (chrome only — ProjectWorkspace.moveTab).
+    m_documentTabBar->setMovable(true);
     // No tabs yet: the document created before this window's UI existed is registered as tab 0 once the whole
     // constructor finishes (see the addDocumentTab call after updateStatusTelemetry()).
     connect(m_documentTabBar, &QTabBar::currentChanged, this, &SessionWindow::switchToDocumentTab);
     connect(m_documentTabBar, &QTabBar::tabCloseRequested, this, &SessionWindow::closeDocumentTab);
+    connect(m_documentTabBar, &QTabBar::tabMoved, this, [this](int from, int to) {
+        if (from < 0 || to < 0 || from >= static_cast<int>(m_documents.size()) || to >= static_cast<int>(m_documents.size()))
+            return;
+        const DocumentTab moved = m_documents[static_cast<size_t>(from)];
+        m_documents.erase(m_documents.begin() + from);
+        m_documents.insert(m_documents.begin() + to, moved);
+        compositor_workspace_move_tab(moved.handle, to);
+        // Keep the active index on the same document after the reorder.
+        for (int i = 0; i < static_cast<int>(m_documents.size()); ++i) {
+            if (m_documents[static_cast<size_t>(i)].handle == m_sessionHandle) {
+                m_activeDocumentIndex = i;
+                break;
+            }
+        }
+    });
     m_headerToolBar->addWidget(m_documentTabBar);
+
+    // "N more tabs" when the strip would crowd the header — ProjectTabStrip's overflow pill on the Mac.
+    m_tabOverflowButton = new QToolButton(m_headerToolBar);
+    m_tabOverflowButton->setObjectName("header.tabOverflow");
+    m_tabOverflowButton->setPopupMode(QToolButton::InstantPopup);
+    m_tabOverflowButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_tabOverflowButton->setCursor(Qt::PointingHandCursor);
+    m_tabOverflowButton->setFixedHeight(28);
+    m_tabOverflowButton->setStyleSheet(
+        "QToolButton { background: rgba(255, 255, 255, 0.035); color: #dddddf; border: 1px solid rgba(255, 255, 255, 0.08); "
+        "border-radius: 14px; padding: 0px 11px; font-size: 12px; font-weight: 500; }"
+        "QToolButton::menu-indicator { image: none; width: 0; }");
+    m_tabOverflowButton->hide();
+    m_headerToolBar->addWidget(m_tabOverflowButton);
+    connect(m_documentTabBar, &QTabBar::currentChanged, this, [this](int) { refreshTabOverflow(); });
+    connect(m_documentTabBar, &QTabBar::tabBarDoubleClicked, this, [this](int) { refreshTabOverflow(); });
 
     auto *spacer = new QWidget(m_headerToolBar);
     spacer->setObjectName("header.dragArea");
