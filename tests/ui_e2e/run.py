@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 from PIL import Image
 from desktop import Desktop
 from tool_cases import TOOL_CASES, TOOLS
+from latency_cases import LATENCY_CASES
 from psd_cases import PSD_CASES
 from metrics import Metrics, metadata, write_report
 
@@ -457,6 +458,7 @@ CASES = {"inspect": inspect_only, "brush_burst": brush_burst, "brush_curve": bru
          "soft_brush": soft_brush, "soft_brush_large": lambda app: soft_brush(app, size=256),
          "smoothing": smoothing, "save_reopen": save_reopen, "brush_performance": brush_performance}
 CASES.update(TOOL_CASES)
+CASES.update(LATENCY_CASES)
 CASES.update(PSD_CASES)
 from tip_cases import TIP_CASES
 CASES.update(TIP_CASES)

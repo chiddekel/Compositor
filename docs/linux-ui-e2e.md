@@ -72,6 +72,7 @@ window focus (required on Xvfb; still applied on a real WM).
 | Spot Healing | Content-Aware, Create Texture, Proximity Match remove a dark spot and preserve distant pixels; undo |
 | Smear | Liquify/Smudge move color, Blur softens an edge; distant pixels preserved; undo |
 | Smear live feedback | All three modes at 256 px on a 1920 × 1080 image; working pixels and desktop preview change before release; five fresh edge crossings each appear within 100 ms |
+| Tool visible latency | Every rail tool family (plus Eraser and each Smear mode); first visible canvas/UI feedback within **150 ms** (`latency_*` cases; writes `visible-latency.json`) |
 | Gaussian / Motion Blur | Full-HD adjustment layers; editor opens within 1500 ms, blur direction, visible slider feedback before release, final value, Preview off/on, Apply, and Undo (`effect_gaussian_blur`, `effect_motion_blur`) |
 | Gradient | Linear/Radial preview, Cancel, Apply, alpha falloff and symmetry; undo |
 | Shape | Rectangle/Ellipse/Line geometry, filled and empty regions; undo |
@@ -166,10 +167,19 @@ Smudge's intentional dab spacing or Blur's already-saturated coverage as a stall
 The 100 ms limit includes stroke setup and screenshot overhead; it is a regression budget
 for this specified workload, not a guarantee for every document or hardware display.
 
+The `latency_*` cases apply the same X11-screenshot observer across every rail tool
+family (plus Eraser), with a unified **150 ms** first-visible-feedback budget and five
+samples each. Eyedropper observes session `foregroundColor` because the canvas pixels
+do not change.
+
 ```sh
 UI_E2E_ARTIFACTS=/tmp/compositor-smear-feedback \
   bash scripts/run-ui-e2e.sh --no-build \
   --case smear_feedback_liquify --case smear_feedback_blur --case smear_feedback_smudge
+
+UI_E2E_ARTIFACTS=/tmp/compositor-tool-latency \
+  bash scripts/run-ui-e2e.sh --no-build \
+  $(python3 -c 'from tests.ui_e2e.latency_cases import LATENCY_CASES; print(" ".join("--case "+n for n in LATENCY_CASES))')
 ```
 
 The `Linux UI E2E` workflow runs on pushes and pull requests targeting `GNU_Linux`
@@ -189,7 +199,8 @@ journey checks the available selection path; it does not establish model segment
 ## Extend
 
 Add a case in `tests/ui_e2e/run.py` (`CASES`), `tests/ui_e2e/tool_cases.py` (`TOOL_CASES`),
-or `tests/ui_e2e/psd_cases.py` (`PSD_CASES`). Perform mutations through
+`tests/ui_e2e/latency_cases.py` (`LATENCY_CASES`), or `tests/ui_e2e/psd_cases.py`
+(`PSD_CASES`). Perform mutations through
 `Desktop` mouse/keyboard input; use observations and exported pixels for assertions.
 Wait for the expected state rather than adding long sleeps. Keep a regression's
 original failing input and a meaningful pixel/state assertion; do not loosen an

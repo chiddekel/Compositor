@@ -20,6 +20,7 @@ application; assertions inspect actual document pixels and application state.
 | Clone Stamp | Source sampling, copied pixels, preserved source, undo |
 | Smear | Liquify, Blur, Smudge; pixels, live preview, undo, fresh-feedback latency |
 | Gradient | Linear and Radial; preview, cancel, apply, falloff, undo |
+| All tools — visible latency | Every rail tool (+ Eraser, each Smear mode); first feedback ≤ **150 ms** (`latency_*`) |
 | Shape | Rectangle, Ellipse, Line; geometry, fill, undo |
 | Type | Native text entry, commit, rendered glyphs, undo |
 | Eyedropper | Sample color and paint with that exact color |
@@ -82,6 +83,32 @@ patch changes. Every sample must meet the unchanged **100 ms** budget.
 Samples are retained in each `smear_feedback_*/visible-latency.json`. The measurement
 includes stroke setup and screenshot overhead, but excludes hardware display scanout.
 It establishes the budget for this workload and machine, not every operation or document.
+
+### All-tool visible latency (150 ms)
+
+`tests/ui_e2e/latency_cases.py` measures first feedback for every rail tool family
+(plus Eraser and each Smear mode). Budget: **150 ms** after one warm-up sample.
+Painting tools use an X11 screenshot patch; overlay/navigation tools use session
+state. Verified 2026-09-29: **18/18 PASS** in `/tmp/compositor-tool-latency-20260929-144613`.
+
+| Case | Median | Max (budgeted) |
+| --- | ---: | ---: |
+| brush | 73.5 ms | 95.6 ms |
+| eraser | 68.9 ms | 79.1 ms |
+| move | 94.4 ms | 126.1 ms |
+| clone | 53.4 ms | 59.8 ms |
+| heal | 65.5 ms | 68.9 ms |
+| smear liquify / blur / smudge | 10.8 / 24.3 / 13.5 ms | ≤30.7 ms |
+| marquee / lasso / crop | 36.4 / 49.0 / 32.1 ms | ≤60.5 ms |
+| gradient / shape | 45.2 / 42.6 ms | ≤68.0 ms |
+| eyedropper | 99.8 ms | 100.3 ms |
+| wand / type / hand / zoom | ≤71.6 ms max | under budget |
+
+```sh
+UI_E2E_ARTIFACTS=/tmp/compositor-tool-latency \
+  bash scripts/run-ui-e2e.sh --no-build \
+  $(cd tests/ui_e2e && python3 -c 'from latency_cases import LATENCY_CASES; print(" ".join("--case "+n for n in LATENCY_CASES))')
+```
 
 ### Sustained-input limitation
 
