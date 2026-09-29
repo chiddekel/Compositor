@@ -766,10 +766,95 @@ def bench_e2e_graphics_2k(app):
     )
 
 
+def demo_visible_layers_color_smudge(app):
+    """Manual visible demo: extra layers, several color picks, ~15–25 s inward spiral smudge.
+
+    Run with ``--visible`` (nested Xephyr). Excluded from the default headless CI suite.
+    """
+    demo_size = 1024
+    smudge_points = 480
+    smudge_interval = 0.032  # ~15.4 s pointer motion alone
+
+    app.create(demo_size, demo_size)
+    try:
+        app.click(app.widget(name="fitCanvas", kind="button"))
+    except Exception:
+        pass
+    app.wait(lambda s: s["state"]["width"] == demo_size and not s["state"]["busy"], "demo canvas")
+
+    t0 = time.perf_counter()
+    strokes = [
+        ("#dc2626", 220, 380, 780, 680),
+        ("#7c3aed", 180, 720, 860, 220),
+        ("#0d9488", 512, 160, 512, 880),
+    ]
+    app.tool("brush")
+    app.brush(size=176, hardness=55, opacity=100)
+    for index, (hex_color, x0, y0, x1, y1) in enumerate(strokes):
+        if index:
+            app.click(app.widget(name="addBlankLayer", kind="button"))
+            app.wait(lambda s, n=index + 1: len(s["state"]["layers"]) == n, f"layer {index + 1}")
+        app.palette(hex_color)
+        previous = app.inspect()["state"]["undoName"]
+        app.stroke(line((x0, y0), (x1, y1), 48), interval=0.006)
+        app.wait(lambda s: s["state"]["undoName"] != previous and not s["state"]["busy"], f"paint {index}")
+
+    assert len(app.inspect()["state"]["layers"]) == len(strokes), "expected one layer per color pass"
+    painted = app.image("demo-before-smudge")
+
+    app.tool("blur")
+    app.option("Smudge")
+    for label, value, key, expected in [("Size", 112, "brushDiameter", 112),
+                                       ("Hardness", 50, "brushHardness", 0.5),
+                                       ("Opacity", 100, "brushOpacity", 1.0)]:
+        app.field(value, label=label, ancestor="swiftUIOptionsContainer")
+        app.wait(lambda s, k=key, e=expected: abs(s["state"].get(k, -999) - e) < 0.001, "Smudge " + label)
+
+    cx, cy = demo_size / 2, demo_size / 2
+    previous = app.inspect()["state"]["undoName"]
+    smudge_t0 = time.perf_counter()
+    # Several rings shrinking toward the center (~15–25 s total), same motion model as other smear E2E cases.
+    rings = [360, 280, 200, 120, 48]
+    points_per_ring = smudge_points // len(rings)
+    for ring_index, radius in enumerate(rings):
+        ring = _circle(cx, cy, radius, count=max(60, points_per_ring))
+        app.gesture(ring, interval=smudge_interval)
+        app.wait(lambda s: not s["state"]["busy"], f"smudge ring {ring_index}", timeout=45)
+    app.wait(lambda s: s["state"]["undoName"] != previous and not s["state"]["busy"],
+             "inward ring smudge", timeout=90)
+    smudge_ms = (time.perf_counter() - smudge_t0) * 1000
+    total_ms = (time.perf_counter() - t0) * 1000
+
+    after = app.image("demo-after-smudge")
+    assert after.tobytes() != painted.tobytes(), "smudge left the canvas unchanged"
+    center = after.getpixel((round(cx), round(cy)))
+    assert center[3] > 0, "spiral should reach the canvas center"
+
+    report = {
+        "canvas": [demo_size, demo_size],
+        "layers": len(strokes),
+        "colors": [s[0] for s in strokes],
+        "smudge_rings": rings,
+        "smudge_points_per_ring": points_per_ring,
+        "smudge_interval_s": smudge_interval,
+        "smudge_wall_ms": smudge_ms,
+        "total_wall_ms": total_ms,
+        "ok": True,
+    }
+    _write_bench(app, "demo-visible-layers-color-smudge", report)
+    assert 12_000 <= smudge_ms <= 45_000, (
+        f"smudge phase {smudge_ms:.0f} ms outside ~15–25 s demo window (12–45 s tolerance)")
+
+
 BENCH_CASES = {
     "bench_brush_2k": bench_brush_2k,
     "bench_smear_2k": bench_smear_2k,
     "bench_e2e_graphics_2k": bench_e2e_graphics_2k,
     "stress_line_effects_smear_2k": stress_line_effects_smear_2k,
     "stress_multitool_2k": stress_multitool_2k,
+}
+
+# Long, watchable journeys — opt in with ``--case`` (not part of default CI).
+DEMO_CASES = {
+    "demo_visible_layers_color_smudge": demo_visible_layers_color_smudge,
 }

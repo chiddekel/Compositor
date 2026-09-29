@@ -462,8 +462,14 @@ CASES.update(LATENCY_CASES)
 CASES.update(PSD_CASES)
 from tip_cases import TIP_CASES
 CASES.update(TIP_CASES)
-from bench_cases import BENCH_CASES
+from bench_cases import BENCH_CASES, DEMO_CASES
 CASES.update(BENCH_CASES)
+CASES.update(DEMO_CASES)
+
+# Default suite excludes slow/manual demos (see DEMO_CASES in bench_cases.py).
+DEFAULT_CASE_EXCLUDE = frozenset(
+    ("inspect", "psb_large_import", "tip_color_range", *DEMO_CASES.keys())
+)
 
 
 def main():
@@ -486,7 +492,7 @@ def main():
     suite = ET.Element("testsuite", name="Compositor desktop UI")
     failures = 0
     report = {"environment": metadata(args.binary, args.backend), "cases": {}}
-    names = args.case or [key for key in CASES if key not in ("inspect", "psb_large_import", "tip_color_range")]
+    names = args.case or [key for key in CASES if key not in DEFAULT_CASE_EXCLUDE]
     if args.large_psb and "psb_large_import" not in names:
         names.append("psb_large_import")
     if args.check_input_regression:

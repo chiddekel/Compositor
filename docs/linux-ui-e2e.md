@@ -41,6 +41,13 @@ UI_E2E_ARTIFACTS=/tmp/compositor-ui-visible \
   bash scripts/run-ui-e2e.sh --no-build --visible --case tool_move
 ```
 
+Layers, foreground color changes, and a long inward ring smudge (watch the picker and canvas):
+
+```sh
+UI_E2E_ARTIFACTS=/tmp/compositor-ui-demo-smudge \
+  bash scripts/run-ui-e2e.sh --no-build --visible --case demo_visible_layers_color_smudge
+```
+
 Requires `Xephyr` on `PATH` (or `COMPOSITOR_XEPHYR`). Do not interact with the Xephyr window while tests run.
 
 ## What is tested
@@ -74,6 +81,7 @@ window focus (required on Xvfb; still applied on a real WM).
 | Smear live feedback | All three modes at 256 px on a 1920 × 1080 image; working pixels and desktop preview change before release; five fresh edge crossings each appear within **150 ms** |
 | Tool visible latency | Every rail tool family (plus Eraser and each Smear mode); first visible canvas/UI feedback within **150 ms** (`latency_*` cases; writes `visible-latency.json`) |
 | 2048² bench / stress | Visible Xephyr journeys on a 2048×2048 canvas: soft-brush circle bench, Liquify ≤150 ms feedback, line→effect→Blur ×12, multi-tool cycles (`bench_*_2k`, `stress_*_2k`) |
+| Visible layers + color + smudge demo | Three layers with hex color picks and brush strokes, then ~15–25 s Smudge along shrinking rings toward canvas center (`demo_visible_layers_color_smudge`; opt-in, not in default CI) |
 | Graphics-package E2E | Full Input→Load→Draw→Effects→Export→Save→Validate on 2048² @ **300 PPI** with warm-up, p50/p95/p99 (`bench_e2e_graphics_2k`) — UI satellite; primary engine bench is [`docs/benchmark-e2e-graphics-package.md`](benchmark-e2e-graphics-package.md) |
 | Gaussian / Motion Blur | Full-HD adjustment layers; editor opens within 1500 ms, blur direction, visible slider feedback before release, final value, Preview off/on, Apply, and Undo (`effect_gaussian_blur`, `effect_motion_blur`) |
 | Gradient | Linear/Radial preview, Cancel, Apply, alpha falloff and symmetry; undo |
