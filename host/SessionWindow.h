@@ -458,6 +458,8 @@ private:
     struct FloatingPanelWindow { QPointer<QDialog> window; QWidget *content = nullptr; QString title; };
     QHash<QString, FloatingPanelWindow> m_floatingPanels;   // panel name -> its window (updateFloatingPanels)
     bool m_updatingFloatingPanels = false, m_floatingPanelsDirty = false;
+    QTimer *m_floatingPanelDragTimer = nullptr;   // throttles updateFloatingPanels during DragGesture drags
+    bool m_floatingPanelDragBypass = false;
     QByteArray m_pumpedState;
     std::array<double, 6> m_pumpedViewport{};   // what the pump last saw of the viewport
     QTimer *m_strokeRefreshTimer = nullptr;

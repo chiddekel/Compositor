@@ -1164,7 +1164,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
             updateToolRail();
         } else if (m_floatingPanels.contains(panel)) {
             refreshImage();           // effect changes preview on the canvas
-            refreshLayers();
+            if (panel != QLatin1String("ColorPickerSheet")) refreshLayers();
             updateFloatingPanels();
         }
     });
@@ -1436,6 +1436,22 @@ void SessionWindow::handleSessionFileRequests() {
 /// panel's cancel (closeFloatingPanel); one the session no longer lists closes.
 void SessionWindow::updateFloatingPanels() {
     if (m_sessionHandle == 0) return;
+    // Hue/SB drags re-resolve the picker every step; coalesce rebuilds like a canvas drag coalesces panel chrome.
+    if (!m_floatingPanelDragBypass && swiftUIDragGestureActive(m_sessionHandle)) {
+        m_floatingPanelsDirty = true;
+        if (!m_floatingPanelDragTimer) {
+            m_floatingPanelDragTimer = new QTimer(this);
+            m_floatingPanelDragTimer->setSingleShot(true);
+            m_floatingPanelDragTimer->setInterval(16);
+            connect(m_floatingPanelDragTimer, &QTimer::timeout, this, [this] {
+                m_floatingPanelDragBypass = true;
+                updateFloatingPanels();
+                m_floatingPanelDragBypass = false;
+            });
+        }
+        if (!m_floatingPanelDragTimer->isActive()) m_floatingPanelDragTimer->start();
+        return;
+    }
     // Not re-entrant: closing or rebuilding a panel moves focus, and a field losing it notifies the listeners, which
     // land here again. A nested call only asks for another pass once this one is done.
     if (m_updatingFloatingPanels) { m_floatingPanelsDirty = true; return; }

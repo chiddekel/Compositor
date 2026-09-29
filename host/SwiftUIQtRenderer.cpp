@@ -380,6 +380,34 @@ void notifyListeners(uint64_t handle, const QString &panel) {
     for (const auto &cb : g_actionListeners) cb(handle, panel);
 }
 
+namespace {
+/// dragChanged can arrive every mouse move; coalesce shell refreshes so the picker doesn't rebuild at 500 Hz.
+struct DragActionRefreshCoalescer {
+    QTimer timer;
+    uint64_t handle = 0;
+    QString panel;
+    DragActionRefreshCoalescer() {
+        timer.setSingleShot(true);
+        timer.setInterval(16);
+        QObject::connect(&timer, &QTimer::timeout, [this] {
+            if (handle) notifyListeners(handle, panel);
+        });
+    }
+    void schedule(uint64_t h, const QString &p) {
+        handle = h;
+        panel = p;
+        if (!timer.isActive()) timer.start();
+    }
+    void flush(uint64_t h, const QString &p) {
+        timer.stop();
+        handle = h;
+        panel = p;
+        notifyListeners(handle, panel);
+        handle = 0;
+    }
+} g_dragActionRefresh;
+} // namespace
+
 void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, const QString &handlerKey,
               const QByteArray &payload = {}, bool deferRefresh = false) {
     const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8(), keyUtf8 = handlerKey.toUtf8();
@@ -387,6 +415,8 @@ void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, cons
                                                payload.isEmpty() ? nullptr : reinterpret_cast<const uint8_t *>(payload.constData()),
                                                static_cast<size_t>(payload.size()));
     if (deferRefresh) QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
+    else if (handlerKey == QLatin1String("dragChanged")) g_dragActionRefresh.schedule(handle, panel);
+    else if (handlerKey == QLatin1String("dragEnded")) g_dragActionRefresh.flush(handle, panel);
     else notifyListeners(handle, panel);
 }
 
@@ -1896,11 +1926,14 @@ private:
 class DragTracker : public QObject {
 public:
     static DragTracker &shared() { static DragTracker *tracker = new DragTracker; return *tracker; }
+    bool isActive() const { return m_tracking; }
+    uint64_t handle() const { return m_handle; }
     void start(uint64_t handle, QString panel, QString id, QPoint originGlobal, QPointF pressGlobal, double minimumDistance) {
         m_handle = handle; m_panel = std::move(panel); m_id = std::move(id);
         m_origin = originGlobal; m_pressGlobal = pressGlobal; m_start = pressGlobal - QPointF(originGlobal);
         m_minimumDistance = qMax(0.0, minimumDistance);
         m_started = m_minimumDistance == 0.0;
+        m_tracking = true;
         qApp->installEventFilter(this);
         if (m_started) send(QStringLiteral("dragChanged"), pressGlobal);
     }
@@ -1918,6 +1951,7 @@ protected:
         }
         if (event->type() == QEvent::MouseButtonRelease) {
             qApp->removeEventFilter(this);
+            m_tracking = false;
             if (!m_started) return false;
             send(QStringLiteral("dragEnded"), static_cast<QMouseEvent *>(event)->globalPosition());
             return true;
@@ -1936,6 +1970,7 @@ private:
     QPointF m_start, m_pressGlobal;
     double m_minimumDistance = 10.0;
     bool m_started = false;
+    bool m_tracking = false;
 };
 
 class DragPressFilter : public QObject {
@@ -3412,6 +3447,10 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 }
 
 } // namespace
+
+bool swiftUIDragGestureActive(uint64_t sessionHandle) {
+    return DragTracker::shared().isActive() && DragTracker::shared().handle() == sessionHandle;
+}
 
 static bool isBeingManipulated(QWidget *panel) {
     for (QSlider *slider : panel->findChildren<QSlider *>()) if (slider->isSliderDown()) return true;

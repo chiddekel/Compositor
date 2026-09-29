@@ -31,3 +31,6 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
 /// Registers a listener called immediately after any SwiftUI action handler finishes dispatching.
 void registerSwiftUIActionListener(std::function<void(uint64_t handle, const QString &panel)> listener);
 
+/// True while a SwiftUI DragGesture is tracking the pointer (hue/SB field, levels, …).
+bool swiftUIDragGestureActive(uint64_t sessionHandle);
+
