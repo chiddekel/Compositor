@@ -540,6 +540,8 @@ final class CanvasView: NSView {
         /// The text being typed, which the canvas draws as pixels.
         let textStyle: LayerTextStyle?
         let textTransform: LayerTransform?
+        /// The mask shown by itself, which may be one the composite doesn't draw (disabled, or a folder's).
+        let maskAlone: ObjectIdentifier?
     }
 
     @discardableResult
@@ -572,7 +574,8 @@ final class CanvasView: NSView {
             folderMasks: (document?.layers ?? []).filter { $0.isGroup && $0.mask != nil }.map {
                 DisplayState.FolderMask(id: $0.id, maskID: $0.mask?.enabledImage.map { ObjectIdentifier($0) },
                                         transform: session.displayedTransform(for: $0))
-            }, textStyle: session.textDraft?.style, textTransform: session.textDraft == nil ? nil : inlineTextEditor?.shownTransform)
+            }, textStyle: session.textDraft?.style, textTransform: session.textDraft == nil ? nil : inlineTextEditor?.shownTransform,
+            maskAlone: session.maskAloneLayer?.mask.map { ObjectIdentifier($0.asset.image) })
         var changed = false
         if displayedState != state {
             if let previous = displayedState, previous.documentID == state.documentID,
@@ -923,6 +926,25 @@ final class CanvasView: NSView {
         DownsampleCache.shared.image(image, drawnAt: drawnWidth * LayerRenderer.deviceScale(of: context) / CGFloat(max(1, image.width)))
     }
 
+    /// The mask as Photoshop shows it after an Option-click: grayscale across the whole canvas, white revealing and
+    /// black hiding, with what a stroke has painted into it so far. Past its pixels, a mask is its edge tone.
+    private func drawMaskAlone(_ mask: LayerMask, of layer: ImageLayer, document: CanvasDocument, scale: CGFloat,
+                               center: (CGPoint) -> CGPoint, in context: CGContext) {
+        let origin = center(.zero)
+        context.setFillColor(gray: LayerMask.background(of: mask.asset.thumbnail), alpha: 1)
+        context.fill(CGRect(x: origin.x, y: origin.y, width: document.size.width * scale, height: document.size.height * scale))
+        if let stroke = session.brushStroke ?? session.gradientEdit?.raster, stroke.isMask, stroke.layer.id == layer.id {
+            let placed = stroke.paintTransform
+            LayerRenderer.drawBrushPreview(mask.asset.image, transform: placed, center: center(placed.center), scale: scale,
+                opacity: 1, blendMode: .normal, mask: nil, patches: stroke.patches, pixelWidth: stroke.width,
+                pixelHeight: stroke.height, paintingMask: false, sourceRect: stroke.sourceRect, in: context)
+            return
+        }
+        // Where it shows while a transform is being dragged, as in the composite.
+        let placed = session.displayedMaskPlacement(for: layer) ?? session.displayedTransform(for: layer)
+        LayerRenderer.draw(mask.asset.image, transform: placed, center: center(placed.center), scale: scale, in: context)
+    }
+
     private func drawLayers(_ document: CanvasDocument, scale: CGFloat, center: @escaping (CGPoint) -> CGPoint, in context: CGContext, onSurface: Bool = false) {
         // Pixels being moved, or a gradient: the tiles drawn below follow the drag only once something reads them (see
         // PixelMove and GradientEdit).
@@ -943,6 +965,10 @@ final class CanvasView: NSView {
                     self?.session.brushError = message
                 }
             }
+        }
+        if let layer = session.maskAloneLayer, let mask = layer.mask {
+            drawMaskAlone(mask, of: layer, document: document, scale: scale, center: center, in: context)
+            return
         }
         handOffTextEffects(document)
         session.effectsPreviews.prepare(layers: document.layers)
@@ -1636,9 +1662,10 @@ final class CanvasView: NSView {
     }
 
     /// The layer a press that misses the transform handles drags, and whether it was picked from under
-    /// the pointer. Cmd picks the layer under the pointer; otherwise the active layer, unless auto-select
-    /// finds another layer there — including one stacked above a selected background that also contains
-    /// the press. A press on empty canvas still drags the active layer: it need not land inside the layer's bounds.
+    /// the pointer. Command flips Auto Select while it's held, as in Photoshop: with Auto Select off it picks
+    /// the layer under the pointer; with it on, it keeps the active layer. Otherwise the active layer, unless
+    /// auto-select finds another layer there — including one stacked above a selected background that also
+    /// contains the press. A press on empty canvas still drags the active layer: it need not land inside the layer's bounds.
     private func transformPressLayer(at pixel: CGPoint, flags: NSEvent.ModifierFlags) -> (id: UUID, picked: Bool)? {
         guard session.canEditLayers || session.transformEdit != nil, let document = session.document else { return nil }
         let underPointer = document.renderLayers.reversed().first { $0.asset != nil && $0.transform.contains(pixel) }?.id
@@ -1646,18 +1673,22 @@ final class CanvasView: NSView {
             layer.asset != nil && !layer.isGroup && document.effectiveVisibleIDs.contains(layer.id) ? layer : nil
         }
         let picks = session.transformEdit == nil
-        if flags.contains(.command), picks, let underPointer { return (underPointer, true) }
+        let autoSelect = session.transformAutoSelect != flags.contains(.command)
+        // Cmd-Shift-click adds the layer under the pointer to the selection, whichever way Auto Select is set.
+        if flags.contains(.command), flags.contains(.shift) || !session.transformAutoSelect, picks, let underPointer {
+            return (underPointer, true)
+        }
         // Several layers selected, or a folder: a press inside their box drags them all, and so does one outside it
         // unless auto-select finds a layer there.
         if session.transformsAsGroup, let id = session.activeLayerID {
             let box = session.transformEdit?.draft ?? session.groupTransformBox
-            if box?.contains(pixel) == true || !(picks && session.transformAutoSelect) || underPointer == nil { return (id, false) }
+            if box?.contains(pixel) == true || !(picks && autoSelect) || underPointer == nil { return (id, false) }
         }
         if let active, session.editedTransform(for: active).contains(pixel) {
             // `renderLayers` is bottom to top, so a later index is painted above. Prefer that layer
             // when auto-select is on; a full-canvas background contains every press, and keeping it
             // would hide a foreground layer stacked on top of it.
-            if picks, session.transformAutoSelect, let underPointer, underPointer != active.id,
+            if picks, autoSelect, let underPointer, underPointer != active.id,
                let top = document.renderLayers.lastIndex(where: { $0.id == underPointer }),
                let current = document.renderLayers.lastIndex(where: { $0.id == active.id }),
                top > current {
@@ -1665,7 +1696,7 @@ final class CanvasView: NSView {
             }
             return (active.id, false)
         }
-        if picks, session.transformAutoSelect || flags.contains(.command), let underPointer { return (underPointer, true) }
+        if picks, autoSelect, let underPointer { return (underPointer, true) }
         return active.map { ($0.id, false) }
     }
     /// Right-drag with a brush tool: left and right resize the brush from its size at the press, or with Shift
@@ -1937,17 +1968,23 @@ final class CanvasView: NSView {
                 session.previewCorners(corners)
                 needsDisplay = true
             } else {
+                let shift = event.modifierFlags.contains(.shift), option = event.modifierFlags.contains(.option)
+                let moving = session.transformEdit?.group.map { Set($0.originals.keys) }
+                    ?? Set([session.transformEdit?.layerID].compactMap { $0 })
+                let tolerance = TransformSnap.distance / max(session.viewport.pointsPerPixel, 0.0001)
+                // Moving and resizing snap to the canvas and the other layers — a resized layer's dragged edges — and
+                // rotating is left alone. Control drags freely.
+                var target = pixel
+                if case .resize = drag.mode, !event.modifierFlags.contains(.control) {
+                    target = session.snappedResizePoint(pixel, drag: drag, proportional: session.locksTransformRatio != shift,
+                                                        moving: moving, tolerance: tolerance) {
+                        drag.updated(to: $0, lockRatio: session.locksTransformRatio, shift: shift, option: option)
+                    }
+                }
                 // Dragging, scaling and rotating land on whole pixels and whole degrees; typed values stay exact.
-                var draft = drag.updated(to: pixel, lockRatio: session.locksTransformRatio,
-                                         shift: event.modifierFlags.contains(.shift),
-                                         option: event.modifierFlags.contains(.option)).rounded()
-                // Moving snaps to the canvas and the other layers; resizing and rotating are left alone, and
-                // Control drags freely.
+                var draft = drag.updated(to: target, lockRatio: session.locksTransformRatio, shift: shift, option: option).rounded()
                 if case .move = drag.mode, !event.modifierFlags.contains(.control) {
-                    let moving = session.transformEdit?.group.map { Set($0.originals.keys) }
-                        ?? Set([session.transformEdit?.layerID].compactMap { $0 })
-                    draft = session.snappedMove(draft, moving: moving,
-                                                tolerance: TransformSnap.distance / max(session.viewport.pointsPerPixel, 0.0001))
+                    draft = session.snappedMove(draft, moving: moving, tolerance: tolerance)
                 }
                 session.previewTransform(draft)
             }
@@ -2500,6 +2537,8 @@ final class CanvasView: NSView {
         guard var mode else { return }
         if case .move = mode { duplicatesTransformOnDrag = modifiers.contains(.option) }
         else { duplicatesTransformOnDrag = false }
+        // A value the Move bar's fields were still changing is applied first: this drag is an edit of its own.
+        if session.transformEdit?.fromFields == true { session.commitTransform() }
         if session.transformEdit == nil { session.beginTransform(persistent: false) }
         // Cmd-dragging a handle distorts, as in Photoshop; once distorted, handles keep distorting.
         if case .resize(let index) = mode, modifiers.contains(.command) || session.transformEdit?.corners != nil {
@@ -2724,6 +2763,24 @@ extension CanvasView {
                 width: stroke.layer.asset?.image.width ?? Int(base.size.width.rounded()),
                 height: stroke.layer.asset?.image.height ?? Int(base.size.height.rounded()),
                 limit: session.transformEdit != nil ? min(2048, steady) : steady)
+        }
+        // Option-click on a mask thumbnail: that mask by itself, gray across the canvas (its edge tone past its pixels),
+        // with a stroke or gradient being laid into it, as `drawMaskAlone` draws it on the Core Graphics canvas.
+        if let layer = session.maskAloneLayer, let mask = layer.mask {
+            let edge = LayerMask.background(of: mask.asset.thumbnail)
+            let back = CIImage(color: CIColor(red: edge, green: edge, blue: edge))
+                .cropped(to: CGRect(origin: .zero, size: document.size).applying(placement.mapping))
+            let placed: CIImage?
+            if let stroke = session.brushStroke ?? session.gradientEdit?.raster, stroke.isMask, stroke.layer.id == layer.id {
+                placed = paintedMask(stroke)
+            } else {
+                placed = placement.place(mask.asset.image, transform: session.displayedMaskPlacement(for: layer)
+                    ?? session.displayedTransform(for: layer), mask: true)
+            }
+            // A mask's values are in its red channel; shown, they're gray.
+            let gray = placed?.applyingFilter("CIColorMatrix", parameters: ["inputGVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+                                                                            "inputBVector": CIVector(x: 1, y: 0, z: 0, w: 0)])
+            return gray.map { $0.composited(over: back) } ?? back
         }
         // A layer being painted, or given a gradient: its grid as the stroke leaves it (painting its mask, its old pixels
         // through the mask as it's being left), through its own mask where its old pixels were — paint past them shows.
