@@ -32,11 +32,11 @@ final class WarpStroke {
     /// The working copy on the GPU, where the dabs run when there is one (see MetalWarp).
     let gpu: MetalWarp?
     private var cpuImage: CGImage?
-    /// The working copy as an image, fetched from the GPU the first time it's asked for after a dab.
+    /// The working copy as an image, remade lazily after a dab (not every dab — long circular strokes
+    /// were remaking a full-canvas CGImage hundreds of times per second and crashing on mouse-up).
     var image: CGImage? {
-        guard let gpu else { return cpuImage }
         if cpuImage == nil {
-            gpu.read(into: context)
+            if let gpu { gpu.read(into: context) }
             cpuImage = context.makeImage()
         }
         return cpuImage
@@ -118,12 +118,8 @@ final class WarpStroke {
             previous = next
         }
         last = point
-        if let gpu {
-            gpu.commit()
-            cpuImage = nil
-        } else {
-            cpuImage = context.makeImage()
-        }
+        if let gpu { gpu.commit() }
+        cpuImage = nil
     }
 
     private func pickUp(at center: CGPoint) {
@@ -249,7 +245,16 @@ extension EditorSession {
             stroke.clone = (result, CGRect(x: 0, y: 0, width: result.width, height: result.height), false)
             stroke.replacesWithClone = true
             stroke.editName = warp.mode.rawValue
-            for point in warp.points { try stroke.append(point) }
+            // Circling for a few seconds records thousands of dabs. Replaying each through a
+            // full-document clone on mouse-up OOMs / SIGSEGVs on Linux — thin to tip coverage.
+            let commitSpacing = max(1, warp.diameter * 0.35)
+            var commit: [CGPoint] = []
+            for point in warp.points {
+                if let last = commit.last, hypot(point.x - last.x, point.y - last.y) < commitSpacing { continue }
+                commit.append(point)
+            }
+            if let last = warp.points.last, commit.last.map({ $0 != last }) ?? true { commit.append(last) }
+            for point in commit { try stroke.append(point) }
             try stroke.flush()
             if !stroke.patches.isEmpty { try commitPaintSnapshot(stroke) }
         } catch { brushError = error.localizedDescription }

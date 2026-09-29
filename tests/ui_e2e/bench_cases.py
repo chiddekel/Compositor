@@ -846,6 +846,53 @@ def demo_visible_layers_color_smudge(app):
         f"smudge phase {smudge_ms:.0f} ms outside ~15–25 s demo window (12–45 s tolerance)")
 
 
+def repro_smudge_circle_mouseup(app):
+    """~3 s circular Smudge then mouse-up — must commit without crashing the host."""
+    size = 1024
+    app.create(size, size)
+    try:
+        app.click(app.widget(name="fitCanvas", kind="button"))
+    except Exception:
+        pass
+    app.palette("#dc2626")
+    app.tool("brush")
+    app.brush(size=128, hardness=80)
+    app.stroke([(180 + i * 4, 420 + int(90 * math.sin(i / 12))) for i in range(160)], interval=0.004)
+
+    app.tool("blur")
+    app.option("Smudge")
+    for label, value, key, expected in [("Size", 96, "brushDiameter", 96),
+                                       ("Hardness", 50, "brushHardness", 0.5),
+                                       ("Opacity", 100, "brushOpacity", 1.0)]:
+        app.field(value, label=label, ancestor="swiftUIOptionsContainer")
+        app.wait(lambda s, k=key, e=expected: abs(s["state"].get(k, -999) - e) < 0.001, "Smudge " + label)
+
+    cx = cy = size / 2
+    radius = 280
+    # ~3 s of motion: 120 samples × 25 ms.
+    count = 120
+    circle = [
+        (cx + radius * math.cos(i * 2 * math.pi / count),
+         cy + radius * math.sin(i * 2 * math.pi / count))
+        for i in range(count + 1)
+    ]
+    before = app.image("repro-smudge-before")
+    previous = app.inspect()["state"]["undoName"]
+    started = time.perf_counter()
+    app.gesture(circle, interval=0.025)
+    app.wait(lambda s: s["state"]["undoName"] != previous and not s["state"]["busy"],
+             "smudge mouse-up commit", timeout=60)
+    wall_ms = (time.perf_counter() - started) * 1000
+    after = app.image("repro-smudge-after")
+    assert after.tobytes() != before.tobytes(), "circle smudge left pixels unchanged"
+    assert app.inspect()["state"]["undoName"] == "Smudge"
+    _write_bench(app, "repro-smudge-circle-mouseup", {
+        "canvas": [size, size], "points": len(circle), "interval_s": 0.025,
+        "wall_ms": wall_ms, "ok": True,
+    })
+    assert 2_000 <= wall_ms <= 20_000, f"expected ~3 s stroke, got {wall_ms:.0f} ms"
+
+
 BENCH_CASES = {
     "bench_brush_2k": bench_brush_2k,
     "bench_smear_2k": bench_smear_2k,
@@ -857,4 +904,5 @@ BENCH_CASES = {
 # Long, watchable journeys — opt in with ``--case`` (not part of default CI).
 DEMO_CASES = {
     "demo_visible_layers_color_smudge": demo_visible_layers_color_smudge,
+    "repro_smudge_circle_mouseup": repro_smudge_circle_mouseup,
 }
