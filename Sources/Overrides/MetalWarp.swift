@@ -20,9 +20,10 @@ import CoreImage
     private var carried: [Float] = []
     private var carriedSide = 0
     /// Untouched layer at stroke start (RGBA bytes, width×height).
-    private var original: [UInt8]?
+    private var original: UnsafeMutablePointer<UInt8>?
     /// Per-pixel source offset (dx, dy) from the untouched layer, in pixels.
-    private var offsets: [Float]?
+    /// calloc so untouched pages stay lazy — Swift Array zero-fill of Full HD stalled first Liquify feedback.
+    private var offsets: UnsafeMutablePointer<Float>?
     private var scratch: [Float] = []
     private var scratchW = 0
     private var scratchH = 0
@@ -36,6 +37,11 @@ import CoreImage
         height = context.height
         bytesPerRow = context.bytesPerRow
         pixels = data.bindMemory(to: UInt8.self, capacity: bytesPerRow * height)
+    }
+
+    deinit {
+        original?.deallocate()
+        if let offsets { free(UnsafeMutableRawPointer(offsets)) }
     }
 
     var image: CIImage? {
@@ -98,14 +104,22 @@ import CoreImage
     func pickUp(at center: CGPoint, radius: Int) {
         let side = 2 * radius + 1
         carriedSide = side
-        carried = [Float](repeating: 0, count: side * side * 4)
+        let count = side * side * 4
+        if carried.count != count { carried = [Float](repeating: 0, count: count) }
         let cx = Int(center.x.rounded()), cy = Int(center.y.rounded())
         for gy in 0..<side {
             for gx in 0..<side {
-                let p = SIMD2(cx + gx - radius, cy + gy - radius)
-                let c = sample(Int(p.x), Int(p.y))
+                let px = cx + gx - radius, py = cy + gy - radius
                 let o = (gy * side + gx) * 4
-                carried[o] = c.x; carried[o + 1] = c.y; carried[o + 2] = c.z; carried[o + 3] = c.w
+                if px >= 0, py >= 0, px < width, py < height {
+                    let i = py * bytesPerRow + px * 4
+                    carried[o] = Float(pixels[i])
+                    carried[o + 1] = Float(pixels[i + 1])
+                    carried[o + 2] = Float(pixels[i + 2])
+                    carried[o + 3] = Float(pixels[i + 3])
+                } else {
+                    carried[o] = 0; carried[o + 1] = 0; carried[o + 2] = 0; carried[o + 3] = 0
+                }
             }
         }
     }
@@ -115,21 +129,28 @@ import CoreImage
         let cx = Int(center.x.rounded()), cy = Int(center.y.rounded())
         let invR = 1 / Float(diameter / 2)
         let keep = Float(strength)
+        let h = Float(hardness)
         let side = carriedSide
+        // Direct buffer math (same as WarpStroke.smudge) — sample/write + per-pixel sqrt was the live stall.
         for gy in 0..<side {
+            let oy = gy - radius
+            let py = cy + oy
+            guard py >= 0, py < height else { continue }
             for gx in 0..<side {
-                let ox = gx - radius, oy = gy - radius
-                let px = cx + ox, py = cy + oy
-                guard px >= 0, py >= 0, px < width, py < height else { continue }
-                let w = weight(sqrt(Float(ox * ox + oy * oy)) * invR, hardness: Float(hardness))
+                let ox = gx - radius
+                let px = cx + ox
+                guard px >= 0, px < width else { continue }
+                let w = weight(sqrt(Float(ox * ox + oy * oy)) * invR, hardness: h)
                 guard w > 0 else { continue }
-                let under = sample(px, py)
+                let i = py * bytesPerRow + px * 4
                 let o = (gy * side + gx) * 4
-                let held = SIMD4(carried[o], carried[o + 1], carried[o + 2], carried[o + 3])
-                // Tip warp_smudge: lay down carried color at strength, then carry what was just left.
-                let painted = under + (held - under) * w * keep
-                write(px, py, painted)
-                carried[o] = painted.x; carried[o + 1] = painted.y; carried[o + 2] = painted.z; carried[o + 3] = painted.w
+                let blend = w * keep
+                for k in 0..<4 {
+                    let under = Float(pixels[i + k])
+                    let painted = under + (carried[o + k] - under) * blend
+                    pixels[i + k] = UInt8(max(0, min(255, painted.rounded())))
+                    carried[o + k] = painted
+                }
             }
         }
     }
@@ -145,14 +166,17 @@ import CoreImage
         let cw = x1 - x0 + 1, ch = y1 - y0 + 1
 
         if original == nil {
-            var copy = [UInt8](repeating: 0, count: width * height * 4)
+            let rgbaCount = width * height * 4
+            let copy = UnsafeMutablePointer<UInt8>.allocate(capacity: rgbaCount)
             for y in 0..<height {
-                memcpy(&copy[y * width * 4], pixels + y * bytesPerRow, width * 4)
+                memcpy(copy + y * width * 4, pixels + y * bytesPerRow, width * 4)
             }
             original = copy
-            offsets = [Float](repeating: 0, count: width * height * 2)
+            // calloc: untouched offset pages stay lazy until a dab writes them (Full HD Array zero-fill was ~50–100 ms).
+            let offsetCount = width * height * 2
+            offsets = calloc(offsetCount, MemoryLayout<Float>.size)?.assumingMemoryBound(to: Float.self)
         }
-        guard var offsets, original != nil else { return }
+        guard let offsets, original != nil else { return }
 
         scratchW = cw; scratchH = ch
         scratchOrigin = SIMD2(Int32(x0), Int32(y0))
@@ -194,6 +218,5 @@ import CoreImage
                 write(px, py, sampleOriginal(Float(px) + moved.x, Float(py) + moved.y))
             }
         }
-        self.offsets = offsets
     }
 }

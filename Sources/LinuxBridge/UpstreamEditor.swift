@@ -359,7 +359,12 @@ final class UpstreamEditor {
         case "selectLayer":
             guard let id = command.layerID else { return fail(-1, "layerID required") }
             guard s.document?.layers.contains(where: { $0.id == id }) == true else { return fail(-5, "no such layer") }
-            s.selectLayer(id)
+            // enabled=true: additive panel selection (Ctrl-click), so Cut-with-multi can be exercised.
+            if command.enabled == true {
+                s.selectLayers(s.selectedLayerIDs.union([id]), primary: id)
+            } else {
+                s.selectLayer(id)
+            }
         case "deleteLayer":
             guard s.activeLayerID != nil else { return fail(-5, "no layer") }
             s.deleteActiveLayer()
@@ -630,11 +635,15 @@ final class UpstreamEditor {
                 s.setPaletteColor(PaletteColor(red: p["red"] ?? 0, green: p["green"] ?? 0, blue: p["blue"] ?? 0), background: background)
             }
             await s.fillSelection(with: background ? .background : .foreground)
-        case "clearSelection": await s.clearSelectedPixels()
+        case "clearSelection":
+            // Cut/Clear target the active layer. Tip canEditPixels == canPaint, which refuses when the
+            // Layers panel has several selected — collapse to the active layer for the edit, then restore.
+            await Self.withSingleLayerSelection(s) { await s.clearSelectedPixels() }
         case "invert": await s.invertPixels()
         case "copy": s.copySelection()
         case "copyMerged": s.copyMergedSelection()
-        case "cut": await s.cutSelection()
+        case "cut":
+            await Self.withSingleLayerSelection(s) { await s.cutSelection() }
         case "paste": s.paste()
         case "duplicateLayer": s.duplicateActiveLayer()
         case "layerViaCopy": s.layerViaCopy()
@@ -1197,12 +1206,14 @@ final class UpstreamEditor {
                 ?? s.hueSaturation?.previewImage(for: layer.id)
             if let preview, let asset = layer.asset {
                 images[layer.id] = ImportedImage(image: preview, thumbnail: asset.thumbnail, name: asset.name)
-            } else if let warp = s.warpStroke, warp.layer.id == layer.id, let image = warp.image {
+            } else if let warp = s.warpStroke, warp.layer.id == layer.id {
                 // CanvasView draws the working warp in document coordinates. Show the same pixels here;
                 // otherwise the cached Qt canvas stays frozen until finishWarp commits the layer.
+                // Crop from the working buffer: warping then `makeImage()` of the whole canvas every
+                // mid-stroke frame was the liquify/smear live-feedback regression (often >150 ms).
                 let canvas = CGRect(origin: .zero, size: document.size)
                 let crop = strokeRegion.map { $0.integral.insetBy(dx: -2, dy: -2).intersection(canvas) } ?? canvas
-                if !crop.isNull, !crop.isEmpty, let cropped = crop == canvas ? image : image.cropping(to: crop) {
+                if !crop.isNull, !crop.isEmpty, let cropped = warp.snapshot(in: crop) {
                     images[layer.id] = ImportedImage(image: cropped, thumbnail: cropped, name: layer.name)
                     shown = LayerTransform(origin: crop.origin, size: crop.size)
                     // A linked mask still covers the original layer placement, not the preview's cropped rect.
@@ -1400,7 +1411,7 @@ final class UpstreamEditor {
         return try rgbaBytes(of: image)
     }
 
-    nonisolated private static func rgbaBytes(of image: CGImage) throws -> (bytes: [UInt8], width: Int, height: Int) {
+    nonisolated static func rgbaBytes(of image: CGImage) throws -> (bytes: [UInt8], width: Int, height: Int) {
         let context = try BrushRaster.context(width: image.width, height: image.height, mask: false)
         BrushRaster.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height), mask: false, context: context)
         guard let data = context.data else { throw ExportError.render }
@@ -1482,5 +1493,19 @@ final class UpstreamEditor {
         done.wait()
         guard let raster = outcome else { throw ExportError.render }
         return try Self.rgbaBytes(of: try raster.get().image)
+    }
+
+    /// Tip `canPaint` / `canEditPixels` refuse Cut and Clear when the Layers panel has several selected.
+    /// Photoshop still clears the active layer; collapse to it for the edit, then put the multi-selection back.
+    private static func withSingleLayerSelection(_ s: EditorSession, _ body: () async -> Void) async {
+        let selected = s.selectedLayerIDs
+        let primary = s.activeLayerID
+        if selected.count > 1, let primary {
+            s.selectLayers([primary], primary: primary)
+        }
+        await body()
+        if selected.count > 1, let primary {
+            s.selectLayers(selected, primary: primary)
+        }
     }
 }

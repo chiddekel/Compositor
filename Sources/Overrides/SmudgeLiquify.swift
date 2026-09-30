@@ -34,11 +34,15 @@ final class WarpStroke {
     private var cpuImage: CGImage?
     /// The working copy as an image, fetched from the GPU the first time it's asked for after a dab.
     var image: CGImage? {
-        guard let gpu else { return cpuImage }
-        if cpuImage == nil {
-            gpu.read(into: context)
-            cpuImage = context.makeImage()
+        if let gpu {
+            if cpuImage == nil {
+                gpu.read(into: context)
+                cpuImage = context.makeImage()
+            }
+            return cpuImage
         }
+        // CPU smudge path: rebuild only on commit / full snapshot, not after every dab chunk.
+        if cpuImage == nil { cpuImage = context.makeImage() }
         return cpuImage
     }
     private var last: CGPoint?
@@ -51,6 +55,9 @@ final class WarpStroke {
     /// scalar path for larger tips, including large brushes on tiny canvases.
     /// Built in `init` (not lazily) so the first measured dab does not pay the 32k-entry fill.
     private let radialWeights: [Float]?
+    /// When a long jump needs more dabs than one turn's budget, the remaining target waits here
+    /// so the shell can paint mid-stroke (see `continuePending` / `flushPending`).
+    private var pendingTarget: CGPoint?
 
     init(layer: ImageLayer, image: CGImage, transform: LayerTransform, canvas: CGSize, mode: BlurToolMode, settings: BrushSettings,
          useGPU: Bool = true) throws {
@@ -65,8 +72,12 @@ final class WarpStroke {
         guard let data = context.data else { throw ExportError.render }
         // Top-left rows: a document point's row is its y.
         pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
-        gpu = useGPU ? MetalWarp(pixels: context) : nil
-        cpuImage = context.makeImage()
+        // Smudge uses the CPU dab path below (cached radialWeights). MetalWarp is for Liquify's
+        // sharp offset warp; its smudge body recomputed falloff every pixel and stalled live feedback.
+        gpu = useGPU && mode != .smudge ? MetalWarp(pixels: context) : nil
+        // Defer full-canvas makeImage: building it on press delayed Liquify first-feedback past 150 ms.
+        // Live preview uses snapshot(in:); commit still goes through image when needed.
+        cpuImage = nil
         let r = Int((diameter / 2).rounded(.up))
         if r <= 256 {
             let invR = 1 / Float(diameter / 2)
@@ -94,9 +105,34 @@ final class WarpStroke {
     }
 
     /// Continues the stroke to `point`, dabbing along the way, then refreshes `image`.
+    /// Long jumps are chunked (`dabBudget`) so the Qt shell can dirty-blit before the rest runs.
+    var hasPendingDabs: Bool { pendingTarget != nil }
+
     func append(_ point: CGPoint) {
+        appendToward(point, maxDabs: dabBudget)
+    }
+
+    /// Runs another budgeted slice toward `pendingTarget`. Returns whether more work remains.
+    @discardableResult
+    func continuePending() -> Bool {
+        guard let target = pendingTarget else { return false }
+        appendToward(target, maxDabs: dabBudget)
+        return pendingTarget != nil
+    }
+
+    /// Drains every deferred dab before commit / cancel so the finished stroke matches a sync append.
+    func flushPending() {
+        while pendingTarget != nil { appendToward(pendingTarget!, maxDabs: 10_000) }
+    }
+
+    /// Smudge spacing is ~5× denser than Liquify; keep CPU time per turn inside the 150 ms feedback budget.
+    /// Four dabs (~5 px at a 256 px tip) is enough for the live-feedback edge sample to change.
+    private var dabBudget: Int { mode == .smudge ? 4 : 48 }
+
+    private func appendToward(_ point: CGPoint, maxDabs: Int) {
         guard let from = last else {
             last = point
+            pendingTarget = nil
             if mode == .smudge {
                 if let gpu { gpu.pickUp(at: point, radius: radius); gpu.commit() } else { pickUp(at: point) }
             }
@@ -107,9 +143,10 @@ final class WarpStroke {
         // left a faint copy of what it dragged, echoes along the stroke. A pixel apart (a little more for a huge brush)
         // the steps run together into one smear, as Photoshop's does.
         let spacing = max(1, diameter * (mode == .smudge ? 0.005 : 0.025))
-        guard distance >= spacing else { return }
+        guard distance >= spacing else { pendingTarget = nil; return }
         let steps = Int((distance / spacing).rounded(.up))
         var previous = from
+        var done = 0
         for step in 1...steps {
             let t = CGFloat(step) / CGFloat(steps)
             let next = CGPoint(x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t)
@@ -119,14 +156,58 @@ final class WarpStroke {
             } else if mode == .smudge { smudge(at: next) } else { push(from: previous, to: next) }
             points.append(next)
             previous = next
+            done += 1
+            if done >= maxDabs && step < steps {
+                last = next
+                pendingTarget = point
+                if let gpu { gpu.commit() }
+                cpuImage = nil
+                return
+            }
         }
         last = point
-        if let gpu {
-            gpu.commit()
-            cpuImage = nil
-        } else {
-            cpuImage = context.makeImage()
+        pendingTarget = nil
+        if let gpu { gpu.commit() }
+        cpuImage = nil
+    }
+
+    /// Document-pixel crop of the working buffer without building a full-canvas CGImage.
+    /// Linux live preview calls this every frame for the dirty tip; full `image` stays for commit.
+    func snapshot(in region: CGRect) -> CGImage? {
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let crop = region.integral.intersection(bounds)
+        guard !crop.isNull, crop.width >= 1, crop.height >= 1 else { return nil }
+        if crop == bounds { return image }
+        // MetalWarp mutates the same context buffer; commit is a no-op, then copy only the tip.
+        if let gpu { gpu.commit() }
+        let w = Int(crop.width), h = Int(crop.height)
+        let srcX = Int(crop.minX), srcY = Int(crop.minY)
+        guard let out = try? BrushRaster.context(width: w, height: h, mask: false),
+              let dest = out.data else { return nil }
+        let srcRow = context.bytesPerRow, dstRow = out.bytesPerRow
+        for row in 0..<h {
+            memcpy(dest + row * dstRow, pixels + (srcY + row) * srcRow + srcX * 4, w * 4)
         }
+        return out.makeImage()
+    }
+
+    /// Same tip crop as `snapshot(in:)`, but raw premultiplied RGBA8 (no CGImage) for the shell's dirty blit.
+    func copyPremultiplied(in region: CGRect) -> (bytes: [UInt8], rect: CGRect)? {
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let crop = region.integral.intersection(bounds)
+        guard !crop.isNull, crop.width >= 1, crop.height >= 1 else { return nil }
+        if let gpu { gpu.commit() }
+        let w = Int(crop.width), h = Int(crop.height)
+        let srcX = Int(crop.minX), srcY = Int(crop.minY)
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        let srcRow = context.bytesPerRow
+        bytes.withUnsafeMutableBytes { raw in
+            guard let dest = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+            for row in 0..<h {
+                memcpy(dest + row * w * 4, pixels + (srcY + row) * srcRow + srcX * 4, w * 4)
+            }
+        }
+        return (bytes, crop)
     }
 
     private func pickUp(at center: CGPoint) {
@@ -239,6 +320,8 @@ extension EditorSession {
     /// Paints the finished Smudge or Liquify result into the layer's pixels along the stroke, as one undo step.
     func finishWarp() {
         guard let warp = warpStroke else { return }
+        // Drain chunked dabs so commit matches a fully synchronous stroke.
+        warp.flushPending()
         warpStroke = nil
         brushRevision += 1
         guard !warp.points.isEmpty, let result = warp.image,
@@ -266,5 +349,16 @@ extension EditorSession {
             try stroke.flush()
             if !stroke.patches.isEmpty { try commitPaintSnapshot(stroke) }
         } catch { brushError = error.localizedDescription }
+    }
+}
+
+extension EditorSession {
+    /// Advances deferred WarpStroke dabs after a dirty frame. Returns whether more remain.
+    @discardableResult
+    func continueWarpPending() -> Bool {
+        guard let warp = warpStroke, warp.hasPendingDabs else { return false }
+        let more = warp.continuePending()
+        brushRevision += 1
+        return more
     }
 }

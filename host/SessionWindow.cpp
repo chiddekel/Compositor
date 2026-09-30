@@ -139,6 +139,7 @@ void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 void compositor_set_wait_pump(void (*pump)(void *context), void *context);
 void compositor_flush_preferences(void);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
+int32_t compositor_session_warp_continue(uint64_t handle);
 int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
@@ -3511,7 +3512,13 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     if (kind == 2 || kind == 0) {
         syncToolFromSession();    // a double-click on live text switches to the Type tool, as on the Mac
         syncTextEditor();         // the shell's inline editor follows the session's text draft
-        refreshLayers(); updateOptionsBar();   // refreshLayers() brings the Layers panel along
+        // Smear/Liquify finishWarp already ran inside canvas_mouse. Defer panel rebuild so release
+        // does not stack a layers-dock rebuild on top of the commit (felt like a stuck UI).
+        if (m_tool == Tool::Smear && kind == 2) {
+            QTimer::singleShot(0, this, [this] { refreshLayers(); updateOptionsBar(); });
+        } else {
+            refreshLayers(); updateOptionsBar();   // refreshLayers() brings the Layers panel along
+        }
     }
     if (m_canvasWidget) m_canvasWidget->update();
 }
@@ -3975,6 +3982,9 @@ void SessionWindow::scheduleStrokeRefresh() {
                     m_canvasWidget->update(QRectF(target.left() + rect[0] * sx, target.top() + rect[1] * sy,
                                                   rect[2] * sx, rect[3] * sy).toAlignedRect().adjusted(-2, -2, 2, 2));
                 }
+                // Chunked smudge/liquify: paint this slice, then run the next dab budget on a later turn
+                // so a dense mouse jump cannot stall the UI past the 150 ms live-feedback budget.
+                if (compositor_session_warp_continue(m_sessionHandle) > 0) scheduleStrokeRefresh();
                 return;
             }
             QImage rendered = renderDisplayImage(m_displayScale);
@@ -3983,13 +3993,18 @@ void SessionWindow::scheduleStrokeRefresh() {
             rendered.setDotsPerMeterY(m_image.dotsPerMeterY());
             m_image = rendered;
             if (m_canvasWidget) m_canvasWidget->update();
+            if (compositor_session_warp_continue(m_sessionHandle) > 0) scheduleStrokeRefresh();
         });
     }
     if (m_strokeRefreshTimer->isActive()) return;
     // Frame pacing: the next frame is due 16 ms after the previous one *started*, not 16 ms after it finished —
     // otherwise the render time adds to the interval (a 20 ms render at a fixed 16 ms delay is ~27 fps).
+    // First smear/liquify feedback: do not wait out the remainder of a prior frame — the 150 ms budget
+    // already includes press setup (full-canvas working buffer) and the first dab chunk.
+    const bool warpLive = m_tool == Tool::Smear && m_sessionHandle != 0;
     const qint64 sinceLast = m_strokeFrameClock.isValid() ? m_strokeFrameClock.elapsed() : 16;
-    m_strokeRefreshTimer->start(static_cast<int>(std::max<qint64>(0, 16 - sinceLast)));
+    const int delay = warpLive ? 0 : static_cast<int>(std::max<qint64>(0, 16 - sinceLast));
+    m_strokeRefreshTimer->start(delay);
 }
 
 void SessionWindow::selectRegion(bool rectangle) {

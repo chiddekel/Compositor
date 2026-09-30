@@ -471,6 +471,37 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
                     "Paste undo name missing after Copy Merged");
         }
 
+        // Multi-layer panel selection must not block Cut of the active layer's pixels.
+        {
+            require(window.sendCommand({{"action", "addLayer"}}), "addLayer for multi-cut failed");
+            const QJsonArray layers = window.sessionState().value("layers").toArray();
+            require(layers.size() >= 2, "need two layers for multi-cut");
+            const QString bottom = layers.at(0).toObject().value("id").toString();
+            const QString top = layers.at(1).toObject().value("id").toString();
+            require(window.sendCommand({{"action", "selectLayer"}, {"layerID", bottom}}), "select bottom failed");
+            require(window.sendCommand({{"action", "selectLayer"}, {"layerID", top}, {"enabled", true}}),
+                    "additive select top failed");
+            // Make the painted bottom layer active again while keeping both selected.
+            require(window.sendCommand({{"action", "selectLayer"}, {"layerID", bottom}, {"enabled", true}}),
+                    "re-primary painted layer failed");
+            require(window.sendCommand({{"action", "selectRectangle"}, {"x", 4}, {"y", 4}, {"width", 40}, {"height", 40}}),
+                    "selection for multi-cut failed");
+            QAction *cut = nullptr;
+            for (QAction *a : window.findChildren<QAction *>()) {
+                if (a->text().remove('&') == QLatin1String("Cut")) { cut = a; break; }
+            }
+            require(cut, "Cut menu action missing");
+            cut->trigger();
+            QApplication::processEvents();
+            require(window.sessionState().value("undoName").toString() == QLatin1String("Clear"),
+                    "Cut with multi-layer selection did not clear");
+            // Leave a clean single-layer selection so later Type→Gradient transitions are not blocked.
+            require(window.sendCommand({{"action", "deselect"}}), "deselect after multi-cut failed");
+            require(window.sendCommand({{"action", "selectLayer"}, {"layerID", top}}), "restore single layer failed");
+            window.setTool(SessionWindow::Tool::Move);
+            QApplication::processEvents();
+        }
+
         // Tool-transition contract (upstream EditorSession.selectTool): rail mirrors session;
         // textDraft is committed by session state, not editor visibility; crop seeds from selection.
         {

@@ -295,6 +295,17 @@ nonisolated public func compositorSessionRender(_ handle: UInt64, _ output: Unsa
     }
 }
 
+/// Advances deferred WarpStroke dabs after a dirty frame. 1 = more remain, 0 = idle/done, negative = error.
+@_cdecl("compositor_session_warp_continue")
+nonisolated public func compositorSessionWarpContinue(_ handle: UInt64) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        guard entry.editor.session.warpStroke?.hasPendingDabs == true else { return 0 }
+        let more = entry.editor.session.continueWarpPending()
+        entry.noteStrokeProgress()
+        return more ? 1 : 0
+    })
+}
+
 @_cdecl("compositor_session_render_dirty")
 nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: UnsafeMutablePointer<Int32>?,
                                                      _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
@@ -303,6 +314,28 @@ nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: U
         guard entry.editor.session.brushStroke != nil || entry.editor.session.warpStroke != nil
                 || entry.editor.session.pixelMove != nil else { return -3 }
         guard let dirty = entry.strokeDirty else { return 0 }
+        // Liquify/Smudge live feedback: when only one pixel layer is visible, the warp working
+        // buffer *is* the composite. Blit the dirty tip straight out and skip ImageExporter —
+        // that path was the bulk of the >150 ms first-feedback regression on Full HD + 256 px tips.
+        if let warp = entry.editor.session.warpStroke,
+           let document = entry.editor.session.document {
+            let visiblePixels = document.layers.filter {
+                document.effectiveVisibleIDs.contains($0.id) && !$0.isGroup && $0.asset != nil
+            }
+            if visiblePixels.count == 1, visiblePixels[0].id == warp.layer.id,
+               visiblePixels[0].opacity >= 0.999, visiblePixels[0].blendMode == .normal,
+               visiblePixels[0].mask == nil,
+               visiblePixels[0].effects?.visible.isEmpty != false,
+               let patch = warp.copyPremultiplied(in: dirty) {
+                guard capacity >= patch.bytes.count else { return -1 }
+                patch.bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: $0.count) }
+                rect[0] = Int32(patch.rect.minX); rect[1] = Int32(patch.rect.minY)
+                rect[2] = Int32(patch.rect.width); rect[3] = Int32(patch.rect.height)
+                rect[4] = Int32(patch.rect.width); rect[5] = Int32(patch.rect.height)
+                entry.strokeDirty = nil
+                return Int64(patch.bytes.count)
+            }
+        }
         // At full resolution: shrinking the region through the high-quality downsampler every frame costs more than
         // the stroke; the shell scales the patch into its display image (the committed stroke re-renders properly).
         guard let made = try? entry.editor.renderRegionRGBA(dirty, scale: 1) else { return -5 }
