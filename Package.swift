@@ -122,6 +122,19 @@ let package = Package(
             publicHeadersPath: ".",
             cSettings: [
                 .define("COMPOSITOR_PORTABLE"),
+                // Tip 1.4.4 Scanlines uses Grand Central Dispatch (`dispatch_apply` + blocks). The Freedesktop
+                // Swift extension ships libdispatch headers and BlocksRuntime; wire them so the unmodified
+                // DitherPixels.c builds on Linux the same way it does on macOS.
+                .unsafeFlags([
+                    "-fblocks",
+                    "-I/usr/lib/sdk/swift6/lib/swift",
+                    "-I/usr/lib/sdk/swift6/lib/swift/Block",
+                ]),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/lib/sdk/swift6/lib/swift/linux"]),
+                .linkedLibrary("dispatch"),
+                .linkedLibrary("BlocksRuntime"),
             ]
         ),
         // Apple CoreGraphics API surface for Linux (CGContext/CGImage/CGPath/... over Skia, pure-Swift failsafe).

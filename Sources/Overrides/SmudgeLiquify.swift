@@ -32,11 +32,11 @@ final class WarpStroke {
     /// The working copy on the GPU, where the dabs run when there is one (see MetalWarp).
     let gpu: MetalWarp?
     private var cpuImage: CGImage?
-    /// The working copy as an image, remade lazily after a dab (not every dab — long circular strokes
-    /// were remaking a full-canvas CGImage hundreds of times per second and crashing on mouse-up).
+    /// The working copy as an image, fetched from the GPU the first time it's asked for after a dab.
     var image: CGImage? {
+        guard let gpu else { return cpuImage }
         if cpuImage == nil {
-            if let gpu { gpu.read(into: context) }
+            gpu.read(into: context)
             cpuImage = context.makeImage()
         }
         return cpuImage
@@ -103,7 +103,10 @@ final class WarpStroke {
             return
         }
         let distance = hypot(point.x - from.x, point.y - from.y)
-        let spacing = max(1, diameter * (mode == .smudge ? 0.08 : 0.025))
+        // Smudge drags the pixels one dab's spacing at a time and mixes them with what's there: spaced widely, each step
+        // left a faint copy of what it dragged, echoes along the stroke. A pixel apart (a little more for a huge brush)
+        // the steps run together into one smear, as Photoshop's does.
+        let spacing = max(1, diameter * (mode == .smudge ? 0.005 : 0.025))
         guard distance >= spacing else { return }
         let steps = Int((distance / spacing).rounded(.up))
         var previous = from
@@ -118,8 +121,12 @@ final class WarpStroke {
             previous = next
         }
         last = point
-        if let gpu { gpu.commit() }
-        cpuImage = nil
+        if let gpu {
+            gpu.commit()
+            cpuImage = nil
+        } else {
+            cpuImage = context.makeImage()
+        }
     }
 
     private func pickUp(at center: CGPoint) {
@@ -154,10 +161,13 @@ final class WarpStroke {
                 let p = (y * width + x) * 4, c = ((dy + r) * side + dx + r) * 4
                 for k in 0..<4 {
                     let under = Float(pixels[p + k])
-                    let painted = under + (carried[c + k] - under) * w
+                    // What was under the brush at the last dab, laid down here at the smudge's strength, as Photoshop
+                    // does: all of it drags the pixels along; less mixes them with what's here, softening the trail.
+                    let painted = under + (carried[c + k] - under) * w * keep
                     pixels[p + k] = UInt8(max(0, min(255, painted.rounded())))
-                    // The brush picks up some of what it just left, more the weaker the smudge.
-                    carried[c + k] = painted + (carried[c + k] - painted) * keep
+                    // The brush then carries what it just left, and nothing older: holding on to what it picked up
+                    // at the start stamped it again at every dab, a trail of ghost copies.
+                    carried[c + k] = painted
                 }
             }
         }
@@ -217,9 +227,8 @@ extension EditorSession {
         }
         finishOpacityEdit()
         do {
-            // Linux MetalWarp shares the CGContext buffer; GPU pickUp/smudge here still segfaults under the Qt host in some builds.
             let stroke = try WarpStroke(layer: layer, image: image, transform: displayedTransform(for: layer),
-                                        canvas: document.size, mode: blurMode, settings: brushSettings, useGPU: false)
+                                        canvas: document.size, mode: blurMode, settings: brushSettings)
             stroke.append(point)
             warpStroke = stroke
             lastBrushPoint = (point, layer.id, false)
@@ -233,18 +242,8 @@ extension EditorSession {
         warpStroke = nil
         brushRevision += 1
         guard !warp.points.isEmpty, let result = warp.image,
-              let index = document?.layers.firstIndex(where: { $0.id == warp.layer.id }),
-              let current = document?.layers[index],
+              let current = document?.layers.first(where: { $0.id == warp.layer.id }),
               current.asset?.image === warp.layer.asset?.image, current.transform == warp.layer.transform else { return }
-
-        // Fast path: the working copy is already the finished document pixels. Crop to the stroke
-        // envelope ∪ layer bounds and replace the layer once — tip-replay of a long Liquify was
-        // stalling mouse-up well past 200 ms.
-        if current.mask == nil, current.transform.rotation == 0, !current.transform.flipX, !current.transform.flipY,
-           commitWarpImage(result, warp: warp, layer: current, index: index) {
-            return
-        }
-
         do {
             var settings = brushSettings
             // A hard tip a little wider than the brush covers everything the stroke moved.
@@ -255,47 +254,17 @@ extension EditorSession {
             stroke.clone = (result, CGRect(x: 0, y: 0, width: result.width, height: result.height), false)
             stroke.replacesWithClone = true
             stroke.editName = warp.mode.rawValue
-            let commitSpacing = max(1, warp.diameter * 0.35)
-            var commit: [CGPoint] = []
-            for point in warp.points {
-                if let last = commit.last, hypot(point.x - last.x, point.y - last.y) < commitSpacing { continue }
-                commit.append(point)
+            // The tip is solid and a little wider than the brush, so a point every twentieth of its width covers what
+            // every dab did: a big brush on a big canvas lays thousands of dabs, and replaying each one stalled the release.
+            let spacing = max(1, warp.diameter * 0.05)
+            var kept: CGPoint?
+            for (index, point) in warp.points.enumerated() {
+                if let kept, index < warp.points.count - 1, hypot(point.x - kept.x, point.y - kept.y) < spacing { continue }
+                try stroke.append(point)
+                kept = point
             }
-            if let last = warp.points.last, commit.last.map({ $0 != last }) ?? true { commit.append(last) }
-            for point in commit { try stroke.append(point) }
             try stroke.flush()
             if !stroke.patches.isEmpty { try commitPaintSnapshot(stroke) }
         } catch { brushError = error.localizedDescription }
-    }
-
-    /// Replace `layers[index]` with a crop of the warp working copy. Returns false if the crop is empty.
-    private func commitWarpImage(_ result: CGImage, warp: WarpStroke, layer: ImageLayer, index: Int) -> Bool {
-        let pad = ceil(warp.diameter / 2) + 2
-        var minX = CGFloat.greatestFiniteMagnitude, minY = minX
-        var maxX = -CGFloat.greatestFiniteMagnitude, maxY = maxX
-        for point in warp.points {
-            minX = min(minX, point.x - pad)
-            minY = min(minY, point.y - pad)
-            maxX = max(maxX, point.x + pad)
-            maxY = max(maxY, point.y + pad)
-        }
-        let canvas = CGRect(x: 0, y: 0, width: result.width, height: result.height)
-        let dirty = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-        let layerRect = CGRect(origin: layer.transform.origin, size: layer.transform.size)
-        let dest = dirty.union(layerRect).integral.intersection(canvas)
-        guard !dest.isNull, !dest.isEmpty, let cropped = result.cropping(to: dest) else { return false }
-        beginEdit(warp.mode.rawValue)
-        let name = layer.asset?.name ?? layer.name
-        let asset = ImportedImage(image: cropped, thumbnail: layer.asset?.thumbnail ?? cropped, name: name)
-        var transform = layer.transform
-        transform.origin = dest.origin
-        transform.size = dest.size
-        document?.layers[index] = ImageLayer(id: layer.id, asset: asset, name: layer.name,
-            isVisible: layer.isVisible, transform: transform, parentID: layer.parentID, isGroup: false,
-            opacity: layer.opacity, blendMode: layer.blendMode, mask: layer.mask,
-            maskSourceID: layer.maskSourceID, adjustment: layer.adjustment, shape: layer.shape,
-            effects: layer.effects, text: layer.text)
-        endEdit()
-        return true
     }
 }

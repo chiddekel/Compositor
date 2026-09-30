@@ -259,7 +259,13 @@ public:
     bool canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *canvas);
     void canvasTabletEvent(QTabletEvent *event, QWidget *canvas);
     void canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas);
+    void canvasDragMoveEvent(QDragMoveEvent *event, QWidget *canvas);
+    void canvasDragLeaveEvent(QDragLeaveEvent *event, QWidget *canvas);
     void canvasDropEvent(QDropEvent *event, QWidget *canvas);
+    void updateMaskAloneBadge(const QJsonObject &state);
+    void ensureMaskAloneBadge();
+    void setCanvasDropTargetActive(bool active);
+    void paintCanvasDropAccent(QPainter &p, QWidget *canvas);
     QRectF canvasTargetRect() const;
     QPointF documentToCanvasPoint(const QPointF &docPoint) const;
     // CanvasRulerNSView: the rulers' drawing and guide drags (vertical = the left ruler).
@@ -318,6 +324,10 @@ private:
     uint64_t m_shownRenderHandle = 0;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
     void showSizeDialog(bool imageSize);
     void showFilterDialog(const QString &kind);
+    /// Image menu adjustments: Levels / HueSat sheets or FilterSheet (not a new adjustment layer).
+    void openImageAdjustment(const QString &kind);
+    /// Layer > New Adjustment Layer…: addAdjustment + upstream floating editor.
+    void openNewAdjustmentLayer(const QString &kind);
     void showAdjustDialog(const QString &kind);
     QPointF documentPoint(const QPointF &windowPoint) const;
     void refreshImage();
@@ -343,6 +353,7 @@ private:
     void setBrushDiameter(int value);
     void setBrushHardness(int value);
     void setBrushOpacity(int value);
+    void setBlurRadius(double value);
     void setBrushColor(const QColor &color);
     void setBlendModeFromCombo(int index);
     void pickBrushColor();
@@ -442,6 +453,7 @@ private:
     int m_brushDiameter = 16;
     int m_brushHardness = 100;
     int m_brushOpacity = 100;
+    double m_blurRadius = 5.0;   // tip Blur brush radius (px), apart from Strength
     bool m_syncingLayers = false;
     QMap<Tool, QAction *> m_toolActions;
     std::unique_ptr<ITabletHandler> m_tabletHandler;
@@ -485,6 +497,9 @@ private:
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
     QWidget *m_welcomeContent = nullptr;
+    QWidget *m_maskAloneBadge = nullptr;
+    QLabel *m_maskAloneNameLabel = nullptr;
+    bool m_canvasDropTargetActive = false;
     // Canvas chrome from the session (syncCanvasChrome): rulers, layout grid, guides, snap lines.
     void syncCanvasChrome(const QJsonObject &state);
     QWidget *m_rulerCorner = nullptr, *m_rulerH = nullptr, *m_rulerV = nullptr;

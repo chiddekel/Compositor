@@ -58,7 +58,7 @@ import Sparkle
             "appVisibility": [], "appTermination": [shell("Quit Compositor", "quit", key: "q", modifiers: command)],
             "newItem": [], "saveItem": [], "undoRedo": [], "pasteboard": [], "toolbar": [],
             "windowSize": [shell("Minimize", "minimize", key: "m", modifiers: command), shell("Zoom", "zoom")],
-            "help": [Item(title: "Compositor Help", enabled: false)],
+            "help": [shell("Compositor Help", "openHelp")],
         ]
         let layout: [(String, [String])] = [
             ("Compositor", ["appInfo", "appVisibility", "appTermination"]), ("File", ["newItem", "saveItem"]),

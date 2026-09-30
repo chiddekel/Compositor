@@ -109,6 +109,10 @@ private struct State: Encodable {
     let brushHardness: Double
     let brushOpacity: Double
     let brushSmoothing: Double
+    /// Tip 1.4.2+: Blur mode's own radius (px), apart from Strength (opacity).
+    let blurRadius: Double
+    /// Smear sub-mode: Liquify / Blur / Smudge (`BlurToolMode.rawValue`).
+    let blurMode: String
     /// The upstream color picker the UI asked for (`EditorSession.colorPicker`), for the shell to present.
     let colorPickerTitle: String?
     let colorPickerColor: [Double]?
@@ -207,7 +211,7 @@ final class UpstreamEditor {
     static let supportedActions: Set<String> = [
         "markSaved", "markUnsaved", "new", "addLayer", "addGroup", "groupSelectedLayers", "ungroupLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
         "setOpacity", "setBlendMode", "setSelectedOpacity", "cycleBlendMode", "flipLayer", "flipCanvas", "undo", "redo",
-        "addRevealMask", "addHideMask", "toggleMaskAlone", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
+        "addRevealMask", "addHideMask", "toggleMaskAlone", "clearMaskAlone", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
         "selectAll", "deselect", "invertSelection", "loadLayerSelection", "loadMaskSelection", "selectSubject", "featherSelection",
         "colorRangeBegin", "colorRangeSample", "colorRangeUpdate", "colorRangeCommit", "colorRangeCancel",
         "selectRectangle", "selectEllipse", "selectLasso", "expandSelection", "contractSelection",
@@ -220,7 +224,8 @@ final class UpstreamEditor {
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
-        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "beginLevels", "beginHueSaturation",
+        "beginAdjustmentEditing", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textReplace", "textRestore", "textSelect", "textFinish", "textCancel",
@@ -239,6 +244,8 @@ final class UpstreamEditor {
     private(set) var jpegExportSheet: JPEGExportSheet?
     /// View > Grid Settings…: values as they were when the sheet opened (Cancel puts them back).
     private(set) var gridSettingsBackup: (grid: LayoutGrid, appearance: GridAppearance, shown: Bool)?
+    /// Resumes `gridSettingsSheet` when the shell's modal closes (OK or Cancel).
+    private var gridSettingsAnswer: (() -> Void)?
     private var sizeAnswer: ((Any?) -> Void)?
     private var pendingJPEG: Data?
     private var trimAnswer: ((TrimOptions?) -> Void)?
@@ -287,6 +294,9 @@ final class UpstreamEditor {
             session.gridAppearance = backup.appearance
         }
         gridSettingsBackup = nil
+        let answer = gridSettingsAnswer
+        gridSettingsAnswer = nil
+        answer?()
     }
 
     /// Modal upstream sheets open now, by panel name (the shell shows each while it is listed).
@@ -321,13 +331,14 @@ final class UpstreamEditor {
         })
     }
 
-    /// Brush options present in `parameters` (diameter px, hardness / opacity 0...1, smoothing 0...100), clamped to the
-    /// options bar's ranges; absent ones keep their value.
+    /// Brush options present in `parameters` (diameter px, hardness / opacity 0...1, smoothing 0...100,
+    /// blurRadius 0.5...50), clamped to the options bar's ranges; absent ones keep their value.
     private static func apply(_ parameters: [String: Double], to settings: inout BrushSettings) {
         if let d = parameters["diameter"], d.isFinite { settings.diameter = CGFloat(min(2000, max(1, d))) }
         if let h = parameters["hardness"], h.isFinite { settings.hardness = CGFloat(min(1, max(0, h))) }
         if let o = parameters["opacity"], o.isFinite { settings.opacity = CGFloat(min(1, max(0.01, o))) }
         if let m = parameters["smoothing"], m.isFinite { settings.smoothing = CGFloat(min(100, max(0, m))) }
+        if let r = parameters["blurRadius"], r.isFinite { settings.blurRadius = CGFloat(min(50, max(0.5, r))) }
     }
 
     func commandAsync(_ json: Data) async -> Int32 {
@@ -382,6 +393,8 @@ final class UpstreamEditor {
         case "toggleMaskAlone":
             guard let id = command.layerID ?? s.activeLayerID else { return fail(-5, "no layer") }
             s.toggleMaskAlone(id)
+        case "clearMaskAlone":
+            s.viewsMaskAlone = false
         case "deleteMask": s.deleteLayerMask()
         case "setMaskEnabled":
             guard let enabled = command.enabled, let mask = s.activeLayer?.mask else { return fail(-1, "no mask") }
@@ -687,6 +700,25 @@ final class UpstreamEditor {
             s.beginFilter(kind)
             guard s.filterEdit != nil else { return fail(-5, "filter could not start") }
             filterInShellDialog = false
+        // Image > Levels… / Hue/Saturation… (CompositorApp): floating LevelsSheet / HueSaturationSheet.
+        case "beginLevels":
+            s.beginLevels()
+            guard s.levels != nil else { return fail(-5, "levels could not start") }
+        case "beginHueSaturation":
+            s.beginHueSaturation()
+            guard s.hueSaturation != nil else { return fail(-5, "hue/saturation could not start") }
+        // Layer > Edit Adjustment… / double-click: open the upstream editor for that adjustment layer.
+        case "beginAdjustmentEditing":
+            let id = command.layerID ?? s.activeLayerID
+            guard let id, s.document?.layers.first(where: { $0.id == id })?.adjustment != nil else {
+                return fail(-1, "not an adjustment layer")
+            }
+            s.adjustmentEditingID = id
+            await s.beginAdjustmentEditing(id)
+            guard s.adjustmentOriginal != nil || s.levels != nil || s.hueSaturation != nil || s.filterEdit != nil
+                    || s.document?.layers.first(where: { $0.id == id })?.adjustment?.kind == .invert else {
+                return fail(-5, "adjustment editor could not start")
+            }
         // Image > Trim… (ProjectController.trim): upstream's sheet, then its trim, as one undo step.
         case "trim":
             guard s.document != nil else { return fail(-2, "no document") }
@@ -743,10 +775,14 @@ final class UpstreamEditor {
             } catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
         case "gridSettingsSheet":
             // ProjectController.gridSettings(): live preview while open; Cancel restores the backup.
+            // Await until the shell modal finishes so ImportPrompts.presentPendingSheet can show GridSettingsSheet.
             guard gridSettingsBackup == nil else { return fail(-5, "grid settings already open") }
             let original = (grid: s.layoutGrid, appearance: s.gridAppearance, shown: s.showsGrid)
             gridSettingsBackup = original
             s.showsGrid = true
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                gridSettingsAnswer = { continuation.resume() }
+            }
         case "writeJPEG":
             guard let path = command.paths?.first, let data = pendingJPEG else { return fail(-1, "nothing to write") }
             pendingJPEG = nil
@@ -861,17 +897,15 @@ final class UpstreamEditor {
             let options = ImageSizeOptions(width: width, height: height, resolution: command.value ?? s.document?.resolution ?? 72, sampling: sampling)
             guard let resized = try? await ImageResizer.shared.resize(snapshot, to: options) else { return fail(-5, "image resize failed") }
             s.applyImageSize(resized)
-        // The shell's adjustment dialogs own the edit (adjustmentEditing below). Upstream's `adjustmentEditingID` is the
-        // macOS "open the adjustment sheet" request (LayersPanel's .task begins upstream's own editing session for
-        // it), so it is not left set here — otherwise both flows would edit the same adjustment at once.
+        // The shell's Qt AdjustDialog path used to clear adjustmentEditingID and drive preview via
+        // adjustmentPreview commands. Prefer upstream's own editors (LevelsSheet / HueSaturationSheet /
+        // FilterSheet) the way LayersPanel's .task does on the Mac.
         case "addAdjustment":
             guard let name = command.kind, let kind = AdjustmentKind(rawValue: name) else { return fail(-1, "unknown adjustment") }
             s.addAdjustment(kind)
-            if let id = s.adjustmentEditingID, let value = s.document?.layers.first(where: { $0.id == id })?.adjustment {
-                adjustmentEditing = id
-                adjustmentOriginal = (id, value)
+            if let id = s.adjustmentEditingID {
+                await s.beginAdjustmentEditing(id)
             }
-            s.adjustmentEditingID = nil
         case "adjustmentBegin":
             guard let id = command.layerID, let value = s.document?.layers.first(where: { $0.id == id })?.adjustment else { return fail(-1, "not an adjustment layer") }
             s.selectLayer(id)
@@ -889,6 +923,8 @@ final class UpstreamEditor {
         case "adjustmentCancel":
             if let original = adjustmentOriginal { s.updateAdjustment(original.id, value: original.value) }
             adjustmentEditing = nil; adjustmentOriginal = nil
+            // Also cancel an upstream floating adjustment edit started via addAdjustment / beginAdjustmentEditing.
+            if s.adjustmentEditingID != nil { _ = s.finishAdjustmentEditing(commit: false) }
         case "contentFill":
             s.beginFilter(.contentAwareFill)
             guard s.filterEdit != nil else { return fail(-5, "content-aware fill needs a selection") }
@@ -916,6 +952,7 @@ final class UpstreamEditor {
                 if let w = WandMode(rawValue: mode) { s.wandMode = w }
                 if let b = BrushToolMode(rawValue: mode) { s.brushMode = b }
                 if let k = ShapeKind(rawValue: mode) { s.shapeKind = k }
+                if let blur = BlurToolMode(rawValue: mode) { s.blurMode = blur }
             }
         default:
             return fail(-7, "Unsupported by the upstream bridge yet: \(command.action)")
@@ -1047,6 +1084,8 @@ final class UpstreamEditor {
             brushHardness: Double(s.brushSettings.hardness),
             brushOpacity: Double(s.brushSettings.opacity),
             brushSmoothing: Double(s.brushSettings.smoothing),
+            blurRadius: Double(s.brushSettings.blurRadius),
+            blurMode: s.blurMode.rawValue,
             colorPickerTitle: s.colorPicker?.target.title,
             colorPickerColor: s.colorPicker.map { rgb($0.color) },
             gradientLine: s.gradientEdit.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] },

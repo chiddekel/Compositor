@@ -7,10 +7,17 @@
 #include <QMessageBox>
 
 void SessionWindow::showSizeDialog(bool imageSize) {
+    // Prefer upstream Canvas Size / Image Size sheets (same as AppMenus → shell requests).
+    if (sendCommand({{"action", imageSize ? "imageSizeSheet" : "canvasSizeSheet"}})) {
+        refreshImage();
+        refreshLayers();
+        updateLayersPanel();
+        updateStatusTelemetry();
+        return;
+    }
     const QJsonObject state = sessionState();
     if (state.value("busy").toBool() || state.value("width").toInt() <= 0) return;
     SizeDialog dialog(state, imageSize, this, m_platform.colors);
-    // Failed allocation/validation leaves the dialog open and the document intact.
     while (dialog.exec() == QDialog::Accepted) {
         if (sendCommand(dialog.command())) { refreshImage(); return; }
         m_platform.notifier->warn(tr("Resize failed"), sessionState().value("error").toString());
@@ -18,6 +25,12 @@ void SessionWindow::showSizeDialog(bool imageSize) {
 }
 
 void SessionWindow::showFilterDialog(const QString &kind) {
+    // Upstream FilterSheet (floating), matching CompositorApp's Filter / Image menus.
+    if (sendCommand({{"action", "openFilter"}, {"kind", kind}})) {
+        refreshImage();
+        updateFloatingPanels();
+        return;
+    }
     if (!sendCommand({{"action", "filterBegin"}, {"kind", kind}})) return;
     FilterDialog dialog(kind, [this](const QJsonObject &command) {
         const bool ok = sendCommand(command);
@@ -27,60 +40,33 @@ void SessionWindow::showFilterDialog(const QString &kind) {
     dialog.exec();
 }
 
-void SessionWindow::showAdjustDialog(const QString &kind) {
-    // New sheets: addAdjustment creates the adjustment layer and begins its edit
-    // (macOS Layers > New Adjustment Sheet). The sheet becomes the active layer.
-    // Histogram of the pixels the adjustment starts from (captured before the sheet exists),
-    // alpha-weighted: bins for RGB (luma), R, G, B.
-    auto bins = std::make_shared<std::vector<std::vector<double>>>(4, std::vector<double>(256, 0.0));
-    if (!m_image.isNull()) {
-        const QImage source = m_image.convertToFormat(QImage::Format_RGBA8888);
-        for (int y = 0; y < source.height(); ++y) {
-            const uchar *row = source.constScanLine(y);
-            for (int x = 0; x < source.width(); ++x) {
-                const uchar *px = row + x * 4;
-                const double weight = px[3] / 255.0;
-                if (weight <= 0) continue;
-                (*bins)[0][qBound(0, qRound(0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]), 255)] += weight;
-                for (int c = 0; c < 3; ++c) (*bins)[c + 1][px[c]] += weight;
-            }
-        }
-    }
-    if (!sendCommand({{"action", "addAdjustment"}, {"kind", kind}})) {
-        sendCommand({{"action", "adjustmentCancel"}});
+void SessionWindow::openImageAdjustment(const QString &kind) {
+    // CompositorApp Image menu: Levels / Hue/Saturation have dedicated sheets; the rest are filters.
+    if (kind == QLatin1String("Levels")) {
+        if (sendCommand({{"action", "beginLevels"}})) { refreshImage(); updateFloatingPanels(); }
         return;
     }
-    auto original = std::make_shared<QImage>(m_image);
-    AdjustServices services;
-    services.histogram = [bins](int channel) { return (*bins)[qBound(0, channel, 3)]; };
-    services.colors = m_platform.colors;
-    services.requestSample = [this, original](std::function<void(const QColor &)> done) {
-        if (m_canvasWidget) m_canvasWidget->setCursor(Qt::CrossCursor);
-        m_pixelSampler = [this, original, done](const QPointF &point) {
-            QColor color;
-            const QPoint pixel(qFloor(point.x()), qFloor(point.y()));
-            if (original->rect().contains(pixel)) {
-                const QColor c = original->pixelColor(pixel);
-                if (c.alpha() > 0) color = QColor::fromRgbF(c.redF(), c.greenF(), c.blueF());
-            }
-            done(color);
-        };
-    };
-    AdjustDialog dialog(kind, [this](const QJsonObject &command) {
-        const bool ok = sendCommand(command);
-        refreshImage();
-        return ok;
-    }, this, services);
-    const int outcome = dialog.exec();
-    m_pixelSampler = nullptr;
-    if (m_canvasWidget) m_canvasWidget->unsetCursor();
-    if (outcome == QDialog::Rejected) {
-        // Discard the newly created adjustment layer on cancel (R26)
-        sendCommand({{"action", "undo"}});
-        refreshImage();
-        refreshLayers();
+    if (kind == QLatin1String("Hue/Saturation")) {
+        if (sendCommand({{"action", "beginHueSaturation"}})) { refreshImage(); updateFloatingPanels(); }
+        return;
     }
+    showFilterDialog(kind);
 }
+
+void SessionWindow::openNewAdjustmentLayer(const QString &kind) {
+    // Layer > New Adjustment Layer…: create the layer, then open upstream's editor.
+    if (!sendCommand({{"action", "addAdjustment"}, {"kind", kind}})) return;
+    refreshImage();
+    refreshLayers();
+    updateLayersPanel();
+    updateFloatingPanels();
+}
+
+void SessionWindow::showAdjustDialog(const QString &kind) {
+    // Legacy entry: Image-menu adjustments (objectName adjust.*). New adjustment layers use openNewAdjustmentLayer.
+    openImageAdjustment(kind);
+}
+
 
 #include <QLineEdit>
 #include <QListWidget>

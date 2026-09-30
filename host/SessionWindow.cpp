@@ -17,6 +17,8 @@ static bool needsUpstreamImporter(const QString &path);
 #include "SwiftUIQtRenderer.h"
 #include "LucideIcons.h"
 #include "AppVersion.h"
+#include <QDesktopServices>
+#include <QUrl>
 #include <QSvgRenderer>
 
 #include <QPainter>
@@ -164,6 +166,7 @@ int32_t compositor_workspace_select_tab(uint64_t handle);
 uint64_t compositor_workspace_close_tab(uint64_t handle);
 int32_t compositor_workspace_move_tab(uint64_t handle, int32_t toIndex);
 int64_t compositor_workspace_tab_title(uint64_t handle, uint8_t *output, size_t capacity);
+int32_t compositor_workspace_settle(void);
 void compositor_modifiers_changed(int32_t modifiers);
 }
 
@@ -221,6 +224,7 @@ protected:
         QWidget::resizeEvent(event);
         m_window->syncViewportGeometry();
         m_window->positionWelcome();
+        m_window->updateMaskAloneBadge(m_window->sessionState());
     }
     void mousePressEvent(QMouseEvent *event) override {
         m_window->canvasMousePressEvent(event, this);
@@ -239,6 +243,12 @@ protected:
     }
     void dragEnterEvent(QDragEnterEvent *event) override {
         m_window->canvasDragEnterEvent(event, this);
+    }
+    void dragMoveEvent(QDragMoveEvent *event) override {
+        m_window->canvasDragMoveEvent(event, this);
+    }
+    void dragLeaveEvent(QDragLeaveEvent *event) override {
+        m_window->canvasDragLeaveEvent(event, this);
     }
     void dropEvent(QDropEvent *event) override {
         m_window->canvasDropEvent(event, this);
@@ -951,7 +961,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     auto *adjustmentMenu = new QMenu(btnAdjustment);
     for (const QString &kind : {QString("Hue/Saturation"), QString("Levels"), QString("Curves"),
                                 QString("Exposure"), QString("Grain"), QString("Gradient Map")}) {
-        adjustmentMenu->addAction(kind, this, [this, kind] { showAdjustDialog(kind); });
+        adjustmentMenu->addAction(kind, this, [this, kind] { openNewAdjustmentLayer(kind); });
     }
     btnAdjustment->setMenu(adjustmentMenu);
     btnAdjustment->setPopupMode(QToolButton::InstantPopup);
@@ -1055,7 +1065,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
             row->setMinimumHeight(38);
             row->setStyleSheet("QToolButton { text-align: left; padding: 4px 8px; font-size: 13px; color: #e6e6ea; border: none; border-radius: 6px; }"
                                "QToolButton:hover { background: #2c2d31; }");
-            connect(row, &QToolButton::clicked, this, [this, kind] { showAdjustDialog(kind); });
+            connect(row, &QToolButton::clicked, this, [this, kind] { openNewAdjustmentLayer(kind); });
             rows->addWidget(row);
         }
         rows->addStretch();
@@ -1537,11 +1547,13 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
     if (m_sessionHandle == 0) return;
     const uint64_t handle = m_sessionHandle;
     QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("swiftUISheet.") + panel);
     dialog.setWindowTitle(panel == QLatin1String("PSDConversionSheet") ? tr("Import Photoshop File")
                           : panel == QLatin1String("TrimSheet") ? tr("Trim")
                           : panel == QLatin1String("CanvasSizeSheet") ? tr("Canvas Size")
                           : panel == QLatin1String("ImageSizeSheet") ? tr("Image Size")
-                          : panel == QLatin1String("JPEGExportSheet") ? tr("Export JPEG") : tr("Develop"));
+                          : panel == QLatin1String("JPEGExportSheet") ? tr("Export JPEG")
+                          : panel == QLatin1String("GridSettingsSheet") ? tr("Grid") : tr("Develop"));
     auto *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(0, 0, 0, 0);
     QWidget *current = nullptr;
@@ -1702,6 +1714,13 @@ void SessionWindow::setBrushToolMode(BrushToolMode mode) {
 
 void SessionWindow::setSmearMode(SmearMode mode) {
     m_smearMode = mode;
+    // Tip BrushControls blurMode picker: keep the session's mode in sync so upstream canvas strokes use it.
+    if (m_sessionHandle != 0) {
+        const char *name = "Liquify";
+        if (mode == SmearMode::Blur) name = "Blur";
+        else if (mode == SmearMode::Smudge) name = "Smudge";
+        sendCommandQuiet({{"action", "selectTool"}, {"kind", "blur"}, {"name", QString::fromUtf8(name)}});
+    }
     updateOptionsBar();
 }
 
@@ -2356,13 +2375,18 @@ void SessionWindow::handleShellRequests() {
             }
         }
         else if (request == QLatin1String("gridSettings")) {
+            // gridSettingsSheet awaits the modal (presentPendingSheet → presentSwiftUISheet) until OK/Cancel.
             if (sendCommand({{"action", "gridSettingsSheet"}})) {
                 refreshImage();
+                if (m_canvasWidget) m_canvasWidget->update();
             }
         }
         else if (request == QLatin1String("trim")) trigger("image.trim");
         else if (request == QLatin1String("about")) trigger("help.about");
         else if (request == QLatin1String("checkForUpdates")) trigger("help.updates");
+        else if (request == QLatin1String("openHelp")) {
+            QDesktopServices::openUrl(QUrl(QStringLiteral("https://chiddekel.github.io/Compositor/")));
+        }
         else if (request == QLatin1String("quit")) close();
         else if (request == QLatin1String("minimize")) showMinimized();
         else if (request == QLatin1String("zoom")) { if (isMaximized()) showNormal(); else showMaximized(); }
@@ -2762,11 +2786,11 @@ void SessionWindow::createMenus() {
 
     // --- Image ---
     auto *image = menuBar()->addMenu(tr("Image"));
-    image->addAction(tr("Curves…"), QKeySequence(Qt::CTRL | Qt::Key_M), this, [this] { showAdjustDialog("Curves"); })->setObjectName("adjust.Curves");
-    image->addAction(tr("Levels…"), QKeySequence(Qt::CTRL | Qt::Key_L), this, [this] { showAdjustDialog("Levels"); })->setObjectName("adjust.Levels");
-    image->addAction(tr("Hue/Saturation…"), QKeySequence(Qt::CTRL | Qt::Key_U), this, [this] { showAdjustDialog("Hue/Saturation"); })->setObjectName("adjust.Hue/Saturation");
+    image->addAction(tr("Curves…"), QKeySequence(Qt::CTRL | Qt::Key_M), this, [this] { openImageAdjustment("Curves"); })->setObjectName("adjust.Curves");
+    image->addAction(tr("Levels…"), QKeySequence(Qt::CTRL | Qt::Key_L), this, [this] { openImageAdjustment("Levels"); })->setObjectName("adjust.Levels");
+    image->addAction(tr("Hue/Saturation…"), QKeySequence(Qt::CTRL | Qt::Key_U), this, [this] { openImageAdjustment("Hue/Saturation"); })->setObjectName("adjust.Hue/Saturation");
     for (const QString &kind : {QString("Black & White"), QString("Color Balance"), QString("Exposure"), QString("Gradient Map"), QString("Grain")}) {
-        auto *act = image->addAction(kind + "…", this, [this, kind] { showAdjustDialog(kind); });
+        auto *act = image->addAction(kind + "…", this, [this, kind] { openImageAdjustment(kind); });
         act->setObjectName("adjust." + kind);
     }
 
@@ -2800,45 +2824,33 @@ void SessionWindow::createMenus() {
 
     // --- Filter ---
     auto *filter = menuBar()->addMenu(tr("Filter"));
-    // Upstream's Filter menu, in its order (FilterKind.allCases minus the Image menu's adjustments). The first four
-    // keep the shell's dialogs; the rest open upstream's FilterSheet as a floating panel, as on the Mac.
+    // Upstream Filter menu (FilterKind minus Image adjustments and content-aware fill): always FilterSheet.
     for (const QString &kind : {QString("Gaussian Blur"), QString("Motion Blur"), QString("Add Noise"), QString("Vignette"),
-                                QString("Bloom / Glow"), QString("Tonal Contrast"), QString("Lens Correction"),
-                                QString("Camera Raw Filter")}) {
-        const bool shellDialog = kind == "Gaussian Blur" || kind == "Motion Blur" || kind == "Add Noise" || kind == "Lens Correction";
-        auto *action = filter->addAction(kind + "…", this, [this, kind, shellDialog] {
-            if (shellDialog) { showFilterDialog(kind); return; }
-            if (sendCommand({{"action", "openFilter"}, {"kind", kind}})) { refreshImage(); updateFloatingPanels(); }
+                                QString("Bloom / Glow"), QString("Dither"), QString("Tonal Contrast"), QString("Lens Correction"),
+                                QString("Camera Raw Filter"), QString("Remove Background")}) {
+        auto *action = filter->addAction(kind + "…", this, [this, kind] {
+            showFilterDialog(kind);
         });
         action->setObjectName("filter." + kind);
     }
-    filter->addAction(tr("Remove Background…"), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"removeBackground"})") == 0) {
-            refreshImage();
-            refreshLayers();
-        }
-    })->setObjectName("filter.Remove Background");
 
     // --- Layer ---
     auto *layer = menuBar()->addMenu(tr("Layer"));
     auto *adjMenu = layer->addMenu(tr("New Adjustment Layer"));
     for (const QString &kind : {QString("Hue/Saturation"), QString("Levels"), QString("Curves"), QString("Exposure"),
-                                QString("Gradient Map"), QString("Grain"), QString("Invert"), QString("Black & White"), QString("Color Balance")}) {
+                                QString("Gradient Map"), QString("Grain"), QString("Add Noise"), QString("Gaussian Blur"),
+                                QString("Motion Blur"), QString("Invert"), QString("Black & White"), QString("Color Balance")}) {
         adjMenu->addAction(kind == "Invert" ? kind : kind + "…", this, [this, kind] {
-            showAdjustDialog(kind);
+            openNewAdjustmentLayer(kind);
         })->setObjectName("layer.adjust." + kind);
     }
 
     layer->addAction(tr("Edit Adjustment…"), this, [this] {
-        const QJsonObject state = sessionState();
-        const QString active = state.value("activeLayerID").toString();
-        for (const QJsonValue &v : state.value("layers").toArray()) {
-            const QJsonObject l = v.toObject();
-            if (l.value("id").toString() == active && l.contains("adjustment")) {
-                const QString kind = l.value("adjustment").toObject().value("kind").toString();
-                if (!kind.isEmpty()) showAdjustDialog(kind);
-                break;
-            }
+        if (sendCommand({{"action", "beginAdjustmentEditing"}})) {
+            refreshImage();
+            refreshLayers();
+            updateLayersPanel();
+            updateFloatingPanels();
         }
     })->setObjectName("layer.editAdjustment");
 
@@ -3020,6 +3032,9 @@ void SessionWindow::createMenus() {
 
     // --- Help ---
     auto *help = menuBar()->addMenu(tr("Help"));
+    help->addAction(tr("Compositor Help"), this, [this] {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://chiddekel.github.io/Compositor/")));
+    })->setObjectName("help.open");
     help->addAction(tr("About Compositor"), this, [this] { showAboutPanel(); })->setObjectName("help.about");
 
     help->addAction(tr("Check for Updates…"), this, [this] {
@@ -3270,6 +3285,7 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
             }
             if (m_overlayCacheValid) p.drawImage(0, 0, m_overlayCache);
         }
+        paintCanvasDropAccent(p, canvas);
         return;
     }
     Q_UNUSED(event);
@@ -3277,7 +3293,10 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     // EditorCanvas.draw: the surround, then the document with its shadow, dark checkerboard and hairline.
     p.fillRect(canvas->rect(), QColor::fromRgbF(0.105, 0.105, 0.105));
 
-    if (m_image.isNull()) return;
+    if (m_image.isNull()) {
+        paintCanvasDropAccent(p, canvas);
+        return;
+    }
 
     const QRectF target = canvasTargetRect();
     const QRect targetI = target.toRect();
@@ -3416,6 +3435,19 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
             if (m_overlayCacheValid) p.drawImage(0, 0, m_overlayCache);
         }
     }
+
+    paintCanvasDropAccent(p, canvas);
+}
+
+void SessionWindow::paintCanvasDropAccent(QPainter &p, QWidget *canvas) {
+    // ContentView's drop accent: 3 px accent stroke inset while a file/image drag is over the canvas.
+    if (!m_canvasDropTargetActive || !canvas) return;
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen accent(QColor(0x0a, 0x84, 0xff), 3);
+    accent.setJoinStyle(Qt::RoundJoin);
+    p.setPen(accent);
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(canvas->rect().adjusted(3, 3, -3, -3), 8, 8);
 }
 
 /// The overlay views that asked to be redrawn since the last paint (a brush circle following the pointer, marching
@@ -3566,12 +3598,111 @@ void SessionWindow::canvasTabletEvent(QTabletEvent *event, QWidget *canvas) {
 
 void SessionWindow::canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
-    dragEnterEvent(event);
+    if (event->mimeData()->hasUrls() || event->mimeData()->hasImage()) {
+        event->acceptProposedAction();
+        setCanvasDropTargetActive(true);
+    }
+}
+
+void SessionWindow::canvasDragMoveEvent(QDragMoveEvent *event, QWidget *canvas) {
+    Q_UNUSED(canvas);
+    if (event->mimeData()->hasUrls() || event->mimeData()->hasImage()) {
+        event->acceptProposedAction();
+        setCanvasDropTargetActive(true);
+    }
+}
+
+void SessionWindow::canvasDragLeaveEvent(QDragLeaveEvent *event, QWidget *canvas) {
+    Q_UNUSED(event);
+    Q_UNUSED(canvas);
+    setCanvasDropTargetActive(false);
 }
 
 void SessionWindow::canvasDropEvent(QDropEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    setCanvasDropTargetActive(false);
     dropEvent(event);
+}
+
+void SessionWindow::setCanvasDropTargetActive(bool active) {
+    if (m_canvasDropTargetActive == active) return;
+    m_canvasDropTargetActive = active;
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::ensureMaskAloneBadge() {
+    if (m_maskAloneBadge || !m_canvasWidget) return;
+    m_maskAloneBadge = new QWidget(m_canvasWidget);
+    m_maskAloneBadge->setObjectName(QStringLiteral("maskAloneBadge"));
+    m_maskAloneBadge->setAttribute(Qt::WA_StyledBackground, true);
+    m_maskAloneBadge->setStyleSheet(QStringLiteral(
+        "QWidget#maskAloneBadge {"
+        "  background-color: rgba(0, 0, 0, 191);"
+        "  border: 1px solid rgba(255, 255, 255, 36);"
+        "  border-radius: 13px;"
+        "}"
+        "QLabel { color: white; background: transparent; }"
+        "QToolButton { color: white; background: transparent; border: none; padding: 2px 4px; }"
+        "QToolButton:hover { color: rgba(255, 255, 255, 180); }"));
+    auto *row = new QHBoxLayout(m_maskAloneBadge);
+    row->setContentsMargins(11, 0, 8, 0);
+    row->setSpacing(7);
+    auto *icon = new QLabel(m_maskAloneBadge);
+    icon->setPixmap(renderToolVectorIcon(QStringLiteral("rectangle.inset.filled"), 14, Qt::white).pixmap(14, 14));
+    row->addWidget(icon);
+    auto *title = new QLabel(tr("Layer Mask"), m_maskAloneBadge);
+    QFont titleFont = title->font();
+    titleFont.setPointSize(12);
+    titleFont.setWeight(QFont::DemiBold);
+    title->setFont(titleFont);
+    row->addWidget(title);
+    m_maskAloneNameLabel = new QLabel(m_maskAloneBadge);
+    QFont nameFont = m_maskAloneNameLabel->font();
+    nameFont.setPointSize(12);
+    m_maskAloneNameLabel->setFont(nameFont);
+    m_maskAloneNameLabel->setStyleSheet(QStringLiteral("color: rgba(255, 255, 255, 153);"));
+    m_maskAloneNameLabel->setMaximumWidth(220);
+    row->addWidget(m_maskAloneNameLabel);
+    auto *close = new QToolButton(m_maskAloneBadge);
+    close->setText(QStringLiteral("×"));
+    close->setToolTip(tr("Show the image again (or Option-click the mask thumbnail)"));
+    close->setAutoRaise(true);
+    connect(close, &QToolButton::clicked, this, [this] {
+        sendCommandQuiet({{"action", "clearMaskAlone"}});
+        refreshImage();
+        updateLayersPanel();
+    });
+    row->addWidget(close);
+    m_maskAloneBadge->setFixedHeight(26);
+    m_maskAloneBadge->hide();
+}
+
+void SessionWindow::updateMaskAloneBadge(const QJsonObject &state) {
+    if (!m_canvasWidget) return;
+    const bool alone = state.value("viewsMaskAlone").toBool(false);
+    if (!alone) {
+        if (m_maskAloneBadge) m_maskAloneBadge->hide();
+        return;
+    }
+    ensureMaskAloneBadge();
+    QString name;
+    const QString active = state.value("activeLayerID").toString();
+    for (const QJsonValue &v : state.value("layers").toArray()) {
+        const QJsonObject layer = v.toObject();
+        if (layer.value("id").toString() == active) {
+            name = layer.value("name").toString();
+            break;
+        }
+    }
+    if (m_maskAloneNameLabel) m_maskAloneNameLabel->setText(name);
+    m_maskAloneBadge->adjustSize();
+    const QSize hint = m_maskAloneBadge->sizeHint();
+    const int w = qMax(hint.width(), m_maskAloneBadge->minimumSizeHint().width());
+    const int h = 26;
+    m_maskAloneBadge->setGeometry((m_canvasWidget->width() - w) / 2,
+                                  m_canvasWidget->height() - h - 14, w, h);
+    m_maskAloneBadge->show();
+    m_maskAloneBadge->raise();
 }
 
 void SessionWindow::paintEvent(QPaintEvent *event) {
@@ -3670,6 +3801,7 @@ void SessionWindow::refreshImage() {
     const auto state = sessionState();
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
     syncCanvasChrome(state);
+    updateMaskAloneBadge(state);
     // Why a brush can't paint (paintRefusal), and mask-alone mode, as status feedback.
     if (const QString brushError = state.value("brushError").toString(); !brushError.isEmpty())
         statusBar()->showMessage(brushError, 4000);
@@ -4128,6 +4260,12 @@ void SessionWindow::setBrushOpacity(int value) {
     updateOptionsBar();
 }
 
+void SessionWindow::setBlurRadius(double value) {
+    m_blurRadius = value;
+    sendCommandQuiet({{"action", "setBrushSettings"}, {"parameters", QJsonObject{{"blurRadius", value}}}});
+    updateOptionsBar();
+}
+
 /// Brush diameter / hardness / opacity as the session holds them, into the shell's copies (strokes, tablet, cursor) and
 /// the legacy controls — signals blocked, so showing a value never writes it back (clamped to a slider's range).
 void SessionWindow::syncBrushFromSession() {
@@ -4137,6 +4275,12 @@ void SessionWindow::syncBrushFromSession() {
     m_brushDiameter = std::max(1, int(std::lround(state.value("brushDiameter").toDouble())));
     m_brushHardness = int(std::lround(state.value("brushHardness").toDouble() * 100));
     m_brushOpacity = int(std::lround(state.value("brushOpacity").toDouble() * 100));
+    if (state.contains("blurRadius"))
+        m_blurRadius = std::max(0.5, std::min(50.0, state.value("blurRadius").toDouble()));
+    const QString blurMode = state.value("blurMode").toString();
+    if (blurMode == QLatin1String("Blur")) m_smearMode = SmearMode::Blur;
+    else if (blurMode == QLatin1String("Smudge")) m_smearMode = SmearMode::Smudge;
+    else if (blurMode == QLatin1String("Liquify")) m_smearMode = SmearMode::Liquify;
     auto show = [this](const char *name, int value) {
         if (auto *slider = findChild<QSlider *>(name)) { const QSignalBlocker block(slider); slider->setValue(value); }
         if (auto *spin = findChild<QSpinBox *>(QString(name) + "Spin")) { const QSignalBlocker block(spin); spin->setValue(value); }
@@ -4144,6 +4288,14 @@ void SessionWindow::syncBrushFromSession() {
     show("brush.diameter", m_brushDiameter);
     show("brush.hardness", m_brushHardness);
     show("brush.opacity", m_brushOpacity);
+    if (auto *spin = findChild<QDoubleSpinBox *>("brush.blurRadius")) {
+        const QSignalBlocker block(spin);
+        spin->setValue(m_blurRadius);
+    }
+    if (auto *combo = findChild<QComboBox *>("options.smearMode")) {
+        const QSignalBlocker block(combo);
+        combo->setCurrentIndex(m_smearMode == SmearMode::Blur ? 1 : m_smearMode == SmearMode::Smudge ? 2 : 0);
+    }
 }
 
 void SessionWindow::setBlendModeFromCombo(int index) {
@@ -4294,6 +4446,14 @@ void SessionWindow::requestTool(Tool tool) {
     cmdObj["version"] = 1;
     cmdObj["action"] = "selectTool";
     cmdObj["kind"] = QString::fromUtf8(sessionNameForTool(tool));
+    if (tool == Tool::Smear) {
+        const char *name = "Liquify";
+        if (m_smearMode == SmearMode::Blur) name = "Blur";
+        else if (m_smearMode == SmearMode::Smudge) name = "Smudge";
+        cmdObj["name"] = QString::fromUtf8(name);
+    } else if (tool == Tool::Brush) {
+        cmdObj["name"] = m_brushToolMode == BrushToolMode::Erase ? QStringLiteral("Erase") : QStringLiteral("Paint");
+    }
     sendCommand(cmdObj);
     const QJsonObject after = sessionState();
     applyToolLocally(toolFromSessionState(after));
@@ -5151,6 +5311,11 @@ void SessionWindow::clearAutosave() {
 }
 
 void SessionWindow::closeEvent(QCloseEvent *event) {
+    // Tip ProjectWorkspace.confirmQuit: settle canvas drafts / cancel open dialogs / finish text before Save prompts.
+    if (compositor_workspace_settle() != 0) {
+        event->ignore();
+        return;
+    }
     // Upstream ProjectWorkspace.confirmQuit: ask about each unsaved tab, the one on screen first, then the rest left
     // to right; Cancel on any keeps the window open.
     std::vector<uint64_t> order;
@@ -6407,6 +6572,7 @@ void SessionWindow::setupOptionsBar() {
     lblSmearMode->setStyleSheet(labelStyle);
     layoutSmear->addWidget(lblSmearMode);
     auto *comboSmearMode = new QComboBox(pageSmear);
+    comboSmearMode->setObjectName("options.smearMode");
     comboSmearMode->addItems({tr("Liquify"), tr("Blur"), tr("Smudge")});
     connect(comboSmearMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         if (idx == 0) setSmearMode(SmearMode::Liquify);
@@ -6424,6 +6590,40 @@ void SessionWindow::setupOptionsBar() {
     sliderSmearSize->setFixedWidth(90);
     layoutSmear->addWidget(sliderSmearSize);
     connect(sliderSmearSize, &QSlider::valueChanged, this, [this](int val) { setBrushDiameter(val); });
+
+    // Tip 1.4.2: Blur has its own Radius, apart from Strength (opacity).
+    auto *lblBlurRadius = new QLabel(tr("Radius"), pageSmear);
+    lblBlurRadius->setObjectName("options.blurRadiusLabel");
+    lblBlurRadius->setStyleSheet(labelStyle);
+    layoutSmear->addWidget(lblBlurRadius);
+    auto *spinBlurRadius = new QDoubleSpinBox(pageSmear);
+    spinBlurRadius->setObjectName("brush.blurRadius");
+    spinBlurRadius->setRange(0.5, 50.0);
+    spinBlurRadius->setDecimals(1);
+    spinBlurRadius->setSingleStep(0.5);
+    spinBlurRadius->setValue(m_blurRadius);
+    spinBlurRadius->setSuffix(tr(" px"));
+    spinBlurRadius->setFixedWidth(72);
+    spinBlurRadius->setStyleSheet(spinStyle);
+    connect(spinBlurRadius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double val) {
+        setBlurRadius(val);
+    });
+    layoutSmear->addWidget(spinBlurRadius);
+
+    auto *lblSmearStrength = new QLabel(tr("Strength"), pageSmear);
+    lblSmearStrength->setStyleSheet(labelStyle);
+    layoutSmear->addWidget(lblSmearStrength);
+    auto *spinSmearStrength = new QSpinBox(pageSmear);
+    spinSmearStrength->setObjectName("brush.opacitySpin");
+    spinSmearStrength->setRange(1, 100);
+    spinSmearStrength->setValue(m_brushOpacity);
+    spinSmearStrength->setSuffix(tr(" %"));
+    spinSmearStrength->setFixedWidth(54);
+    spinSmearStrength->setStyleSheet(spinStyle);
+    connect(spinSmearStrength, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        setBrushOpacity(val);
+    });
+    layoutSmear->addWidget(spinSmearStrength);
 
     layoutSmear->addStretch();
     m_optionsStack->addWidget(pageSmear);

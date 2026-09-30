@@ -17,7 +17,7 @@ final class CoreGraphicsCompatTests: XCTestCase {
 
     func testDrawWithIdentityClosureCopiesPixels() {
         let img = makeRedImage(2, 2)
-        let ctx = CGContextCompat(width: 2, height: 2) { src, dst, w, h in
+        let ctx = CGContextCompat(width: 2, height: 2) { src, dst, w, h, _ in
             let n = w * h * 4
             for i in 0..<n { dst[i] = src[i] }
             return 0
@@ -30,7 +30,7 @@ final class CoreGraphicsCompatTests: XCTestCase {
     func testDrawFallsBackToSwiftWhenClosureReturnsNonZero() {
         let img = makeRedImage(2, 2)
         // Closure "fails" (device lost, plan §6); Swift fallback must draw red.
-        let ctx = CGContextCompat(width: 2, height: 2) { _, _, _, _ in -2 }
+        let ctx = CGContextCompat(width: 2, height: 2) { _, _, _, _, _ in -2 }
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: 2, height: 2))
         let out = ctx.makeImage()!
         for p in 0..<4 {
@@ -55,7 +55,7 @@ final class CoreGraphicsCompatTests: XCTestCase {
         // use a non-capturing "always fail" closure: if the Skia path ran it
         // would return 0 and the test would see copied bytes; the Swift
         // fallback draws a scaled red rect into the 4x4 context instead.
-        let ctx = CGContextCompat(width: 4, height: 4) { _, _, _, _ in -1 }
+        let ctx = CGContextCompat(width: 4, height: 4) { _, _, _, _, _ in -1 }
         // Scaled rect -> not identity -> Swift path, closure must not run.
         ctx.draw(img, in: CGRect(x: 1, y: 1, width: 2, height: 2))
         let out = ctx.makeImage()!

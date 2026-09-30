@@ -166,6 +166,22 @@ nonisolated public func compositorWorkspaceTabTitle(_ handle: UInt64, _ output: 
     }
 }
 
+/// Tip ProjectWorkspace.settlePendingEdits / finishTextEditing before Quit or closing the window: apply canvas
+/// drafts (gradient, pixel move), cancel open dialogs, finish in-progress text — so Quit is not refused mid-edit.
+@_cdecl("compositor_workspace_settle")
+nonisolated public func compositorWorkspaceSettle() -> Int32 {
+    Int32(awaitOnMain({
+        let workspace = Workspace.shared
+        for tab in workspace.quitOrder where tab.session.textDraft != nil {
+            guard tab.session.finishText() else { return Int64(-5) }
+        }
+        await workspace.settlePendingEdits()
+        return 0
+    }, whileWaiting: {
+        if let pump = ImportPrompts.waitPump { pump(ImportPrompts.waitPumpContext) }
+    }))
+}
+
 /// Runs `body` on the main actor from a C entry point (which the shell calls on the main thread).
 func onMain<Result>(_ body: @MainActor () -> Result) -> Result {
     if Thread.isMainThread { return MainActor.assumeIsolated(body) }
