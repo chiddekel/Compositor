@@ -217,7 +217,7 @@ final class UpstreamEditor {
         "selectRectangle", "selectEllipse", "selectLasso", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
         "duplicateLayer", "layerViaCopy", "toggleClippingMask", "moveActiveLayer", "moveActiveLayerOutOfGroup", "mergeLayers",
-        "brushBegin", "setBrushSettings", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
+        "brushBegin", "setBrushSettings", "setGradientSettings", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
         "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
         "setMaskSelected", "invertMask", "transform", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
@@ -680,6 +680,20 @@ final class UpstreamEditor {
             var settings = s.brushSettings
             Self.apply(command.parameters ?? [:], to: &settings)
             s.brushSettings = settings
+        case "setGradientSettings":
+            // Qt options fallback (SwiftUI GradientControls binds session.gradientSettings directly).
+            let p = command.parameters ?? [:]
+            if let shape = command.kind.flatMap(GradientShape.init(rawValue:)) {
+                s.gradientSettings.shape = shape
+            }
+            if let style = command.name.flatMap(GradientStyle.init(rawValue:)) {
+                s.gradientSettings.style = style
+            }
+            if let reversed = p["reversed"] { s.gradientSettings.reversed = reversed != 0 }
+            if let opacity = p["opacity"], opacity.isFinite {
+                s.gradientSettings.opacity = CGFloat(min(1, max(0.01, opacity)))
+            }
+            s.refreshGradient()
         case "brushMove":
             guard let point = point(command) else { return fail(-1, "invalid point") }
             s.continueBrush(at: point)
@@ -1170,6 +1184,9 @@ final class UpstreamEditor {
         var images = snapshot.images
         var masks = snapshot.masks
         var manifest = snapshot.manifest
+        // EditorCanvas.applyFill() before drawing a pending gradient; without it paintSnapshot() is still the blank
+        // raster and the Qt canvas shows no fade until Apply (commitGradient) fills it.
+        if let edit = s.gradientEdit { try? edit.applyFill() }
         // A pending gradient previews through its own raster edit, drawn in place of the layer as a stroke is
         // (EditorCanvas draws `gradientEdit?.raster` the same way).
         let stroke = s.brushStroke ?? s.gradientEdit?.raster ?? s.pixelMove?.raster

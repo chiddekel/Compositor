@@ -7,6 +7,8 @@
 #include "interfaces/IPlatformServices.h"
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
+#include <QMimeData>
 #include <QStyleFactory>
 #include <QCheckBox>
 #include <QComboBox>
@@ -436,9 +438,37 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             action("Export PNG...")->trigger();
             require(notifier->warnings.size() == 1, "failed export did not reach the injected notifier");
             action("Copy")->trigger();
-            require(!clipboard->stored.isNull(), "copy did not reach the injected clipboard");
+            // Selection Clipboard writes through SystemClipboard → QClipboard (not IClipboardService).
+            require(QApplication::clipboard()->mimeData()
+                        && (!QApplication::clipboard()->mimeData()->formats().isEmpty()
+                            || QApplication::clipboard()->mimeData()->hasImage()),
+                    "copy did not reach the system clipboard");
             require(injected.performAutosave(), "autosave failed against the injected storage");
             require(QDir(temporary.filePath("appdata/recovery")).exists(), "autosave ignored the injected storage locator");
+        }
+
+        // Copy Merged + Paste via Edit menu: selection pixels from every visible layer, placed in situ —
+        // not the full canvas (the old shell overwrite) and not a centered import_rgba dump.
+        {
+            require(window.sendCommand({{"action", "selectRectangle"}, {"x", 4}, {"y", 4}, {"width", 40}, {"height", 40}}),
+                    "selection for Copy Merged failed");
+            QAction *copyMerged = nullptr;
+            QAction *paste = nullptr;
+            for (QAction *a : window.findChildren<QAction *>()) {
+                const QString clean = a->text().remove('&');
+                if (clean == QLatin1String("Copy Merged")) copyMerged = a;
+                if (clean == QLatin1String("Paste")) paste = a;
+            }
+            require(copyMerged && paste, "Copy Merged / Paste menu actions missing");
+            const int layersBefore = window.sessionState().value("layers").toArray().size();
+            copyMerged->trigger();
+            QApplication::processEvents();
+            paste->trigger();
+            QApplication::processEvents();
+            require(window.sessionState().value("layers").toArray().size() == layersBefore + 1,
+                    "Copy Merged → Paste did not add a layer");
+            require(window.sessionState().value("undoName").toString() == QLatin1String("Paste"),
+                    "Paste undo name missing after Copy Merged");
         }
 
         // Tool-transition contract (upstream EditorSession.selectTool): rail mirrors session;

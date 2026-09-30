@@ -315,6 +315,34 @@ def line_effects_smear_stress(app):
     assert len(snap["state"].get("layers", [])) >= 1
 
 
+def copy_merged_pastes_composite(app):
+    """Copy Merged takes every visible layer in the selection; Paste puts those pixels back in place."""
+    from tool_cases import line
+
+    app.create()
+    app.palette("#e11d48")
+    app.brush(size=40, hardness=100, opacity=100)
+    app.stroke(line((120, 200), (280, 200), 40), undo_name="Brush Stroke")
+    app.click(app.widget(name="addBlankLayer", kind="button"))
+    app.wait(lambda s: len(s["state"].get("layers", [])) >= 2, "second layer")
+    app.palette("#22c55e")
+    app.stroke(line((240, 200), (400, 200), 40), undo_name="Brush Stroke")
+    app.tool("marquee")
+    app.option("Rectangle")
+    app.gesture(line((100, 160), (420, 240)))
+    app.wait(lambda s: s["state"].get("hasSelection") is True, "marquee for Copy Merged")
+    layers_before = len(app.inspect()["state"]["layers"])
+    app.desktop.focus(app.inspect()["windowID"])
+    app.desktop.key("Control_L", "Shift_L", "c")
+    app.desktop.key("Control_L", "v")
+    app.wait(lambda s: len(s["state"].get("layers", [])) == layers_before + 1
+             and s["state"].get("undoName") == "Paste", "Copy Merged paste layer", timeout=15)
+    image = app.image("copy-merged-paste")
+    # Overlap of red and green strokes should be present on the pasted layer composite.
+    assert image.getpixel((200, 200))[3] > 200, "Copy Merged missed the red stroke"
+    assert image.getpixel((320, 200))[3] > 200, "Copy Merged missed the green stroke"
+
+
 TIP_CASES = {
     "tip_select_all_inverse": select_all_then_inverse_deselects,
     "tip_paint_refusal_folder": paint_refusal_on_folder,
@@ -323,6 +351,7 @@ TIP_CASES = {
     "tip_mask_reveal_selection": mask_reveals_selection,
     "tip_tab_reorder": tab_reorder_drag,
     "tip_line_effects_smear_stress": line_effects_smear_stress,
+    "tip_copy_merged": copy_merged_pastes_composite,
     # Opt-in: menu discovery is sensitive to in-window Select menu layout.
     "tip_color_range": color_range_selects,
 }

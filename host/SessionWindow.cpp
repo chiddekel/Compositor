@@ -2543,50 +2543,33 @@ void SessionWindow::createMenus() {
 
     edit->addSeparator();
 
+    // Copy/Cut/Copy Merged write the selection (or merged composite) through upstream's NSPasteboard → QClipboard
+    // bridge. Do not overwrite with the full canvas: that discarded Copy Merged / selection pixels and broke Paste
+    // placement. Paste goes through session.paste() so pixelClipboard origin and layer copies stay correct.
     m_actCut = edit->addAction(tr("Cut"), QKeySequence::Cut, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"cut"})") == 0) refreshImage();
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"cut"})") == 0) {
+            refreshImage();
+            refreshLayers();
+        }
     });
     m_actCut->setObjectName("edit.cut");
 
     m_actCopy = edit->addAction(tr("Copy"), QKeySequence::Copy, this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0) {
-            if (!m_image.isNull()) m_platform.clipboard->setImage(fullResolutionImage());
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"copy"})") == 0)
             statusBar()->showMessage(tr("Copied to clipboard."), 1500);
-        }
     });
     m_actCopy->setObjectName("edit.copy");
 
     m_actCopyMerged = edit->addAction(tr("Copy Merged"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C), this, [this] {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0) {
-            if (!m_image.isNull()) m_platform.clipboard->setImage(fullResolutionImage());
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"copyMerged"})") == 0)
             statusBar()->showMessage(tr("Copied merged to clipboard."), 1500);
-        }
     });
     m_actCopyMerged->setObjectName("edit.copyMerged");
 
     m_actPaste = edit->addAction(tr("Paste"), QKeySequence::Paste, this, [this] {
-        const QImage img = m_platform.clipboard->image();
-        if (!img.isNull()) {
-            QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
-            std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
-            for (int y = 0; y < rgba.height(); ++y) {
-                const uint8_t *src = rgba.constScanLine(y);
-                uint8_t *dst = premul.data() + y * rgba.width() * 4;
-                for (int x = 0; x < rgba.width(); ++x) {
-                    const uint8_t a = src[x * 4 + 3];
-                    dst[x * 4] = static_cast<uint8_t>((src[x * 4] * a + 127) / 255);
-                    dst[x * 4 + 1] = static_cast<uint8_t>((src[x * 4 + 1] * a + 127) / 255);
-                    dst[x * 4 + 2] = static_cast<uint8_t>((src[x * 4 + 2] * a + 127) / 255);
-                    dst[x * 4 + 3] = a;
-                }
-            }
-            std::string name = "Pasted Layer";
-            if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
-                                               rgba.width(), rgba.height(),
-                                               reinterpret_cast<const uint8_t *>(name.data()), name.size(), 0) == 0) {
-                refreshImage();
-                refreshLayers();
-            }
+        if (cmd(m_sessionHandle, R"({"version":1,"action":"paste"})") == 0) {
+            refreshImage();
+            refreshLayers();
         }
     });
     m_actPaste->setObjectName("edit.paste");
@@ -3523,6 +3506,8 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     }
     invalidateOverlay();
     refreshImage();
+    // Keep shell draft chrome in sync (Enter/Esc on a pending gradient uses m_gradientLine).
+    if (m_tool == Tool::Gradient || m_tool == Tool::Shape) syncCanvasDrafts();
     if (kind == 2 || kind == 0) {
         syncToolFromSession();    // a double-click on live text switches to the Type tool, as on the Mac
         syncTextEditor();         // the shell's inline editor follows the session's text draft
@@ -6657,33 +6642,71 @@ void SessionWindow::setupOptionsBar() {
     layoutGradient->addWidget(lblGradTitle);
 
     auto *comboGradType = new QComboBox(pageGradient);
-    comboGradType->addItems({tr("Linear"), tr("Radial"), tr("Angle"), tr("Reflected"), tr("Diamond")});
-    connect(comboGradType, &QComboBox::currentTextChanged, this, [this](const QString &t) { m_gradientType = t; });
+    comboGradType->setObjectName("gradient.shape");
+    // Tip GradientShape only has Linear and Radial (Angle/Reflected/Diamond are not in upstream).
+    comboGradType->addItems({tr("Linear"), tr("Radial")});
+    connect(comboGradType, &QComboBox::currentTextChanged, this, [this](const QString &t) {
+        m_gradientType = t;
+        sendCommandQuiet({{"action", "setGradientSettings"}, {"kind", t}});
+        refreshImage();
+    });
     layoutGradient->addWidget(comboGradType);
 
-    auto *lblGradBlend = new QLabel(tr("Blend:"), pageGradient);
-    lblGradBlend->setStyleSheet(labelStyle);
-    layoutGradient->addWidget(lblGradBlend);
-    auto *comboGradBlend = new QComboBox(pageGradient);
-    comboGradBlend->addItems(blendModes());
-    layoutGradient->addWidget(comboGradBlend);
+    auto *comboGradStyle = new QComboBox(pageGradient);
+    comboGradStyle->setObjectName("gradient.style");
+    comboGradStyle->addItems({tr("Foreground to Transparent"), tr("Foreground to Background")});
+    connect(comboGradStyle, &QComboBox::currentTextChanged, this, [this](const QString &t) {
+        sendCommandQuiet({{"action", "setGradientSettings"}, {"name", t}});
+        refreshImage();
+    });
+    layoutGradient->addWidget(comboGradStyle);
 
     auto *lblGradOpac = new QLabel(tr("Opacity:"), pageGradient);
     lblGradOpac->setStyleSheet(labelStyle);
     layoutGradient->addWidget(lblGradOpac);
     auto *spinGradOpac = new QSpinBox(pageGradient);
-    spinGradOpac->setRange(0, 100);
+    spinGradOpac->setObjectName("gradient.opacity");
+    spinGradOpac->setRange(1, 100);
     spinGradOpac->setValue(m_gradientOpacity);
     spinGradOpac->setSuffix(tr(" %"));
     spinGradOpac->setFixedWidth(54);
     spinGradOpac->setStyleSheet(spinStyle);
-    connect(spinGradOpac, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) { m_gradientOpacity = val; });
+    connect(spinGradOpac, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int val) {
+        m_gradientOpacity = val;
+        sendCommandQuiet({{"action", "setGradientSettings"}, {"parameters", QJsonObject{{"opacity", val / 100.0}}}});
+        refreshImage();
+    });
     layoutGradient->addWidget(spinGradOpac);
 
     auto *chkGradReverse = new QCheckBox(tr("Reverse"), pageGradient);
+    chkGradReverse->setObjectName("gradient.reverse");
     chkGradReverse->setChecked(m_gradientReverse);
-    connect(chkGradReverse, &QCheckBox::toggled, this, [this](bool val) { m_gradientReverse = val; });
+    connect(chkGradReverse, &QCheckBox::toggled, this, [this](bool val) {
+        m_gradientReverse = val;
+        sendCommandQuiet({{"action", "setGradientSettings"}, {"parameters", QJsonObject{{"reversed", val ? 1.0 : 0.0}}}});
+        refreshImage();
+    });
     layoutGradient->addWidget(chkGradReverse);
+
+    auto *btnGradCancel = new QPushButton(tr("Cancel"), pageGradient);
+    btnGradCancel->setObjectName("gradient.cancel");
+    btnGradCancel->setStyleSheet(btnStyle);
+    connect(btnGradCancel, &QPushButton::clicked, this, [this] {
+        sendCommand({{"action", "gradientCancel"}});
+        refreshImage();
+        updateOptionsBar();
+    });
+    auto *btnGradApply = new QPushButton(tr("Apply"), pageGradient);
+    btnGradApply->setObjectName("gradient.apply");
+    btnGradApply->setStyleSheet(btnStyle);
+    connect(btnGradApply, &QPushButton::clicked, this, [this] {
+        sendCommand({{"action", "gradientCommit"}});
+        refreshImage();
+        refreshLayers();
+        updateOptionsBar();
+    });
+    layoutGradient->addWidget(btnGradCancel);
+    layoutGradient->addWidget(btnGradApply);
 
     layoutGradient->addStretch();
     m_optionsStack->addWidget(pageGradient);
