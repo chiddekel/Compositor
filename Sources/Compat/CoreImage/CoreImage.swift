@@ -190,7 +190,11 @@ private indirect enum Node {
         case .transform(let n, let t):
             guard abs(t.a * t.d - t.b * t.c) > 1e-12 else { return Raster(rect: region) }
             let inv = t.inverted()
-            let src = n.extent.isInfiniteLike ? region : region.applying(inv).insetBy(dx: -2, dy: -2).integral.intersection(n.extent.integral)
+            // Always sample the child in the pre-transform space of `region`. Using `region` itself when
+            // the child is infinite (clampedToExtent) skipped the shrink of tip's Scanlines glow
+            // (scale-down → blur → scale-up), so the bloom never left the CRT lines.
+            let mapped = region.applying(inv).insetBy(dx: -2, dy: -2).integral
+            let src = n.extent.isInfiniteLike ? mapped : mapped.intersection(n.extent.integral)
             let input = n.eval(src.isNull ? region : src, env)
             let m = [Double(inv.a), Double(inv.c), Double(inv.tx), Double(inv.b), Double(inv.d), Double(inv.ty), 0, 0, 1]
             return RasterFilters.projective(input, inverse: m, output: region)

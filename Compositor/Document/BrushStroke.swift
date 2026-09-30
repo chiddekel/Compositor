@@ -46,16 +46,22 @@ nonisolated enum BrushRaster {
     /// is copied byte for byte, several times quicker than drawing it.
     static func copy(_ image: CGImage) throws -> CGContext {
         let context = try Self.context(width: image.width, height: image.height, mask: false)
+        // Read through Data.withUnsafeBytes: on Linux CFData is Data, and CFDataGetBytePtr's
+        // `(data as NSData).bytes` dangles at end-of-statement, so a memcpy from it can see
+        // freed memory (Scanlines glow lost the first row after makeImage → copy).
         guard image.bitsPerPixel == 32, image.bitsPerComponent == 8, image.bitmapInfo == context.bitmapInfo,
               image.colorSpace == context.colorSpace, let source = image.dataProvider?.data,
-              let bytes = CFDataGetBytePtr(source), let target = context.data,
-              CFDataGetLength(source) >= image.bytesPerRow * (image.height - 1) + image.width * 4 else {
+              let target = context.data,
+              source.count >= image.bytesPerRow * (image.height - 1) + image.width * 4 else {
             draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height), mask: false, context: context)
             return context
         }
         let row = image.width * 4
-        for y in 0..<image.height {
-            memcpy(target + y * context.bytesPerRow, bytes + y * image.bytesPerRow, row)
+        source.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self).baseAddress!
+            for y in 0..<image.height {
+                memcpy(target + y * context.bytesPerRow, bytes + y * image.bytesPerRow, row)
+            }
         }
         return context
     }

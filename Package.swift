@@ -118,22 +118,37 @@ let package = Package(
                 "SeparableBlend.swift",
                 "TiledLayerRenderer.swift",
                 "TransformOverlay.swift",
+                // Built through linux/kernels/DitherPixelsLinux.c (serial dispatch_apply).
+                "DitherPixels.c",
             ],
             publicHeadersPath: ".",
             cSettings: [
                 .define("COMPOSITOR_PORTABLE"),
-                // Tip 1.4.4 Scanlines uses Grand Central Dispatch (`dispatch_apply` + blocks). The Freedesktop
-                // Swift extension ships libdispatch headers and BlocksRuntime; wire them so the unmodified
-                // DitherPixels.c builds on Linux the same way it does on macOS.
+            ]
+        ),
+        // Tip DitherPixels.c with a serial dispatch_apply so Scanlines glow matches macOS on Linux.
+        .target(
+            name: "CompositorDitherKernel",
+            dependencies: [],
+            path: "linux/kernels",
+            exclude: [
+                "CheckedAdjustPixels.c", "CheckedBrushPixels.c", "CheckedContentFill.c",
+                "CheckedHealPixels.c", "CheckedLensPixels.c", "CheckedNoisePixels.c", "CheckedWandPixels.c",
+                "CompositorKernelChecks.h",
+            ],
+            sources: ["DitherPixelsLinux.c"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("COMPOSITOR_PORTABLE"),
+                .headerSearchPath("../../Compositor/Rendering"),
+                .headerSearchPath("."),   // stub linux/kernels/dispatch/dispatch.h
                 .unsafeFlags([
                     "-fblocks",
-                    "-I/usr/lib/sdk/swift6/lib/swift",
                     "-I/usr/lib/sdk/swift6/lib/swift/Block",
                 ]),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/lib/sdk/swift6/lib/swift/linux"]),
-                .linkedLibrary("dispatch"),
                 .linkedLibrary("BlocksRuntime"),
             ]
         ),
@@ -194,7 +209,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal"] + ["CompositorKernels", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal"] + ["CompositorKernels", "CompositorDitherKernel", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",

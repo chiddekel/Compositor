@@ -13,8 +13,10 @@ public typealias CFMutableData = NSMutableData
 public typealias CFTypeRef = AnyObject
 
 public func CFDataGetBytePtr(_ data: CFData) -> UnsafePointer<UInt8>? {
-    // Valid while `data` lives — same contract as Apple's CFDataGetBytePtr for toll-free Data.
-    UnsafeRawPointer((data as NSData).bytes).assumingMemoryBound(to: UInt8.self)
+    // Apple: toll-free CFData keeps this pointer valid for `data`'s lifetime. Here CFData is Data,
+    // and `(data as NSData).bytes` dangles when that temporary NSData is released at end-of-statement.
+    // Call sites must use `data.withUnsafeBytes` (see BrushRaster.copy) instead of this helper.
+    data.withUnsafeBytes { $0.baseAddress?.assumingMemoryBound(to: UInt8.self) }
 }
 
 public func CFDataGetLength(_ data: CFData) -> Int { data.count }
