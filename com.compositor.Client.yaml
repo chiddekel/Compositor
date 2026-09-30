@@ -271,6 +271,10 @@ modules:
       - install -Dm644 third_party/models/LICENSE-U2Net.txt /app/share/compositor/models/LICENSE-U2Net.txt
       - install -Dm644 flatpak/com.compositor.Client.desktop /app/share/applications/com.compositor.Client.desktop
       - install -Dm644 flatpak/com.compositor.Client.metainfo.xml /app/share/metainfo/com.compositor.Client.metainfo.xml
+      # MIME + thumbnailer: Finder Quick Look / Dock-Services twin for .comp packages.
+      - install -Dm644 flatpak/com.compositor.Client.xml /app/share/mime/packages/com.compositor.Client.xml
+      - install -Dm644 flatpak/com.compositor.Client.thumbnailer /app/share/thumbnailers/com.compositor.Client.thumbnailer
+      - install -Dm755 build/compositor-thumbnailer /app/bin/compositor-thumbnailer
       - install -Dm644 LICENSE /app/share/licenses/com.compositor.Client/LICENSE
     sources:
        # Local source for development. Release builds replace this with the

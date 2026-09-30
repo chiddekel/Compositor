@@ -7,13 +7,17 @@ import Testing
 
 /// Metal → Vulkan GPU canvas smoke: `GPUCanvasRenderer.shared` and `MetalWarp` when Vulkan/FORCE is set.
 @MainActor struct GPUCanvasLinuxTests {
-    @Test func sharedIsAvailableWhenForcedOrVulkan() {
-        // COMPOSITOR_FORCE_GPU_CANVAS=1 or a loaded Skia bridge with Vulkan makes shared non-nil.
-        #expect(GPUCanvasRenderer.shared != nil || ProcessInfo.processInfo.environment["COMPOSITOR_CPU_CANVAS"] == "1")
+    @Test func sharedIsNilByDefaultAndAvailableWhenForced() {
+        // Shipped default: Core Graphics canvas (shared nil). FORCE=1 enables GPU present path.
+        if ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1" {
+            #expect(GPUCanvasRenderer.shared != nil)
+        } else if ProcessInfo.processInfo.environment["COMPOSITOR_CPU_CANVAS"] != "1" {
+            #expect(GPUCanvasRenderer.shared == nil)
+        }
     }
 
-    @Test func metalWarpInitsWhenGPUCanvasIsPresent() throws {
-        guard GPUCanvasRenderer.shared != nil else { return }
+    @Test func metalWarpInitsWithWorkingContext() throws {
+        // Linux MetalWarp is CPU dab math; it must init even when the GPU canvas present path is off.
         let context = try BrushRaster.context(width: 32, height: 32, mask: false)
         let warp = MetalWarp(pixels: context)
         #expect(warp != nil)

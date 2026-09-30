@@ -819,6 +819,8 @@ extern "C" int compositor_host_package_smoke(int argc, char **argv) {
         window.initDemoDocument();
         const QString source = temporary.filePath("source.comp");
         require(window.writeProjectPackage(source), "template save failed");
+        require(QFileInfo::exists(source + "/QuickLook/Preview.jpg"),
+                "QuickLook/Preview.jpg missing after save (Finder Quick Look twin)");
         const auto readManifest = [](const QString &package) {
             QFile file(package + "/manifest.json");
             require(file.open(QIODevice::ReadOnly), "manifest read failed");

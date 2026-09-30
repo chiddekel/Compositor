@@ -1,5 +1,7 @@
 # Upstream release feature inventory → Linux status (tip `v1.4.5` / `11d8d7a`)
 
+**Editor status:** product features through tip **1.4.5** are ✅ on GNU/Linux (CPU/CG canvas by default + Vulkan brush/effects; Flatpak adapters for Sparkle/Quick Look/Dock). `GPUCanvasRenderer.shared` is nil unless `COMPOSITOR_FORCE_GPU_CANVAS=1` (GPU present Adapter / parity work).
+
 Source: [robbietilton/Compositor releases](https://github.com/robbietilton/Compositor/releases) plus the Features section of upstream `README.md`. Treat each release note as the catch-up **prompt**: inherit tip trees, then Port / Adapter only what Linux still lacks.
 
 Legend: **✅** Linux matches tip · **🟡** works with known UX gap · **❌** missing · **n/a** macOS-only · **e2e** covered by `tests/ui_e2e`.
@@ -39,9 +41,9 @@ Legend: **✅** Linux matches tip · **🟡** works with known UX gap · **❌**
 | Files | .comp save/open, PSD/PSB, SVG, RAW, JPEG preview export | ✅ | save_reopen, psd_* |
 | App | Remappable shortcuts, label scrubbing | ✅ | — |
 | App | Quit/close while busy (gradient/dialog) settle (1.4.4) | ✅ | — |
-| App | Sparkle auto-update | n/a | Flatpak updates |
-| App | Finder Quick Look / thumbnails | n/a | Adapter writes preview where useful |
-| App | macOS 26 / Apple silicon packaging | n/a | — |
+| App | Sparkle auto-update | ✅ | FlatpakUpdateService + Help → Check for Updates |
+| App | Finder Quick Look / thumbnails | ✅ | `QuickLook/Preview.jpg` on save + compositor-thumbnailer / MIME |
+| App | macOS 26 / Apple silicon packaging | n/a | Flatpak `com.compositor.Client` |
 
 ## Release deltas (commit subjects / notes as prompts)
 
@@ -71,8 +73,8 @@ GPU canvas family — **Adapter Metal → Vulkan (Skia Ganesh)**; CPU/CG is fail
 | --- | --- | --- |
 | `MetalBrushCoverage` | Vulkan compute ([`backends/brush`](../backends/brush)) | C CPU kernel (same coverage math) |
 | `MetalLayerEffects` | Vulkan compute ([`backends/effects`](../backends/effects)) | OpenCV → C++ CPU (same pass order) |
-| `GPUCanvasRenderer` / canvas present | CI present → CG/Qt ([`GPUCanvas`](../Sources/Overrides/GPUCanvas.swift)); Skia Vulkan blit ([`SkiaBridge`](../linux/graphics/SkiaBridge.cpp)) | **Default:** Core Graphics (Mac look). `drawOnGPU` opt-in via `COMPOSITOR_FORCE_GPU_CANVAS` until GPU↔CPU pixel parity |
-| `MetalWarp` / `GPUNoise` | Same-API overrides; dab/noise math mirrors Metal kernels | CPU dabs / NoisePixels |
+| `GPUCanvasRenderer` / canvas present | CI present → CG/Qt ([`GPUCanvas`](../Sources/Overrides/GPUCanvas.swift)); optional Vulkan when forced | **Shipped default:** Core Graphics (Mac look). GPU present is Adapter/opt-in (`COMPOSITOR_FORCE_GPU_CANVAS`) — product tools use CPU/CG + Vulkan brush/effects |
+| `MetalWarp` / `GPUNoise` | CPU dab math matching Metal kernels ([`MetalWarp`](../Sources/Overrides/MetalWarp.swift)); NoisePixels | Always available (not gated on GPU canvas) |
 
 ### v1.3 → v1.3.4–1.3.7
 Color Range · Type per-letter font/color · Dither · Grid Settings · Snap To · JPEG zoomable preview · font previews · New Canvas presets · ⌘Z while typing — **✅**.

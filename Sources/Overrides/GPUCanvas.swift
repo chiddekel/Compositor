@@ -1,9 +1,9 @@
 // OVERRIDE for Compositor/Rendering/GPUCanvas.swift (excluded from the Linux build).
 //
-// Metal → Vulkan: `GPUCanvasRenderer.shared` drives tip `EditorCanvas.drawOnGPU`. Constraint: look, feel,
-// and UX must match Mac (sRGB, orientation, sampling, brush response) — not API-only stubs. When a Vulkan
-// ICD is present, `shared` is non-nil so colour tools (adjustments, Soft Light, warp, noise) use the GPU
-// path; set COMPOSITOR_CPU_CANVAS=1 or COMPOSITOR_FORCE_GPU_CANVAS=0 to stay on Core Graphics.
+// Metal → Vulkan: `GPUCanvasRenderer.shared` drives tip `EditorCanvas.drawOnGPU` when
+// COMPOSITOR_FORCE_GPU_CANVAS=1. Constraint: look, feel, and UX must match Mac (sRGB, orientation,
+// sampling, brush response). Shipped default is Core Graphics (`shared == nil`) so the Qt canvas
+// matches Mac CG look; set COMPOSITOR_FORCE_GPU_CANVAS=1 to exercise the GPU present path.
 // CompRenderer's Vulkan composite via SkiaBridge is independent and stays on.
 
 import Foundation
@@ -53,15 +53,14 @@ final class CAMetalLayer {
         // Opt out: CPU canvas forever (Settings / CI).
         if ProcessInfo.processInfo.environment["COMPOSITOR_CPU_CANVAS"] == "1" { return false }
         if UserDefaults.standard.bool(forKey: "CompositorCPUCanvas") { return false }
-        // Explicit force / deny for parity work.
+        // Explicit force / deny for parity work and GPUCanvasTests.
         if let forced = ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] {
             if forced == "1" { return true }
             if forced == "0" { return false }
         }
-        // Metal → Vulkan: when a Vulkan ICD exists, enable the GPU canvas path so colour
-        // adjustments (Hue/Saturation, Levels, …), Soft Light, warp and noise tools match tip's
-        // Metal drawOnGPU. CompRenderer / SkiaBridge stay the composite backend underneath.
-        return CanvasBackends.vulkanGPUAvailable
+        // Shipped default: Core Graphics canvas (Mac look on Linux). drawOnGPU present stays
+        // opt-in until GPU↔CPU pixel diffs meet tip thresholds; brush/effects already use Vulkan.
+        return false
     }
 
     private func release(keepingLastFrame: Bool) {

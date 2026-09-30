@@ -146,6 +146,7 @@ uint64_t compositor_save_capture(uint64_t handle);
 int64_t compositor_save_export_manifest(uint64_t token, uint8_t *output, size_t capacity);
 int64_t compositor_save_export_layer(uint64_t token, const uint8_t *layer_id, size_t count,
                                     int32_t mask, uint8_t *output, size_t capacity, size_t *width, size_t *height);
+int64_t compositor_save_export_preview(uint64_t token, uint8_t *output, size_t capacity);
 int32_t compositor_save_mark_saved(uint64_t token);
 void compositor_save_release(uint64_t token);
 int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
@@ -4990,6 +4991,23 @@ bool writeFrozenProjectPackage(const QString &path, uint64_t snapshot, QString *
             if (image.isNull() || !writer.write(image) || !encodedAsset.flush()) return false;
             encodedAsset.close();
             if (QFileInfo(encodedAsset.fileName()).size() > compositor::projectEncodedAssetBytes) return false;
+        }
+    }
+
+    // macOS Quick Look Space-bar preview; Freedesktop thumbnailers read the same path.
+    // Autosave skips the flatten — recovery packages do not need Finder/file-manager thumbs.
+    if (!path.endsWith(QStringLiteral("/autosave.comp"), Qt::CaseInsensitive)
+        && !path.endsWith(QStringLiteral("autosave.comp"), Qt::CaseInsensitive)) {
+        const int64_t previewSize = compositor_save_export_preview(snapshot, nullptr, 0);
+        if (previewSize > 0) {
+            std::vector<uint8_t> preview(static_cast<size_t>(previewSize));
+            if (compositor_save_export_preview(snapshot, preview.data(), preview.size()) == previewSize) {
+                if (!temporary.mkpath("QuickLook")) return false;
+                QFile previewFile(temporary.filePath(QStringLiteral("QuickLook/Preview.jpg")));
+                if (!previewFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+                if (previewFile.write(reinterpret_cast<const char *>(preview.data()), previewSize) != previewSize
+                    || !previewFile.flush()) return false;
+            }
         }
     }
 

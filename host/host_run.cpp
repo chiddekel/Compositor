@@ -145,12 +145,17 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     if (!appIcon.isNull()) {
         window.setWindowIcon(appIcon);
     }
+    bool openNewCanvas = false;
     for (int i = 1; i < argc; ++i) {
         if (!argv[i]) continue;
         QString arg = QString::fromLocal8Bit(argv[i]);
+        if (arg == QLatin1String("--new-canvas")) { openNewCanvas = true; continue; }
         if (arg.startsWith(QLatin1Char('-'))) continue;
         if (QFile::exists(arg)) {
-            if (arg.endsWith(QStringLiteral(".cproject"), Qt::CaseInsensitive)) {
+            // .comp is the directory package (macOS document package twin); keep .cproject as alias.
+            if (arg.endsWith(QStringLiteral(".comp"), Qt::CaseInsensitive)
+                || arg.endsWith(QStringLiteral(".cproject"), Qt::CaseInsensitive)
+                || QFileInfo(arg + QStringLiteral("/manifest.json")).isFile()) {
                 window.loadProject(arg);
             } else {
                 window.importImage(arg);
@@ -161,6 +166,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     if (qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty() && !QCoreApplication::arguments().filter(QStringLiteral("-smoke")).size())
         window.restoreWindowPlacement();
     window.show();
+    if (openNewCanvas) window.newCanvasTab();
     installUIE2EBridge(window);
     if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
         // COMPOSITOR_GRAB_SIZE=WxH: the window at that size first (e.g. tall enough to show the whole tool rail).

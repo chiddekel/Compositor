@@ -46,9 +46,9 @@ option(COMPOSITOR_REQUIRE_VENDORED_DEPS OFF)
 #     (refuses to link the forbidden host-system Qt).
 #   - COMPOSITOR_BUILD_HOST=ON: local-dev escape hatch, accept host Qt6.
 if(COMPOSITOR_BUILD_HOST)
-    find_package(Qt6 COMPONENTS Widgets DBus Svg QUIET)
+    find_package(Qt6 COMPONENTS Widgets DBus Svg Gui QUIET)
 else()
-    find_package(Qt6 COMPONENTS Widgets DBus Svg QUIET)
+    find_package(Qt6 COMPONENTS Widgets DBus Svg Gui QUIET)
     if(Qt6_FOUND AND NOT DEFINED ENV{FLATPAK_ID})
         message(FATAL_ERROR
             "Qt6 was found (at ${Qt6_DIR}) but this is a host-system Qt, not the "
@@ -297,6 +297,10 @@ if(Qt6_FOUND)
         target_compile_definitions(CompositorHostRun PRIVATE COMPOSITOR_SKIA_BRIDGE=1)
         target_link_libraries(CompositorHostRun PUBLIC CompositorSkiaBridge)
     endif()
+
+    # Freedesktop thumbnailer for .comp packages (reads QuickLook/Preview.jpg).
+    add_executable(compositor-thumbnailer host/ThumbnailerMain.cpp)
+    target_link_libraries(compositor-thumbnailer PRIVATE Qt6::Gui)
 endif()
 
 # ── Tests ──────────────────────────────────────────────────────────────

@@ -294,7 +294,7 @@ struct KeyboardShortcutsSheet: View {
 
 /// Replacement for the blocked `ShortcutRecorder` (an `NSViewRepresentable` `NSButton` using `#selector`
 /// target-action). Shows the current chord and flips to "Press keys…" on click, matching the real control's states;
-/// while recording, the shell hands it the next key pressed (compatKeyCapture), which completes the rebinding.
+/// while recording, the shell hands it the next key pressed (compatKeyCapture / KeyCaptureFilter).
 private struct ShortcutRecorder: View {
     let chord: ShortcutChord
     let recording: Bool
@@ -309,9 +309,12 @@ private struct ShortcutRecorder: View {
         }
         .buttonStyle(.bordered)
         .accessibilityLabel(recording ? "Press a shortcut" : chord.label)
-        // Recording: the next key pressed becomes the chord (Esc cancels), as the real control's keyDown does.
+        // Recording: next key becomes the chord (same as Mac keyDown — single character only; Esc is "\u{1b}").
         if recording {
-            button.compatKeyCapture { key, modifiers in finish(key.isEmpty ? nil : ShortcutChord(key, modifiers)) }
+            button.compatKeyCapture { key, modifiers in
+                guard key.count == 1 else { return }
+                finish(ShortcutChord(key, modifiers))
+            }
         } else {
             button
         }

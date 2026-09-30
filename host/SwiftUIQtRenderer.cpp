@@ -1012,6 +1012,33 @@ private:
 };
 
 extern "C" int32_t compositor_current_cursor(void);
+extern "C" int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
+
+/// Apply whatever NSCursor.set() last chose: stock shapes 0–9, or the custom picture for code 10
+/// (NumericScrub arrows, eyedropper, zoom magnifier — same path as the canvas and layer list).
+static void applyCompositorCursor(QWidget *widget) {
+    if (!widget) return;
+    static const Qt::CursorShape shapes[] = {
+        Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor, Qt::ClosedHandCursor,
+        Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor, Qt::SizeBDiagCursor,
+        Qt::ArrowCursor
+    };
+    const int code = compositor_current_cursor();
+    if (code < 0 || code > 10) return;
+    if (code == 10) {
+        int32_t w = 0, h = 0;
+        double hx = 0, hy = 0;
+        const int64_t size = compositor_canvas_cursor_image(&w, &h, &hx, &hy, nullptr, 0);
+        if (size > 0 && size == int64_t(w) * h * 4) {
+            QByteArray bytes(qsizetype(size), Qt::Uninitialized);
+            compositor_canvas_cursor_image(&w, &h, &hx, &hy, reinterpret_cast<uint8_t *>(bytes.data()), size_t(bytes.size()));
+            const QImage image(reinterpret_cast<const uchar *>(bytes.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied);
+            widget->setCursor(QCursor(QPixmap::fromImage(image.copy()), qRound(hx), qRound(hy)));
+            return;
+        }
+    }
+    widget->setCursor(shapes[code]);
+}
 
 /// SwiftUI's `onContinuousHover`: the pointer's position in the view as it moves over it, "ended" when it leaves; the
 /// cursor is whatever the handler set (NSCursor.set()).
@@ -1055,11 +1082,7 @@ protected:
             if (latest.isEmpty()) return;
             dispatch(handle, panel, id, QStringLiteral("onContinuousHover"), latest);
             if (!widget) return;
-            static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
-                Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
-                Qt::SizeBDiagCursor, Qt::ArrowCursor};
-            const int code = compositor_current_cursor();
-            if (code >= 0 && code <= 10) widget->setCursor(shapes[code]);
+            applyCompositorCursor(widget);
         });
         return false;
     }

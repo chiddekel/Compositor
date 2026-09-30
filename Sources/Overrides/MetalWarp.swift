@@ -29,7 +29,9 @@ import CoreImage
     private var scratchOrigin = SIMD2<Int32>.zero
 
     init?(pixels context: CGContext) {
-        guard GPUCanvasRenderer.shared != nil, let data = context.data else { return nil }
+        // Linux MetalWarp is CPU-backed dab math (tip 1.4.2 sharp Liquify). Do not gate on
+        // GPUCanvasRenderer.shared — that only controls the Metal/Vulkan canvas present path.
+        guard let data = context.data else { return nil }
         width = context.width
         height = context.height
         bytesPerRow = context.bytesPerRow

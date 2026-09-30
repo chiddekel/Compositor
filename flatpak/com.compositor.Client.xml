@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-compositor-project">
+    <comment>Compositor project</comment>
+    <comment xml:lang="en">Compositor project</comment>
+    <acronym>COMP</acronym>
+    <icon name="com.compositor.Client"/>
+    <glob-deleteall/>
+    <glob pattern="*.comp"/>
+    <glob pattern="*.cproject"/>
+  </mime-type>
+</mime-info>

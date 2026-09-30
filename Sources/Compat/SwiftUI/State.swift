@@ -191,10 +191,11 @@ public struct EnvironmentValues {
     public var displayScale: CGFloat { 1 }
 }
 
-/// Scroll view camera for `.scrollPosition` (JPEG export preview); Linux only needs the type.
+/// Scroll view camera for `.scrollPosition` (JPEG export preview).
 public struct ScrollPosition: Equatable {
+    public private(set) var point: CGPoint = .zero
     public init() {}
-    public mutating func scrollTo(point: CGPoint) { _ = point }
+    public mutating func scrollTo(point: CGPoint) { self.point = point }
     public mutating func scrollTo(edge: Any) { _ = edge }
 }
 

@@ -85,6 +85,24 @@ nonisolated public func compositorSaveExportLayer(_ token: UInt64, _ layerID: Un
     return Int64(size)
 }
 
+/// Finder Quick Look twin: JPEG bytes for `QuickLook/Preview.jpg` inside the package (same
+/// ImageExporter path as macOS). Returns 0 when the canvas is too large to flatten on every save.
+@_cdecl("compositor_save_export_preview")
+nonisolated public func compositorSaveExportPreview(_ token: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard capacity >= 0, let snapshot = ProjectSaveSnapshots.get(token) else { return -1 }
+    final class Box: @unchecked Sendable { var data: Data? }
+    let box = Box()
+    let done = DispatchSemaphore(value: 0)
+    Task {
+        box.data = await ImageExporter.shared.quickLookImages(snapshot.project)?.preview
+        done.signal()
+    }
+    done.wait()
+    guard let data = box.data, !data.isEmpty else { return 0 }
+    if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
+    return Int64(data.count)
+}
+
 /// Only call after successful installation of the package. Autosave releases its
 /// snapshot without marking a user save. New edits retain their modified state.
 @_cdecl("compositor_save_mark_saved")

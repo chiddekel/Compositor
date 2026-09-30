@@ -68,7 +68,7 @@ import AppKit
     }
 
     /// The cursor as a code the shell maps: 0 arrow, 1 I-beam, 2 crosshair, 3 open hand, 4 closed hand, 5 pointing hand,
-    /// 6 left-right, 7 up-down, 8 diagonal ↖↘, 9 diagonal ↗↙, 10 a picture of the app's own (not yet mapped).
+    /// 6 left-right, 7 up-down, 8 diagonal ↖↘, 9 diagonal ↗↙, 10 custom picture (`compositor_canvas_cursor_image`).
     static func cursorCode(_ cursor: NSCursor) -> Int32 {
         switch cursor.shape {
         case .arrow: return 0
