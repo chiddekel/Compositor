@@ -735,7 +735,8 @@ static int vulkan_render_rgba(CompRenderer* r,
         paint.setBlendMode(map_cg_blend_mode(cg_blend_mode));
         canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
         if (!surface->readPixels(dstPixmap, 0, 0)) return -2;
-        r->gr_context->flushAndSubmit(true);
+        // Skia canvaskit/0.42+: flushAndSubmit takes GrSyncCpu, not bool.
+        r->gr_context->flushAndSubmit(GrSyncCpu::kYes);
         r->last_executed = COMP_RENDERER_VULKAN;
         return 0;
     }

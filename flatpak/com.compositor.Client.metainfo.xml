@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.5-linux-alpha.2" date="2026-09-30" type="development">
+      <description><p>Tip 1.4.5 Linux catch-up: live gradient preview, Copy Merged/Paste, Smudge/Liquify under 150 ms with a responsive release, Cut through every selected layer, and a Skia Ganesh Flatpak build fix.</p></description>
+    </release>
     <release version="1.4.5-linux-alpha.1" date="2026-09-30" type="development">
       <description><p>Tip 1.4.5 Linux catch-up: live gradient preview, Copy Merged/Paste, Smudge/Liquify under 150 ms with a responsive release, and Cut through every selected layer.</p></description>
     </release>
