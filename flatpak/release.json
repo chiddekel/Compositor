@@ -1,6 +1,6 @@
 {
   "app_id": "com.compositor.Client",
-  "version": "1.2.0-linux-alpha.1",
+  "version": "1.4.5-linux-alpha.1",
   "channel": "alpha",
   "architecture": "x86_64",
   "repository": "chiddekel/Compositor",

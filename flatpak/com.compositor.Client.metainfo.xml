@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.5-linux-alpha.1" date="2026-09-30" type="development">
+      <description><p>Tip 1.4.5 Linux catch-up: live gradient preview, Copy Merged/Paste, Smudge/Liquify under 150 ms with a responsive release, and Cut through every selected layer.</p></description>
+    </release>
     <release version="1.2.0-linux-alpha.1" date="2026-09-27" type="development">
       <description><p>Keep the newly created canvas when undoing all edits on GNU/Linux, preserving the initial layer, redo history, and unsaved document state.</p></description>
     </release>
