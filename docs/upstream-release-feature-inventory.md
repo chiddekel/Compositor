@@ -1,6 +1,6 @@
-# Upstream release feature inventory → Linux status (tip `v1.4.1` / `3b50e5d`)
+# Upstream release feature inventory → Linux status (tip `v1.4.5` / `11d8d7a`)
 
-Source: [robbietilton/Compositor releases](https://github.com/robbietilton/Compositor/releases) plus the Features section of upstream `README.md`. Release notes themselves are empty tags; user-visible work is taken from commit subjects between tags and the README.
+Source: [robbietilton/Compositor releases](https://github.com/robbietilton/Compositor/releases) plus the Features section of upstream `README.md`. Treat each release note as the catch-up **prompt**: inherit tip trees, then Port / Adapter only what Linux still lacks.
 
 Legend: **✅** Linux matches tip · **🟡** works with known UX gap · **❌** missing · **n/a** macOS-only · **e2e** covered by `tests/ui_e2e`.
 
@@ -28,17 +28,34 @@ Legend: **✅** Linux matches tip · **🟡** works with known UX gap · **❌**
 | Painting | Brush / Erase / Clone / Heal / Smear | ✅ | brush_*, tool_*, smear_feedback_* |
 | Painting | paintRefusal explanations | ✅ | tip_paint_refusal_folder |
 | Painting | Clone/Blur at layer resolution | ✅ | — |
+| Painting | Blur Radius; Liquify sharp / Smudge no ghosts (1.4.2) | ✅ | — |
+| Painting | Large-canvas Blur/Smudge/Liquify (1.4.3) | ✅ | LargeCanvasBrushTests |
 | Filters | Camera Raw, Levels, Curves, blurs, Dither, … | ✅ | effect_* |
+| Filters | Dither Scanlines CRT + Glow/Dots/Wobble (1.4.4) | ✅ | DitherTests |
+| Filters | Camera Raw curves = Photoshop parametric + RGB tone (1.4.5) | ✅ | CameraRawTests parametric* |
 | Canvas | Tabs; drag reorder + overflow “N more” menu | ✅ | tip_tab_reorder |
 | Canvas | Rulers, guides, grid, Snap To, Grid Settings | ✅ | — |
 | Canvas | Crop, Canvas/Image Size, Trim | ✅ | tool_crop |
 | Files | .comp save/open, PSD/PSB, SVG, RAW, JPEG preview export | ✅ | save_reopen, psd_* |
 | App | Remappable shortcuts, label scrubbing | ✅ | — |
+| App | Quit/close while busy (gradient/dialog) settle (1.4.4) | ✅ | — |
 | App | Sparkle auto-update | n/a | Flatpak updates |
 | App | Finder Quick Look / thumbnails | n/a | Adapter writes preview where useful |
 | App | macOS 26 / Apple silicon packaging | n/a | — |
 
-## Release deltas (commit subjects)
+## Release deltas (commit subjects / notes as prompts)
+
+### v1.4.4 → v1.4.5
+Camera Raw parametric = Photoshop; curve graph drag; tone curve on R/G/B — **Port** `DragGesture.Value.startLocation`; inherit tip curve + `adjust_camera_raw_curve_color`. **✅**
+
+### v1.4.3 → v1.4.4
+Scanlines CRT dither + Glow; quit/close mid-gradient — **Inherit** dither kernels; **Port** workspace settle; Compat `CGDataProvider.data` pin for `BrushRaster.copy`. **✅**
+
+### v1.4.2 → v1.4.3
+Blur/Smudge/Liquify on big canvases / largest brush — **Inherit** tip BrushStroke / Smudge; regenerate smudge override. **✅**
+
+### v1.4.1 → v1.4.2
+Liquify sharp, Smudge no ghosts, Blur Radius — **Port** MetalWarp tip + blurRadius ABI. **✅**
 
 ### v1.4 → v1.4.1
 paintRefusal · native-res clone/blur · Cancel/Apply gating · mask reveal + alone · HeldModifiers · tab reorder/overflow · Ungroup · live transform fields · resize snap · eye cursor — **ported**.
@@ -63,6 +80,14 @@ Color Range · Type per-letter font/color · Dither · Grid Settings · Snap To 
 ### v1.2 → v1.3
 External reload · save-while-edit · SVG · mask paint anywhere · numeric scrub · PSB — **✅**.
 
+## How to use a release as a prompt
+
+1. Read the GitHub release body (and commits between tags).
+2. Classify each bullet: **Inherit** (protected trees) · **Port** (Compat / Overrides / host) · **Adapter** · **n/a**.
+3. Merge `upstream/main`, keep `scripts/check-upstream-clean.sh` green (no hand-edits under `Compositor/` / `CompositorTests/`).
+4. Port only Linux-side gaps; regenerate generators (`gen-smudge-liquify-override.py`, …).
+5. Prove with the matching Swift tests / `scripts/run-ui-e2e.sh` cases.
+
 ## How to verify
 
 ```sh
@@ -77,3 +102,4 @@ bash scripts/run-ui-e2e.sh
 ```
 
 Unit gates: `bash scripts/check-upstream-clean.sh` and SwiftPM / LinuxOverrideTests as usual.
+`swift test --filter 'DitherTests.glowLightsBetweenTheLines|CameraRawTests.parametricCurve|CameraRawTests.curveDeepens'`.
