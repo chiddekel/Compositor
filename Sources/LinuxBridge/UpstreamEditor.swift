@@ -636,14 +636,14 @@ final class UpstreamEditor {
             }
             await s.fillSelection(with: background ? .background : .foreground)
         case "clearSelection":
-            // Cut/Clear target the active layer. Tip canEditPixels == canPaint, which refuses when the
-            // Layers panel has several selected — collapse to the active layer for the edit, then restore.
-            await Self.withSingleLayerSelection(s) { await s.clearSelectedPixels() }
+            // Tip canEditPixels == canPaint refuses when several layers are selected. Clear every
+            // selected pixel layer inside the marquee (Photoshop-style), then restore the multi-selection.
+            await Self.clearThroughSelectedLayers(s)
         case "invert": await s.invertPixels()
         case "copy": s.copySelection()
         case "copyMerged": s.copyMergedSelection()
         case "cut":
-            await Self.withSingleLayerSelection(s) { await s.cutSelection() }
+            await Self.cutThroughSelectedLayers(s)
         case "paste": s.paste()
         case "duplicateLayer": s.duplicateActiveLayer()
         case "layerViaCopy": s.layerViaCopy()
@@ -1496,7 +1496,48 @@ final class UpstreamEditor {
     }
 
     /// Tip `canPaint` / `canEditPixels` refuse Cut and Clear when the Layers panel has several selected.
-    /// Photoshop still clears the active layer; collapse to it for the edit, then put the multi-selection back.
+    /// Clear every selected pixel layer inside the marquee (one undo), then put the multi-selection back.
+    private static func clearThroughSelectedLayers(_ s: EditorSession) async {
+        guard s.selection != nil, let document = s.document else { return }
+        let selected = s.selectedLayerIDs
+        let primary = s.activeLayerID
+        let targets = document.layers.filter {
+            selected.contains($0.id) && !$0.isGroup && $0.asset != nil
+                && document.effectiveVisibleIDs.contains($0.id) && $0.adjustment == nil
+        }
+        guard !targets.isEmpty else { return }
+        if targets.count == 1 {
+            await withSingleLayerSelection(s) { await s.clearSelectedPixels() }
+            return
+        }
+        // Nest tip clears so one Undo restores every layer.
+        s.beginEdit("Clear")
+        defer {
+            s.endEdit()
+            if let primary { s.selectLayers(selected, primary: primary) }
+            else { s.selectLayers(selected, primary: targets.last?.id) }
+        }
+        for layer in targets {
+            s.selectLayers([layer.id], primary: layer.id)
+            await s.clearSelectedPixels()
+        }
+    }
+
+    /// Cut through every selected pixel layer: clipboard gets the merged selection, then Clear as above.
+    private static func cutThroughSelectedLayers(_ s: EditorSession) async {
+        guard s.selection != nil else { return }
+        let selected = s.selectedLayerIDs
+        if selected.count <= 1 {
+            await withSingleLayerSelection(s) { await s.cutSelection() }
+            return
+        }
+        // Clipboard matches what the marquee shows across the stack.
+        if s.canCopyMerged { s.copyMergedSelection() }
+        else { await withSingleLayerSelection(s) { s.copySelection() } }
+        await clearThroughSelectedLayers(s)
+    }
+
+    /// Tip `canPaint` refuses some edits when several layers are selected; collapse to the active layer for the body.
     private static func withSingleLayerSelection(_ s: EditorSession, _ body: () async -> Void) async {
         let selected = s.selectedLayerIDs
         let primary = s.activeLayerID

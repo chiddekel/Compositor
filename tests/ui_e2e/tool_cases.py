@@ -343,8 +343,16 @@ def smear_feedback(app, mode):
         live = app.image("live-smear")
         live_path = app.request("capture", name="live-desktop.png")["path"]
     finally:
+        release_started = time.perf_counter()
         app.desktop.button(False)
     app.wait(lambda s: s["pointerReleases"] > snapshot["pointerReleases"] and not s["state"]["busy"], "live smear release")
+    release_ms = (time.perf_counter() - release_started) * 1000
+    (app.artifacts / "release-latency.json").write_text(json.dumps({
+        "mode": mode, "limit_ms": 400, "canvas": [1920, 1080], "diameter": 256,
+        "path_points": len(points), "release_ms": release_ms,
+        "observer": "pointer release to session not busy; includes finishWarp commit",
+    }, indent=2))
+    assert release_ms <= 400, mode + " release hung: %.0f ms" % release_ms
     assert live.tobytes() != before.tobytes(), mode + " preview stayed frozen until release"
     x, y, sx, sy = snapshot["canvasMapping"]
     # The original edge, well behind the final pointer and away from the tool cursor.

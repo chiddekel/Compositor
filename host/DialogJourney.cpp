@@ -471,21 +471,31 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
                     "Paste undo name missing after Copy Merged");
         }
 
-        // Multi-layer panel selection must not block Cut of the active layer's pixels.
+        // Multi-layer panel selection: Cut clears the marquee on every selected pixel layer (one undo).
         {
             require(window.sendCommand({{"action", "addLayer"}}), "addLayer for multi-cut failed");
             const QJsonArray layers = window.sessionState().value("layers").toArray();
             require(layers.size() >= 2, "need two layers for multi-cut");
             const QString bottom = layers.at(0).toObject().value("id").toString();
             const QString top = layers.at(1).toObject().value("id").toString();
+            // Paint opaque pixels on both layers inside the upcoming marquee.
+            require(window.sendCommand({{"action", "selectLayer"}, {"layerID", bottom}}), "select bottom to paint failed");
+            require(window.sendCommand({{"action", "selectRectangle"}, {"x", 4}, {"y", 4}, {"width", 40}, {"height", 40}}),
+                    "marquee for bottom fill failed");
+            require(window.sendCommand({{"action", "fillForeground"}}), "fill bottom for multi-cut failed");
+            require(window.sendCommand({{"action", "selectLayer"}, {"layerID", top}}), "select top to paint failed");
+            require(window.sendCommand({{"action", "selectRectangle"}, {"x", 4}, {"y", 4}, {"width", 40}, {"height", 40}}),
+                    "marquee for top fill failed");
+            require(window.sendCommand({{"action", "fillForeground"}}), "fill top for multi-cut failed");
             require(window.sendCommand({{"action", "selectLayer"}, {"layerID", bottom}}), "select bottom failed");
             require(window.sendCommand({{"action", "selectLayer"}, {"layerID", top}, {"enabled", true}}),
                     "additive select top failed");
-            // Make the painted bottom layer active again while keeping both selected.
             require(window.sendCommand({{"action", "selectLayer"}, {"layerID", bottom}, {"enabled", true}}),
-                    "re-primary painted layer failed");
+                    "re-primary bottom while multi-selected failed");
             require(window.sendCommand({{"action", "selectRectangle"}, {"x", 4}, {"y", 4}, {"width", 40}, {"height", 40}}),
                     "selection for multi-cut failed");
+            const QImage beforeCut = exported(window, temporary.filePath("before-multi-cut.png"));
+            require(beforeCut.pixelColor(20, 20).alpha() > 200, "multi-cut fixture missing opaque pixels");
             QAction *cut = nullptr;
             for (QAction *a : window.findChildren<QAction *>()) {
                 if (a->text().remove('&') == QLatin1String("Cut")) { cut = a; break; }
@@ -495,6 +505,9 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             QApplication::processEvents();
             require(window.sessionState().value("undoName").toString() == QLatin1String("Clear"),
                     "Cut with multi-layer selection did not clear");
+            const QImage afterCut = exported(window, temporary.filePath("after-multi-cut.png"));
+            require(afterCut.pixelColor(20, 20).alpha() < 10,
+                    "Cut with all layers selected did not cut through the stack");
             // Leave a clean single-layer selection so later Type→Gradient transitions are not blocked.
             require(window.sendCommand({{"action", "deselect"}}), "deselect after multi-cut failed");
             require(window.sendCommand({{"action", "selectLayer"}, {"layerID", top}}), "restore single layer failed");

@@ -324,22 +324,34 @@ extension EditorSession {
         warp.flushPending()
         warpStroke = nil
         brushRevision += 1
-        guard !warp.points.isEmpty, let result = warp.image,
+        guard !warp.points.isEmpty else { return }
+        // Commit only the stroke's dirty tip union — full-canvas makeImage + dense tip replay
+        // was the ~1s release hang after long Liquify/Smudge strokes on Full HD.
+        let pad = ceil(warp.diameter / 2) + 2
+        var dirty = CGRect.null
+        for point in warp.points {
+            dirty = dirty.union(CGRect(x: point.x - pad, y: point.y - pad,
+                                       width: pad * 2, height: pad * 2))
+        }
+        let canvas = CGRect(x: 0, y: 0, width: warp.width, height: warp.height)
+        dirty = dirty.integral.intersection(canvas)
+        guard !dirty.isNull, !dirty.isEmpty, let result = warp.snapshot(in: dirty),
               let current = document?.layers.first(where: { $0.id == warp.layer.id }),
               current.asset?.image === warp.layer.asset?.image, current.transform == warp.layer.transform else { return }
         do {
             var settings = brushSettings
-            // A hard tip a little wider than the brush covers everything the stroke moved.
-            settings.diameter = warp.diameter + 4
+            // Hard tip a little wider than the brush; sparse stamps still cover a solid tip.
+            let tip = warp.diameter + 4
+            settings.diameter = tip
             settings.hardness = 1
             settings.opacity = 1
             let stroke = try makeRasterEdit(for: current, settings: settings)
-            stroke.clone = (result, CGRect(x: 0, y: 0, width: result.width, height: result.height), false)
+            stroke.clone = (result, dirty, false)
             stroke.replacesWithClone = true
             stroke.editName = warp.mode.rawValue
-            // The tip is solid and a little wider than the brush, so a point every twentieth of its width covers what
-            // every dab did: a big brush on a big canvas lays thousands of dabs, and replaying each one stalled the release.
-            let spacing = max(1, warp.diameter * 0.05)
+            // Hard circular tip of diameter `tip` covers when centers are ≤ tip apart; 0.05 was 10× denser
+            // than needed and dominated release after intensive strokes.
+            let spacing = max(1, tip * 0.5)
             var kept: CGPoint?
             for (index, point) in warp.points.enumerated() {
                 if let kept, index < warp.points.count - 1, hypot(point.x - kept.x, point.y - kept.y) < spacing { continue }
