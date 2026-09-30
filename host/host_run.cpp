@@ -64,7 +64,6 @@
 #include <QPointer>
 #include <QWindow>
 #include "SessionWindow.h"
-#include "UIE2EBridge.h"
 
 #if defined(COMPOSITOR_SKIA_BRIDGE)
 #include "SkiaBridge.h"
@@ -167,7 +166,6 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         window.restoreWindowPlacement();
     window.show();
     if (openNewCanvas) window.newCanvasTab();
-    installUIE2EBridge(window);
     if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
         // COMPOSITOR_GRAB_SIZE=WxH: the window at that size first (e.g. tall enough to show the whole tool rail).
         if (const QStringList wh = qEnvironmentVariable("COMPOSITOR_GRAB_SIZE").split(QLatin1Char('x')); wh.size() == 2) {

@@ -141,15 +141,6 @@ Smoke tests (add `--offscreen`):
 | `--layers-smoke` | layers dock |
 | `--brush-smoke` | brush + blend + paint |
 
-Desktop UI E2E tests drive the release app with native mouse and keyboard input on a
-private display, then check real painted pixels and saved projects:
-
-```sh
-bash scripts/run-ui-e2e.sh
-```
-
-See [Linux UI E2E](docs/linux-ui-e2e.md) for dependencies, coverage, artifacts and CI.
-
 <details>
 <summary>Manual build (what the script automates)</summary>
 

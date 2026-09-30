@@ -86,7 +86,7 @@ Primary source locations, relative to this repository:
 | Linux font control and menu integration | [TypeControls.swift](../Sources/Overrides/TypeControls.swift), [AppMenus.swift](../Sources/LinuxBridge/AppMenus.swift), [ContentView.swift](../Sources/Overrides/ContentView.swift) |
 | Scale-aware adjustment API and current exporter | [LayerAdjustment.swift](../Compositor/Document/LayerAdjustment.swift), `apply`; [ImageExporter.swift](../Compositor/IO/ImageExporter.swift) (read-only references) |
 | Linux override build selection | [Package.swift](../Package.swift), target `Compositor` exclusions and `Sources/UpstreamCore/Overrides` |
-| Conditional platform/performance items | [README.md](../README.md), [tool-e2e-status.md](tool-e2e-status.md), [linux-ui-e2e.md](linux-ui-e2e.md), [SubjectSegmentation.swift](../Sources/LinuxBridge/SubjectSegmentation.swift), [UPSTREAM_TEST_EXCLUSIONS.md](../linux/UPSTREAM_TEST_EXCLUSIONS.md) |
+| Conditional platform/performance items | [README.md](../README.md), [SubjectSegmentation.swift](../Sources/LinuxBridge/SubjectSegmentation.swift), [UPSTREAM_TEST_EXCLUSIONS.md](../linux/UPSTREAM_TEST_EXCLUSIONS.md) |
 
 The local upstream comparison (`git diff 2309a85 upstream/main -- Compositor CompositorTests`) shows the Color Range additions and font-run/format-11 changes. The protected-tree comparison (`git diff --quiet 2309a85 HEAD -- Compositor CompositorTests`) succeeds. These checks compare known revisions, not a claim that upstream can never advance.
 

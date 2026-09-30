@@ -4,46 +4,46 @@
 
 Source: [robbietilton/Compositor releases](https://github.com/robbietilton/Compositor/releases) plus the Features section of upstream `README.md`. Treat each release note as the catch-up **prompt**: inherit tip trees, then Port / Adapter only what Linux still lacks.
 
-Legend: **✅** Linux matches tip · **🟡** works with known UX gap · **❌** missing · **n/a** macOS-only · **e2e** covered by `tests/ui_e2e`.
+Legend: **✅** Linux matches tip · **🟡** works with known UX gap · **❌** missing · **n/a** macOS-only.
 
 ## Product features (README tip)
 
-| Area | Feature | Linux | e2e |
-| --- | --- | --- | --- |
-| Layers | Folders, opacity, blend modes | ✅ | PSD + layer rename |
-| Layers | Masks paint/fill/invert/blur; link/unlink | ✅ | tip_mask_* |
-| Layers | Clipping / folder masks | ✅ | — |
-| Layers | Adjustment layers (12) | ✅ | effect_* |
-| Layers | Layer effects (6) | ✅ | — |
-| Layers | Merge / duplicate / rename / reorder | ✅ | layer_rename |
-| Layers | Ungroup (⇧⌘G) + folder context menu | ✅ | tip_ungroup |
-| Layers | Mask alone (Option-click) + reveal/hide selection mask | ✅ | tip_mask_alone, tip_mask_reveal_selection |
-| Layers | Option-over-mask eye cursor | ✅ | — |
-| Transform | Move/scale/rotate/flip, free distort, multi-layer | ✅ | tool_move |
-| Transform | Live Auto Select / aspect lock via HeldModifiers | ✅ | — |
-| Transform | Field apply without Apply; Cancel/Apply only when waiting | ✅ | — |
-| Transform | Resize handle snap | ✅ | — |
-| Selections | Marquee / Lasso / Wand+Object | ✅ | tool_marquee_*, tool_lasso_*, tool_wand_* |
-| Selections | Subject, Expand/Contract/Feather | ✅ | — |
-| Selections | Color Range | ✅ | tip_color_range (opt-in `--case`) |
-| Selections | Select All → Inverse deselects full canvas | ✅ | tip_select_all_inverse |
-| Painting | Brush / Erase / Clone / Heal / Smear | ✅ | brush_*, tool_*, smear_feedback_* |
-| Painting | paintRefusal explanations | ✅ | tip_paint_refusal_folder |
-| Painting | Clone/Blur at layer resolution | ✅ | — |
-| Painting | Blur Radius; Liquify sharp / Smudge no ghosts (1.4.2) | ✅ | — |
-| Painting | Large-canvas Blur/Smudge/Liquify (1.4.3) | ✅ | LargeCanvasBrushTests |
-| Filters | Camera Raw, Levels, Curves, blurs, Dither, … | ✅ | effect_* |
-| Filters | Dither Scanlines CRT + Glow/Dots/Wobble (1.4.4) | ✅ | DitherTests |
-| Filters | Camera Raw curves = Photoshop parametric + RGB tone (1.4.5) | ✅ | CameraRawTests parametric* |
-| Canvas | Tabs; drag reorder + overflow “N more” menu | ✅ | tip_tab_reorder |
-| Canvas | Rulers, guides, grid, Snap To, Grid Settings | ✅ | — |
-| Canvas | Crop, Canvas/Image Size, Trim | ✅ | tool_crop |
-| Files | .comp save/open, PSD/PSB, SVG, RAW, JPEG preview export | ✅ | save_reopen, psd_* |
-| App | Remappable shortcuts, label scrubbing | ✅ | — |
-| App | Quit/close while busy (gradient/dialog) settle (1.4.4) | ✅ | — |
-| App | Sparkle auto-update | ✅ | FlatpakUpdateService + Help → Check for Updates |
-| App | Finder Quick Look / thumbnails | ✅ | `QuickLook/Preview.jpg` on save + compositor-thumbnailer / MIME |
-| App | macOS 26 / Apple silicon packaging | n/a | Flatpak `com.compositor.Client` |
+| Area | Feature | Linux |
+| --- | --- | --- |
+| Layers | Folders, opacity, blend modes | ✅ |
+| Layers | Masks paint/fill/invert/blur; link/unlink | ✅ |
+| Layers | Clipping / folder masks | ✅ |
+| Layers | Adjustment layers (12) | ✅ |
+| Layers | Layer effects (6) | ✅ |
+| Layers | Merge / duplicate / rename / reorder | ✅ |
+| Layers | Ungroup (⇧⌘G) + folder context menu | ✅ |
+| Layers | Mask alone (Option-click) + reveal/hide selection mask | ✅ |
+| Layers | Option-over-mask eye cursor | ✅ |
+| Transform | Move/scale/rotate/flip, free distort, multi-layer | ✅ |
+| Transform | Live Auto Select / aspect lock via HeldModifiers | ✅ |
+| Transform | Field apply without Apply; Cancel/Apply only when waiting | ✅ |
+| Transform | Resize handle snap | ✅ |
+| Selections | Marquee / Lasso / Wand+Object | ✅ |
+| Selections | Subject, Expand/Contract/Feather | ✅ |
+| Selections | Color Range | ✅ |
+| Selections | Select All → Inverse deselects full canvas | ✅ |
+| Painting | Brush / Erase / Clone / Heal / Smear | ✅ |
+| Painting | paintRefusal explanations | ✅ |
+| Painting | Clone/Blur at layer resolution | ✅ |
+| Painting | Blur Radius; Liquify sharp / Smudge no ghosts (1.4.2) | ✅ |
+| Painting | Large-canvas Blur/Smudge/Liquify (1.4.3) | ✅ |
+| Filters | Camera Raw, Levels, Curves, blurs, Dither, … | ✅ |
+| Filters | Dither Scanlines CRT + Glow/Dots/Wobble (1.4.4) | ✅ |
+| Filters | Camera Raw curves = Photoshop parametric + RGB tone (1.4.5) | ✅ |
+| Canvas | Tabs; drag reorder + overflow “N more” menu | ✅ |
+| Canvas | Rulers, guides, grid, Snap To, Grid Settings | ✅ |
+| Canvas | Crop, Canvas/Image Size, Trim | ✅ |
+| Files | .comp save/open, PSD/PSB, SVG, RAW, JPEG preview export | ✅ |
+| App | Remappable shortcuts, label scrubbing | ✅ |
+| App | Quit/close while busy (gradient/dialog) settle (1.4.4) | ✅ |
+| App | Sparkle auto-update | ✅ |
+| App | Finder Quick Look / thumbnails | ✅ |
+| App | macOS 26 / Apple silicon packaging | n/a |
 
 ## Release deltas (commit subjects / notes as prompts)
 
@@ -88,20 +88,14 @@ External reload · save-while-edit · SVG · mask paint anywhere · numeric scru
 2. Classify each bullet: **Inherit** (protected trees) · **Port** (Compat / Overrides / host) · **Adapter** · **n/a**.
 3. Merge `upstream/main`, keep `scripts/check-upstream-clean.sh` green (no hand-edits under `Compositor/` / `CompositorTests/`).
 4. Port only Linux-side gaps; regenerate generators (`gen-smudge-liquify-override.py`, …).
-5. Prove with the matching Swift tests / `scripts/run-ui-e2e.sh` cases.
+5. Prove with the matching Swift / LinuxOverride / dialog-smoke tests.
 
 ## How to verify
 
 ```sh
-# Tip feature journeys only
-UI_E2E_ARTIFACTS=/tmp/compositor-tip-e2e \
-  bash scripts/run-ui-e2e.sh --case tip_select_all_inverse --case tip_paint_refusal_folder \
-  --case tip_ungroup --case tip_mask_alone --case tip_mask_reveal_selection \
-  --case tip_color_range --case tip_tab_reorder
-
-# Full desktop suite (see docs/linux-ui-e2e.md)
-bash scripts/run-ui-e2e.sh
+bash scripts/check-upstream-clean.sh
+./scripts/run-compositor.sh --release --offscreen --dialog-smoke
 ```
 
-Unit gates: `bash scripts/check-upstream-clean.sh` and SwiftPM / LinuxOverrideTests as usual.
+Unit gates: SwiftPM / LinuxOverrideTests as usual.
 `swift test --filter 'DitherTests.glowLightsBetweenTheLines|CameraRawTests.parametricCurve|CameraRawTests.curveDeepens'`.

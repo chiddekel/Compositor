@@ -84,7 +84,7 @@ Commit structure: Part A as one commit (the catch-up), Part B as a second (the t
 - G01–G12 implemented with named test suites and native smoke journeys, per `linux/compatibility-gap-progress.md`.
 - `scripts/check-upstream-clean.sh`, `linux/upstream-parity.json`, the generator freshness checks, and `linux/patches/{color-range,text-format-11}.patch`.
 - `syncToolFromSession` and the tool-name mapping already exist; B1–B3 restructure them rather than adding a parallel mechanism.
-- `linux/interchange-verification.md`, `docs/linux-gap-feasibility-2026-09-27.md`, `docs/tool-e2e-status.md` — the evidence base for the ledger.
+- `linux/interchange-verification.md`, `docs/linux-gap-feasibility-2026-09-27.md` — the evidence base for the ledger.
 
 ### 6. NOT in scope
 
