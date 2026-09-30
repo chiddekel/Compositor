@@ -48,6 +48,11 @@ def prepare(output: Path, tag: str):
     if re.search(r"@[A-Z_]+@", page):
         raise ValueError("Unresolved website template value")
     (output / "index.html").write_text(page)
+    published = (output / "index.html").read_text()
+    if f"Version {version}" not in published:
+        raise ValueError("Download page must show Version " + version + " after template substitution")
+    if "@VERSION@" in published:
+        raise ValueError("Download page still contains unsubstituted @VERSION@")
     (output / ".nojekyll").touch()
     shutil.copyfile(ROOT / "flatpak/release-key.gpg", output / "release-key.gpg")
     shutil.copyfile(ROOT / "Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-128.png", output / "icon.png")

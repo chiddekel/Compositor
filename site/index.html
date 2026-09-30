@@ -42,7 +42,7 @@
   <div class="wrap">
     <nav aria-label="Main navigation">
       <a class="brand" href="./"><img src="icon.png" alt="" width="36" height="36">Compositor</a>
-      <div class="links"><a href="https://github.com/@REPOSITORY@/tree/GNU_Linux">Source</a><a href="@RELEASE_URL@">Release notes</a></div>
+      <div class="links"><a href="https://github.com/@REPOSITORY@/tree/GNU_Linux">Source</a><a id="release-notes-link" href="@RELEASE_URL@">Release notes</a></div>
     </nav>
     <main>
       <div class="eyebrow">Linux / Alpha</div>
@@ -50,9 +50,9 @@
       <p class="intro">Compositor is a free, open-source image editor for compositing and photo work. Layers, masks, painting, and adjustments, together on your Linux desktop.</p>
       <div class="download">
         <a class="primary" href="com.compositor.Client.flatpakref">Install Flatpak alpha</a>
-        <a class="secondary" href="@BUNDLE_URL@">Download .flatpak bundle</a>
+        <a class="secondary" id="bundle-link" href="@BUNDLE_URL@">Download .flatpak bundle</a>
       </div>
-      <p class="meta">Version @VERSION@ · Linux x86_64 · Alpha channel</p>
+      <p class="meta" id="version-meta">Version @VERSION@ · Linux x86_64 · Alpha channel</p>
       <section class="features" aria-label="Editing tools">
         <div><h2>Build with layers</h2><p>Compose images with layer masks, blend modes, selections, and transforms.</p></div>
         <div><h2>Find the right look</h2><p>Adjust color and tone, soften with Gaussian Blur, or add directional Motion Blur.</p></div>
@@ -73,5 +73,27 @@ flatpak run com.compositor.Client</code></pre>
     </main>
     <footer>Linux port maintained at <a href="https://github.com/@REPOSITORY@">@REPOSITORY@</a>.<br>Based on <a href="https://github.com/robbietilton/Compositor">upstream Compositor</a>. Free and open source under the MIT license.</footer>
   </div>
+  <script>
+    // Keep the version line and download links aligned with release.json from the same Pages deploy.
+    fetch("release.json", { cache: "no-store" }).then(function (response) {
+      if (!response.ok) throw new Error("release.json " + response.status);
+      return response.json();
+    }).then(function (release) {
+      var version = release.version;
+      var arch = release.architecture || "x86_64";
+      var channel = release.channel || "alpha";
+      var channelLabel = channel.charAt(0).toUpperCase() + channel.slice(1);
+      var meta = document.getElementById("version-meta");
+      if (meta && version) {
+        meta.textContent = "Version " + version + " · Linux " + arch + " · " + channelLabel + " channel";
+      }
+      var notes = document.getElementById("release-notes-link");
+      if (notes && release.release_url) notes.href = release.release_url;
+      var bundle = document.getElementById("bundle-link");
+      if (bundle && release.tag && release.repository) {
+        bundle.href = "https://github.com/" + release.repository + "/releases/download/" + release.tag + "/com.compositor.Client.flatpak";
+      }
+    }).catch(function () { /* build-time @VERSION@ placeholders remain */ });
+  </script>
 </body>
 </html>
