@@ -361,7 +361,15 @@ public struct CoordinateSpace: Sendable {
 /// tracking is wired to a widget (a later phase — see `.gesture(_:)`, currently a no-op `View` modifier); building
 /// this value and chaining onto it must still compile and behave like real SwiftUI's fluent builder.
 public struct DragGesture {
-    public struct Value: Sendable { public var location: CGPoint = .zero; public var translation: CGSize = .zero }
+    public struct Value: Sendable {
+        public var location: CGPoint = .zero
+        public var translation: CGSize = .zero
+        /// Where the drag began. Derived from `location` − `translation` so the Qt bridge's 4-number payload
+        /// (x, y, dx, dy) still matches Apple's `DragGesture.Value` (Camera Raw curve graph, tip 1.4.5).
+        public var startLocation: CGPoint {
+            CGPoint(x: location.x - translation.width, y: location.y - translation.height)
+        }
+    }
     public let minimumDistance: Double
     public let coordinateSpace: CoordinateSpace
     var onChangedAction: ((Value) -> Void)?
