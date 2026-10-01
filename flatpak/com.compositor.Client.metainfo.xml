@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.5-linux-alpha.4" date="2026-10-01" type="development">
+      <description><p>Flatpak Updates dialog adds Restart Now after an install so the new commit launches after save prompts.</p></description>
+    </release>
     <release version="1.4.5-linux-alpha.3" date="2026-09-30" type="development">
       <description><p>Maintenance alpha: drop the Linux UI e2e and graphics E2E bench harness from the tree; editor behavior unchanged from alpha.2.</p></description>
     </release>

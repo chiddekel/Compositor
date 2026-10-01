@@ -7,6 +7,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QLabel>
+#include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
@@ -114,7 +115,9 @@ void FlatpakUpdateService::checkForUpdates(bool interactive) {
         layout->addWidget(m_progressBar);
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, m_dialog);
         m_updateButton = buttons->addButton(tr("Check and Update"), QDialogButtonBox::ActionRole);
+        m_restartButton = buttons->addButton(tr("Restart Now"), QDialogButtonBox::AcceptRole);
         connect(m_updateButton, &QPushButton::clicked, this, [this] { installUpdate(); });
+        connect(m_restartButton, &QPushButton::clicked, this, [this] { restartNow(); });
         connect(buttons, &QDialogButtonBox::rejected, m_dialog, &QDialog::close);
         layout->addWidget(buttons);
     }
@@ -122,6 +125,43 @@ void FlatpakUpdateService::checkForUpdates(bool interactive) {
     m_dialog->show();
     m_dialog->raise();
     m_dialog->activateWindow();
+}
+
+void FlatpakUpdateService::armRelaunch() {
+    if (m_relaunchConnection) return;
+    // Host launches the new Flatpak commit after this process has fully exited.
+    m_relaunchConnection = connect(qApp, &QCoreApplication::aboutToQuit, this, [] {
+        QProcess::startDetached(QStringLiteral("flatpak-spawn"), {
+            QStringLiteral("--host"),
+            QStringLiteral("sh"),
+            QStringLiteral("-c"),
+            QStringLiteral("sleep 1; exec flatpak run com.compositor.Client"),
+        });
+    });
+}
+
+void FlatpakUpdateService::disarmRelaunch() {
+    if (!m_relaunchConnection) return;
+    disconnect(m_relaunchConnection);
+    m_relaunchConnection = {};
+}
+
+void FlatpakUpdateService::restartNow() {
+    if (!m_supported || m_status != UpdateStatus::ReadyToRestart) return;
+    if (m_dialog) m_dialog->hide();
+    armRelaunch();
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+        if (!widget->isWindow() || !widget->isVisible() || widget == m_dialog.data()) continue;
+        if (!widget->close()) {
+            // Save/quit cancelled — stay on the installed update and show the dialog again.
+            disarmRelaunch();
+            if (m_dialog) {
+                m_dialog->show();
+                refreshDialog();
+            }
+            return;
+        }
+    }
 }
 
 void FlatpakUpdateService::installUpdate() {
@@ -205,7 +245,7 @@ void FlatpakUpdateService::refreshDialog() {
     case UpdateStatus::NoUpdate: text = tr("No update was available at the last check."); break;
     case UpdateStatus::Downloading: text = tr("Checking for and installing updates…"); break;
     case UpdateStatus::ReadyToRestart:
-        text = tr("The update is installed. Save your work, then close and reopen Compositor to use it."); break;
+        text = tr("The update is installed. Save your work, then restart Compositor to use it."); break;
     case UpdateStatus::Error:
         text = tr("The update could not be completed. %1\n\nYou can also update Compositor in your software center or run:\nflatpak update com.compositor.Client").arg(m_error); break;
     }
@@ -217,6 +257,10 @@ void FlatpakUpdateService::refreshDialog() {
     m_updateButton->setText(m_status == UpdateStatus::UpdateAvailable ? tr("Install Update") : tr("Check and Update"));
     m_updateButton->setVisible(m_supported && m_status != UpdateStatus::ReadyToRestart);
     m_updateButton->setEnabled(!busy);
+    if (m_restartButton) {
+        m_restartButton->setVisible(m_supported && m_status == UpdateStatus::ReadyToRestart);
+        m_restartButton->setEnabled(m_status == UpdateStatus::ReadyToRestart);
+    }
 }
 
 } // namespace qtplatform

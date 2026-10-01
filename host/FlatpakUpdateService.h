@@ -42,6 +42,9 @@ private:
     void fail(const QString &message);
     void refreshDialog();
     void subscribe(const QString &path, bool connect);
+    void restartNow();
+    void armRelaunch();
+    void disarmRelaunch();
 
     QDBusConnection m_bus;
     bool m_supported = false;
@@ -55,6 +58,8 @@ private:
     QPointer<QLabel> m_label;
     QPointer<QProgressBar> m_progressBar;
     QPointer<QPushButton> m_updateButton;
+    QPointer<QPushButton> m_restartButton;
+    QMetaObject::Connection m_relaunchConnection;
 };
 
 } // namespace qtplatform

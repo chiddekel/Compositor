@@ -18,8 +18,9 @@ ID are separate installations; their private settings are not automatically migr
 
 Choose **Check for Updates…** in Compositor's menu, then **Check and Update** (or
 **Install Update** when an update is known). The Flatpak portal asks the host to
-update this installed application. Installation leaves documents open. Save your
-work, close Compositor, and reopen it after installation completes.
+update this installed application. Installation leaves documents open. When the
+update is ready, choose **Restart Now** (save prompts still run) or close and
+reopen Compositor yourself.
 
 Development launches inside the SDK do not enable the updater. The app checks its
 Flatpak identity, installed commit, and executable path. It never runs host shell

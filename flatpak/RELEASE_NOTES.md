@@ -1,13 +1,13 @@
-Compositor 1.4.5-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.5-linux-alpha.4 for Linux — signed Flatpak alpha, x86_64.
 
-Maintenance release on tip 1.4.5 Linux catch-up:
+Minor updater polish on tip 1.4.5 Linux catch-up:
 
-- Editor behavior matches 1.4.5-linux-alpha.2 (live gradient preview, Copy Merged/Paste, Smudge/Liquify latency, multi-layer Cut, Unofficial port download page, Skia Ganesh Flatpak build).
-- Remove the Linux UI e2e suite and graphics E2E bench from the repository and CI; smoke and unit tests remain.
+- After **Check for Updates…** installs a Flatpak update, the dialog offers **Restart Now** next to Close (save prompts still run; the new commit starts after quit).
+- Editor behavior otherwise matches 1.4.5-linux-alpha.3.
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.
-- Updates run without closing documents. Save your work and reopen Compositor after installation.
+- Updates install without closing documents; use **Restart Now** or reopen Compositor to run the new build.
 
 This is an alpha release of the GNU/Linux port of Compositor.
 
