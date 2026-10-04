@@ -2405,8 +2405,21 @@ void SessionWindow::showAboutPanel() {
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(40, 24, 40, 24);
     layout->setSpacing(6);
+    QIcon aboutIcon = windowIcon();
+    if (aboutIcon.isNull()) aboutIcon = QApplication::windowIcon();
+    if (aboutIcon.isNull()) aboutIcon = QIcon::fromTheme(QStringLiteral("com.compositor.Client"));
+    if (aboutIcon.isNull()) {
+        for (int s : {64, 128, 256, 32}) {
+            const QString path = QStringLiteral("/app/share/icons/hicolor/%1x%1/apps/com.compositor.Client.png").arg(s);
+            if (QFile::exists(path)) { aboutIcon.addFile(path); break; }
+        }
+    }
     auto *icon = new QLabel(panel);
-    icon->setPixmap(windowIcon().pixmap(64, 64));
+    const QPixmap pixmap = aboutIcon.pixmap(QSize(64, 64));
+    if (!pixmap.isNull()) {
+        icon->setPixmap(pixmap);
+        icon->setFixedHeight(64);
+    }
     icon->setAlignment(Qt::AlignCenter);
     layout->addWidget(icon);
     layout->addSpacing(8);
