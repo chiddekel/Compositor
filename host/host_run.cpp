@@ -115,15 +115,19 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     app.setOrganizationName("Compositor");
     app.setDesktopFileName("com.compositor.Client");
 
-    QIcon appIcon;
+    QIcon appIcon = QIcon::fromTheme(QStringLiteral("com.compositor.Client"));
     const int iconSizes[] = {16, 32, 64, 128, 256, 512, 1024};
     for (int s : iconSizes) {
-        const QString p1 = QStringLiteral("Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-%1.png").arg(s);
-        if (QFile::exists(p1)) {
-            appIcon.addFile(p1);
-        } else {
-            const QString p2 = QDir::homePath() + QStringLiteral("/.local/share/icons/hicolor/%1x%1/apps/com.compositor.Client.png").arg(s);
-            if (QFile::exists(p2)) appIcon.addFile(p2);
+        const QString candidates[] = {
+            QStringLiteral("Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-%1.png").arg(s),
+            QStringLiteral("/app/share/icons/hicolor/%1x%1/apps/com.compositor.Client.png").arg(s),
+            QDir::homePath() + QStringLiteral("/.local/share/icons/hicolor/%1x%1/apps/com.compositor.Client.png").arg(s),
+        };
+        for (const QString &path : candidates) {
+            if (QFile::exists(path)) {
+                appIcon.addFile(path);
+                break;
+            }
         }
     }
     if (!appIcon.isNull()) {
