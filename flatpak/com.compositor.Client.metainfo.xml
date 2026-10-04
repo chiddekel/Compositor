@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.5-linux-alpha.5" date="2026-10-04" type="development">
+      <description><p>About panel shows the Compositor app icon on Flatpak by resolving theme and /app/share icon paths.</p></description>
+    </release>
     <release version="1.4.5-linux-alpha.4" date="2026-10-01" type="development">
       <description><p>Flatpak Updates dialog adds Restart Now after an install so the new commit launches after save prompts.</p></description>
     </release>

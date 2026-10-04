@@ -1,9 +1,9 @@
-Compositor 1.4.5-linux-alpha.4 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.5-linux-alpha.5 for Linux — signed Flatpak alpha, x86_64.
 
-Minor updater polish on tip 1.4.5 Linux catch-up:
+Minor About polish on tip 1.4.5 Linux catch-up:
 
-- After **Check for Updates…** installs a Flatpak update, the dialog offers **Restart Now** next to Close (save prompts still run; the new commit starts after quit).
-- Editor behavior otherwise matches 1.4.5-linux-alpha.3.
+- **About Compositor** shows the app icon on Flatpak (theme + `/app/share/icons` lookup when repo-relative AppIcon files are unavailable).
+- Otherwise matches 1.4.5-linux-alpha.4, including **Restart Now** after an installed Flatpak update.
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.
