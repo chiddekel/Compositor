@@ -15,9 +15,11 @@
 #   - Skia: pinned canvaskit/0.42.0, GPU + Vulkan enabled (plan §8.4).
 #   - OpenCV: 4.14.0 (plan §8.5), core+imgproc+dnn (dnn runs U²-Net-small for subject segmentation).
 #
-# Sandbox: tightened to plan §8.6 (no home/host grants; portal-driven).
-#   - No --filesystem grants; all file access routes through the XDG
-#     FileChooser and Documents portals (plan §8.8).
+# Sandbox: portal-driven plus xdg-documents/xdg-download for .comp directory packages
+# (document portal file grants cannot hold a folder package). No blanket home/host.
+#   - --filesystem=xdg-documents:create / xdg-download:create
+#   - --filesystem=xdg-config/user-dirs.dirs:ro (localized Documents/Downloads names)
+#   - Other access via XDG FileChooser/Documents portals (plan §8.8).
 #
 # Build runs entirely inside the Flatpak SDK sandbox. Nothing links the build
 # host's installed system libraries.
@@ -41,9 +43,15 @@ finish-args:
   - --socket=fallback-x11   # Qt windowing (X11 fallback)
   - --socket=wayland        # Qt windowing (Wayland, preferred)
   - --device=dri            # GPU: Vulkan + GL (plan §8.6, §8.7)
+  # .comp projects are directory packages. The document portal only grants *files*,
+  # which cannot be replaced with a folder. Allow the usual user save locations so
+  # Save / Save As can create real .comp directories (still no blanket home/host).
+  - --filesystem=xdg-documents:create
+  - --filesystem=xdg-download:create
+  # So Qt maps Documents/Downloads to localized names (e.g. Dokumenty / Pobrane).
+  - --filesystem=xdg-config/user-dirs.dirs:ro
   # Plan §8.6: no --filesystem=home/host, no --share=network.
-  # All file access routes through the XDG FileChooser/Documents portals
-  # (plan §8.8); no --filesystem grants required.
+  # Other file access still routes through the XDG FileChooser/Documents portals.
   - --talk-name=org.freedesktop.portal.*   # FileChooser, Documents, Clipboard portals
   - --talk-name=com.canonical.AppMenu.Registrar   # the desktop's global menu, where there is one (menus as on the Mac)
 
