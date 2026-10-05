@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.5-linux-alpha.8" date="2026-10-05" type="development">
+      <description><p>Show Controls arms Free Transform with Cancel (Esc) and Apply (Enter); Ctrl+T still enters Free Transform when controls are off.</p></description>
+    </release>
     <release version="1.4.5-linux-alpha.7" date="2026-10-05" type="development">
       <description><p>Move / Free Transform: Ctrl+T persistent edit with aligned handle hitboxes, wider grab slop, and resize/rotate hover cursors on Linux.</p></description>
     </release>

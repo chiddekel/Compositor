@@ -1,9 +1,9 @@
-Compositor 1.4.5-linux-alpha.7 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.5-linux-alpha.8 for Linux — signed Flatpak alpha, x86_64.
 
-Move / Free Transform on tip 1.4.5 Linux catch-up:
+Move / Free Transform polish on tip 1.4.5 Linux catch-up:
 
-- **Ctrl+T** enters persistent Free Transform (scale, rotate, Enter/Esc); handle hitboxes align with the drawn squares and rotate circle, with wider grab slop and resize/rotate cursors on hover.
-- Otherwise matches 1.4.5-linux-alpha.6 (Image › Curves graph drag on Linux).
+- **Show Controls** arms Free Transform with **Cancel** (Esc) and **Apply** (Enter); **Ctrl+T** still enters Free Transform when controls are off.
+- Otherwise matches 1.4.5-linux-alpha.7 (Ctrl+T handles, hit alignment, hover cursors).
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.
