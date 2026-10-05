@@ -853,6 +853,21 @@ final class UpstreamEditor {
         case "setShowsTransformControls":
             guard let enabled = command.enabled else { return fail(-1, "enabled required") }
             s.showsTransformControls = enabled
+            // Same as TransformInspector's Show Controls toggle: on → Free Transform (Cancel/Apply), off → reset.
+            if enabled {
+                if s.transformEdit == nil {
+                    if s.canTransformSelection { await s.beginSelectionTransform() }
+                    else { s.beginTransform(persistent: true) }
+                }
+            } else if s.transformEdit?.persistent == true {
+                s.cancelTransform()
+            }
+            // TransformOverlay.draw reads this flag; mark every hosted canvas's overlay dirty so a partial
+            // blit (and the shell's invalidateOverlay) both pick up the switch.
+            for canvas in UpstreamCanvases.canvases.values {
+                guard canvas.view.session === s else { continue }
+                canvas.view.subviews.compactMap { $0 as? TransformOverlay }.forEach { $0.needsDisplay = true }
+            }
         case "setTransformAutoSelect":
             guard let enabled = command.enabled else { return fail(-1, "enabled required") }
             s.transformAutoSelect = enabled
@@ -868,8 +883,13 @@ final class UpstreamEditor {
             guard var draft = s.transformEdit?.draft ?? s.activeLayer?.transform else { return fail(-5, "no layer") }
             apply(command.parameters ?? [:], to: &draft)
             s.previewTransform(draft)
-        case "transformCommit": s.commitTransform()
-        case "transformCancel": s.cancelTransform()
+        case "transformCommit":
+            s.commitTransform()
+            // Show Controls still on: keep Free Transform open so Cancel / Apply stay enabled.
+            if s.showsTransformControls { s.beginTransform(persistent: true) }
+        case "transformCancel":
+            s.cancelTransform()
+            if s.showsTransformControls { s.beginTransform(persistent: true) }
         // Move tool, as EditorCanvas drags: Ctrl-dragging a handle distorts (and once distorted, handles keep distorting);
         // `value` = handle (0...7 around from top-left, 9 = the body). The edit stays pending until Enter / Apply.
         case "distortDragBegin":

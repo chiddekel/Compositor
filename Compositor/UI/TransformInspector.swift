@@ -15,8 +15,25 @@ struct TransformInspector: View {
                                               set: { session.transformAutoSelect = $0 != held.contains(.command) }))
               .help("Select layers by clicking the canvas. Hold Command to turn it the other way while you click.")
               .accessibilityIdentifier("transformAutoSelect")
-          Toggle("Show Controls", isOn: $session.showsTransformControls)
-              .help("Show the transform box and handles (⌘H). When hidden, drag anywhere to move the layer.")
+          Toggle("Show Controls", isOn: Binding(
+              get: { session.showsTransformControls },
+              set: { on in
+                  session.showsTransformControls = on
+                  // Turning controls on enters Free Transform so Cancel / Apply (Esc / Enter) arm — same as ⌘T.
+                  // Turning them off abandons a pending edit; a finished one has already cleared transformEdit.
+                  if on {
+                      guard session.transformEdit == nil else { return }
+                      if session.canTransformSelection {
+                          Task { await session.beginSelectionTransform() }
+                      } else {
+                          session.beginTransform(persistent: true)
+                      }
+                  } else if session.transformEdit?.persistent == true {
+                      session.cancelTransform()
+                  }
+              }
+          ))
+              .help("Show the transform box and handles (⌘H). Enables Cancel / Apply (Esc / Enter). When hidden, drag anywhere to move the layer.")
           ScrollView(.horizontal) {
             HStack(spacing: 12) {
                 field("X", value: value.origin.x) { $0.origin.x = $1 }.frame(width: 85)
@@ -46,19 +63,35 @@ struct TransformInspector: View {
             }.disabled((!session.canTransform && session.transformEdit == nil) || session.transformEdit?.corners != nil)
                 .padding(.horizontal, 18)
           }.scrollIndicators(.hidden)
-          // Only an edit that waits for them — typed values, ⌘T, a distortion — has anything to cancel or apply. A
-          // handle drag applies itself on release, and ghosted buttons after it read as the pixels being resampled,
-          // which they never are. Left in place unseen, so Escape and Return still reach a drag in progress.
+          // Pending Free Transform (⌘T, Show Controls on, distortion): Cancel / Apply are live. A plain Show Controls
+          // handle drag used to apply on release with ghosted buttons; Show Controls now opens a persistent edit so the
+          // buttons stay meaningful. Left in place unseen when idle, so Escape and Return still reach a drag in progress.
           let pending = session.transformEdit?.persistent == true
           HStack(spacing: 12) {
-              Button("Cancel") { session.cancelTransform() }.configuredNativeShortcut(.escape)
+              Button("Cancel") {
+                  session.cancelTransform()
+                  // Show Controls still on: open a fresh Free Transform so Cancel / Apply stay armed.
+                  if session.showsTransformControls { session.beginTransform(persistent: true) }
+              }.configuredNativeShortcut(.escape)
                   .disabled(session.transformEdit == nil)
-              Button("Apply") { session.commitTransform() }.configuredNativeShortcut(.return)
+              Button("Apply") {
+                  session.commitTransform()
+                  if session.showsTransformControls { session.beginTransform(persistent: true) }
+              }.configuredNativeShortcut(.return)
                   .disabled(session.transformEdit == nil).accessibilityIdentifier("applyTransform")
           }
           .opacity(pending ? 1 : 0).allowsHitTesting(pending).accessibilityHidden(!pending)
           .animation(.easeOut(duration: 0.12), value: pending)
         }.padding(.trailing, 18).toolHeaderBar().releasesFocusOnCommit(session)
+        // Defaults keep Show Controls on: arm Free Transform when the Move bar appears so Cancel / Apply aren't ghosted.
+        .onAppear {
+            guard session.showsTransformControls, session.transformEdit == nil else { return }
+            if session.canTransformSelection {
+                Task { await session.beginSelectionTransform() }
+            } else {
+                session.beginTransform(persistent: true)
+            }
+        }
     }
 
     /// 100% scale: the layer's pixels (a blank layer's size before this edit, so typing doesn't compound).

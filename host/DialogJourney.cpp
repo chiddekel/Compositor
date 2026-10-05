@@ -1445,7 +1445,7 @@ extern "C" int compositor_host_text_smoke(int argc, char **argv, int (*probe)(vo
     return probe ? probe() : 1;
 }
 
-/// Focused Move / Free Transform journey: Show Controls handle resize, Ctrl+T persistent edit, Enter/Esc.
+/// Focused Move / Free Transform journey: Show Controls arms Cancel/Apply, Enter apply, Esc reset, Ctrl+T.
 extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
     try {
@@ -1459,10 +1459,14 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         window.setTool(SessionWindow::Tool::Move);
         QApplication::processEvents();
 
+        // Show Controls on → Free Transform (Cancel / Apply armed).
         require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", true}}),
                 "setShowsTransformControls failed");
         require(window.sessionState().value("showsTransformControls").toBool(),
                 "Show Controls did not stick in session state");
+        QApplication::processEvents();
+        require(window.sessionState().value("transforming").toBool(),
+                "Show Controls on did not enter Free Transform (Cancel/Apply would stay disabled)");
 
         const auto geometry = [&]() {
             const QJsonObject layer = window.sessionState().value("layers").toArray().at(0).toObject();
@@ -1498,25 +1502,37 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
             QApplication::processEvents();
         };
 
-        // 1) Show Controls: bottom-right handle drag resizes (non-persistent; commits on release).
+        // 1) Show Controls Free Transform: corner handle drag resizes; stays pending until Enter.
         drag(at(56, 56), at(48, 48));
         require(geometry().size() == QSizeF(48, 48),
                 "corner handle drag with Show Controls did not resize (transformation missing)");
-        require(!window.sessionState().value("transforming").toBool(),
-                "non-persistent handle drag left transforming=true after mouse-up");
+        require(window.sessionState().value("transforming").toBool(),
+                "Show Controls Free Transform ended on mouse-up (Cancel/Apply should stay armed)");
 
-        // 2) Body drag still moves the layer.
+        // 2) Body drag still moves the layer (draft).
         const QRectF beforeMove = geometry();
         drag(at(20, 20), at(24, 25));
         require(qRound(geometry().x()) == qRound(beforeMove.x()) + 4
                     && qRound(geometry().y()) == qRound(beforeMove.y()) + 5,
                 "body drag did not move the layer");
 
-        // 3) enterFreeTransform (Ctrl+T): Show Controls off — handles must still work via persistent edit.
+        // Enter applies; Show Controls still on → a fresh Free Transform opens (Cancel/Apply stay armed).
+        {
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(&window, &enter);
+            QApplication::processEvents();
+        }
+        require(window.sessionState().value("transforming").toBool(),
+                "after Enter with Show Controls on, Free Transform should reopen");
+        require(geometry().size() == QSizeF(48, 48), "Enter did not keep applied size");
+
+        // 3) Show Controls off abandons pending edit; Ctrl+T enters Free Transform without Show Controls.
         require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", false}}),
                 "could not turn Show Controls off");
         require(!window.sessionState().value("showsTransformControls").toBool(),
                 "Show Controls stayed on");
+        require(!window.sessionState().value("transforming").toBool(),
+                "Show Controls off did not clear Free Transform");
         window.enterFreeTransform();
         QApplication::processEvents();
         require(window.sessionState().value("transforming").toBool(),
@@ -1548,25 +1564,32 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         require(window.sessionState().value("transforming").toBool(),
                 "rotation ended persistent transform early");
 
-        require(window.sendCommand({{"action", "transformCommit"}}), "transformCommit failed");
-        QApplication::processEvents();
+        // Enter applies via the shell key path; Show Controls off → transforming clears.
+        {
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(&window, &enter);
+            QApplication::processEvents();
+        }
         require(!window.sessionState().value("transforming").toBool(),
-                "transformCommit left transforming=true");
+                "Enter did not apply Free Transform (transforming still true)");
 
-        // 4) Esc cancels a fresh persistent transform.
+        // 4) Esc resets a fresh persistent transform (shell key path).
         window.enterFreeTransform();
         QApplication::processEvents();
         const QRectF beforeCancel = geometry();
         drag(at(beforeCancel.right(), beforeCancel.bottom()),
              at(beforeCancel.right() + 10, beforeCancel.bottom() + 10));
-        require(window.sendCommand({{"action", "transformCancel"}}), "transformCancel failed");
-        QApplication::processEvents();
-        require(!window.sessionState().value("transforming").toBool(), "transformCancel left transforming");
+        {
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(&window, &esc);
+            QApplication::processEvents();
+        }
+        require(!window.sessionState().value("transforming").toBool(), "Esc did not reset Free Transform");
         require(qAbs(geometry().width() - beforeCancel.width()) < 0.5
                     && qAbs(geometry().height() - beforeCancel.height()) < 0.5,
-                "transformCancel did not restore size");
+                "Esc reset did not restore size");
 
-        qInfo("Qt transform smoke OK (Show Controls, Ctrl+T scale/rotate without Show Controls, Enter/Esc)");
+        qInfo("Qt transform smoke OK (Show Controls arms Cancel/Apply, Enter apply, Esc reset, Ctrl+T)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt transform smoke failed: %s", e.what());

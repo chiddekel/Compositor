@@ -208,9 +208,13 @@ public:
     std::vector<std::unique_ptr<QMouseEvent>> m_pendingDrags;   // ordered pointer samples awaiting delivery
     void syncAppMenus();
     void performAppMenu(const QString &path);
-    /// Cmd/Ctrl+T: persistent Free Transform (layer or selection). Clears leftover Ctrl from the chord so the
-    /// first handle drag scales/rotates instead of distorting (Linux maps Ctrl → ⌘).
+    /// Cmd/Ctrl+T: enter persistent Free Transform (layer or selection). Clears leftover Ctrl from the chord so the
+    /// first handle drag scales/rotates instead of distorting (Linux maps Ctrl → ⌘). Enter applies; Esc resets.
     void enterFreeTransform();
+    /// Enter while Free Transform is open: commit the edit.
+    void applyFreeTransform();
+    /// Esc while Free Transform is open: cancel and restore pre-edit geometry.
+    void resetFreeTransform();
     void handleShellRequests();
     void exportWithUpstream(bool jpeg);
     void positionWelcome();
@@ -602,6 +606,10 @@ private:
     QCheckBox *m_linkCheck = nullptr;
     QCheckBox *m_autoSelectCheck = nullptr;
     QCheckBox *m_showControlsCheck = nullptr;
+    /// Cancel / Apply for a pending Free Transform (Ctrl+T); hidden until transforming.
+    QPushButton *m_transformCancelBtn = nullptr;
+    QPushButton *m_transformApplyBtn = nullptr;
+    void updateTransformCommitControls();
     int m_transformHandle = -1;  // -1 none, 0-7 resize (TL,T,TR,R,BR,B,BL,L), 8 rotate, 9 move body
     LayerGeometry m_transformStart;
     /// A pending distortion's corners (document px, TL TR BR BL), from the session; empty when not distorting.

@@ -1874,6 +1874,16 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
+    // Free Transform: Enter applies, Esc resets. Handle here before routesToUpstreamCanvas — Move tool would
+    // forward Return/Esc to compositor_canvas_key and return without running the shell apply/reset path.
+    if (event->modifiers() == Qt::NoModifier
+        && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Escape)
+        && (!m_distortCorners.isEmpty() || sessionState().value("transforming").toBool())) {
+        if (event->key() == Qt::Key_Escape) resetFreeTransform();
+        else applyFreeTransform();
+        event->accept();
+        return;
+    }
     if (routesToUpstreamCanvas()) {
         static const QHash<int, int> codes{{Qt::Key_Return, 36}, {Qt::Key_Enter, 76}, {Qt::Key_Escape, 53}, {Qt::Key_Backspace, 51},
             {Qt::Key_Delete, 117}, {Qt::Key_Tab, 48}, {Qt::Key_Backtab, 48}, {Qt::Key_Left, 123}, {Qt::Key_Right, 124}, {Qt::Key_Down, 125}, {Qt::Key_Up, 126}};
@@ -2039,25 +2049,11 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
                 event->accept();
                 return;
             }
-            if (!m_distortCorners.isEmpty() || sessionState().value("transforming").toBool()) {
-                sendCommand({{"action", "transformCancel"}});
-                syncDistortFromSession();
-                refreshImage(); refreshLayers(); updateOptionsBar();
-                event->accept();
-                return;
-            }
             break;
         case Qt::Key_Return:
         case Qt::Key_Enter:
             if (m_hasPendingCrop) {
                 applyCrop();
-                event->accept();
-                return;
-            }
-            if (!m_distortCorners.isEmpty() || sessionState().value("transforming").toBool()) {
-                sendCommand({{"action", "transformCommit"}});
-                syncDistortFromSession();
-                refreshImage(); refreshLayers(); updateOptionsBar();
                 event->accept();
                 return;
             }
@@ -2362,11 +2358,44 @@ void SessionWindow::enterFreeTransform() {
     if (!sendCommand({{"action", "transformCommand"}})) return;
     syncToolFromSession();
     syncOptionsFromSession();
+    updateTransformCommitControls();
     invalidateOverlay();
     refreshImage();
     refreshLayers();
     updateOptionsBar();
     if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::applyFreeTransform() {
+    if (!sendCommand({{"action", "transformCommit"}})) return;
+    syncDistortFromSession();
+    syncToolFromSession();
+    syncOptionsFromSession();
+    updateTransformCommitControls();
+    invalidateOverlay();
+    refreshImage();
+    refreshLayers();
+    updateOptionsBar();
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::resetFreeTransform() {
+    if (!sendCommand({{"action", "transformCancel"}})) return;
+    syncDistortFromSession();
+    syncToolFromSession();
+    syncOptionsFromSession();
+    updateTransformCommitControls();
+    invalidateOverlay();
+    refreshImage();
+    refreshLayers();
+    updateOptionsBar();
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
+void SessionWindow::updateTransformCommitControls() {
+    const bool pending = m_sessionHandle != 0 && sessionState().value("transforming").toBool();
+    if (m_transformCancelBtn) m_transformCancelBtn->setVisible(pending);
+    if (m_transformApplyBtn) m_transformApplyBtn->setVisible(pending);
 }
 
 /// ProjectController.exportPNG / exportJPEG: upstream's exporter (and JPEG sheet), the save panel being the shell's,
@@ -2689,6 +2718,10 @@ void SessionWindow::createMenus() {
                 const QSignalBlocker block(m_showControlsCheck);
                 m_showControlsCheck->setChecked(checked);
             }
+            updateTransformCommitControls();
+            invalidateOverlay();
+            refreshImage();
+            updateOptionsBar();
             if (m_canvasWidget) m_canvasWidget->update();
         }
     });
@@ -6126,6 +6159,10 @@ void SessionWindow::setupOptionsBar() {
                 const QSignalBlocker block(act);
                 act->setChecked(checked);
             }
+            updateTransformCommitControls();
+            invalidateOverlay();
+            refreshImage();
+            updateOptionsBar();
             if (m_canvasWidget) m_canvasWidget->update();
         }
     });
@@ -6181,6 +6218,26 @@ void SessionWindow::setupOptionsBar() {
         connect(spin, &QSpinBox::valueChanged, this, [this, field] { applyTransformFields(field); });
     }
     layoutMove->addStretch();
+
+    // Mac TransformInspector: Cancel/Apply only while a persistent edit waits (Ctrl+T / distortion).
+    auto *btnCancelTransform = new QPushButton(tr("Cancel"), pageMove);
+    btnCancelTransform->setObjectName("transform.cancel");
+    btnCancelTransform->setToolTip(tr("Reset transform (Esc)"));
+    btnCancelTransform->setStyleSheet(btnStyle);
+    btnCancelTransform->setVisible(false);
+    connect(btnCancelTransform, &QPushButton::clicked, this, [this] { resetFreeTransform(); });
+    m_transformCancelBtn = btnCancelTransform;
+    layoutMove->addWidget(btnCancelTransform);
+
+    auto *btnApplyTransform = new QPushButton(tr("Apply"), pageMove);
+    btnApplyTransform->setObjectName("transform.apply");
+    btnApplyTransform->setToolTip(tr("Apply transform (Enter)"));
+    btnApplyTransform->setStyleSheet(btnStyle);
+    btnApplyTransform->setVisible(false);
+    connect(btnApplyTransform, &QPushButton::clicked, this, [this] { applyFreeTransform(); });
+    m_transformApplyBtn = btnApplyTransform;
+    layoutMove->addWidget(btnApplyTransform);
+
     m_optionsStack->addWidget(pageMove);
 
     // Page 1: Marquee (Tool::Marquee = 1)
@@ -7174,6 +7231,7 @@ void SessionWindow::syncOptionsFromSession() {
             act->setChecked(on);
         }
     }
+    updateTransformCommitControls();
     if (m_autoSelectCheck && state.contains("transformAutoSelect")) {
         const bool on = state.value("transformAutoSelect").toBool();
         if (m_autoSelectCheck->isChecked() != on) {
@@ -7242,7 +7300,10 @@ void SessionWindow::updateStatusTelemetry() {
     QString hint;
     switch (m_tool) {
     case Tool::Move:
-        hint = tr("Click to select · Click outside to deselect · Drag to move · Handles to resize · Space to pan");
+        if (m_sessionHandle != 0 && sessionState().value("transforming").toBool())
+            hint = tr("Free Transform · Drag handles to scale/rotate · Enter apply · Esc reset");
+        else
+            hint = tr("Click to select · Click outside to deselect · Drag to move · Handles to resize · Space to pan");
         break;
     case Tool::Brush:
         if (m_brushToolMode == BrushToolMode::Erase) {
