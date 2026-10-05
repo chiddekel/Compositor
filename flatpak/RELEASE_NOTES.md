@@ -1,10 +1,10 @@
-Compositor 1.4.5-linux-alpha.9 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.5-linux-alpha.10 for Linux — signed Flatpak alpha, x86_64.
 
-Save / Save As reliability on tip 1.4.5 Linux catch-up:
+Flatpak Save / Save As for tip 1.4.5 Linux catch-up:
 
-- **Save As** installs `.comp` directory packages reliably (temp staging, rename-or-copy).
-- When the system dialog returns an XDG document-portal file path, the project saves automatically under **Documents** with the chosen name (no second dialog).
-- Otherwise matches 1.4.5-linux-alpha.8 (Show Controls Free Transform Cancel/Apply).
+- Grant **Documents** and **Downloads** (plus localized user-dirs) so `.comp` directory packages can be written from the sandbox.
+- Portal/tmpfs save paths remap to a durable Documents (or app-data) location automatically.
+- Otherwise matches 1.4.5-linux-alpha.9 (Save As install fixes).
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.
