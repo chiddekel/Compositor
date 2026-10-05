@@ -1,9 +1,9 @@
-Compositor 1.4.5-linux-alpha.5 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.5-linux-alpha.6 for Linux — signed Flatpak alpha, x86_64.
 
-Minor About polish on tip 1.4.5 Linux catch-up:
+Curves interaction fix on tip 1.4.5 Linux catch-up:
 
-- **About Compositor** shows the app icon on Flatpak (theme + `/app/share/icons` lookup when repo-relative AppIcon files are unavailable).
-- Otherwise matches 1.4.5-linux-alpha.4, including **Restart Now** after an installed Flatpak update.
+- **Image › Curves… (Ctrl+M)** graph drag / add / remove points works again on Linux (SwiftUI `Color` views are mapped in the Qt renderer so `Color.clear` gesture hosts receive clicks).
+- Otherwise matches 1.4.5-linux-alpha.5 (About app icon, Restart Now after Flatpak update).
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.
