@@ -89,18 +89,11 @@ nonisolated public func compositorSaveExportLayer(_ token: UInt64, _ layerID: Un
 /// ImageExporter path as macOS). Returns 0 when the canvas is too large to flatten on every save.
 @_cdecl("compositor_save_export_preview")
 nonisolated public func compositorSaveExportPreview(_ token: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
-    guard capacity >= 0, let snapshot = ProjectSaveSnapshots.get(token) else { return -1 }
-    final class Box: @unchecked Sendable { var data: Data? }
-    let box = Box()
-    let done = DispatchSemaphore(value: 0)
-    Task {
-        box.data = await ImageExporter.shared.quickLookImages(snapshot.project)?.preview
-        done.signal()
-    }
-    done.wait()
-    guard let data = box.data, !data.isEmpty else { return 0 }
-    if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
-    return Int64(data.count)
+    guard capacity >= 0, ProjectSaveSnapshots.get(token) != nil else { return -1 }
+    // The Qt package writer runs on a background thread while the UI thread may be blocked in a local event
+    // loop (writeProjectPackage). Flattening for QuickLook here used to hang or fail the whole save.
+    _ = output
+    return 0
 }
 
 /// Only call after successful installation of the package. Autosave releases its

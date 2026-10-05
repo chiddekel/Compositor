@@ -223,7 +223,7 @@ final class UpstreamEditor {
         "duplicateLayer", "layerViaCopy", "toggleClippingMask", "moveActiveLayer", "moveActiveLayerOutOfGroup", "mergeLayers",
         "brushBegin", "setBrushSettings", "setGradientSettings", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
         "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
-        "setMaskSelected", "invertMask", "transform", "transformCommand", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
+        "setMaskSelected", "invertMask", "transform", "transformCommand", "transformBegin", "transformPreview", "transformCommit", "transformCommitFinal", "transformCancel",
         "setShowsTransformControls", "setTransformAutoSelect",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
@@ -887,6 +887,9 @@ final class UpstreamEditor {
             s.commitTransform()
             // Show Controls still on: keep Free Transform open so Cancel / Apply stay enabled.
             if s.showsTransformControls { s.beginTransform(persistent: true) }
+        case "transformCommitFinal":
+            // Save / export / tab switch: fold the draft into the document and leave transform idle.
+            s.commitTransform()
         case "transformCancel":
             s.cancelTransform()
             if s.showsTransformControls { s.beginTransform(persistent: true) }

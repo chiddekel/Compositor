@@ -215,6 +215,8 @@ public:
     void applyFreeTransform();
     /// Esc while Free Transform is open: cancel and restore pre-edit geometry.
     void resetFreeTransform();
+    /// Mac ProjectController.begin: commit pending Free Transform (and clear crop) before package snapshot.
+    void prepareDocumentForProjectIO(uint64_t handle = 0);
     void handleShellRequests();
     void exportWithUpstream(bool jpeg);
     void positionWelcome();
@@ -416,6 +418,7 @@ private:
     std::vector<DocumentTab> m_documents;
     int m_activeDocumentIndex = -1;
     QSet<uint64_t> m_savingDocuments;
+    QString m_lastProjectSaveError;
     QSet<uint64_t> m_closeAfterSave;
     bool m_closeWindowAfterSave = false;
     bool m_painting = false;

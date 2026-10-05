@@ -232,7 +232,7 @@ struct FakeFiles final : IFileDialogService {
     std::function<void()> beforeSave;
     QString chooseImageToOpen() override { return openImagePath; }
     QString chooseProjectToOpen() override { return {}; }
-    QString chooseProjectSavePath() override { if (beforeSave) beforeSave(); return projectSavePath; }
+    QString chooseProjectSavePath(const QString &) override { if (beforeSave) beforeSave(); return projectSavePath; }
     QString chooseExportPath(const QString &, const QString &) override { return exportPath; }
 };
 struct FakeClipboard final : IClipboardService {
@@ -1589,7 +1589,35 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
                     && qAbs(geometry().height() - beforeCancel.height()) < 0.5,
                 "Esc reset did not restore size");
 
-        qInfo("Qt transform smoke OK (Show Controls arms Cancel/Apply, Enter apply, Esc reset, Ctrl+T)");
+        // 5) Save while Show Controls keeps Free Transform open — Mac commits first; Linux must too.
+        require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", true}}),
+                "could not re-enable Show Controls before save");
+        QApplication::processEvents();
+        require(window.sessionState().value("transforming").toBool(),
+                "Show Controls on before save did not enter Free Transform");
+        QTemporaryDir packageDir;
+        require(packageDir.isValid(), "temp dir for save smoke");
+        const QString savedPath = packageDir.filePath(QStringLiteral("transform-save.comp"));
+        require(window.saveProject(savedPath), "save while Free Transform active failed");
+        require(QFileInfo::exists(savedPath + "/manifest.json"), "saved package missing manifest");
+        // Overwrite save (atomic replace of existing .comp directory).
+        require(window.saveProject(savedPath), "overwrite save while transforming failed");
+
+        // 6) Save As: native dialogs often create an empty file at the chosen path — package install must replace it.
+        const QString saveAsPath = packageDir.filePath(QStringLiteral("save-as.comp"));
+        {
+            QFile placeholder(saveAsPath);
+            require(placeholder.open(QIODevice::WriteOnly), "could not create Save As placeholder file");
+            placeholder.close();
+            require(QFileInfo(saveAsPath).isFile(), "Save As placeholder should be a file");
+        }
+        require(window.writeProjectPackage(saveAsPath), "Save As over empty placeholder file failed");
+        require(QFileInfo(saveAsPath).isDir(), "Save As did not install a directory package");
+        require(QFileInfo::exists(saveAsPath + "/manifest.json"), "Save As package missing manifest");
+        // Save As over an existing directory package (not just a placeholder file).
+        require(window.writeProjectPackage(saveAsPath), "Save As overwrite of directory package failed");
+
+        qInfo("Qt transform smoke OK (Show Controls arms Cancel/Apply, Enter/Esc, save while transforming, Save As)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt transform smoke failed: %s", e.what());

@@ -33,7 +33,8 @@ public:
         return path.isEmpty() ? QStringList() : QStringList{path};
     }
     virtual QString chooseProjectToOpen() = 0;
-    virtual QString chooseProjectSavePath() = 0;
+    /// Suggested path or file name (e.g. Untitled.comp); empty lets the dialog pick a default.
+    virtual QString chooseProjectSavePath(const QString &suggestedPath = {}) = 0;
     /// `formatName` is "PNG", "JPEG", ...; `filter` a Qt-style name-filter string.
     virtual QString chooseExportPath(const QString &formatName, const QString &filter) = 0;
 };

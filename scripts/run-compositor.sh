@@ -111,6 +111,9 @@ FLATPAK_ARGS=(
     --share=ipc
     --device=dri
     --socket=session-bus
+    # Mount org.freedesktop.Sdk.Extension.swift6 into /usr/lib/sdk/swift6
+    # (KDE Sdk declares the Extension point; branch must match Sdk metadata, currently 25.08).
+    --env=FLATPAK_ENABLE_SDK_EXT=swift6
 )
 
 if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then

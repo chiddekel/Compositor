@@ -37,6 +37,8 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QSettings>
 #include <QThreadPool>
 #include <QRunnable>
+#include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QEventLoop>
 #include <QScopeGuard>
 #include <QPainterPath>
@@ -561,16 +563,82 @@ bool SessionWindow::isDocumentModified(uint64_t handle) const {
     return QJsonDocument::fromJson(bytes).object().value("modified").toBool(false);
 }
 
+namespace {
+QString normalizeProjectPackagePath(QString path);
+}
+
 bool SessionWindow::saveCurrentDocument(bool forceChoosePath) {
     if (m_activeDocumentIndex < 0 || m_activeDocumentIndex >= static_cast<int>(m_documents.size())) return false;
     const uint64_t handle = m_documents[m_activeDocumentIndex].handle;
     const QString known = m_documents[m_activeDocumentIndex].filePath;
-    const QString path = (!forceChoosePath && known.endsWith(".comp", Qt::CaseInsensitive))
-        ? known : m_platform.files->chooseProjectSavePath();
+    QString path;
+    if (!forceChoosePath && known.endsWith(QLatin1String(".comp"), Qt::CaseInsensitive)) {
+        path = known;
+    } else {
+        const QString title = m_documents[m_activeDocumentIndex].title.isEmpty()
+            ? QStringLiteral("Untitled") : m_documents[m_activeDocumentIndex].title;
+        const QString suggested = known.isEmpty()
+            ? QDir::home().filePath(title + QStringLiteral(".comp"))
+            : known;
+        path = m_platform.files->chooseProjectSavePath(suggested);
+    }
     if (path.isEmpty()) return false;
-    return startProjectSave(path, false, [this](bool saved) {
-        if (!saved) m_platform.notifier->warn(tr("Save failed"), tr("Could not save project. The previous file has been preserved."));
-    }, true, handle);
+    path = normalizeProjectPackagePath(path);
+    if (!path.endsWith(QLatin1String(".comp"), Qt::CaseInsensitive))
+        path += QStringLiteral(".comp");
+    if (path.startsWith(QStringLiteral("/run/user/")) && path.contains(QStringLiteral("/doc/"))) {
+        m_platform.notifier->warn(tr("Save failed"),
+            tr("The system save dialog returned a portal file path, which cannot hold a Compositor project folder. Try again and pick a folder under Home, Documents, or Downloads."));
+        return false;
+    }
+    // Native Save dialogs often create an empty file at the chosen path; .comp must be a directory package.
+    {
+        const QFileInfo info(path);
+        if (info.isFile() && !QFile::remove(path)) {
+            m_platform.notifier->warn(tr("Save failed"),
+                tr("Could not replace “%1” with a project package. Choose another name or location.").arg(info.fileName()));
+            return false;
+        }
+    }
+    const QString parentDir = QFileInfo(path).absolutePath();
+    if (!QDir().mkpath(parentDir)) {
+        m_platform.notifier->warn(tr("Save failed"), tr("Could not create the folder for this project."));
+        return false;
+    }
+    {
+        QTemporaryFile probe(parentDir + QStringLiteral("/.compositor-write-XXXXXX"));
+        if (!probe.open()) {
+            m_platform.notifier->warn(tr("Save failed"),
+                tr("Compositor cannot write to “%1”. Choose a location through the save dialog (Documents or Downloads).")
+                    .arg(parentDir));
+            return false;
+        }
+    }
+    if (!startProjectSave(path, false, [this](bool saved) {
+        if (!saved) {
+            QString text = tr("Could not save project. The previous file has been preserved.");
+            if (!m_lastProjectSaveError.isEmpty())
+                text += QStringLiteral("\n\n") + m_lastProjectSaveError;
+            m_platform.notifier->warn(tr("Save failed"), text);
+        } else {
+            // startProjectSave committed Free Transform for the snapshot; re-arm Show Controls editing after save.
+            if (sessionState().value("showsTransformControls").toBool()
+                && !sessionState().value("transforming").toBool()) {
+                sendCommandQuiet({{"action", "setShowsTransformControls"}, {"enabled", true}});
+                updateTransformCommitControls();
+                updateOptionsBar();
+            }
+        }
+    }, true, handle)) {
+        if (m_savingDocuments.contains(handle))
+            statusBar()->showMessage(tr("A save is already in progress."), 3000);
+        else if (m_commandDepth > 0)
+            m_platform.notifier->warn(tr("Save failed"), tr("Finish the current action, then try saving again."));
+        else
+            m_platform.notifier->warn(tr("Save failed"), tr("Could not start saving this project."));
+        return false;
+    }
+    return true;
 }
 
 bool SessionWindow::confirmDocumentClose(int index, bool closingWindow) {
@@ -2396,6 +2464,17 @@ void SessionWindow::updateTransformCommitControls() {
     const bool pending = m_sessionHandle != 0 && sessionState().value("transforming").toBool();
     if (m_transformCancelBtn) m_transformCancelBtn->setVisible(pending);
     if (m_transformApplyBtn) m_transformApplyBtn->setVisible(pending);
+}
+
+void SessionWindow::prepareDocumentForProjectIO(uint64_t handle) {
+    const uint64_t target = handle ? handle : m_sessionHandle;
+    if (!target) return;
+    const uint64_t previous = m_sessionHandle;
+    m_sessionHandle = target;
+    if (m_hasPendingCrop && target == previous) cancelCrop();
+    // Fold Free Transform into layer state without re-opening Show Controls (transformCommit would).
+    sendCommandQuiet({{"action", "transformCommitFinal"}});
+    m_sessionHandle = previous;
 }
 
 /// ProjectController.exportPNG / exportJPEG: upstream's exporter (and JPEG sheet), the save panel being the shell's,
@@ -4965,7 +5044,7 @@ bool SessionWindow::importImage(const QString &path) {
 /// workspace.newCanvas(): a new, empty tab (the New Canvas sheet shows in it until a document is made).
 void SessionWindow::newCanvasTab() {
     if (sessionState().value("busy").toBool()) return;
-    sendCommandQuiet({{"action", "transformCommit"}});   // upstream commits a pending transform before switching
+    sendCommandQuiet({{"action", "transformCommitFinal"}});   // upstream commits a pending transform before switching
     const uint64_t handle = compositor_workspace_add_tab();
     addDocumentTab(handle, workspaceTabTitle(handle));
 }
@@ -4997,21 +5076,99 @@ bool SessionWindow::loadProject(const QString &path) {
 }
 
 namespace {
+
+QString normalizeProjectPackagePath(QString path) {
+    if (path.isEmpty()) return path;
+    if (path.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
+        path = QUrl(path).toLocalFile();
+    path = QDir::cleanPath(path);
+    const QString suffix = QStringLiteral(".comp");
+    while (path.endsWith(suffix + suffix, Qt::CaseInsensitive))
+        path.chop(suffix.size());
+    path = QFileInfo(path).absoluteFilePath();
+    // Qt's non-native dialog treats an existing .comp package as a normal folder, so Save As
+    // can land on Untitled.comp/Untitled.comp. Climb to the enclosing package.
+    while (true) {
+        const QFileInfo info(path);
+        if (!info.dir().dirName().endsWith(suffix, Qt::CaseInsensitive)) break;
+        path = info.dir().absolutePath();
+    }
+    return path;
+}
+
+bool copyDirectoryRecursively(const QString &source, const QString &destination) {
+    QDir sourceDir(source);
+    if (!sourceDir.exists()) return false;
+    if (!QDir().mkpath(destination)) return false;
+    const QFileInfoList entries =
+        sourceDir.entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden);
+    for (const QFileInfo &entry : entries) {
+        const QString target = destination + QLatin1Char('/') + entry.fileName();
+        if (entry.isDir()) {
+            if (!copyDirectoryRecursively(entry.absoluteFilePath(), target)) return false;
+        } else {
+            if (QFile::exists(target) && !QFile::remove(target)) return false;
+            if (!QFile::copy(entry.absoluteFilePath(), target)) return false;
+        }
+    }
+    return true;
+}
+
+/// Move an existing package aside, or remove it when rename fails (busy mount, open handles).
+bool relocateExistingPackage(const QString &path, const QString &backupPath) {
+    if (!QFileInfo::exists(path)) return true;
+    if (QFile::rename(path, backupPath)) return true;
+    qWarning("project save: rename aside failed (%s → %s)", qPrintable(path), qPrintable(backupPath));
+    if (QFileInfo(path).isFile()) return QFile::remove(path);
+    if (QFileInfo(path).isDir()) return QDir(path).removeRecursively();
+    return false;
+}
+
+bool installStagedProjectPackage(const QString &temporaryPath, const QString &path, const QString &backupPath) {
+    if (!relocateExistingPackage(path, backupPath)) {
+        qWarning("project save: could not replace existing package at %s", qPrintable(path));
+        return false;
+    }
+    if (QFile::rename(temporaryPath, path)) {
+        if (QFileInfo::exists(backupPath)) QDir(backupPath).removeRecursively();
+        return true;
+    }
+    qWarning("project save: rename install failed (%s → %s), trying copy",
+             qPrintable(temporaryPath), qPrintable(path));
+    if (!copyDirectoryRecursively(temporaryPath, path)) {
+        qWarning("project save: copy install failed (%s → %s)", qPrintable(temporaryPath), qPrintable(path));
+        if (QFileInfo::exists(backupPath)) QFile::rename(backupPath, path);
+        return false;
+    }
+    QDir(temporaryPath).removeRecursively();
+    if (QFileInfo::exists(backupPath)) QDir(backupPath).removeRecursively();
+    return true;
+}
+
 // Consumes only immutable save data; safe to call from the package worker.
-bool writeFrozenProjectPackage(const QString &path, uint64_t snapshot, QString *savedDocumentID) {
+// Stage under the system temp directory — never as a sibling of `path`. Save As / XDG
+// document-portal grants often allow only the chosen file, so `path.tmp-PID` next to it fails.
+bool writeFrozenProjectPackage(const QString &path, uint64_t snapshot, QString *savedDocumentID,
+                               QString *failureReason = nullptr) {
+    const auto fail = [&](const QString &why) -> bool {
+        qWarning("project save: %s [%s]", qPrintable(why), qPrintable(path));
+        if (failureReason) *failureReason = why;
+        return false;
+    };
 
     // Export manifest JSON from Swift core
     int64_t manifestSize = compositor_save_export_manifest(snapshot, nullptr, 0);
-    if (manifestSize <= 0 || manifestSize > compositor::projectMetadataBytes) return false;
+    if (manifestSize <= 0 || manifestSize > compositor::projectMetadataBytes)
+        return fail(QStringLiteral("manifest export failed (%1)").arg(manifestSize));
 
     std::vector<uint8_t> manifestBytes(static_cast<size_t>(manifestSize));
     int64_t n = compositor_save_export_manifest(snapshot, manifestBytes.data(), manifestBytes.size());
-    if (n != manifestSize) return false;
+    if (n != manifestSize) return fail(QStringLiteral("manifest re-export size mismatch"));
 
     QByteArray manifestData(reinterpret_cast<char *>(manifestBytes.data()), manifestSize);
-    if (manifestData.size() > compositor::projectMetadataBytes) return false;
+    if (manifestData.size() > compositor::projectMetadataBytes) return fail(QStringLiteral("manifest too large"));
     QJsonDocument manifestDoc = QJsonDocument::fromJson(manifestData);
-    if (manifestDoc.isNull() || !manifestDoc.isObject()) return false;
+    if (manifestDoc.isNull() || !manifestDoc.isObject()) return fail(QStringLiteral("manifest JSON invalid"));
 
     const QJsonObject manifest = manifestDoc.object();
     if (savedDocumentID) *savedDocumentID = manifest.value("documentID").toString();
@@ -5026,33 +5183,63 @@ bool writeFrozenProjectPackage(const QString &path, uint64_t snapshot, QString *
             const int64_t size = compositor_save_export_layer(snapshot,
                 reinterpret_cast<const uint8_t *>(id.constData()), id.size(), isMask ? 1 : 0,
                 nullptr, 0, &width, &height);
-            if (size <= 0 || !compositor::accountProjectAsset(width, height, isMask ? maskPixels : imagePixels)
-                || static_cast<uint64_t>(size) != width * height * (isMask ? 1 : 4)) return false;
+            if (size <= 0)
+                return fail(QStringLiteral("layer %1 (%2) missing pixels")
+                                .arg(QString::fromUtf8(id), isMask ? QStringLiteral("mask") : QStringLiteral("image")));
+            if (!compositor::accountProjectAsset(width, height, isMask ? maskPixels : imagePixels))
+                return fail(QStringLiteral("layer %1 exceeds project pixel budget").arg(QString::fromUtf8(id)));
+            if (static_cast<uint64_t>(size) != width * height * (isMask ? 1 : 4))
+                return fail(QStringLiteral("layer %1 pixel size mismatch").arg(QString::fromUtf8(id)));
         }
     }
-    const QString temporaryPath = path + ".tmp-" + QString::number(QCoreApplication::applicationPid());
-    const auto cleanup = qScopeGuard([temporaryPath] { QDir(temporaryPath).removeRecursively(); });
+
+    // Prefer staging on the destination filesystem so install can rename atomically.
+    // Fall back to the system temp dir when the parent is not writable (portal parents, etc.).
+    QString temporaryPath;
+    {
+        QTemporaryDir localStaging(
+            QFileInfo(path).absolutePath() + QStringLiteral("/.compositor-save-XXXXXX"));
+        if (localStaging.isValid()
+            && !(localStaging.path().startsWith(QStringLiteral("/run/user/"))
+                 && localStaging.path().contains(QStringLiteral("/doc/")))) {
+            temporaryPath = localStaging.path();
+            localStaging.setAutoRemove(false);
+        }
+    }
+    if (temporaryPath.isEmpty()) {
+        QTemporaryDir staging;
+        if (!staging.isValid()) return fail(QStringLiteral("could not create staging directory"));
+        temporaryPath = staging.path();
+        staging.setAutoRemove(false);
+    }
+    bool stagingPending = true;
+    const auto cleanupStaging = qScopeGuard([&] {
+        if (stagingPending && !temporaryPath.isEmpty()) QDir(temporaryPath).removeRecursively();
+    });
     QDir temporary(temporaryPath);
-    if (temporary.exists() && !temporary.removeRecursively()) return false;
-    if (!temporary.mkpath("images")) return false;
+    if (!temporary.mkpath(QStringLiteral("images"))) return fail(QStringLiteral("could not create staging images/"));
 
     QFile manifestFile(temporary.filePath("manifest.json"));
-    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return fail(QStringLiteral("could not write staging manifest"));
     const QByteArray encodedManifest = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
-    if (encodedManifest.size() > compositor::projectMetadataBytes) return false;
-    if (manifestFile.write(encodedManifest) != encodedManifest.size()) return false;
+    if (encodedManifest.size() > compositor::projectMetadataBytes) return fail(QStringLiteral("encoded manifest too large"));
+    if (manifestFile.write(encodedManifest) != encodedManifest.size())
+        return fail(QStringLiteral("manifest write incomplete"));
     manifestFile.close();
 
     for (const QJsonValue &value : manifest.value("layers").toArray()) {
         const QJsonObject layer = value.toObject();
         const QString idString = layer.value("id").toString();
         const QByteArray id = idString.toUtf8();
-        if (id.isEmpty()) return false;
+        if (id.isEmpty()) return fail(QStringLiteral("layer with empty id"));
         for (const bool isMask : {false, true}) {
             const QString filename = layer.value(isMask ? "maskFile" : "imageFile").toString();
             if (filename.isEmpty()) continue;
-            const QString expected = idString + (isMask ? ".mask.png" : ".png");
-            if (filename != expected || QFileInfo(filename).fileName() != filename) return false;
+            const QString expected = idString + (isMask ? QStringLiteral(".mask.png") : QStringLiteral(".png"));
+            if (filename.compare(expected, Qt::CaseInsensitive) != 0
+                || QFileInfo(filename).fileName() != filename)
+                return fail(QStringLiteral("layer %1 asset name mismatch (%2)").arg(idString, filename));
 
             size_t width = 0, height = 0;
             const int64_t size = compositor_save_export_layer(snapshot,
@@ -5060,58 +5247,65 @@ bool writeFrozenProjectPackage(const QString &path, uint64_t snapshot, QString *
                 isMask ? 1 : 0, nullptr, 0, &width, &height);
             size_t surfacePixels = 0;
             if (size <= 0 || !compositor::accountProjectAsset(width, height, surfacePixels)
-                || static_cast<uint64_t>(size) != width * height * (isMask ? 1 : 4)) return false;
+                || static_cast<uint64_t>(size) != width * height * (isMask ? 1 : 4))
+                return fail(QStringLiteral("layer %1 encode preflight failed").arg(idString));
             std::vector<uint8_t> bytes(static_cast<size_t>(size));
             const int64_t copied = compositor_save_export_layer(snapshot,
                 reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()),
                 isMask ? 1 : 0, bytes.data(), bytes.size(), &width, &height);
-            if (copied != size) return false;
+            if (copied != size) return fail(QStringLiteral("layer %1 pixel copy failed").arg(idString));
 
             QImage image;
             if (isMask) {
                 image = QImage(static_cast<int>(width), static_cast<int>(height), QImage::Format_Grayscale8);
-                if (image.isNull()) return false;
+                if (image.isNull()) return fail(QStringLiteral("layer %1 mask QImage alloc failed").arg(idString));
                 for (size_t y = 0; y < height; ++y)
                     std::memcpy(image.scanLine(static_cast<int>(y)), bytes.data() + y * width, width);
             } else {
                 image = straightRGBA(bytes, static_cast<int>(width), static_cast<int>(height));
             }
-            QFile encodedAsset(temporary.filePath("images/" + filename));
-            if (!encodedAsset.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+            QFile encodedAsset(temporary.filePath(QStringLiteral("images/") + filename));
+            if (!encodedAsset.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                return fail(QStringLiteral("could not write %1").arg(filename));
             QImageWriter writer(&encodedAsset, "PNG");
-            if (image.isNull() || !writer.write(image) || !encodedAsset.flush()) return false;
+            if (image.isNull() || !writer.write(image) || !encodedAsset.flush())
+                return fail(QStringLiteral("PNG encode failed for %1").arg(filename));
             encodedAsset.close();
-            if (QFileInfo(encodedAsset.fileName()).size() > compositor::projectEncodedAssetBytes) return false;
+            if (QFileInfo(encodedAsset.fileName()).size() > compositor::projectEncodedAssetBytes)
+                return fail(QStringLiteral("encoded %1 exceeds size limit").arg(filename));
         }
     }
 
-    // macOS Quick Look Space-bar preview; Freedesktop thumbnailers read the same path.
-    // Autosave skips the flatten — recovery packages do not need Finder/file-manager thumbs.
+    // QuickLook/Preview.jpg is optional — never fail the save for preview issues.
     if (!path.endsWith(QStringLiteral("/autosave.comp"), Qt::CaseInsensitive)
         && !path.endsWith(QStringLiteral("autosave.comp"), Qt::CaseInsensitive)) {
         const int64_t previewSize = compositor_save_export_preview(snapshot, nullptr, 0);
         if (previewSize > 0) {
             std::vector<uint8_t> preview(static_cast<size_t>(previewSize));
-            if (compositor_save_export_preview(snapshot, preview.data(), preview.size()) == previewSize) {
-                if (!temporary.mkpath("QuickLook")) return false;
+            if (compositor_save_export_preview(snapshot, preview.data(), preview.size()) == previewSize
+                && temporary.mkpath("QuickLook")) {
                 QFile previewFile(temporary.filePath(QStringLiteral("QuickLook/Preview.jpg")));
-                if (!previewFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-                if (previewFile.write(reinterpret_cast<const char *>(preview.data()), previewSize) != previewSize
-                    || !previewFile.flush()) return false;
+                if (previewFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    if (previewFile.write(reinterpret_cast<const char *>(preview.data()), previewSize) != previewSize)
+                        qWarning("project save: QuickLook preview write incomplete");
+                    previewFile.flush();
+                }
             }
         }
     }
 
-    QDir destinationInfo = QFileInfo(path).dir();
-    const QString backupPath = path + ".old-" + QString::number(QCoreApplication::applicationPid());
+    // Save As / native dialogs may leave an empty file where the directory package must go.
+    if (QFileInfo(path).isFile() && !QFile::remove(path))
+        return fail(QStringLiteral("could not remove placeholder file at destination"));
+
+    const QString backupPath = path + QStringLiteral(".old-") + QString::number(QCoreApplication::applicationPid());
     QDir backup(backupPath);
-    if (backup.exists() && !backup.removeRecursively()) return false;
-    if (QFileInfo::exists(path) && !destinationInfo.rename(path, backupPath)) return false;
-    if (!destinationInfo.rename(temporaryPath, path)) {
-        if (QFileInfo::exists(backupPath)) destinationInfo.rename(backupPath, path);
-        return false;
-    }
-    if (QFileInfo::exists(backupPath)) backup.removeRecursively();
+    if (backup.exists() && !backup.removeRecursively())
+        return fail(QStringLiteral("could not clear leftover backup"));
+
+    if (!installStagedProjectPackage(temporaryPath, path, backupPath))
+        return fail(QStringLiteral("could not install package at destination"));
+    stagingPending = false; // installed (renamed or copied+removed)
     return true;
 }
 
@@ -5149,8 +5343,13 @@ bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave
         if (!autosave) statusBar()->showMessage(tr("A save is already in progress."), 3000);
         return false;
     }
+    // Mac ProjectController.begin: commit Free Transform (and clear crop) before capturing the package snapshot.
+    prepareDocumentForProjectIO(handle);
     const uint64_t captured = compositor_save_capture(handle);
-    if (!captured) return false;
+    if (!captured) {
+        qWarning("project save: snapshot capture failed for handle %llu", static_cast<unsigned long long>(handle));
+        return false;
+    }
     auto snapshot = std::make_shared<SaveToken>(captured);
     const QString recovery = autosaveDirectory();
     const auto state = sessionState();
@@ -5162,20 +5361,31 @@ bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave
     projectWriter().start(QRunnable::create([window, snapshot, handle, path, recovery, autosave, markSaved, info,
                                              completion = std::move(completion)] {
         bool saved = false;
+        QString failureReason;
         try {
             QString documentID;
-            saved = (!autosave || QDir().mkpath(recovery)) && writeFrozenProjectPackage(path, snapshot->value, &documentID);
+            saved = (!autosave || QDir().mkpath(recovery))
+                && writeFrozenProjectPackage(path, snapshot->value, &documentID, &failureReason);
             if (saved && autosave) {
                 QFile file(recovery + "/autosave.info");
                 if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(QJsonDocument(info).toJson());
             } else if (saved && path != QFileInfo(recovery + "/autosave.comp").absoluteFilePath()) {
                 removeRecovery(recovery, documentID);
             }
-        } catch (...) { saved = false; }
-        QMetaObject::invokeMethod(qApp, [window, snapshot, handle, path, autosave, markSaved, saved, completion] {
+        } catch (const std::exception &ex) {
+            saved = false;
+            failureReason = QStringLiteral("exception: %1").arg(QString::fromUtf8(ex.what()));
+            qWarning("project save: exception: %s", ex.what());
+        } catch (...) {
+            saved = false;
+            failureReason = QStringLiteral("unknown exception during package write");
+            qWarning("project save: unknown exception");
+        }
+        QMetaObject::invokeMethod(qApp, [window, snapshot, handle, path, autosave, markSaved, saved, failureReason, completion] {
             savingPaths().remove(path);
             if (!window) return;
             window->m_savingDocuments.remove(handle);
+            window->m_lastProjectSaveError = saved ? QString() : failureReason;
             if (saved && !autosave && markSaved) {
                 if (compositor_save_mark_saved(snapshot->value) == 0) {
                     auto &documents = window->m_documents;
