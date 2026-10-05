@@ -3349,6 +3349,17 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);   // narrowed to its stack's axis there
         spacer->setMinimumSize(0, 0);
         widget = spacer;
+    } else if (kind == "Color") {
+        // Color as a view leaf (Color.clear.contentShape + DragGesture, background fills, …).
+        // Must produce a real widget so gesture handlers attach; skipping it leaves an interactive
+        // GeometryReader overlay that eats clicks without delivering drag events (Image › Curves).
+        auto *swatch = new QWidget;
+        swatch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        swatch->setAttribute(Qt::WA_StyledBackground, true);
+        const QColor fill = parseColorToken(strings.value("name").toString());
+        swatch->setStyleSheet(QStringLiteral("background-color: rgba(%1,%2,%3,%4); border: none;")
+                                  .arg(fill.red()).arg(fill.green()).arg(fill.blue()).arg(fill.alphaF(), 0, 'f', 4));
+        widget = swatch;
     } else if (kind == "Divider") {
         // NSColor.separatorColor in dark aqua (white at 10%), one point thick across its stack (an HStack turns it).
         auto *line = new QFrame;
