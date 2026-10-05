@@ -99,6 +99,12 @@ struct HostBootstrap {
             print("CompositorHostBootstrap: Qt brush smoke OK")
             return
         }
+        if CommandLine.arguments.contains("--transform-smoke") {
+            let result = compositor_host_transform_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt transform smoke returned \(result)") }
+            print("CompositorHostBootstrap: Qt transform smoke OK")
+            return
+        }
         if CommandLine.arguments.contains("--session-smoke") {
             runSessionSmoke()
             print("CompositorHostBootstrap: session journey OK (create/new/paint/render/undo/redo/close)")

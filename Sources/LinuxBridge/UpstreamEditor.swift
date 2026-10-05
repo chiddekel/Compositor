@@ -81,6 +81,10 @@ private struct State: Encodable {
     let error: String?
     let hasSelection: Bool
     let canTransformSelection: Bool
+    let showsTransformControls: Bool
+    let transformAutoSelect: Bool
+    /// Free Transform / Move handle edit in progress (Ctrl+T persistent or drag-resize).
+    let transforming: Bool
     let isMaskSelected: Bool
     /// Option-click mask thumbnail: canvas shows that mask alone (Photoshop).
     let viewsMaskAlone: Bool
@@ -219,7 +223,8 @@ final class UpstreamEditor {
         "duplicateLayer", "layerViaCopy", "toggleClippingMask", "moveActiveLayer", "moveActiveLayerOutOfGroup", "mergeLayers",
         "brushBegin", "setBrushSettings", "setGradientSettings", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
         "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
-        "setMaskSelected", "invertMask", "transform", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
+        "setMaskSelected", "invertMask", "transform", "transformCommand", "transformBegin", "transformPreview", "transformCommit", "transformCancel",
+        "setShowsTransformControls", "setTransformAutoSelect",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
@@ -841,12 +846,24 @@ final class UpstreamEditor {
             await s.invertPixels()
             s.isMaskSelected = was
         case "transformBegin": s.beginTransform()
+        case "transformCommand":
+            // Tip Cmd-T: selection float when possible, else persistent Free Transform on the layer.
+            if s.canTransformSelection { await s.beginSelectionTransform() }
+            else { s.beginTransform() }
+        case "setShowsTransformControls":
+            guard let enabled = command.enabled else { return fail(-1, "enabled required") }
+            s.showsTransformControls = enabled
+        case "setTransformAutoSelect":
+            guard let enabled = command.enabled else { return fail(-1, "enabled required") }
+            s.transformAutoSelect = enabled
         case "transform":
-            guard var transform = s.activeLayer?.transform else { return fail(-5, "no layer") }
+            // Options-bar fields: update the live draft. While Free Transform (Ctrl+T) is open, leave it
+            // pending until Enter/Esc — tip TransformInspector does the same for typed values.
+            guard var transform = s.transformEdit?.draft ?? s.activeLayer?.transform else { return fail(-5, "no layer") }
             apply(command.parameters ?? [:], to: &transform)
-            s.beginTransform()
+            if s.transformEdit == nil { s.beginTransform(persistent: false) }
             s.previewTransform(transform)
-            s.commitTransform()
+            if s.transformEdit?.persistent != true { s.commitTransform() }
         case "transformPreview":
             guard var draft = s.transformEdit?.draft ?? s.activeLayer?.transform else { return fail(-5, "no layer") }
             apply(command.parameters ?? [:], to: &draft)
@@ -1083,6 +1100,9 @@ final class UpstreamEditor {
                 transform: s.displayedTransform(for: $0)) }, error: error,
             hasSelection: s.selection != nil,
             canTransformSelection: s.canTransformSelection,
+            showsTransformControls: s.showsTransformControls,
+            transformAutoSelect: s.transformAutoSelect,
+            transforming: s.transformEdit != nil,
             isMaskSelected: s.isMaskSelected,
             viewsMaskAlone: s.viewsMaskAlone,
             activeLayerIsVisible: active?.isVisible ?? true,

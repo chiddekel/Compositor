@@ -208,6 +208,9 @@ public:
     std::vector<std::unique_ptr<QMouseEvent>> m_pendingDrags;   // ordered pointer samples awaiting delivery
     void syncAppMenus();
     void performAppMenu(const QString &path);
+    /// Cmd/Ctrl+T: persistent Free Transform (layer or selection). Clears leftover Ctrl from the chord so the
+    /// first handle drag scales/rotates instead of distorting (Linux maps Ctrl → ⌘).
+    void enterFreeTransform();
     void handleShellRequests();
     void exportWithUpstream(bool jpeg);
     void positionWelcome();
@@ -516,6 +519,8 @@ private:
     bool m_colorPickerOpen = false, m_samplingPicker = false;
     bool m_colorRangeOpen = false;
     bool m_upstreamCanvasDrag = false;
+    /// After Ctrl+T: ignore Control on canvas mouse until Ctrl is released (else the chord's leftover Ctrl→⌘ distorts).
+    bool m_suppressCanvasCommand = false;
     QByteArray m_cursorPicture;
     // Upstream's overlay as last drawn (canvas-sized, premultiplied): repainted only where its views are invalid
     // (setNeedsDisplay), wholly when anything else may have changed it (m_overlayCacheValid false, the viewport moved).

@@ -24,6 +24,7 @@ int compositor_host_color_range_smoke(int argc, char **argv);
 int compositor_host_io_smoke(int argc, char **argv);
 int compositor_host_layers_smoke(int argc, char **argv);
 int compositor_host_brush_smoke(int argc, char **argv);
+int compositor_host_transform_smoke(int argc, char **argv);
 
 #ifdef __cplusplus
 }

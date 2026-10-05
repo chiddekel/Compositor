@@ -233,9 +233,13 @@ public final class NSTrackingArea {
     }
     open func convert(_ point: CGPoint, from view: NSView?) -> CGPoint {
         if view == nil {
-            let winHeight = window?.frame.height ?? bounds.height
+            // Window coords are bottom-left. Flipped views are top-left within their bounds.
+            // Use this view's bounds height (not window.frame.height): a titled window's frame can
+            // disagree with the content view, and that delta shifted every hit test vs drawn chrome.
             let localX = point.x - originInWindow.x
-            let localY = isFlipped ? (winHeight - point.y - originInWindow.y) : (point.y - originInWindow.y)
+            let localY = isFlipped
+                ? (bounds.height - (point.y - originInWindow.y))
+                : (point.y - originInWindow.y)
             return CGPoint(x: localX, y: localY)
         }
         let source = view?.originInWindow ?? .zero, mine = originInWindow
@@ -247,9 +251,10 @@ public final class NSTrackingArea {
     }
     open func convert(_ point: CGPoint, to view: NSView?) -> CGPoint {
         if view == nil {
-            let winHeight = window?.frame.height ?? bounds.height
             let winX = point.x + originInWindow.x
-            let winY = isFlipped ? (winHeight - (point.y + originInWindow.y)) : (point.y + originInWindow.y)
+            let winY = isFlipped
+                ? (originInWindow.y + bounds.height - point.y)
+                : (point.y + originInWindow.y)
             return CGPoint(x: winX, y: winY)
         }
         let target = view?.originInWindow ?? .zero, mine = originInWindow

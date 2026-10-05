@@ -1444,3 +1444,132 @@ extern "C" int compositor_host_text_smoke(int argc, char **argv, int (*probe)(vo
     QApplication app(argc, argv);
     return probe ? probe() : 1;
 }
+
+/// Focused Move / Free Transform journey: Show Controls handle resize, Ctrl+T persistent edit, Enter/Esc.
+extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
+    QApplication app(argc, argv);
+    try {
+        const auto require = [](bool ok, const char *message) {
+            if (!ok) throw std::runtime_error(message);
+        };
+        SessionWindow window;
+        window.resize(1200, 800);
+        window.show();
+        QApplication::processEvents();
+        window.setTool(SessionWindow::Tool::Move);
+        QApplication::processEvents();
+
+        require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", true}}),
+                "setShowsTransformControls failed");
+        require(window.sessionState().value("showsTransformControls").toBool(),
+                "Show Controls did not stick in session state");
+
+        const auto geometry = [&]() {
+            const QJsonObject layer = window.sessionState().value("layers").toArray().at(0).toObject();
+            const QJsonObject t = layer.value("transform").toObject();
+            auto pair = [](const QJsonValue &v, const char *a, const char *b) {
+                if (v.isArray()) return QPointF(v.toArray().at(0).toDouble(), v.toArray().at(1).toDouble());
+                return QPointF(v.toObject().value(a).toDouble(), v.toObject().value(b).toDouble());
+            };
+            const QPointF o = pair(t.value("origin"), "x", "y");
+            const QPointF z = pair(t.value("size"), "width", "height");
+            return QRectF(o.x(), o.y(), z.x(), z.y());
+        };
+        const auto rotation = [&]() {
+            const QJsonObject layer = window.sessionState().value("layers").toArray().at(0).toObject();
+            return layer.value("transform").toObject().value("rotation").toDouble();
+        };
+
+        // Demo canvas: red brush stroke leaves a ~56x56 layer in a 64x64 document.
+        require(geometry().size() == QSizeF(56, 56), "unexpected initial layer size for transform smoke");
+
+        QWidget *canvas = window.findChild<QWidget *>(QStringLiteral("editorCanvas"));
+        require(canvas != nullptr, "editorCanvas missing");
+        auto at = [&](double dx, double dy) { return window.documentToCanvasPoint(QPointF(dx, dy)); };
+        auto drag = [&](QPointF from, QPointF to, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+                QMouseEvent ev(type, pos, canvas->mapToGlobal(pos.toPoint()), button, buttons, mods);
+                QApplication::sendEvent(canvas, &ev);
+            };
+            send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+            send(QEvent::MouseMove, (from + to) / 2, Qt::NoButton, Qt::LeftButton);
+            send(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
+            send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+            QApplication::processEvents();
+        };
+
+        // 1) Show Controls: bottom-right handle drag resizes (non-persistent; commits on release).
+        drag(at(56, 56), at(48, 48));
+        require(geometry().size() == QSizeF(48, 48),
+                "corner handle drag with Show Controls did not resize (transformation missing)");
+        require(!window.sessionState().value("transforming").toBool(),
+                "non-persistent handle drag left transforming=true after mouse-up");
+
+        // 2) Body drag still moves the layer.
+        const QRectF beforeMove = geometry();
+        drag(at(20, 20), at(24, 25));
+        require(qRound(geometry().x()) == qRound(beforeMove.x()) + 4
+                    && qRound(geometry().y()) == qRound(beforeMove.y()) + 5,
+                "body drag did not move the layer");
+
+        // 3) enterFreeTransform (Ctrl+T): Show Controls off — handles must still work via persistent edit.
+        require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", false}}),
+                "could not turn Show Controls off");
+        require(!window.sessionState().value("showsTransformControls").toBool(),
+                "Show Controls stayed on");
+        window.enterFreeTransform();
+        QApplication::processEvents();
+        require(window.sessionState().value("transforming").toBool(),
+                "enterFreeTransform did not enter transforming state");
+        require(window.sessionState().value("tool").toString() == QLatin1String("move"),
+                "enterFreeTransform did not select Move tool");
+
+        const QRectF beforePersistent = geometry();
+        // Simulate leftover Ctrl from the Ctrl+T chord on the press — enterFreeTransform must have cleared
+        // HeldModifiers/⌘ so this still scales instead of distorting.
+        drag(at(beforePersistent.right(), beforePersistent.bottom()),
+             at(beforePersistent.right() + 16, beforePersistent.bottom() + 16), Qt::ControlModifier);
+        require(geometry().width() > beforePersistent.width() + 0.5
+                    && geometry().height() > beforePersistent.height() + 0.5,
+                "persistent Free Transform handle drag did not resize (Ctrl leftover after Ctrl+T?)");
+        require(window.sessionState().value("transforming").toBool(),
+                "persistent transform ended on mouse-up (should wait for Enter/Esc)");
+        require(window.sessionState().value("distortCorners").toArray().isEmpty(),
+                "Ctrl leftover after Ctrl+T entered distort instead of scale");
+
+        // Rotation handle sits 28 view-points above the top-edge midpoint (TransformOverlayGeometry).
+        const QRectF beforeRotate = geometry();
+        const double angleBefore = rotation();
+        const QPointF topMidView = at(beforeRotate.center().x(), beforeRotate.top());
+        const QPointF rotHandle = topMidView + QPointF(0, -28);
+        drag(rotHandle, rotHandle + QPointF(40, 18));
+        require(qAbs(rotation() - angleBefore) > 1.0,
+                "persistent Free Transform rotation handle did not rotate");
+        require(window.sessionState().value("transforming").toBool(),
+                "rotation ended persistent transform early");
+
+        require(window.sendCommand({{"action", "transformCommit"}}), "transformCommit failed");
+        QApplication::processEvents();
+        require(!window.sessionState().value("transforming").toBool(),
+                "transformCommit left transforming=true");
+
+        // 4) Esc cancels a fresh persistent transform.
+        window.enterFreeTransform();
+        QApplication::processEvents();
+        const QRectF beforeCancel = geometry();
+        drag(at(beforeCancel.right(), beforeCancel.bottom()),
+             at(beforeCancel.right() + 10, beforeCancel.bottom() + 10));
+        require(window.sendCommand({{"action", "transformCancel"}}), "transformCancel failed");
+        QApplication::processEvents();
+        require(!window.sessionState().value("transforming").toBool(), "transformCancel left transforming");
+        require(qAbs(geometry().width() - beforeCancel.width()) < 0.5
+                    && qAbs(geometry().height() - beforeCancel.height()) < 0.5,
+                "transformCancel did not restore size");
+
+        qInfo("Qt transform smoke OK (Show Controls, Ctrl+T scale/rotate without Show Controls, Enter/Esc)");
+        return 0;
+    } catch (const std::exception &e) {
+        qCritical("Qt transform smoke failed: %s", e.what());
+        return 1;
+    }
+}

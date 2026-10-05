@@ -16,8 +16,12 @@ import AppKit
     }
     func resize(width: Double, height: Double, scale: Double) {
         let size = CGSize(width: max(1, width), height: max(1, height))
-        guard view.frame.size != size || window.backingScaleFactor != CGFloat(scale) else { return }
+        let dpr = CGFloat(scale)
+        guard view.frame.size != size || window.backingScaleFactor != dpr else { return }
+        window.backingScaleFactor = dpr
         window.setContentSize(size)
+        // Keep contentView frame identical to the window content size — convert(_:from:nil) uses both,
+        // and a mismatch offsets every flipped-view mouse hit (transform handles look right, grab wrong).
         view.frame = CGRect(origin: .zero, size: size)
         view.layout()
     }
@@ -40,8 +44,12 @@ import AppKit
             return
         }
         let type: NSEvent.EventType = [0: .leftMouseDown, 1: .leftMouseDragged, 2: .leftMouseUp, 3: .mouseMoved][kind] ?? .leftMouseDown
-        // The window's space is bottom-left; the view is flipped.
-        let location = CGPoint(x: x, y: view.bounds.height - y)
+        // Qt canvas is top-left, same as this flipped CanvasView. Round-trip through convert so hit testing
+        // lands on the same points TransformOverlay draws (manual height-y broke when window/view sizes drifted).
+        let viewPoint = CGPoint(x: x, y: y)
+        let location = view.convert(viewPoint, to: nil)
+        // Keep AppKit's global pointer in sync so Move's toolCursor / Option-duplicate path see this hover.
+        NSEvent.mouseLocation = window.convertPoint(toScreen: location)
         guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0,
                                              clickCount: max(1, clickCount), pressure: 1) else { return }
@@ -51,15 +59,17 @@ import AppKit
         case .leftMouseUp: view.mouseUp(with: event)
         default: view.mouseMoved(with: event)
         }
-        // Hovering: the cursor rects decide (as AppKit does); pressing and dragging: whatever the view set.
-        if type == .mouseMoved || type == .leftMouseUp, let cursor = view.cursorForPoint(view.convert(event.locationInWindow, from: nil)) {
+        // Move / Free Transform sets resize (8 squares) and rotate (circle) cursors in mouseMoved via
+        // transformCursor(at:). Do not replace that with cursorForPoint — resetCursorRects only installs one
+        // canvas-wide toolCursor, which wiped handle cursors on every hover.
+        if type == .leftMouseUp, let cursor = view.cursorForPoint(viewPoint) {
             NSCursor.current = cursor
         }
     }
 
     /// A trackpad pinch (Qt's zoom gesture): upstream's `magnify(with:)`, zooming about the pointer by `1 + magnification`.
     func magnify(x: Double, y: Double, magnification: Double) {
-        let location = CGPoint(x: x, y: view.bounds.height - y)
+        let location = view.convert(CGPoint(x: x, y: y), to: nil)
         guard let event = NSEvent.mouseEvent(with: .magnify, location: location, modifierFlags: [],
                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                              context: nil, eventNumber: 0, clickCount: 1, pressure: 0) else { return }

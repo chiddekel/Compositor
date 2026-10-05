@@ -46,6 +46,11 @@ extension NSWindow {
     }
     public func setContentSize(_ size: CGSize) {
         frame = CGRect(origin: frame.origin, size: size)
+        // Match AppKit: the content view fills the content rect. Without this, UpstreamCanvas resize
+        // and convert(_:from:) can disagree on height and offset flipped hit tests.
+        if let contentView, contentView.frame.size != size {
+            contentView.frame = CGRect(origin: .zero, size: size)
+        }
     }
     public func center() {}
     public func makeKey() { isVisible = true }

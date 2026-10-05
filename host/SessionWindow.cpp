@@ -797,6 +797,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         qApp->arguments().contains("--brush-smoke") ||
         qApp->arguments().contains("--layers-smoke") ||
         qApp->arguments().contains("--io-smoke") ||
+        qApp->arguments().contains("--transform-smoke") ||
         qEnvironmentVariableIsSet("COMPOSITOR_DEMO_CANVAS")
     );
     if (isSmokeTest) {
@@ -2038,7 +2039,7 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
                 event->accept();
                 return;
             }
-            if (!m_distortCorners.isEmpty()) {   // ... and Escape puts the layer back
+            if (!m_distortCorners.isEmpty() || sessionState().value("transforming").toBool()) {
                 sendCommand({{"action", "transformCancel"}});
                 syncDistortFromSession();
                 refreshImage(); refreshLayers(); updateOptionsBar();
@@ -2053,7 +2054,7 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
                 event->accept();
                 return;
             }
-            if (!m_distortCorners.isEmpty()) {   // a pending distortion: Enter applies it
+            if (!m_distortCorners.isEmpty() || sessionState().value("transforming").toBool()) {
                 sendCommand({{"action", "transformCommit"}});
                 syncDistortFromSession();
                 refreshImage(); refreshLayers(); updateOptionsBar();
@@ -2084,7 +2085,14 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
 
 void SessionWindow::keyReleaseEvent(QKeyEvent *event) {
     // A released Shift/Ctrl must flip Auto Select / aspect lock back without waiting for a mouse move.
-    compositor_modifiers_changed(chordBits(event->modifiers()));
+    int bits = chordBits(event->modifiers());
+    if (event->key() == Qt::Key_Control) {
+        m_suppressCanvasCommand = false;
+        bits &= ~1;   // Qt often still reports the released key in modifiers()
+    } else if (m_suppressCanvasCommand) {
+        bits &= ~1;
+    }
+    compositor_modifiers_changed(bits);
     updateOptionsBar();
     if (event->key() == Qt::Key_Space && m_spaceHandActive && !event->isAutoRepeat()) {
         m_spaceHandActive = false;
@@ -2258,6 +2266,13 @@ void SessionWindow::syncAppMenus() {
     auto apply = [](QAction *action, const QJsonObject &o) {
         action->setText(QString(o.value("title").toString()).replace(QLatin1Char('&'), QStringLiteral("&&")));   // no mnemonics
         action->setEnabled(o.value("enabled").toBool(true));
+        // Free Transform: keep Ctrl+T live even when the last menu sync saw canTransform=false (AppKit validates
+        // on use). enterFreeTransform / beginTransform still no-op when nothing can be transformed.
+        const QString title = o.value("title").toString();
+        if ((title.startsWith(QLatin1String("Transform Layer")) || title.startsWith(QLatin1String("Transform Selection")))
+            && o.value("key").toString() == QLatin1String("t")) {
+            action->setEnabled(true);
+        }
         if (o.contains("checked")) action->setChecked(o.value("checked").toBool());
         // Only when it differs: setting a shortcut re-registers it with the window's shortcut map.
         const QKeySequence shortcut = o.contains("key") ? appMenuSequence(o.value("key").toString(), o.value("modifiers").toInt()) : QKeySequence();
@@ -2295,7 +2310,14 @@ void SessionWindow::syncAppMenus() {
             action->setShortcutContext(Qt::WindowShortcut);
             apply(action, o);
             m_appMenuActions.insert(path, action);
-            connect(action, &QAction::triggered, this, [this, path] { performAppMenu(path); });
+            const QString title = o.value("title").toString();
+            // Transform Layer/Selection: shell enterFreeTransform (session transformCommand), not AppMenus.perform —
+            // that path re-checks disabled and would swallow a stale Ctrl+T; also clears leftover Ctrl→⌘.
+            if (title.startsWith(QLatin1String("Transform Layer")) || title.startsWith(QLatin1String("Transform Selection"))) {
+                connect(action, &QAction::triggered, this, [this] { enterFreeTransform(); });
+            } else {
+                connect(action, &QAction::triggered, this, [this, path] { performAppMenu(path); });
+            }
         }
     };
     for (const QJsonValue &v : menus) {
@@ -2330,6 +2352,21 @@ void SessionWindow::performAppMenu(const QString &path) {
     updateFloatingPanels();
     applyShortcutSettings();
     syncAppMenus();
+}
+
+void SessionWindow::enterFreeTransform() {
+    // Ctrl+T leaves Control held until key-up; Linux maps that to ⌘, so the next handle press would distort
+    // instead of scale/rotate. Suppress Ctrl on canvas mouse until Control is released, and clear HeldModifiers.
+    m_suppressCanvasCommand = true;
+    compositor_modifiers_changed(0);
+    if (!sendCommand({{"action", "transformCommand"}})) return;
+    syncToolFromSession();
+    syncOptionsFromSession();
+    invalidateOverlay();
+    refreshImage();
+    refreshLayers();
+    updateOptionsBar();
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 /// ProjectController.exportPNG / exportJPEG: upstream's exporter (and JPEG sheet), the save panel being the shell's,
@@ -2646,8 +2683,14 @@ void SessionWindow::createMenus() {
     actSnap->setChecked(true);
     actSnap->setObjectName("view.snap");
 
-    auto *actTransformControls = view->addAction(tr("Show Transform Controls"), QKeySequence(Qt::CTRL | Qt::Key_H), this, [this](bool) {
-        if (m_canvasWidget) m_canvasWidget->update();
+    auto *actTransformControls = view->addAction(tr("Show Transform Controls"), QKeySequence(Qt::CTRL | Qt::Key_H), this, [this](bool checked) {
+        if (sendCommand({{"action", "setShowsTransformControls"}, {"enabled", checked}})) {
+            if (m_showControlsCheck) {
+                const QSignalBlocker block(m_showControlsCheck);
+                m_showControlsCheck->setChecked(checked);
+            }
+            if (m_canvasWidget) m_canvasWidget->update();
+        }
     });
     actTransformControls->setCheckable(true);
     actTransformControls->setChecked(true);
@@ -2855,7 +2898,7 @@ void SessionWindow::createMenus() {
     layer->addSeparator();
 
     m_actTransform = layer->addAction(tr("Transform Layer"), QKeySequence(Qt::CTRL | Qt::Key_T), this, [this] {
-        setTool(Tool::Move);
+        enterFreeTransform();
     });
     m_actTransform->setObjectName("layer.transform");
 
@@ -3477,9 +3520,11 @@ bool SessionWindow::routesToUpstreamCanvas() const {
 void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount, bool refresh) {
     PERF_SCOPE(kind == 3 ? "canvasMouse:hover" : kind == 1 ? "canvasMouse:drag" : "canvasMouse:press/release");
     { PERF_SCOPE("canvasMouse:syncViewport"); syncViewportGeometry(); }
+    Qt::KeyboardModifiers mods = event->modifiers();
+    if (m_suppressCanvasCommand) mods &= ~Qt::ControlModifier;
     const int cursor = [&] { PERF_SCOPE("canvasMouse:upstream");
         return compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
-                                       chordBits(event->modifiers()), clickCount); }();
+                                       chordBits(mods), clickCount); }();
     // A burst delivers every sample to the tool, then updates the shell once at its final position.
     if (!refresh) return;
     // Upstream's cursor for what is under the pointer (a custom picture — a selection tool's — shows as a crosshair).
@@ -6060,8 +6105,11 @@ void SessionWindow::setupOptionsBar() {
 
     auto *chkAutoSelect = new QCheckBox(tr("Auto Select"), pageMove);
     chkAutoSelect->setObjectName("transformAutoSelect");
-    chkAutoSelect->setChecked(true);
+    chkAutoSelect->setChecked(false); // tip ToolDefaults: autoSelect starts off
     m_autoSelectCheck = chkAutoSelect;
+    connect(chkAutoSelect, &QCheckBox::toggled, this, [this](bool checked) {
+        sendCommand({{"action", "setTransformAutoSelect"}, {"enabled", checked}});
+    });
     layoutMove->addWidget(chkAutoSelect);
 
     auto *comboAutoSelectType = new QComboBox(pageMove);
@@ -6072,7 +6120,15 @@ void SessionWindow::setupOptionsBar() {
     chkShowControls->setChecked(true);
     chkShowControls->setObjectName("transformShowControls");
     m_showControlsCheck = chkShowControls;
-    connect(chkShowControls, &QCheckBox::toggled, this, [this] { if (m_canvasWidget) m_canvasWidget->update(); });
+    connect(chkShowControls, &QCheckBox::toggled, this, [this](bool checked) {
+        if (sendCommand({{"action", "setShowsTransformControls"}, {"enabled", checked}})) {
+            if (auto *act = findChild<QAction *>("view.transformControls")) {
+                const QSignalBlocker block(act);
+                act->setChecked(checked);
+            }
+            if (m_canvasWidget) m_canvasWidget->update();
+        }
+    });
     layoutMove->addWidget(chkShowControls);
 
     auto addCoordBox = [&](const QString &label, int defVal) {
@@ -7107,6 +7163,24 @@ void SessionWindow::syncOptionsFromSession() {
     if (m_sessionHandle == 0) return;
     syncBrushFromSession();
     const auto state = sessionState();
+    if (m_showControlsCheck && state.contains("showsTransformControls")) {
+        const bool on = state.value("showsTransformControls").toBool();
+        if (m_showControlsCheck->isChecked() != on) {
+            const QSignalBlocker block(m_showControlsCheck);
+            m_showControlsCheck->setChecked(on);
+        }
+        if (auto *act = findChild<QAction *>("view.transformControls"); act && act->isChecked() != on) {
+            const QSignalBlocker block(act);
+            act->setChecked(on);
+        }
+    }
+    if (m_autoSelectCheck && state.contains("transformAutoSelect")) {
+        const bool on = state.value("transformAutoSelect").toBool();
+        if (m_autoSelectCheck->isChecked() != on) {
+            const QSignalBlocker block(m_autoSelectCheck);
+            m_autoSelectCheck->setChecked(on);
+        }
+    }
     const QString selMode = state.value("selectionMode").toString();
     if (!selMode.isEmpty()) {
         m_selectionMode = selMode;
