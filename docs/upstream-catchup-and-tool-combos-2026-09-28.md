@@ -44,7 +44,7 @@ m_tool = tool;                                       // set unconditionally
 
 Four concrete failures follow:
 
-1. **Commit skipped when the inline editor is not visible.** The gate is `m_textEditor->isVisible()`, but the real state is the session's `textDraft`. Headless/offscreen runs, a lost focus, or a draft opened through a non-editor path all leave `textDraft != nil` while this branch is skipped.
+1. **Commit skipped when the inline editor is not visible.** The gate is `m_textEditor->isVisible()`, but the session's `textDraft` is authoritative. Headless/offscreen runs, a lost focus, or a draft opened through a non-editor path all leave `textDraft != nil` while this branch is skipped.
 2. **Refusal is not modelled.** Upstream stops the switch when `finishText()` fails (locked/hidden layer, `canEditLayers == false`). Qt switches anyway, so the rail, options bar and status telemetry show a tool the session is not using.
 3. **The failure is swallowed.** `sendCommandQuiet` discards the error, so the user gets a silent half-state instead of a message.
 4. **Repair path re-enters the same code.** `syncToolFromSession` (`host/SessionWindow.cpp:6625`) detects the mismatch and calls `setTool` again on a queued connection, which re-runs the `textFinish` path and re-sends `selectTool`. The rail flickers and the commit path runs twice.
