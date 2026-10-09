@@ -1,4 +1,5 @@
-// OVERRIDE for Compositor/UI/JPEGExportSheet.swift: pan/zoom via Image.offset (compat ScrollPosition is a stub).
+// OVERRIDE for Compositor/UI/JPEGExportSheet.swift (tip renamed to ExportAsSheet): JPEG-only sheet for Qt exportJPEG.
+// JPEGPreview lives in tip ExportAsSheet.swift.
 import SwiftUI
 
 struct JPEGExportSheet: View {
@@ -122,84 +123,5 @@ struct JPEGExportSheet: View {
     private var matte: Binding<PaletteColor> {
         Binding(get: { PaletteColor(red: options.red, green: options.green, blue: options.blue) },
                 set: { options.red = $0.red; options.green = $0.green; options.blue = $0.blue })
-    }
-}
-
-/// The encoded JPEG, fitted or zoomed (1 is 100%: one image pixel per screen pixel, as the canvas counts it), where it
-/// can be dragged or scrolled around. Double-click switches between Fit and 100%.
-struct JPEGPreview: View {
-    static let frame = CGSize(width: 560, height: 330)
-    static let steps: [Double] = [0.25, 0.5, 1, 2, 4, 8]
-    let image: CGImage
-    /// The exported image's size, which the preview may have been decoded smaller than.
-    let pixelWidth: Int
-    let pixelHeight: Int
-    @Binding var zoom: Double?
-    @Environment(\.displayScale) private var displayScale
-        @State private var offset = CGPoint.zero
-    @State private var dragStart: CGPoint?
-
-    /// The zoom at which the whole image fits `frame`.
-    static func fitZoom(width: Int, height: Int, in frame: CGSize, displayScale: CGFloat) -> Double {
-        let points = CGSize(width: CGFloat(width) / max(1, displayScale), height: CGFloat(height) / max(1, displayScale))
-        return Double(min(frame.width / points.width, frame.height / points.height))
-    }
-    /// The next zoom step past `zoom` in `direction` (1 in, −1 out), or nil at the end.
-    static func step(from zoom: Double, in direction: Int) -> Double? {
-        direction > 0 ? steps.first { $0 > zoom * 1.001 } : steps.last { $0 < zoom * 0.999 }
-    }
-
-    var body: some View {
-        GeometryReader { geometry in
-            if let zoom {
-                let size = shownSize(zoom)
-                // Linux: pan via offset (Qt ScrollArea does not drive tip ScrollPosition).
-                Image(decorative: image, scale: 1).resizable().interpolation(zoom >= 1 ? .none : .high)
-                    .frame(width: size.width, height: size.height)
-                    .offset(x: -offset.x, y: -offset.y)
-                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-                    .clipped()
-                    .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 1)
-                        .onChanged { drag in
-                            let start = dragStart ?? offset
-                            dragStart = start
-                            let maxX = max(0, size.width - geometry.size.width)
-                            let maxY = max(0, size.height - geometry.size.height)
-                            offset = CGPoint(x: min(max(0, start.x - drag.translation.width), maxX),
-                                             y: min(max(0, start.y - drag.translation.height), maxY))
-                        }
-                        .onEnded { _ in dragStart = nil })
-                    .onTapGesture(count: 2) { self.zoom = nil }
-                    .onAppear { keepCentered(from: nil, to: zoom, in: geometry.size) }
-                    .onChange(of: zoom) { old, new in keepCentered(from: old, to: new, in: geometry.size) }
-                    .pointerStyle(dragStart == nil ? .grabIdle : .grabActive)
-            } else {
-                Image(decorative: image, scale: 1).resizable().interpolation(.high).scaledToFit()
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { self.zoom = 1 }
-            }
-        }
-    }
-
-    /// The image's size on screen at `zoom`, in points.
-    private func shownSize(_ zoom: Double) -> CGSize {
-        CGSize(width: CGFloat(pixelWidth) / max(1, displayScale) * zoom, height: CGFloat(pixelHeight) / max(1, displayScale) * zoom)
-    }
-
-    /// Zooming keeps the middle of the view on the same part of the image; coming from Fit, it starts at the center.
-    private func keepCentered(from old: Double?, to new: Double?, in view: CGSize) {
-        guard let new else { return }
-        let size = shownSize(new)
-        var middle = CGPoint(x: size.width / 2, y: size.height / 2)
-        if let old {
-            let before = shownSize(old)
-            let fx = before.width > 0 ? (offset.x + min(view.width, before.width) / 2) / before.width : 0.5
-            let fy = before.height > 0 ? (offset.y + min(view.height, before.height) / 2) / before.height : 0.5
-            middle = CGPoint(x: fx * size.width, y: fy * size.height)
-        }
-        offset = CGPoint(x: min(max(0, middle.x - view.width / 2), max(0, size.width - view.width)),
-                         y: min(max(0, middle.y - view.height / 2), max(0, size.height - view.height)))
     }
 }

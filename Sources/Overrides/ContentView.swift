@@ -42,6 +42,11 @@ import Sparkle
     }
     /// A fresh workspace, as the real delegate starts with (`let workspace = ProjectWorkspace()`).
     convenience init() { self.init(workspace: ProjectWorkspace()) }
+    /// Tip View › Toggle Fullscreen / Canvas Only (F). Qt hosts chrome; flip session flag and ask the shell.
+    func toggleCanvasOnly() {
+        session.canvasOnly.toggle()
+        ShellProjects.pending.append("toggleCanvasOnly")
+    }
 }
 
 struct ContentView: View {
@@ -363,7 +368,7 @@ struct ContentView: View {
     }
     private var welcome: some View {
         NewCanvasSheet(session: session,
-            onCreate: { session.createNewProject(width: $0, height: $1) },
+            onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
             onOpen: { Task { await applicationDelegate?.projects.open() } })
     }
     var statusBar: some View {   // Linux: internal, see toolHeaders

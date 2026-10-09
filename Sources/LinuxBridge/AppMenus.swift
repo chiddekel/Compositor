@@ -215,6 +215,14 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
     func save(asNew: Bool = false) async -> Bool { request(asNew ? "saveAs" : "save"); return true }
     func exportPNG() async { request("exportPNG") }
     func exportJPEG() async { request("exportJPEG") }
+    /// Tip File › Export As… / Export JPEG… — shell still runs PNG/JPEG paths; PDF lands with the Export As port.
+    func exportAs(start: ExportFormat? = nil) async {
+        switch start {
+        case .jpeg: request("exportJPEG")
+        case .pdf: request("exportPDF")
+        case .png, nil: request("exportPNG")
+        }
+    }
     func canvasSize() async { request("canvasSize") }
     func imageSize() async { request("imageSize") }
     func trim() async { request("trim") }

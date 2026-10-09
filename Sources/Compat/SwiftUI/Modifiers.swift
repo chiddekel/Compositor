@@ -68,6 +68,9 @@ extension View {
     public func foregroundStyle(_ style: ShapeStyle) -> some View {
         modified { $0.modifiers.append(.foregroundStyle(style.name)) }
     }
+    public func foregroundStyle(_ style: AnyShapeStyle) -> some View {
+        foregroundStyle(style.token)
+    }
     public func foregroundColor(_ color: Color?) -> some View {
         modified { $0.modifiers.append(.foregroundStyle(color?.name ?? "primary")) }
     }
@@ -813,4 +816,12 @@ public struct PointerStyle: Sendable {
 /// Option 2 / Control 4 / Shift 8 — Linux's Ctrl / Alt / Meta / Shift. What AppKit code reads from `NSEvent.modifierFlags`.
 public enum CompatInput {
     nonisolated(unsafe) public static var clickModifiers: Int = 0
+}
+
+extension View {
+    /// Sheets that must not dismiss while work is in progress (Raw Develop Importing…).
+    public func interactiveDismissDisabled(_ disabled: Bool = true) -> some View {
+        _ = disabled
+        return self
+    }
 }

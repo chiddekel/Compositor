@@ -51,6 +51,10 @@ public struct CIFormat: Hashable, Sendable {
     let rawValue: Int
     public static let RGBA8 = CIFormat(rawValue: 0), BGRA8 = CIFormat(rawValue: 1), L8 = CIFormat(rawValue: 2)
     public static let RGBAf = CIFormat(rawValue: 3), A8 = CIFormat(rawValue: 4)
+    /// Half-float working format on Apple; treated as float here.
+    public static let RGBAh = CIFormat(rawValue: 5)
+    /// 16-bit unsigned per channel (RAW dither path).
+    public static let RGBA16 = CIFormat(rawValue: 6)
 }
 
 public let kCIInputImageKey = "inputImage"
@@ -424,6 +428,8 @@ public struct CIContextOption: Hashable, Sendable {
     public static let outputColorSpace = CIContextOption(key: "outputColorSpace")
     public static let cacheIntermediates = CIContextOption(key: "cacheIntermediates")
     public static let useSoftwareRenderer = CIContextOption(key: "useSoftwareRenderer")
+    /// Apple working-pixel format; recorded and ignored (evaluator stays float).
+    public static let workingFormat = CIContextOption(key: "workingFormat")
 }
 
 public final class CIContext: @unchecked Sendable {
@@ -537,7 +543,24 @@ public final class CIContext: @unchecked Sendable {
 
     public func render(_ image: CIImage, toBitmap bitmap: UnsafeMutableRawPointer, rowBytes: Int, bounds: CGRect,
                        format: CIFormat, colorSpace: CGColorSpace?) {
-        guard let cg = createCGImage(image, from: bounds, format: format, colorSpace: colorSpace) else { return }
+        // RGBA16: render 8-bit then expand (RAW dither expects 16-bit samples before C quantize).
+        if format == .RGBA16 {
+            guard let cg = createCGImage(image, from: bounds, format: .RGBA8, colorSpace: colorSpace) else { return }
+            let bytes = cg.portableImage.bytes
+            bytes.withUnsafeBufferPointer { src in
+                guard let srcBase = src.baseAddress else { return }
+                for y in 0..<cg.height {
+                    let dst = bitmap.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt16.self)
+                    let srcRow = srcBase.advanced(by: y * cg.bytesPerRow)
+                    for x in 0..<(cg.width * 4) {
+                        dst[x] = UInt16(srcRow[x]) &* 257  // 0...255 → 0...65535
+                    }
+                }
+            }
+            return
+        }
+        let cgFormat: CIFormat = (format == .RGBAh || format == .RGBAf) ? .RGBA8 : format
+        guard let cg = createCGImage(image, from: bounds, format: cgFormat, colorSpace: colorSpace) else { return }
         let bpp = cg.isGrayPlane ? 1 : 4
         let bytes = cg.portableImage.bytes
         bytes.withUnsafeBufferPointer { src in

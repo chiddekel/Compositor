@@ -91,7 +91,7 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
         guard session.document == nil else { return nil }
         let editor = entry.editor
         resolved = ViewResolver.resolve(NewCanvasSheet(session: session,
-            onCreate: { session.createNewProject(width: $0, height: $1) },
+            onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
             onOpen: { editor.openProjectRequested = true }))
     case "RawDevelopSheet":
         // One sheet per develop request, kept while it is open: its sliders and preview live in its @State.

@@ -66,6 +66,7 @@ public struct Alignment: Sendable, Equatable {
     public static let bottom = Alignment(name: "bottom"), topLeading = Alignment(name: "topLeading")
     public static let topTrailing = Alignment(name: "topTrailing"), bottomLeading = Alignment(name: "bottomLeading")
     public static let bottomTrailing = Alignment(name: "bottomTrailing")
+    public static let leadingFirstTextBaseline = Alignment(name: "leadingFirstTextBaseline")
 }
 
 public struct TextAlignment: Sendable, Equatable {
@@ -105,6 +106,12 @@ public struct StyleToken: Sendable, Equatable, ExpressibleByStringLiteral, Primi
 public typealias Font = StyleToken
 public typealias Color = StyleToken
 public typealias ShapeStyle = StyleToken
+
+/// Type-erased `ShapeStyle` (Apple's `AnyShapeStyle`); here a thin wrapper over `StyleToken`.
+public struct AnyShapeStyle: Sendable, Equatable {
+    let token: StyleToken
+    public init(_ style: StyleToken) { token = style }
+}
 
 extension StyleToken {
     // Animation-shaped members (`.animation(.easeOut(duration:), value:)`). The compat layer's `.animation`
@@ -166,18 +173,28 @@ extension StyleToken {
 /// A minimal stand-in for Foundation's `FormatStyle` machinery — just enough for `TextField(_:value:format:)`'s
 /// `.number.precision(.fractionLength(_:))` chains to compile; the Qt renderer formats the number itself.
 public struct NumberFormat: Sendable {
-    public static let number = NumberFormat(minimumFractionLength: nil, maximumFractionLength: nil)
+    public static let number = NumberFormat(minimumFractionLength: nil, maximumFractionLength: nil, grouping: true)
     public let minimumFractionLength: Int?
     public let maximumFractionLength: Int?
+    public let grouping: Bool
 
-    private init(minimumFractionLength: Int?, maximumFractionLength: Int?) {
+    private init(minimumFractionLength: Int?, maximumFractionLength: Int?, grouping: Bool = true) {
         self.minimumFractionLength = minimumFractionLength
         self.maximumFractionLength = maximumFractionLength
+        self.grouping = grouping
     }
 
     public func precision(_ precision: NumberFormatPrecision) -> NumberFormat {
         NumberFormat(minimumFractionLength: precision.minimumFractionLength,
-                     maximumFractionLength: precision.maximumFractionLength)
+                     maximumFractionLength: precision.maximumFractionLength,
+                     grouping: grouping)
+    }
+    /// Tip New Canvas / Export As size fields use `.grouping(.never)`.
+    public enum Grouping: Sendable { case automatic, never }
+    public func grouping(_ grouping: Grouping) -> NumberFormat {
+        NumberFormat(minimumFractionLength: minimumFractionLength,
+                     maximumFractionLength: maximumFractionLength,
+                     grouping: grouping != .never)
     }
 }
 public struct NumberFormatPrecision: Sendable {

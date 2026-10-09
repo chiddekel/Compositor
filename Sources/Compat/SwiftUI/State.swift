@@ -189,6 +189,8 @@ public struct OpenWindowAction {
 public struct EnvironmentValues {
     public var openWindow: OpenWindowAction { OpenWindowAction() }
     public var displayScale: CGFloat { 1 }
+    /// Real SwiftUI tracks control enabled state; default true until disabled modifiers are threaded through.
+    public var isEnabled: Bool { true }
 }
 
 /// Scroll view camera for `.scrollPosition` (JPEG export preview).

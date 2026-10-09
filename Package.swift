@@ -113,6 +113,7 @@ let package = Package(
                 "MetalBrushCoverage.swift",
                 "MetalLayerEffects.swift",
                 "MetalWarp.swift",
+                "NavigatorGeometry.swift",
                 "RasterSnapshot.swift",
                 "SampleRingOverlay.swift",
                 "SeparableBlend.swift",
@@ -243,7 +244,8 @@ let package = Package(
                      "Rendering/TransformOverlay.swift",
                      "UI/JPEGExportSheet.swift",
                      "UI/ProjectTabs.swift",
-                     "UI/LayerMaskMenu.swift"],
+                     "UI/LayerMaskMenu.swift",
+                     "UI/TransformInspector.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),

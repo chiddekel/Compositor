@@ -131,6 +131,12 @@ public struct Image: View, PrimitiveView {
         }
     }
     public func resizable() -> Image { var copy = self; copy.isResizable = true; return copy }
+    public enum ResizingMode: Sendable { case stretch, tile }
+    /// Tip Export As checkerboard uses `.tile`; stretching is enough for the render tree token.
+    public func resizable(resizingMode: ResizingMode) -> Image {
+        _ = resizingMode
+        return resizable()
+    }
     public func interpolation(_ quality: StyleToken) -> Image { _ = quality; return self }
     public func scaledToFit() -> some View {
         var copy = self

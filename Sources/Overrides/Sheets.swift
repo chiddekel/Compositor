@@ -1,10 +1,7 @@
-// `Compositor/UI/{CanvasSizeSheet,ImageSizeSheet,JPEGExportSheet}.swift` are wired in unmodified (symlinked under
-// Sources/UpstreamCore/UI/); this file only adds the Linux-only `SheetAutoResolving` conformance real upstream code
-// has no reason to declare. Upstream's unmodified `ProjectController` builds these, hosts them with
-// `NSHostingController` and presents them with `NSWindow.beginSheet`. Presentation is the Qt shell's job: it
-// installs `NSWindow.sheetPresenter`, reads the sheet from `sheet.contentViewController?.representedRootView`,
-// shows its own dialog and calls the completion. With no host installed, a sheet settles as "cancelled" via
-// `resolveWithoutHost()`, so headless runs and tests never hang.
+// `Compositor/UI/{CanvasSizeSheet,ImageSizeSheet,ExportAsSheet}.swift` are wired in (ExportAsSheet symlinked;
+// JPEGExportSheet remains a Linux override for the Qt exportJPEG path). This file only adds the Linux-only
+// `SheetAutoResolving` conformance. Upstream's `ProjectController` builds sheets with `NSHostingController` /
+// `NSWindow.beginSheet`; the Qt shell presents them. With no host, `resolveWithoutHost()` cancels.
 
 import Foundation
 import AppKit
@@ -15,3 +12,4 @@ import SwiftUI
 extension CanvasSizeSheet: SheetAutoResolving { public func resolveWithoutHost() { finish(nil) } }
 extension ImageSizeSheet: SheetAutoResolving { public func resolveWithoutHost() { finish(nil) } }
 extension JPEGExportSheet: SheetAutoResolving { public func resolveWithoutHost() { finish(nil) } }
+extension ExportAsSheet: SheetAutoResolving { public func resolveWithoutHost() { finish(nil) } }
