@@ -187,10 +187,13 @@ public struct OpenWindowAction {
 }
 
 public struct EnvironmentValues {
+    /// Active environment while `ViewResolver` walks a tree (pushed/popped around `.disabled`).
+    nonisolated(unsafe) public static var current = EnvironmentValues()
+
     public var openWindow: OpenWindowAction { OpenWindowAction() }
     public var displayScale: CGFloat { 1 }
-    /// Real SwiftUI tracks control enabled state; default true until disabled modifiers are threaded through.
-    public var isEnabled: Bool { true }
+    /// Mirrors SwiftUI: false under an ancestor `.disabled(true)`.
+    public var isEnabled: Bool = true
 }
 
 /// Scroll view camera for `.scrollPosition` (JPEG export preview).
@@ -202,9 +205,10 @@ public struct ScrollPosition: Equatable {
 }
 
 @propertyWrapper public struct Environment<Value> {
-    private let value: Value
-    public init(_ keyPath: KeyPath<EnvironmentValues, Value>) { value = EnvironmentValues()[keyPath: keyPath] }
-    public var wrappedValue: Value { value }
+    private let keyPath: KeyPath<EnvironmentValues, Value>
+    public init(_ keyPath: KeyPath<EnvironmentValues, Value>) { self.keyPath = keyPath }
+    /// Read at access time so `.disabled` applied outside a label still reaches `@Environment(\.isEnabled)`.
+    public var wrappedValue: Value { EnvironmentValues.current[keyPath: keyPath] }
 }
 
 /// Gives per-property `Binding`s into an `@Observable` reference type (`EditorSession`, ...) via dynamic member

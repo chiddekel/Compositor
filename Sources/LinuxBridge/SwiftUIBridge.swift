@@ -115,6 +115,15 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
     case "JPEGExportSheet":
         guard let sheet = entry.editor.jpegExportSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)
+    case "ExportAsSheet":
+        guard let sheet = entry.editor.exportAsSheet else { return nil }
+        resolved = ViewResolver.resolve(sheet)
+    case "NavigatorMinimap":
+        // View › Navigator, from 300% zoom, while not Canvas Only — same gates as tip ContentView.
+        let shows = (UserDefaults.standard.object(forKey: "navigator.visible") as? Bool) ?? false
+        guard shows, !session.canvasOnly, session.document != nil,
+              session.viewport.zoom >= NavigatorMinimap.zoomShown else { return nil }
+        resolved = ViewResolver.resolve(NavigatorMinimap(session: session))
     case "GridSettingsSheet":
         guard let backup = entry.editor.gridSettingsBackup else { return nil }
         let editor = entry.editor

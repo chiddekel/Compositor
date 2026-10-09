@@ -305,6 +305,11 @@ public enum ViewResolver {
         }
         if let primitive = view as? any PrimitiveView {
             let path = (primitive as? ModifiedContent)?.identity.map { "\(path)#\($0)" } ?? path
+            let savedEnabled = EnvironmentValues.current.isEnabled
+            if let modified = primitive as? ModifiedContent, let disables = modified.environmentDisables {
+                EnvironmentValues.current.isEnabled = savedEnabled && !disables
+            }
+            defer { EnvironmentValues.current.isEnabled = savedEnabled }
             let children = primitive._childViews.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
             return [primitive._makeNode(children: children)]
         }

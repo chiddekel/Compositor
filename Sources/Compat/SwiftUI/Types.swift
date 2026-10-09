@@ -17,6 +17,14 @@ public struct Edge: Hashable, Sendable {
     }
 }
 
+public struct SafeAreaRegions: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let container = SafeAreaRegions(rawValue: 1 << 0)
+    public static let keyboard = SafeAreaRegions(rawValue: 1 << 1)
+    public static let all: SafeAreaRegions = [.container, .keyboard]
+}
+
 public struct EdgeInsets: Sendable {
     public var top: Double, leading: Double, bottom: Double, trailing: Double
     public init(top: Double = 0, leading: Double = 0, bottom: Double = 0, trailing: Double = 0) {

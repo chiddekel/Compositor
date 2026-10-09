@@ -273,7 +273,8 @@ let package = Package(
                       "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
                       "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
                       "TypeToolTests.swift", "GroupTests.swift", "LayerMaskTests.swift", "LayerAppearanceTests.swift",
-                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift"],
+                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift",
+                      "CommandPaletteTests.swift", "NavigatorTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
@@ -297,7 +298,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CompatTests",
-            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision"],
+            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision", "SwiftUI"],
             path: "Tests/CompatTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift

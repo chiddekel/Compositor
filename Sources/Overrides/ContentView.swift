@@ -52,6 +52,7 @@ import Sparkle
 struct ContentView: View {
     /// The Layers panel's width, remembered across launches.
     @AppStorage("layersPanelWidth") private var layersPanelWidth = 252.0
+    @AppStorage("navigator.visible") private var showsNavigator = false
     @Bindable var session: EditorSession
     var applicationDelegate: CompositorApplicationDelegate? = nil
     @Environment(\.openWindow) private var openWindow
@@ -125,12 +126,14 @@ struct ContentView: View {
 
     @ViewBuilder private var editorStack: some View {
         VStack(spacing: 0) {
-            toolHeaders
+            if !session.canvasOnly { toolHeaders }
             HStack(spacing: 0) {
-                toolRail
-                Divider()
+                if !session.canvasOnly {
+                    toolRail
+                    Divider()
+                }
                 VStack(spacing: 0) {
-                    if session.showsRulers, session.document != nil {
+                    if session.showsRulers, session.document != nil, !session.canvasOnly {
                         HStack(spacing: 0) {
                             CanvasRulerCorner()
                             CanvasRulerView(session: session, axis: .horizontal)
@@ -138,7 +141,7 @@ struct ContentView: View {
                         }
                     }
                     HStack(spacing: 0) {
-                        if session.showsRulers, session.document != nil {
+                        if session.showsRulers, session.document != nil, !session.canvasOnly {
                             CanvasRulerView(session: session, axis: .vertical)
                                 .frame(width: CanvasRuler.thickness)
                         }
@@ -151,17 +154,26 @@ struct ContentView: View {
                                     .padding(.bottom, 14)
                                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                             }
+                            if showsNavigator, !session.canvasOnly, session.viewport.zoom >= NavigatorMinimap.zoomShown {
+                                NavigatorMinimap(session: session)
+                                    .padding(12)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            }
                         }
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("editor")) } action: { canvasFrame = $0 }
                     }
                 }
-                PanelResizeEdge(width: $layersPanelWidth, range: LayersPanel.widths)
-                LayersPanel(session: session, width: layersPanelWidth)
+                if !session.canvasOnly {
+                    PanelResizeEdge(width: $layersPanelWidth, range: LayersPanel.widths)
+                    LayersPanel(session: session, width: layersPanelWidth)
+                }
             }
-            Divider()
-            // Keeps its own height however short the window gets; the tools scroll instead.
-            statusBar.fixedSize(horizontal: false, vertical: true)
-                .modifier(WidthReader(width: $windowWidth))
+            if !session.canvasOnly {
+                Divider()
+                // Keeps its own height however short the window gets; the tools scroll instead.
+                statusBar.fixedSize(horizontal: false, vertical: true)
+                    .modifier(WidthReader(width: $windowWidth))
+            }
         }
     }
 
@@ -203,6 +215,8 @@ struct ContentView: View {
         }
         .onAppear { applicationDelegate?.showEditor = { openWindow(id: "editor") } }
         .preferredColorScheme(.dark)
+        // Canvas Only (F): the canvas runs up under where the title bar was.
+        .ignoresSafeArea(.container, edges: session.canvasOnly ? .top : [])
         .navigationTitle(session.projectURL?.deletingPathExtension().lastPathComponent ?? "Untitled")
         .toolbar {
             ToolbarItem(placement: .navigation) {

@@ -350,5 +350,65 @@ final class CoreGraphicsCompatTests: XCTestCase {
         XCTAssertEqual(pixel[2], 0, "blue channel")
         XCTAssertEqual(pixel[3], 255, "alpha channel")
     }
+
+    /// Tip ImageExporter.pdfData + ExportTests.pdfIsOnePage… redraw path.
+    func testPDFConsumerEmbedsBitmap() {
+        var pixels = [UInt8](repeating: 0, count: 6 * 6 * 4)
+        // Red block covering (1..3, 1..3); (4,1) stays clear — same check ExportTests uses.
+        for y in 1..<4 {
+            for x in 1..<4 {
+                let i = (y * 6 + x) * 4
+                pixels[i] = 255; pixels[i + 3] = 255
+            }
+        }
+        let image = CGImage(PortableImage(width: 6, height: 6, kind: .rgba, bytesPerRow: 24, bytes: pixels))
+        let data = NSMutableData()
+        var page = CGRect(x: 0, y: 0, width: 2.88, height: 2.88)
+        guard let consumer = CGDataConsumer(data: data),
+              let context = CGContext(consumer: consumer, mediaBox: &page, nil) else {
+            XCTFail("PDF context")
+            return
+        }
+        context.beginPDFPage(nil)
+        context.draw(image, in: page)
+        context.endPDFPage()
+        context.closePDF()
+        let pdf = data as Data
+        XCTAssertEqual(String(data: pdf.prefix(8), encoding: .ascii), "%PDF-1.4")
+        let text = String(decoding: pdf, as: UTF8.self)
+        XCTAssertTrue(text.contains("/FlateDecode"))
+        XCTAssertFalse(text.contains("/DCTDecode"))
+        guard let document = CGPDFDocument(CGDataProvider(data: pdf)!),
+              let pdfPage = document.page(at: 1) else {
+            XCTFail("CGPDFDocument parse failed; pdf=\(text.prefix(200))")
+            return
+        }
+        XCTAssertEqual(document.numberOfPages, 1)
+        let box = pdfPage.getBoxRect(.mediaBox)
+        XCTAssertEqual(box.width, 2.88, accuracy: 0.001)
+        guard let restored = pdfPage.image else {
+            XCTFail("page image missing; flateStreams? pdf has Width=\(text.contains("/Width"))")
+            return
+        }
+        XCTAssertEqual(restored.width, 6)
+        let rb = restored.portableImage.bytes
+        XCTAssertEqual(rb[(1 * 6 + 1) * 4], 255, "parsed red")
+        XCTAssertEqual(rb[(1 * 6 + 1) * 4 + 3], 255, "parsed alpha")
+
+        guard let out = CGContext(data: nil, width: 6, height: 6, bitsPerComponent: 8, bytesPerRow: 24,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            XCTFail("redraw context")
+            return
+        }
+        out.interpolationQuality = .none
+        out.scaleBy(x: 6 / box.width, y: 6 / box.height)
+        out.drawPDFPage(pdfPage)
+        let drawn = out.makeImage()!.portableImage.bytes
+        let i11 = (1 * 6 + 1) * 4, i41 = (1 * 6 + 4) * 4
+        XCTAssertEqual(drawn[i11], 255, "red at (1,1) got \(drawn[i11]) a=\(drawn[i11 + 3])")
+        XCTAssertEqual(drawn[i11 + 3], 255, "alpha at (1,1)")
+        XCTAssertEqual(drawn[i41 + 3], 0, "clear at (4,1) got a=\(drawn[i41 + 3])")
+    }
 }
 

@@ -68,6 +68,7 @@ void SessionWindow::showAdjustDialog(const QString &kind) {
 }
 
 
+#include <algorithm>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -79,10 +80,11 @@ void SessionWindow::showAdjustDialog(const QString &kind) {
 
 CommandPaletteDialog::CommandPaletteDialog(SessionWindow *window, QWidget *parent)
     : QDialog(parent), m_window(window) {
-    setWindowTitle(tr("Command Palette"));
+    setWindowTitle(tr("Search Commands"));
     setObjectName("commandPaletteDialog");
-    setMinimumSize(480, 320);
-    resize(560, 380);
+    setMinimumSize(460, 290);
+    resize(460, 290);
+    setWindowFlags((windowFlags() | Qt::FramelessWindowHint) & ~Qt::WindowContextHelpButtonHint);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
@@ -173,26 +175,69 @@ void CommandPaletteDialog::collectCommands() {
 
 void CommandPaletteDialog::populateList(const QString &query) {
     m_list->clear();
-    const QString lower = query.toLower().trimmed();
+    // Tip CommandPaletteSearch: fuzzy letter match + tier ranking (word start > substring > scattered).
+    const QString phrase = query.toLower().trimmed();
+    QString wanted;
+    for (QChar c : phrase) if (!c.isSpace()) wanted += c;
+
+    auto scoreOf = [&](const QString &text) -> int {
+        const QString title = text.toLower();
+        if (phrase.isEmpty()) return 0;
+        if (wanted.isEmpty()) return 0;
+        int from = 0, previous = -2, total = 0;
+        for (QChar character : wanted) {
+            const int found = title.indexOf(character, from);
+            if (found < 0) return -1;
+            const bool wordStart = found == 0 || !title.at(found - 1).isLetterOrNumber();
+            total += 1 + (wordStart ? 8 : 0) + (found == previous + 1 ? 5 : 0);
+            previous = found;
+            from = found + 1;
+        }
+        const QStringList words = phrase.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        auto wordsStartWords = [&](const QStringList &ws) {
+            int searchFrom = 0;
+            for (const QString &word : ws) {
+                bool ok = false;
+                int at = searchFrom;
+                while ((at = title.indexOf(word, at)) >= 0) {
+                    if (at == 0 || !title.at(at - 1).isLetter()) { searchFrom = at + word.size(); ok = true; break; }
+                    ++at;
+                }
+                if (!ok) return false;
+            }
+            return true;
+        };
+        int tier = 1;
+        if (wordsStartWords({phrase})) tier = 5;
+        else if (words.size() > 1 && wordsStartWords(words)) tier = 4;
+        else if (title.contains(phrase)) tier = 3;
+        else if (QString(title).remove(QLatin1Char(' ')).contains(wanted)) tier = 2;
+        return tier * 1'000'000 + (tier == 1 ? total * 100 : 0) - title.size() / 4;
+    };
+
+    struct Ranked { int score; int index; };
+    std::vector<Ranked> ranked;
     for (size_t i = 0; i < m_entries.size(); ++i) {
         const auto &cmd = m_entries[i];
-        const QString full = (cmd.category + " " + cmd.title).toLower();
-        if (!lower.isEmpty() && !full.contains(lower)) continue;
-
-        QString label = cmd.category.isEmpty() ? cmd.title : QString("[%1] %2").arg(cmd.category, cmd.title);
-        if (!cmd.shortcut.isEmpty()) {
-            label += QString(" (%1)").arg(cmd.shortcut);
-        }
-
+        const QString full = cmd.category.isEmpty() ? cmd.title : cmd.category + QStringLiteral(" › ") + cmd.title;
+        const int score = scoreOf(full);
+        if (!phrase.isEmpty() && score < 0) continue;
+        ranked.push_back({score, static_cast<int>(i)});
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const Ranked &a, const Ranked &b) {
+        if (a.score != b.score) return a.score > b.score;
+        return a.index < b.index;
+    });
+    for (const Ranked &r : ranked) {
+        const auto &cmd = m_entries[static_cast<size_t>(r.index)];
+        QString label = cmd.category.isEmpty() ? cmd.title : QStringLiteral("%1 › %2").arg(cmd.category, cmd.title);
+        if (cmd.action && cmd.action->isChecked()) label = QStringLiteral("✓ ") + label;
+        if (!cmd.shortcut.isEmpty()) label += QStringLiteral("  ") + cmd.shortcut;
         auto *item = new QListWidgetItem(label, m_list);
-        item->setData(Qt::UserRole, static_cast<int>(i));
-        if (!cmd.action->isEnabled()) {
-            item->setForeground(Qt::gray);
-        }
+        item->setData(Qt::UserRole, r.index);
+        if (cmd.action && !cmd.action->isEnabled()) item->setForeground(Qt::gray);
     }
-    if (m_list->count() > 0) {
-        m_list->setCurrentRow(0);
-    }
+    if (m_list->count() > 0) m_list->setCurrentRow(0);
 }
 
 void CommandPaletteDialog::triggerSelected() {

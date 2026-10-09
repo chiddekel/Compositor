@@ -34,6 +34,9 @@ public struct ModifiedContent: View, PrimitiveView {
     let apply: (inout RenderNode) -> Void
     /// `.id(_:)`: part of the content's identity, so a new id is a new view (fresh `@State`, `.onAppear` again).
     var identity: String? = nil
+    /// When set, children resolve with `EnvironmentValues.isEnabled` ANDed with `!environmentDisables`
+    /// (tip Layers footer `FooterIcon` reads `@Environment(\.isEnabled)` under `.disabled`).
+    var environmentDisables: Bool? = nil
     public var _childViews: [any View] { [content] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = children.first ?? RenderNode(kind: "_Empty")
@@ -62,6 +65,10 @@ extension View {
                 top: edges.contains(.top) ? amount : 0, leading: edges.contains(.leading) ? amount : 0,
                 bottom: edges.contains(.bottom) ? amount : 0, trailing: edges.contains(.trailing) ? amount : 0))
         }
+    }
+    /// Tip Canvas Only: under the title bar. Qt hosts chrome; recorded for tree parity, no layout effect here.
+    public func ignoresSafeArea(_ regions: SafeAreaRegions = .all, edges: Edge.Set = .all) -> some View {
+        _ = regions; _ = edges; return self
     }
     public func padding(_ length: Double) -> some View { padding(.all, length) }
     public func font(_ font: Font) -> some View { modified { $0.modifiers.append(.font(font.name)) } }
@@ -128,7 +135,9 @@ extension View {
     }
     public func opacity(_ value: Double) -> some View { modified { $0.modifiers.append(.opacity(value)) } }
     public func border(_ style: ShapeStyle, width: Double = 1) -> some View { modified { $0.modifiers.append(.border(style.name, width)) } }
-    public func disabled(_ value: Bool) -> some View { modified { $0.modifiers.append(.disabled(value)) } }
+    public func disabled(_ value: Bool) -> some View {
+        ModifiedContent(content: self, apply: { $0.modifiers.append(.disabled(value)) }, environmentDisables: value)
+    }
     public func fixedSize(horizontal: Bool = true, vertical: Bool = true) -> some View {
         modified { $0.modifiers.append(.fixedSize(horizontal: horizontal, vertical: vertical)) }
     }
@@ -192,6 +201,7 @@ extension View {
     }
     public func help(_ text: String) -> some View { modified { $0.modifiers.append(.help(text)) } }
     public func accessibilityLabel(_ text: String) -> some View { modified { $0.modifiers.append(.accessibilityLabel(text)) } }
+    public func accessibilityHint(_ text: String) -> some View { modified { $0.modifiers.append(.accessibilityLabel(text)) } }
     public func accessibilityIdentifier(_ text: String) -> some View {
         modified { $0.modifiers.append(.accessibilityIdentifier(text)) }
     }
@@ -803,6 +813,7 @@ public enum ColorScheme: Sendable { case light, dark }
 public struct PointerStyle: Sendable {
     fileprivate let name: String
     private init(_ name: String) { self.name = name }
+    public static let `default` = PointerStyle("default")
     public static let columnResize = PointerStyle("columnResize")
     public static let horizontalResize = PointerStyle("horizontalResize")
     public static let verticalResize = PointerStyle("verticalResize")

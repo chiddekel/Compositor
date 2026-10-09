@@ -219,6 +219,12 @@ public:
     void prepareDocumentForProjectIO(uint64_t handle = 0);
     void handleShellRequests();
     void exportWithUpstream(bool jpeg);
+    void exportPDFWithUpstream();
+    void exportAsWithUpstream(const QString &startFormat = QString());
+    /// Tip Canvas Only (F): hide toolbars/layers/status; black canvas surround.
+    void applyCanvasOnly(bool on);
+    void updateNavigator();
+    void positionNavigator();
     void positionWelcome();
     /// Upstream's .fileImporter / the welcome's Open project, when the session asks for them.
     void handleSessionFileRequests();
@@ -507,6 +513,10 @@ private:
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
     QWidget *m_welcomeContent = nullptr;
+    QWidget *m_navigatorContent = nullptr;
+    bool m_canvasOnly = false;
+    bool m_canvasOnlySavedTools = true, m_canvasOnlySavedOptions = true, m_canvasOnlySavedLayers = true, m_canvasOnlySavedStatus = true;
+    QString m_lastRevealedLayerId;
     QWidget *m_maskAloneBadge = nullptr;
     QLabel *m_maskAloneNameLabel = nullptr;
     bool m_canvasDropTargetActive = false;

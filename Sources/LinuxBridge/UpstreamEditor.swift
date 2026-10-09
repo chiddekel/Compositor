@@ -163,6 +163,14 @@ private struct State: Encodable {
     struct GuideState: Encodable { let vertical: Bool; let position: Double }
     /// Upstream's modal sheets that are open (RawDevelopSheet, PSDConversionSheet, TrimSheet): the shell shows each.
     let sheets: [String]
+    /// After Export As accepts: format name (PNG/JPEG/PDF) while `writeExport` still has bytes to write.
+    let exportFormat: String?
+    /// View › Toggle Fullscreen / Canvas Only (F).
+    let canvasOnly: Bool
+    let canToggleCanvasOnly: Bool
+    let escapeHasNothingToCancel: Bool
+    /// Canvas zoom (1 = 100%), for Navigator ≥300% and shell chrome.
+    let zoom: Double
     /// An alert upstream's ContentView would be showing ("Couldn’t paint" / "Couldn’t crop"): `kind` for dismissAlert.
     let alert: AlertState?
     /// A pending distortion's corners (document px: top-left, top-right, bottom-right, bottom-left), for the shell's handles.
@@ -224,13 +232,13 @@ final class UpstreamEditor {
         "brushBegin", "setBrushSettings", "setGradientSettings", "brushMove", "brushEnd", "brushCancel", "cloneSetSource", "magicWand",
         "filterBegin", "filterPreview", "filterCommit", "filterCancel", "filterSetPreview",
         "setMaskSelected", "invertMask", "transform", "transformCommand", "transformBegin", "transformPreview", "transformCommit", "transformCommitFinal", "transformCancel",
-        "setShowsTransformControls", "setTransformAutoSelect",
+        "setShowsTransformControls", "setTransformAutoSelect", "setCanvasOnly",
         "distortBegin", "distortCommit", "addShape", "warpBegin", "warpMove", "warpEnd", "warpCancel",
         "resizeCanvas", "cropCanvas", "resizeImage", "addAdjustment", "adjustmentBegin", "adjustmentPreview",
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
         "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "beginLevels", "beginHueSaturation",
-        "beginAdjustmentEditing", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "jpegExportSheet", "writeJPEG", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "beginAdjustmentEditing", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "exportPDF", "jpegExportSheet", "writeJPEG", "exportAsSheet", "writeExport", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textReplace", "textRestore", "textSelect", "textFinish", "textCancel",
@@ -245,14 +253,19 @@ final class UpstreamEditor {
     /// Upstream's Canvas Size / Image Size sheets while Image > Canvas Size… / Image Size… waits for their answer.
     private(set) var canvasSizeSheet: CanvasSizeSheet?
     private(set) var imageSizeSheet: ImageSizeSheet?
-    /// Upstream's Export JPEG sheet while File > Export JPEG… waits for its answer.
+    /// Upstream's Export JPEG sheet while File > Export JPEG… waits for its answer (smoke / fallback).
     private(set) var jpegExportSheet: JPEGExportSheet?
+    /// Tip File › Export As… sheet while the shell waits for PNG/JPEG/PDF bytes.
+    private(set) var exportAsSheet: ExportAsSheet?
     /// View > Grid Settings…: values as they were when the sheet opened (Cancel puts them back).
     private(set) var gridSettingsBackup: (grid: LayoutGrid, appearance: GridAppearance, shown: Bool)?
     /// Resumes `gridSettingsSheet` when the shell's modal closes (OK or Cancel).
     private var gridSettingsAnswer: (() -> Void)?
     private var sizeAnswer: ((Any?) -> Void)?
     private var pendingJPEG: Data?
+    private var pendingExport: (data: Data, format: ExportFormat)?
+    /// Format Export As last used (same idea as tip ProjectController.lastExportFormat).
+    private var lastExportFormat: ExportFormat = .png
     private var trimAnswer: ((TrimOptions?) -> Void)?
     /// The filter in progress was opened the upstream way ("openFilter"), so its FilterSheet floats beside the canvas;
     /// the shell's own filter dialogs ("filterBegin") drive filterEdit without it.
@@ -277,6 +290,14 @@ final class UpstreamEditor {
         sizeAnswer = nil
         jpegExportSheet = nil
         answer?(data)
+    }
+
+    /// Answers the open Export As sheet (nil = Cancel).
+    func finishExportAsSheet(_ chosen: (data: Data, format: ExportFormat)?) {
+        let answer = sizeAnswer
+        sizeAnswer = nil
+        exportAsSheet = nil
+        answer?(chosen)
     }
 
     /// Answers the open Trim sheet (nil = Cancel), e.g. when the shell's dialog is closed.
@@ -313,6 +334,7 @@ final class UpstreamEditor {
         if canvasSizeSheet != nil { sheets.append("CanvasSizeSheet") }
         if imageSizeSheet != nil { sheets.append("ImageSizeSheet") }
         if jpegExportSheet != nil { sheets.append("JPEGExportSheet") }
+        if exportAsSheet != nil { sheets.append("ExportAsSheet") }
         if gridSettingsBackup != nil { sheets.append("GridSettingsSheet") }
         return sheets
     }
@@ -790,6 +812,10 @@ final class UpstreamEditor {
             guard let path = command.paths?.first, let snapshot = s.projectSnapshot() else { return fail(-1, "nothing to export") }
             do { try await ImageExporter.shared.exportPNG(snapshot, to: URL(fileURLWithPath: path)) }
             catch { return fail(-5, "Couldn’t export PNG: \(error.localizedDescription)") }
+        case "exportPDF":
+            guard let path = command.paths?.first, let snapshot = s.projectSnapshot() else { return fail(-1, "nothing to export") }
+            do { try await ImageExporter.shared.exportPDF(snapshot, to: URL(fileURLWithPath: path)) }
+            catch { return fail(-5, "Couldn’t export PDF: \(error.localizedDescription)") }
         case "jpegExportSheet":
             guard let snapshot = s.projectSnapshot() else { return fail(-2, "no document") }
             do {
@@ -801,6 +827,28 @@ final class UpstreamEditor {
                 pendingJPEG = data
                 guard data != nil else { return fail(-7, "cancelled") }
             } catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
+        case "exportAsSheet":
+            guard let snapshot = s.projectSnapshot() else { return fail(-2, "no document") }
+            do {
+                let raster = try await ImageExporter.shared.render(snapshot)
+                let start: ExportFormat = {
+                    switch command.kind?.lowercased() {
+                    case "jpeg": return .jpeg
+                    case "pdf": return .pdf
+                    case "png": return .png
+                    default: return lastExportFormat
+                    }
+                }()
+                let chosen: (data: Data, format: ExportFormat)? = await withCheckedContinuation { continuation in
+                    sizeAnswer = { continuation.resume(returning: $0 as? (data: Data, format: ExportFormat)) }
+                    exportAsSheet = ExportAsSheet(raster: raster, session: s, format: start) { [weak self] in
+                        self?.finishExportAsSheet($0)
+                    }
+                }
+                guard let chosen else { return fail(-7, "cancelled") }
+                pendingExport = chosen
+                lastExportFormat = chosen.format
+            } catch { return fail(-5, "Couldn’t export: \(error.localizedDescription)") }
         case "gridSettingsSheet":
             // ProjectController.gridSettings(): live preview while open; Cancel restores the backup.
             // Await until the shell modal finishes so ImportPrompts.presentPendingSheet can show GridSettingsSheet.
@@ -816,6 +864,13 @@ final class UpstreamEditor {
             pendingJPEG = nil
             do { try await ImageExporter.shared.write(data, to: URL(fileURLWithPath: path)) }
             catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
+        case "writeExport":
+            // No path: Cancel on the save panel — drop pending bytes (same idea as writeJPEG without a path).
+            guard let pending = pendingExport else { return fail(-1, "nothing to write") }
+            pendingExport = nil
+            guard let path = command.paths?.first else { return fail(-7, "cancelled") }
+            do { try await ImageExporter.shared.write(pending.data, to: URL(fileURLWithPath: path)) }
+            catch { return fail(-5, "Couldn’t export: \(error.localizedDescription)") }
         // EditorCanvas.sampleColor while the color picker is open: the canvas under the pointer into the picker.
         case "sampleColorPicker":
             guard let p = point(command), s.colorPicker != nil else { return fail(-2, "no picker") }
@@ -850,6 +905,9 @@ final class UpstreamEditor {
             // Tip Cmd-T: selection float when possible, else persistent Free Transform on the layer.
             if s.canTransformSelection { await s.beginSelectionTransform() }
             else { s.beginTransform() }
+        case "setCanvasOnly":
+            guard let enabled = command.enabled else { return fail(-1, "enabled required") }
+            s.canvasOnly = enabled
         case "setShowsTransformControls":
             guard let enabled = command.enabled else { return fail(-1, "enabled required") }
             s.showsTransformControls = enabled
@@ -1183,6 +1241,11 @@ final class UpstreamEditor {
             guideDragging: s.guideDrag != nil, canEditGuides: s.canEditGuides,
             snapLines: [s.snapGuides.xs.map { Double($0) }, s.snapGuides.ys.map { Double($0) }],
             sheets: openSheets,
+            exportFormat: pendingExport?.format.rawValue,
+            canvasOnly: s.canvasOnly,
+            canToggleCanvasOnly: s.canToggleCanvasOnly,
+            escapeHasNothingToCancel: s.escapeHasNothingToCancel,
+            zoom: Double(s.viewport.zoom),
             alert: s.brushError.map { State.AlertState(kind: "brush", title: "Couldn’t paint", message: $0) }
                 ?? s.cropError.map { State.AlertState(kind: "crop", title: "Couldn’t crop", message: $0) },
             distortCorners: s.transformEdit?.corners.map { $0.map { [Double($0.x), Double($0.y)] } },

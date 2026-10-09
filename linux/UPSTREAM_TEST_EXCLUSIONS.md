@@ -20,6 +20,8 @@ excluded here, with a reason; individual tests are never edited.
 | `GPUCanvasTests.swift` | Compiles; pixel-diff cases need `COMPOSITOR_FORCE_GPU_CANVAS=1`. **Shipped default is Core Graphics** (Mac look). Smoke + present channel check: `LinuxOverrideTests.GPUCanvasLinuxTests`. Full GPU↔CPU look-parity for `drawOnGPU` remains Adapter work, not a missing product feature. |
 | `MetalWarpTests.swift` | Tip Metal smudge accelerator tests. Linux `MetalWarp` uses CPU dab math matching Metal kernels (always available); coverage in `GPUCanvasLinuxTests.metalWarpInitsWithWorkingContext`. |
 | `CameraRawSliderTests.swift` | Tests `UI/CameraRawSlider.swift`'s real `CameraRawSliderView`/`GradientSliderCell`/`NSSliderCell`-based implementation (`#selector`/`@objc` target-action, custom `NSSliderCell` subclass) — same category as `SliderSnapTests.swift`. `Sources/Overrides/CameraRawSlider.swift` replaces it with a plain SwiftUI `Slider`; functional coverage lives in the compat layer, not this file. |
+| `CommandPaletteTests.swift` | Tests tip `UI/CommandPalette*.swift` (`NSApp.mainMenu`, `CommandPaletteMenu`, `NSControl.StateValue`). Linux UX is Qt `CommandPaletteDialog` (tip fuzzy ranking); Mac panel / menu APIs are not compiled. |
+| `NavigatorTests.swift` | Tests tip `NavigatorMinimap` / `NavigatorGeometry` against Mac overlay wiring. Linux ships the minimap as a Qt canvas overlay (`NavigatorMinimap` panel); these XCTest cases still need AppKit canvas hosts. |
 
 ## Per-test skips (files stay compiled; pass these to `swift test --skip`)
 

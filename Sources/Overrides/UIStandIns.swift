@@ -51,12 +51,13 @@ struct BlendModePicker: View {
 @MainActor enum BlendPreview { static var layerID: UUID? }
 
 /// STAND-IN for `CommandPaletteController` (UI/CommandPaletteView.swift). Tip menus call `toggle`; the Qt shell
-/// owns command search later — no-op until that port lands.
+/// presents `CommandPaletteDialog` when `commandPalette` is queued.
 @MainActor final class CommandPaletteController {
     static let shared = CommandPaletteController()
     func toggle(session: EditorSession, over window: NSWindow?) {
         _ = session
         _ = window
+        ShellProjects.pending.append("commandPalette")
     }
 }
 

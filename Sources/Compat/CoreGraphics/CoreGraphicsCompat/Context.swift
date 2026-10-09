@@ -513,6 +513,8 @@ public final class CGContext: @unchecked Sendable {
     // MARK: - Drawing Images
 
     public func draw(_ image: CGImage, in rect: CGRect, opacity: Double = 1) {
+        // PDF contexts record the full-resolution image (media box is in points, often ≪ pixels).
+        if PDFRecording.noteDrawIfNeeded(self, image: image, in: rect) { return }
         if let canvas {
             // The canvas already holds setAlpha's graphics state. Pass only the per-draw
             // opacity; multiplying here as well would square the context alpha in Skia.
@@ -530,11 +532,13 @@ public final class CGContext: @unchecked Sendable {
         }
         guard format == .rgba else { return }
         let finalOpacity = opacity * Double(state.alpha)
+        // Software path must honor CTM (ExportTests scales then drawPDFPage into a point-sized media box).
+        let device = Self.bounds(of: rect, under: state.ctm)
 
         // Check injected render closure fallback (Vulkan CompRenderer when activated).
-        if finalOpacity >= 1, rect.origin == .zero,
-           rect.width == CGFloat(image.width),
-           rect.height == CGFloat(image.height),
+        if finalOpacity >= 1, device.origin == .zero,
+           device.width == CGFloat(image.width),
+           device.height == CGFloat(image.height),
            let render = self.render {
             let pImg = image.portableImage
             let rc = pImg.bytes.withUnsafeBufferPointer { srcPtr -> Int32 in
@@ -544,7 +548,25 @@ public final class CGContext: @unchecked Sendable {
             if rc == 0 { return }
         }
 
-        drawSwift(image.portableImage, in: rect, opacity: finalOpacity)
+        drawSwift(image.portableImage, in: device, opacity: finalOpacity)
+    }
+
+    private static func bounds(of rect: CGRect, under t: CGAffineTransform) -> CGRect {
+        let p0 = CGPoint(x: rect.minX, y: rect.minY).applying(t)
+        let p1 = CGPoint(x: rect.maxX, y: rect.minY).applying(t)
+        let p2 = CGPoint(x: rect.minX, y: rect.maxY).applying(t)
+        let p3 = CGPoint(x: rect.maxX, y: rect.maxY).applying(t)
+        let xs = [p0.x, p1.x, p2.x, p3.x], ys = [p0.y, p1.y, p2.y, p3.y]
+        let minX = xs.min()!, maxX = xs.max()!, minY = ys.min()!, maxY = ys.max()!
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    /// Device-space blit used by `drawPDFPage` after applying the CTM to the media box.
+    func drawPDFImage(_ image: CGImage, mediaBox: CGRect) {
+        guard format == .rgba else { return }
+        let device = Self.bounds(of: mediaBox, under: state.ctm)
+        // PortableImage rows are top-down, matching `makeImage` / `NSBitmapImageRep.colorAt`.
+        drawSwift(image.portableImage, in: device, opacity: Double(state.alpha))
     }
 
     /// `opacity` is the caller's own; the context's alpha is applied by the backend from its tracked state.
@@ -669,11 +691,51 @@ public final class CGContext: @unchecked Sendable {
     nonisolated(unsafe) public static var softwareDraw: SoftwareDraw?
 
     private func drawSwift(_ image: PortableImage, in rect: CGRect, opacity: Double) {
-        guard let softwareDraw = CGContext.softwareDraw else { return }
-        var tempBuffer = self.buffer
-        softwareDraw(image, rect, opacity, &tempBuffer)
-        _ = tempBuffer.bytes.withUnsafeBufferPointer { srcPtr in
-            memcpy(self.pixelData, srcPtr.baseAddress!, pixelCount)
+        if let softwareDraw = CGContext.softwareDraw {
+            var tempBuffer = self.buffer
+            softwareDraw(image, rect, opacity, &tempBuffer)
+            _ = tempBuffer.bytes.withUnsafeBufferPointer { srcPtr in
+                memcpy(self.pixelData, srcPtr.baseAddress!, pixelCount)
+            }
+            return
+        }
+        // Built-in nearest-neighbor blit when no host rasterizer is installed (CompatTests, PDF redraw).
+        guard format == .rgba, rect.width > 0, rect.height > 0, image.width > 0, image.height > 0 else { return }
+        let dstX0 = max(0, Int(floor(rect.minX)))
+        let dstY0 = max(0, Int(floor(rect.minY)))
+        let dstX1 = min(width, Int(ceil(rect.maxX)))
+        let dstY1 = min(height, Int(ceil(rect.maxY)))
+        guard dstX0 < dstX1, dstY0 < dstY1 else { return }
+        let src = image.bytes
+        let sbpr = image.bytesPerRow
+        let spp = image.kind == .rgba ? 4 : 1
+        let op = max(0, min(1, opacity))
+        for dy in dstY0..<dstY1 {
+            let v = (Double(dy) + 0.5 - Double(rect.minY)) / Double(rect.height)
+            let sy = min(image.height - 1, max(0, Int(v * Double(image.height))))
+            for dx in dstX0..<dstX1 {
+                let u = (Double(dx) + 0.5 - Double(rect.minX)) / Double(rect.width)
+                let sx = min(image.width - 1, max(0, Int(u * Double(image.width))))
+                let si = sy * sbpr + sx * spp
+                let di = (dy * width + dx) * 4
+                let sr: UInt8, sg: UInt8, sb: UInt8, sa: UInt8
+                if spp == 4 {
+                    sr = src[si]; sg = src[si + 1]; sb = src[si + 2]; sa = src[si + 3]
+                } else {
+                    sr = src[si]; sg = src[si]; sb = src[si]; sa = 255
+                }
+                let a = Double(sa) / 255 * op
+                if a <= 0 { continue }
+                if a >= 1 {
+                    pixelData[di] = sr; pixelData[di + 1] = sg; pixelData[di + 2] = sb; pixelData[di + 3] = sa
+                } else {
+                    let inv = 1 - a
+                    pixelData[di] = UInt8(Double(pixelData[di]) * inv + Double(sr) * a)
+                    pixelData[di + 1] = UInt8(Double(pixelData[di + 1]) * inv + Double(sg) * a)
+                    pixelData[di + 2] = UInt8(Double(pixelData[di + 2]) * inv + Double(sb) * a)
+                    pixelData[di + 3] = UInt8(min(255, Double(pixelData[di + 3]) * inv + Double(sa) * op))
+                }
+            }
         }
     }
 

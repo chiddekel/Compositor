@@ -3319,11 +3319,15 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         scrollArea->setFrameShape(QFrame::NoFrame);
         scrollArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         scrollArea->setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }");
-        scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        // Tip tool headers use ScrollView(.horizontal); respect encoded axes (default vertical-only matches SwiftUI).
+        const bool scrollH = bools.value("horizontal").toBool();
+        const bool scrollV = bools.contains("vertical") ? bools.value("vertical").toBool() : !scrollH;
+        scrollArea->setHorizontalScrollBarPolicy(scrollH ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
+        scrollArea->setVerticalScrollBarPolicy(scrollV ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
         if (!children.isEmpty()) {
             if (QWidget *content = buildNode(handle, panel, children.first().toObject())) {
-                content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+                content->setSizePolicy(scrollH && !scrollV ? QSizePolicy::Preferred : QSizePolicy::Expanding,
+                                       scrollV ? QSizePolicy::Preferred : QSizePolicy::Fixed);
                 scrollArea->setWidget(content);
                 // A List whose view handles drops (compatListDrop): its rows are the stack's items, minus the trailing
                 // Spacer every List ends with.

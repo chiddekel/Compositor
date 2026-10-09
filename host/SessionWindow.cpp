@@ -662,7 +662,16 @@ bool SessionWindow::confirmDocumentClose(int index, bool closingWindow) {
     QPushButton *save = box.addButton(tr("Save"), QMessageBox::AcceptRole);
     box.addButton(tr("Cancel"), QMessageBox::RejectRole);
     QPushButton *discard = box.addButton(tr("Don’t Save"), QMessageBox::DestructiveRole);
+    // Tip 4e035bf: Save is the one colored/default action; Don’t Save matches Cancel (destructive, not accent).
     box.setDefaultButton(save);
+    save->setAutoDefault(true);
+    save->setDefault(true);
+    if (const QColor accent = save->palette().color(QPalette::Highlight); accent.isValid()) {
+        QPalette highlighted = save->palette();
+        highlighted.setColor(QPalette::Button, accent);
+        highlighted.setColor(QPalette::ButtonText, save->palette().color(QPalette::HighlightedText));
+        save->setPalette(highlighted);
+    }
     box.exec();
     if (box.clickedButton() == save) {
         m_closeAfterSave.insert(handle);
@@ -1491,6 +1500,65 @@ void SessionWindow::positionWelcome() {
     m_welcomeContent->setGeometry((m_canvasWidget->width() - width) / 2, (m_canvasWidget->height() - height) / 2, width, height);
 }
 
+/// Tip Navigator minimap: top-right of the canvas from 300% zoom when View › Navigator is on.
+void SessionWindow::updateNavigator() {
+    if (!m_canvasWidget || m_sessionHandle == 0) return;
+    QWidget *next = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("NavigatorMinimap"), m_navigatorContent);
+    if (next != m_navigatorContent) {
+        if (m_navigatorContent) retireRenderedPanel(m_navigatorContent);
+        m_navigatorContent = next;
+        if (next) {
+            next->setParent(m_canvasWidget);
+            next->setObjectName("navigatorMinimap");
+        }
+    }
+    if (!m_navigatorContent) return;
+    positionNavigator();
+    m_navigatorContent->show();
+    m_navigatorContent->raise();
+}
+
+void SessionWindow::positionNavigator() {
+    if (!m_navigatorContent || !m_canvasWidget) return;
+    const QSize hint = m_navigatorContent->sizeHint().expandedTo(QSize(80, 60));
+    const int pad = 12;
+    m_navigatorContent->setGeometry(m_canvasWidget->width() - hint.width() - pad, pad, hint.width(), hint.height());
+}
+
+/// Tip Canvas Only (F): hide chrome; black surround. F / Esc / menu toggle bring it back.
+void SessionWindow::applyCanvasOnly(bool on) {
+    if (m_canvasOnly == on) return;
+    if (on) {
+        m_canvasOnlySavedTools = m_toolsBar && m_toolsBar->isVisible();
+        m_canvasOnlySavedOptions = m_optionsToolBar && m_optionsToolBar->isVisible();
+        m_canvasOnlySavedLayers = m_layersDock && m_layersDock->isVisible();
+        m_canvasOnlySavedStatus = statusBar() && statusBar()->isVisible();
+        if (m_toolsBar) m_toolsBar->hide();
+        if (m_optionsToolBar) m_optionsToolBar->hide();
+        if (m_layersDock) m_layersDock->hide();
+        if (statusBar()) statusBar()->hide();
+        if (m_headerToolBar) m_headerToolBar->hide();
+        if (m_rulerH) m_rulerH->hide();
+        if (m_rulerV) m_rulerV->hide();
+        if (m_rulerCorner) m_rulerCorner->hide();
+    } else {
+        if (m_toolsBar && m_canvasOnlySavedTools) m_toolsBar->show();
+        if (m_optionsToolBar && m_canvasOnlySavedOptions) m_optionsToolBar->show();
+        if (m_layersDock && m_canvasOnlySavedLayers) m_layersDock->show();
+        if (statusBar() && m_canvasOnlySavedStatus) statusBar()->show();
+        if (m_headerToolBar) m_headerToolBar->show();
+        syncCanvasChrome(sessionState());
+    }
+    m_canvasOnly = on;
+    if (m_navigatorContent && on) {
+        retireRenderedPanel(m_navigatorContent);
+        m_navigatorContent = nullptr;
+    } else {
+        updateNavigator();
+    }
+    if (m_canvasWidget) m_canvasWidget->update();
+}
+
 /// Upstream's `.fileImporter(isPresented: $session.showsImporter)` (the welcome's Import image, File > Import) and the
 /// welcome's Open project (`projects.open()`), answered with the shell's choosers.
 void SessionWindow::handleSessionFileRequests() {
@@ -1624,6 +1692,7 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
                           : panel == QLatin1String("CanvasSizeSheet") ? tr("Canvas Size")
                           : panel == QLatin1String("ImageSizeSheet") ? tr("Image Size")
                           : panel == QLatin1String("JPEGExportSheet") ? tr("Export JPEG")
+                          : panel == QLatin1String("ExportAsSheet") ? tr("Export As")
                           : panel == QLatin1String("GridSettingsSheet") ? tr("Grid") : tr("Develop"));
     auto *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -2117,6 +2186,27 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
                 event->accept();
                 return;
             }
+            // Tip: Esc leaves Canvas Only when nothing else is cancellable.
+            if (m_canvasOnly && sessionState().value("escapeHasNothingToCancel").toBool(true)) {
+                if (sendCommand({{"action", "setCanvasOnly"}, {"enabled", false}})) {
+                    applyCanvasOnly(false);
+                    event->accept();
+                    return;
+                }
+            }
+            break;
+        case Qt::Key_F:
+            // Tip Canvas Only (F) when plain; ⌘F is Search Commands via the menu chord.
+            if (!(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+                if (sessionState().value("canToggleCanvasOnly").toBool(true)) {
+                    const bool next = !m_canvasOnly;
+                    if (sendCommand({{"action", "setCanvasOnly"}, {"enabled", next}})) {
+                        applyCanvasOnly(next);
+                        event->accept();
+                        return;
+                    }
+                }
+            }
             break;
         case Qt::Key_Return:
         case Qt::Key_Enter:
@@ -2491,6 +2581,43 @@ void SessionWindow::exportWithUpstream(bool jpeg) {
         m_platform.notifier->warn(jpeg ? tr("Couldn’t export JPEG") : tr("Couldn’t export PNG"), sessionState().value("error").toString());
 }
 
+/// Tip File › Export PDF / Export As… PDF: ImageExporter.pdfData, save panel on the shell.
+void SessionWindow::exportPDFWithUpstream() {
+    const QString base = m_activeDocumentIndex >= 0 && m_activeDocumentIndex < int(m_documents.size())
+        ? m_documents[m_activeDocumentIndex].title : QStringLiteral("Untitled");
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export PDF"),
+        QDir::home().filePath(base + QStringLiteral(".pdf")), tr("PDF document (*.pdf)"));
+    if (path.isEmpty()) return;
+    if (!sendCommand({{"action", "exportPDF"}, {"paths", QJsonArray{path}}}))
+        m_platform.notifier->warn(tr("Couldn’t export PDF"), sessionState().value("error").toString());
+}
+
+/// Tip File › Export As…: ExportAsSheet (PNG/JPEG/PDF + preview), then a save panel for the chosen format.
+void SessionWindow::exportAsWithUpstream(const QString &startFormat) {
+    QJsonObject cmd{{"action", "exportAsSheet"}};
+    if (!startFormat.isEmpty()) cmd.insert(QStringLiteral("kind"), startFormat);
+    if (!sendCommand(cmd)) {
+        if (sessionState().value("error").toString() != QLatin1String("cancelled"))
+            m_platform.notifier->warn(tr("Couldn’t export"), sessionState().value("error").toString());
+        return;
+    }
+    const QString format = sessionState().value("exportFormat").toString();
+    const QString base = m_activeDocumentIndex >= 0 && m_activeDocumentIndex < int(m_documents.size())
+        ? m_documents[m_activeDocumentIndex].title : QStringLiteral("Untitled");
+    QString filter = tr("PNG image (*.png)");
+    QString ext = QStringLiteral(".png");
+    if (format == QLatin1String("JPEG")) { filter = tr("JPEG image (*.jpg *.jpeg)"); ext = QStringLiteral(".jpg"); }
+    else if (format == QLatin1String("PDF")) { filter = tr("PDF document (*.pdf)"); ext = QStringLiteral(".pdf"); }
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export %1").arg(format.isEmpty() ? QStringLiteral("PNG") : format),
+        QDir::home().filePath(base + ext), filter);
+    if (path.isEmpty()) {
+        sendCommandQuiet({{"action", "writeExport"}}); // no paths → drop pending bytes
+        return;
+    }
+    if (!sendCommand({{"action", "writeExport"}, {"paths", QJsonArray{path}}}))
+        m_platform.notifier->warn(tr("Couldn’t export"), sessionState().value("error").toString());
+}
+
 /// Upstream ProjectController calls and system items the menus made (ShellProjects on the Swift side).
 void SessionWindow::handleShellRequests() {
     const int64_t size = compositor_take_shell_requests(nullptr, 0);
@@ -2513,7 +2640,12 @@ void SessionWindow::handleShellRequests() {
         else if (request == QLatin1String("save")) trigger("file.save");
         else if (request == QLatin1String("saveAs")) trigger("file.saveAs");
         else if (request == QLatin1String("exportPNG")) exportWithUpstream(false);
-        else if (request == QLatin1String("exportJPEG")) exportWithUpstream(true);
+        else if (request == QLatin1String("exportJPEG")) exportAsWithUpstream(QStringLiteral("jpeg"));
+        else if (request == QLatin1String("exportPDF")) exportPDFWithUpstream();
+        else if (request == QLatin1String("exportAs")) exportAsWithUpstream(QString());
+        else if (request.startsWith(QLatin1String("exportAs:"))) exportAsWithUpstream(request.mid(9));
+        else if (request == QLatin1String("toggleCanvasOnly")) applyCanvasOnly(sessionState().value("canvasOnly").toBool());
+        else if (request == QLatin1String("commandPalette")) showCommandPalette();
         else if (request == QLatin1String("close")) trigger("file.closeProject");
         else if (request == QLatin1String("canvasSize") || request == QLatin1String("imageSize")) {
             // Upstream's own sheet (CanvasSizeSheet / ImageSizeSheet) and resizer.
@@ -2768,7 +2900,8 @@ void SessionWindow::createMenus() {
 
     edit->addSeparator();
 
-    edit->addAction(tr("Command Palette…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P), this, [this] {
+    // Tip: Search Commands on ⌘F (⌃⌘F is Last Filter via AppMenus). Legacy hardcoded menus keep the same chord.
+    edit->addAction(tr("Command Palette…"), QKeySequence(Qt::CTRL | Qt::Key_F), this, [this] {
         showCommandPalette();
     })->setObjectName("commandPalette");
 
@@ -3444,7 +3577,8 @@ void SessionWindow::canvasPaintEvent(QPaintEvent *event, QWidget *canvas) {
     Q_UNUSED(event);
     QPainter p(canvas);
     // EditorCanvas.draw: the surround, then the document with its shadow, dark checkerboard and hairline.
-    p.fillRect(canvas->rect(), QColor::fromRgbF(0.105, 0.105, 0.105));
+    // Tip Canvas Only: black surround; otherwise EditorCanvas's dark gray rim.
+    p.fillRect(canvas->rect(), m_canvasOnly ? QColor(Qt::black) : QColor::fromRgbF(0.105, 0.105, 0.105));
 
     if (m_image.isNull()) {
         paintCanvasDropAccent(p, canvas);
@@ -3965,6 +4099,8 @@ void SessionWindow::refreshImage() {
     const int width = state.value("width").toInt(), height = state.value("height").toInt();
     syncCanvasChrome(state);
     updateMaskAloneBadge(state);
+    if (state.value("canvasOnly").toBool() != m_canvasOnly) applyCanvasOnly(state.value("canvasOnly").toBool());
+    updateNavigator();
     // Why a brush can't paint (paintRefusal), and mask-alone mode, as status feedback.
     if (const QString brushError = state.value("brushError").toString(); !brushError.isEmpty())
         statusBar()->showMessage(brushError, 4000);
@@ -4093,6 +4229,7 @@ void SessionWindow::refreshDirtyPanels() {
         else if (panel == QLatin1String("ToolRail")) updateToolRail();
         else if (panel == QLatin1String("LayersPanel")) updateLayersPanel();
         else if (panel == QLatin1String("Welcome")) { if (m_welcomeContent || m_image.isNull()) updateWelcome(); }
+        else if (panel == QLatin1String("NavigatorMinimap")) updateNavigator();
         else if (panel == QLatin1String("*")) { refreshPanels(); updateToolRail(); floating = true; }
         else floating = true;   // a floating panel's (or a sheet's own loop refreshes it)
     }
@@ -4374,7 +4511,11 @@ void SessionWindow::refreshLayers() {
     if (selectedIndex.isValid()) {
         m_layersView->setCurrentIndex(selectedIndex);
         m_layersView->selectionModel()->select(selectedIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-        m_layersView->scrollTo(selectedIndex);
+        // Tip: reveal the active layer when selection changes (not on every layers refresh).
+        if (active != m_lastRevealedLayerId) {
+            m_layersView->scrollTo(selectedIndex);
+            m_lastRevealedLayerId = active;
+        }
 
         const int opVal = qRound(activeLayerObj.value("opacity").toDouble(1.0) * 100);
         m_opacity->setValue(opVal);
