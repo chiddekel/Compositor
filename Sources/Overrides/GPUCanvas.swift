@@ -95,13 +95,18 @@ final class CAMetalLayer {
         return made
     }
 
+    /// As a texture filled from the image's rows would be (CIImage(mtlTexture:) on the Mac): the top row at y = 0, the
+    /// frame being built with y counting down. A mask comes back with its values in the red channel.
     private func upload(_ image: CGImage, mask: Bool) -> CIImage? {
+        let source: CGImage
         if mask {
-            // Gray mask → red channel CIImage
             guard let copy = try? Self.grayCopy(image), let cg = copy.makeImage() else { return nil }
-            return CIImage(cgImage: cg)
+            source = cg
+        } else {
+            source = image
         }
-        return CIImage(cgImage: image)
+        return CIImage(cgImage: source)
+            .transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: CGFloat(source.height)))
     }
 
     func cachedLevels(of image: CGImage) -> [Int] {
@@ -431,24 +436,20 @@ nonisolated enum GPUAdjustment {
 }
 
 extension CIContext {
-    /// Linux stand-in for `CIContext.render(_:to:commandBuffer:bounds:colorSpace:)` used by GPUCanvasTests.
+    /// Linux stand-in for `CIContext.render(_:to:commandBuffer:bounds:colorSpace:)` used by GPUCanvasTests. Like Core
+    /// Image writing a plain (not render-target) texture, the image's row at y = 0 lands in the texture's first row:
+    /// the GPU canvas builds its frame with y counting down, so that row is the top of the picture.
     func render(_ image: CIImage, to texture: MTLTexture, commandBuffer: MTLCommandBuffer, bounds: CGRect,
                 colorSpace: CGColorSpace?) {
         _ = (commandBuffer, colorSpace)
         guard let cg = createCGImage(image, from: bounds) else { return }
-        let w = texture.width, h = texture.height
         guard let copy = try? BrushRaster.copy(cg), let data = copy.data else { return }
-        let bpp = 4
-        let count = min(texture.rgbaBytes.count, w * h * bpp)
-        // Tip textures are top-left; BrushRaster.copy matches that.
+        let bpp = 4, w = min(texture.width, copy.width), rows = min(texture.height, copy.height)
+        // `copy` is a CGImage's rows, top (highest y) first.
         texture.rgbaBytes.withUnsafeMutableBytes { dest in
             guard let base = dest.baseAddress else { return }
-            if copy.bytesPerRow == w * bpp {
-                memcpy(base, data, count)
-            } else {
-                for row in 0..<h {
-                    memcpy(base.advanced(by: row * w * bpp), data.advanced(by: row * copy.bytesPerRow), w * bpp)
-                }
+            for row in 0..<rows {
+                memcpy(base.advanced(by: row * texture.width * bpp), data.advanced(by: (copy.height - 1 - row) * copy.bytesPerRow), w * bpp)
             }
         }
     }

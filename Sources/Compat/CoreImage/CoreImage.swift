@@ -31,6 +31,7 @@ public struct CIVector: Sendable {
     public var z: CGFloat { self[2] }
     public var w: CGFloat { self[3] }
     public var cgPointValue: CGPoint { CGPoint(x: x, y: y) }
+    public var cgRectValue: CGRect { CGRect(x: x, y: y, width: z, height: w) }
 }
 
 public struct CIColor: Sendable, Equatable {
@@ -90,27 +91,40 @@ private indirect enum Node {
     case matrix(Node, [[Float]], [Float])
     case colorClamp(Node, [Float], [Float])
     case cube(Node, Int, [Float])
-    case blendMask(Node, Node, Node)
+    /// CIBlendWithMask family: input where the mask is on, background where it is off. `channel` is which part of the
+    /// mask decides: 0 red (CIBlendWithRedMask), 3 alpha (CIBlendWithAlphaMask), 4 luminance (CIBlendWithMask).
+    case blendMask(Node, Node, Node, Int)
+    /// Source-over: `top` composited over `bottom` (CIImage.composited(over:)).
+    case over(Node, Node)
+    /// CIAffineTile: the image transformed, then repeated across the plane with the transformed extent as the period.
+    case tile(Node, CGAffineTransform)
+    /// CIRadialGradient: color0 inside radius0 to color1 at radius1 around `center`, constant beyond either.
+    case radialGradient(CGPoint, Double, CIColor, Double, CIColor)
+    /// CIColorCurves: per-channel lookup (`table` holds r,g,b triples) over `domain`, applied to unpremultiplied sRGB.
+    case curves(Node, [Float], ClosedRange<Double>)
     /// Separable PDF/W3C blend of source over backdrop (`mode` is the Core Image filter name).
     case separable(Node, Node, String)
     case transform(Node, CGAffineTransform)
-    case perspective(Node, [CGPoint])          // target corners TL, TR, BR, BL in CI space
+    /// Target corners TL, TR, BR, BL in CI space; the source rectangle mapped onto them is `source` when given
+    /// (CIPerspectiveTransformWithExtent's inputExtent), else the input's extent.
+    case perspective(Node, [CGPoint], CGRect?)
     case upsample(guide: Node, small: Node, Double, Double)
 
     var extent: CGRect {
         switch self {
         case .source(_, let r): return r
         case .bitmap(let image): return CGRect(x: 0, y: 0, width: image.width, height: image.height)
-        case .color, .clamp, .linearGradient: return infiniteExtent
+        case .color, .clamp, .linearGradient, .radialGradient, .tile: return infiniteExtent
         case .crop(let n, let r): return n.extent.intersection(r)
         case .gaussian(let n, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
-        case .blendMask(let n, _, _): return n.extent
+        case .blendMask(let n, _, _, _), .curves(let n, _, _): return n.extent
+        case .over(let top, let bottom): return top.extent.union(bottom.extent)
         case .separable(let s, let b, _): return s.extent.union(b.extent)
         case .transform(let n, let t): return n.extent.applying(t)
-        case .perspective(_, let pts):
+        case .perspective(_, let pts, _):
             let xs = pts.map(\.x), ys = pts.map(\.y)
             return CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
         case .upsample(let g, _, _, _): return g.extent
@@ -176,6 +190,8 @@ private indirect enum Node {
             return n.eval(inter.integral, env).cropped(to: region)
         case .clamp(let n):
             let ext = n.extent
+            // Already endless (or empty): there is no edge to carry outwards.
+            guard !ext.isInfiniteLike, !ext.isNull, ext.width >= 1, ext.height >= 1 else { return n.eval(region, env) }
             let inner = n.eval(ext.intersection(infiniteExtent).integral, env)
             var out = Raster(rect: region)
             for y in 0..<out.height { for x in 0..<out.width {
@@ -201,15 +217,84 @@ private indirect enum Node {
             return RasterFilters.colorMatrix(n.eval(region, env), r: rows[0], g: rows[1], b: rows[2], a: rows[3], bias: bias)
         case .colorClamp(let n, let lo, let hi): return RasterFilters.colorClamp(n.eval(region, env), minimum: lo, maximum: hi)
         case .cube(let n, let dim, let data): return RasterFilters.colorCube(n.eval(region, env), dimension: dim, cube: data)
-        case .blendMask(let n, let bg, let mask):
-            return RasterFilters.blendWithMask(n.eval(region, env), background: bg.eval(region, env), mask: mask.eval(region, env))
+        case .blendMask(let n, let bg, let mask, let channel):
+            return RasterFilters.blendWithMask(n.eval(region, env), background: bg.eval(region, env), mask: mask.eval(region, env),
+                                               channel: channel)
+        case .over(let top, let bottom):
+            let s = top.eval(region, env)
+            var out = bottom.eval(region, env)
+            var i = 0
+            while i < out.data.count {
+                let keep = 1 - s.data[i + 3]
+                for c in 0..<4 { out.data[i + c] = s.data[i + c] + out.data[i + c] * keep }
+                i += 4
+            }
+            return out
+        case .tile(let n, let t):
+            let tile = Node.transform(n, t)
+            let period = tile.extent.integral
+            guard !period.isNull, period.width >= 1, period.height >= 1, !period.isInfiniteLike else { return tile.eval(region, env) }
+            let inner = tile.eval(period, env)
+            var out = Raster(rect: region)
+            let pw = Int(period.width), ph = Int(period.height)
+            for y in 0..<out.height {
+                var sy = (Int(region.minY) + y - Int(period.minY)) % ph; if sy < 0 { sy += ph }
+                for x in 0..<out.width {
+                    var sx = (Int(region.minX) + x - Int(period.minX)) % pw; if sx < 0 { sx += pw }
+                    let s = inner.index(sx, sy), o = out.index(x, y)
+                    for c in 0..<4 { out.data[o + c] = inner.data[s + c] }
+                }
+            }
+            return out
+        case .radialGradient(let center, let r0, let c0, let r1, let c1):
+            var out = Raster(rect: region)
+            func channels(_ c: CIColor) -> [Float] {
+                var rgb = [Float(c.red), Float(c.green), Float(c.blue)]
+                if env.linear { rgb = rgb.map(Gamma.toLinear) }
+                let a = Float(c.alpha)
+                return [rgb[0] * a, rgb[1] * a, rgb[2] * a, a]
+            }
+            let a = channels(c0), b = channels(c1), span = r1 - r0
+            for y in 0..<out.height {
+                let cy = Double(region.minY) + Double(y) + 0.5 - Double(center.y)
+                for x in 0..<out.width {
+                    let cx = Double(region.minX) + Double(x) + 0.5 - Double(center.x)
+                    let d = (cx * cx + cy * cy).squareRoot()
+                    let t = span != 0 ? Float(min(1, max(0, (d - r0) / span))) : (d >= r1 ? 1 : 0)
+                    let o = out.index(x, y)
+                    for k in 0..<4 { out.data[o + k] = a[k] + (b[k] - a[k]) * t }
+                }
+            }
+            return out
+        case .curves(let n, let table, let domain):
+            var out = n.eval(region, Env(linear: false))
+            let entries = table.count / 3
+            guard entries >= 2 else { return n.eval(region, env) }
+            let lo = Float(domain.lowerBound), hi = Float(domain.upperBound), scale = Float(entries - 1) / max(1e-6, hi - lo)
+            func lookup(_ v: Float, _ channel: Int) -> Float {
+                let position = min(Float(entries - 1), max(0, (v - lo) * scale))
+                let i = min(entries - 2, Int(position)), f = position - Float(i)
+                return table[i * 3 + channel] * (1 - f) + table[(i + 1) * 3 + channel] * f
+            }
+            var i = 0
+            while i < out.data.count {
+                let alpha = out.data[i + 3]
+                if alpha > 0 {
+                    for c in 0..<3 { out.data[i + c] = lookup(min(1, max(0, out.data[i + c] / alpha)), c) * alpha }
+                }
+                i += 4
+            }
+            if env.linear { Gamma.map(&out, Gamma.toLinear) }
+            return out
         case .separable(let s, let b, let mode):
             // Separable blend modes (PDF 1.7 / W3C Compositing & Blending) are defined on non-linear perceptual
             // (sRGB) color components. When linear working space is active, evaluate inputs in sRGB and map the
             // blended result into linear space so the caller receives the linear values it expects.
             let sRGB_s = s.eval(region, Env(linear: false))
             let sRGB_b = b.eval(region, Env(linear: false))
-            var res = RasterFilters.separableBlend(sRGB_s, backdrop: sRGB_b, RasterFilters.separableFormula(mode))
+            var res = RasterFilters.nonSeparableModes.contains(mode)
+                ? RasterFilters.nonSeparableBlend(sRGB_s, backdrop: sRGB_b, mode: mode)
+                : RasterFilters.separableBlend(sRGB_s, backdrop: sRGB_b, RasterFilters.separableFormula(mode))
             if env.linear {
                 Gamma.map(&res, Gamma.toLinear)
             }
@@ -225,11 +310,15 @@ private indirect enum Node {
             let input = n.eval(src.isNull ? region : src, env)
             let m = [Double(inv.a), Double(inv.c), Double(inv.tx), Double(inv.b), Double(inv.d), Double(inv.ty), 0, 0, 1]
             return RasterFilters.projective(input, inverse: m, output: region)
-        case .perspective(let n, let target):
-            let e = n.extent.integral
+        case .perspective(let n, let target, let source):
+            let e = (source ?? n.extent).integral
+            guard !e.isInfiniteLike, !e.isNull, e.width >= 1, e.height >= 1 else { return Raster(rect: region) }
             let corners = [CGPoint(x: e.minX, y: e.maxY), CGPoint(x: e.maxX, y: e.maxY), CGPoint(x: e.maxX, y: e.minY), CGPoint(x: e.minX, y: e.minY)]
             guard let h = RasterFilters.homography(from: target, to: corners) else { return Raster(rect: region) }
-            return RasterFilters.projective(n.eval(e, env), inverse: h, output: region)
+            // One pixel more around the source, so sampling at its edge reads what the input has there (a clamped
+            // image's own edge pixels) rather than transparency.
+            let read = e.insetBy(dx: -1, dy: -1)
+            return RasterFilters.projective(n.eval(read, env), inverse: h, output: region)
         case .upsample(let g, let small, let spatial, let luma):
             return RasterFilters.edgePreserveUpsample(guide: g.eval(region, env), small: small.eval(small.extent.integral, env),
                                                       spatialSigma: spatial, lumaSigma: luma)
@@ -238,7 +327,7 @@ private indirect enum Node {
 }
 
 private extension CGRect {
-    var isInfiniteLike: Bool { width > 4_000_000 }
+    var isInfiniteLike: Bool { width > 4_000_000 || height > 4_000_000 }
     var integral32: CGRect { integral }
 }
 
@@ -313,7 +402,8 @@ public final class CIImage: @unchecked Sendable {
 
     public convenience init(color: CIColor) { self.init(node: .color(color)) }
 
-    public static func empty() -> CIImage { CIImage(color: .clear) }
+    /// No pixels and no extent (CGRect.null), as in Core Image; `CIImage.clear` is the endless transparent one.
+    public static func empty() -> CIImage { CIImage(node: .crop(.color(.clear), .null)) }
     public static var black: CIImage { CIImage(color: .black) }
     public static var clear: CIImage { CIImage(color: .clear) }
 
@@ -349,8 +439,8 @@ public final class CIImage: @unchecked Sendable {
     public func applyingFilter(_ name: String) -> CIImage { applyingFilter(name, parameters: [:]) }
 
     public func composited(over background: CIImage) -> CIImage {
-        // Source-over via the separable machinery is overkill; a blend with a solid mask is exact for opaque sources.
-        CIImage(node: .blendMask(node, background.node, CIImage(color: .white).node))
+        // Source-over: the top's premultiplied pixels plus what shows through its transparency.
+        CIImage(node: .over(node, background.node))
     }
 }
 
@@ -359,11 +449,18 @@ public final class CIImage: @unchecked Sendable {
 public class CIFilter {
     public let name: String
     private var inputs: [String: Any] = [:]
-    public static let supportedNames: Set<String> = ["CIGaussianBlur", "CIBloom", "CIMotionBlur", "CIColorMatrix", "CIColorClamp", "CIColorCube",
-        "CIBlendWithMask", "CIColorBurnBlendMode", "CIColorDodgeBlendMode", "CISoftLightBlendMode",
-        "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CIVividLightBlendMode", "CILinearLightBlendMode",
-        "CIPinLightBlendMode", "CIHardMixBlendMode", "CISubtractBlendMode", "CIDivideBlendMode",
-        "CIPerspectiveTransform", "CIEdgePreserveUpsampleFilter", "CILinearGradient", "CIRadialGradient", "CIAffineTile"]
+    /// Every name `outputImage` implements; `CIFilter(name:)` is nil (and `applyingFilter` a no-op) for any other.
+    public static let supportedNames: Set<String> = [
+        "CIAffineTile", "CIBlendWithAlphaMask", "CIBlendWithMask", "CIBlendWithRedMask", "CIBloom",
+        "CIColorBlendMode", "CIColorBurnBlendMode", "CIColorClamp", "CIColorCube", "CIColorCurves",
+        "CIColorDodgeBlendMode", "CIColorMatrix", "CIDarkenBlendMode", "CIDifferenceBlendMode", "CIDivideBlendMode",
+        "CIEdgePreserveUpsampleFilter", "CIExclusionBlendMode", "CIGaussianBlur", "CIHardLightBlendMode",
+        "CIHardMixBlendMode", "CIHueBlendMode", "CILanczosScaleTransform", "CILightenBlendMode",
+        "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CILinearGradient", "CILinearLightBlendMode",
+        "CILuminosityBlendMode", "CIMotionBlur", "CIMultiplyBlendMode", "CIOverlayBlendMode",
+        "CIPerspectiveTransform", "CIPerspectiveTransformWithExtent", "CIPinLightBlendMode", "CIRadialGradient",
+        "CISaturationBlendMode", "CIScreenBlendMode", "CISoftLightBlendMode", "CISubtractBlendMode",
+        "CIVividLightBlendMode"]
 
     public init?(name: String) {
         guard Self.supportedNames.contains(name) else { return nil }
@@ -390,6 +487,14 @@ public class CIFilter {
 
     public var outputImage: CIImage? {
         // Generators make an image from their parameters alone.
+        if name == "CIRadialGradient" {
+            let center = (inputs[kCIInputCenterKey] as? CIVector).map { CGPoint(x: $0[0], y: $0[1]) } ?? CGPoint(x: 150, y: 150)
+            let r0 = (inputs["inputRadius0"] as? NSNumber)?.doubleValue ?? (inputs["inputRadius0"] as? Double) ?? 5
+            let r1 = (inputs["inputRadius1"] as? NSNumber)?.doubleValue ?? (inputs["inputRadius1"] as? Double) ?? 100
+            let c0 = inputs["inputColor0"] as? CIColor ?? CIColor(red: 1, green: 1, blue: 1)
+            let c1 = inputs["inputColor1"] as? CIColor ?? CIColor(red: 0, green: 0, blue: 0)
+            return CIImage(node: .radialGradient(center, r0, c0, r1, c1))
+        }
         if name == "CILinearGradient" {
             guard let p0 = inputs["inputPoint0"] as? CIVector, let p1 = inputs["inputPoint1"] as? CIVector else { return nil }
             let c0 = inputs["inputColor0"] as? CIColor ?? CIColor(red: 1, green: 1, blue: 1)
@@ -413,9 +518,10 @@ public class CIFilter {
             let dim = Int(number("inputCubeDimension", 2))
             let floats = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
             return CIImage(node: .cube(input.node, dim, floats))
-        case "CIBlendWithMask", "CIBlendWithRedMask":
+        case "CIBlendWithMask", "CIBlendWithRedMask", "CIBlendWithAlphaMask":
             guard let bg = image(kCIInputBackgroundImageKey), let mask = image(kCIInputMaskImageKey) else { return nil }
-            return CIImage(node: .blendMask(input.node, bg.node, mask.node))
+            let channel = name == "CIBlendWithRedMask" ? 0 : name == "CIBlendWithAlphaMask" ? 3 : 4
+            return CIImage(node: .blendMask(input.node, bg.node, mask.node, channel))
         case "CILanczosScaleTransform":
             let scale = number(kCIInputScaleKey, 1)
             let aspect = number(kCIInputAspectRatioKey, 1)
@@ -423,11 +529,15 @@ public class CIFilter {
             return input.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
         case "CIPerspectiveTransform", "CIPerspectiveTransformWithExtent":
             func corner(_ k: String) -> CGPoint { (inputs[k] as? CIVector)?.cgPointValue ?? .zero }
+            let source = name == "CIPerspectiveTransformWithExtent" ? (inputs["inputExtent"] as? CIVector)?.cgRectValue : nil
             return CIImage(node: .perspective(input.node, [corner("inputTopLeft"), corner("inputTopRight"),
-                                                           corner("inputBottomRight"), corner("inputBottomLeft")]))
+                                                           corner("inputBottomRight"), corner("inputBottomLeft")], source))
         case "CIColorCurves":
-            // Approximate with identity when curves payload present; Levels still uses cube path on GPUAdjustment.
-            return input
+            guard let data = inputs["inputCurvesData"] as? Data else { return input }
+            let table = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            let domain = inputs["inputCurvesDomain"] as? CIVector
+            let lo = domain.map { Double($0[0]) } ?? 0, hi = domain.map { Double($0[1]) } ?? 1
+            return CIImage(node: .curves(input.node, table, lo...max(lo + 1e-6, hi)))
         case "CIColorBurnBlendMode", "CIColorDodgeBlendMode", "CISoftLightBlendMode",
              "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CIVividLightBlendMode",
              "CILinearLightBlendMode", "CIPinLightBlendMode", "CIHardMixBlendMode",
@@ -437,11 +547,10 @@ public class CIFilter {
              "CIHueBlendMode", "CISaturationBlendMode", "CIColorBlendMode", "CILuminosityBlendMode":
             guard let bg = image(kCIInputBackgroundImageKey) else { return nil }
             return CIImage(node: .separable(input.node, bg.node, name))
-        case "CIRadialGradient":
-            // Used by the GPU canvas path; Linux keeps Core Graphics for those fills.
-            return input
         case "CIAffineTile":
-            return input
+            let transform = (inputs[kCIInputTransformKey] as? NSAffineTransform)?.transformStruct
+            let t = transform.map { CGAffineTransform(a: $0.m11, b: $0.m12, c: $0.m21, d: $0.m22, tx: $0.tX, ty: $0.tY) } ?? .identity
+            return CIImage(node: .tile(input.node, t))
         case "CIEdgePreserveUpsampleFilter":
             guard let small = image("inputSmallImage") else { return nil }
             return CIImage(node: .upsample(guide: input.node, small: small.node, number("inputSpatialSigma", 3), number("inputLumaSigma", 0.15)))
@@ -465,8 +574,14 @@ public struct CIContextOption: Hashable, Sendable {
 public final class CIContext: @unchecked Sendable {
     private let linearWorkingSpace: Bool
     public init(options: [CIContextOption: Any]? = nil) {
-        // An explicit NSNull working space turns colour management off: values pass through unchanged.
-        linearWorkingSpace = !(options?[.workingColorSpace] is NSNull)
+        // Core Image works in linear light unless told otherwise. An explicit NSNull working space turns colour
+        // management off (values pass through), and a named one is worked in as it is: sRGB stays gamma-encoded,
+        // only a linear space (linearSRGB, extendedLinearSRGB) is linear.
+        switch options?[.workingColorSpace] {
+        case nil: linearWorkingSpace = true
+        case let space as CGColorSpace: linearWorkingSpace = space.name.contains("Linear")
+        default: linearWorkingSpace = false
+        }
     }
     public convenience init() { self.init(options: nil) }
 

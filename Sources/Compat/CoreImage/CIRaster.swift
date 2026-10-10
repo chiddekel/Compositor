@@ -281,7 +281,8 @@ enum RasterFilters {
     }
 
     /// CIBlendWithMask: mix(background, input, mask) where the mask value is its (unpremultiplied) red channel.
-    static func blendWithMask(_ input: Raster, background: Raster, mask: Raster) -> Raster {
+    /// `channel`: 0 the mask's red, 3 its alpha, 4 its luminance (as CIBlendWithRedMask / AlphaMask / BlendWithMask).
+    static func blendWithMask(_ input: Raster, background: Raster, mask: Raster, channel: Int = 0) -> Raster {
         var out = Raster(rect: input.rect, uninitialized: true)
         let w = input.width, h = input.height
         out.data.withUnsafeMutableBufferPointer { outBuf in
@@ -309,7 +310,9 @@ enum RasterFilters {
                                     if ma <= 0 {
                                         outP[0] = bgP[0]; outP[1] = bgP[1]; outP[2] = bgP[2]; outP[3] = bgP[3]
                                     } else {
-                                        let m = ma == 1.0 ? mskP[0] : mskP[0] / ma
+                                        let m: Float = channel == 3 ? ma
+                                            : channel == 4 ? (0.2126 * mskP[0] + 0.7152 * mskP[1] + 0.0722 * mskP[2]) / ma
+                                            : (ma == 1.0 ? mskP[0] : mskP[0] / ma)
                                         if m <= 0.0 {
                                             outP[0] = bgP[0]; outP[1] = bgP[1]; outP[2] = bgP[2]; outP[3] = bgP[3]
                                         } else if m >= 1.0 {
@@ -388,8 +391,64 @@ enum RasterFilters {
         case "CIHardMixBlendMode": return hardMix
         case "CISubtractBlendMode": return subtract
         case "CIDivideBlendMode": return divide
+        case "CIMultiplyBlendMode": return { cb, cs in cb * cs }
+        case "CIScreenBlendMode": return screen
+        case "CIOverlayBlendMode": return { cb, cs in hardLight(cs, cb) }
+        case "CIDarkenBlendMode": return min
+        case "CILightenBlendMode": return max
+        case "CIHardLightBlendMode": return hardLight
+        case "CIDifferenceBlendMode": return { cb, cs in abs(cb - cs) }
+        case "CIExclusionBlendMode": return { cb, cs in cb + cs - 2 * cb * cs }
         default: return { cb, _ in cb }
         }
+    }
+    static func screen(_ cb: Float, _ cs: Float) -> Float { cb + cs - cb * cs }
+    static func hardLight(_ cb: Float, _ cs: Float) -> Float { cs <= 0.5 ? cb * 2 * cs : screen(cb, 2 * cs - 1) }
+
+    /// The W3C non-separable modes (Hue, Saturation, Color, Luminosity), which mix whole colors rather than channels.
+    static let nonSeparableModes: Set<String> = ["CIHueBlendMode", "CISaturationBlendMode", "CIColorBlendMode", "CILuminosityBlendMode"]
+
+    static func nonSeparableBlend(_ source: Raster, backdrop: Raster, mode: String) -> Raster {
+        typealias RGB = (Float, Float, Float)
+        func lum(_ c: RGB) -> Float { 0.3 * c.0 + 0.59 * c.1 + 0.11 * c.2 }
+        func clip(_ c: RGB) -> RGB {
+            let l = lum(c), n = min(c.0, c.1, c.2), x = max(c.0, c.1, c.2)
+            var r = c
+            if n < 0 { r = (l + (r.0 - l) * l / (l - n), l + (r.1 - l) * l / (l - n), l + (r.2 - l) * l / (l - n)) }
+            if x > 1 { r = (l + (r.0 - l) * (1 - l) / (x - l), l + (r.1 - l) * (1 - l) / (x - l), l + (r.2 - l) * (1 - l) / (x - l)) }
+            return r
+        }
+        func setLum(_ c: RGB, _ l: Float) -> RGB { let d = l - lum(c); return clip((c.0 + d, c.1 + d, c.2 + d)) }
+        func sat(_ c: RGB) -> Float { max(c.0, c.1, c.2) - min(c.0, c.1, c.2) }
+        func setSat(_ c: RGB, _ s: Float) -> RGB {
+            var v = [c.0, c.1, c.2]
+            let order = v.indices.sorted { v[$0] < v[$1] }
+            let lo = order[0], mid = order[1], hi = order[2]
+            if v[hi] > v[lo] { v[mid] = (v[mid] - v[lo]) * s / (v[hi] - v[lo]); v[hi] = s } else { v[mid] = 0; v[hi] = 0 }
+            v[lo] = 0
+            return (v[0], v[1], v[2])
+        }
+        var out = source
+        var i = 0
+        while i < out.data.count {
+            let a = source.data[i + 3], ab = backdrop.data[i + 3]
+            let cs: RGB = a > 0 ? (source.data[i] / a, source.data[i + 1] / a, source.data[i + 2] / a) : (0, 0, 0)
+            let cb: RGB = ab > 0 ? (backdrop.data[i] / ab, backdrop.data[i + 1] / ab, backdrop.data[i + 2] / ab) : (0, 0, 0)
+            let mixed: RGB
+            switch mode {
+            case "CIHueBlendMode": mixed = setLum(setSat(cs, sat(cb)), lum(cb))
+            case "CISaturationBlendMode": mixed = setLum(setSat(cb, sat(cs)), lum(cb))
+            case "CIColorBlendMode": mixed = setLum(cs, lum(cb))
+            default: mixed = setLum(cb, lum(cs))   // Luminosity
+            }
+            let m = [mixed.0, mixed.1, mixed.2]
+            for c in 0..<3 {
+                out.data[i + c] = (1 - ab) * source.data[i + c] + (1 - a) * backdrop.data[i + c] + a * ab * m[c]
+            }
+            out.data[i + 3] = a + ab - a * ab
+            i += 4
+        }
+        return out
     }
 
     /// Inverse-maps `output` through a projective transform given by the 3x3 matrix `inverse` (device -> source).
