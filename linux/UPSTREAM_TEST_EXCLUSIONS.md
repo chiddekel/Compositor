@@ -5,7 +5,6 @@ excluded here, with a reason; individual tests are never edited.
 
 | File | Reason |
 |---|---|
-| `FloatingPanelTests.swift` | Four of six pass. `cameraRawDocksToTheDocumentWindow` and `dockedPlacementLeavesTheSavedFilterPosition` look for the app's own document window: on the Mac the tests run inside Compositor (its test host), which has one; `swift test` on Linux has no app window. Awaiting a decision: open a host window for the test process, or skip those two cases. |
 | `SliderSnapTests.swift` | Tests `UI/SliderSnap.swift`, which swizzles `NSSliderCell` through the Objective-C runtime |
 | `LayerTests.swift` | Drives `NativeLayerList`/`LayerTableView` (`NSTableView` subclass counting delegate calls) |
 | `CursorTests.swift` | Builds `LayersPanel` + `LayerTableView` to check cursor routing through the AppKit responder chain |

@@ -60,13 +60,26 @@ extension NSWindow {
 // "real AppKit", but this compat's `NSWindow` isn't `@objc`, so a private extension-owned dictionary is simpler.
 extension NSWindow {
     private static var releaseFlags: [ObjectIdentifier: Bool] = [:]
-    private static var delegates: [ObjectIdentifier: any NSWindowDelegate] = [:]
+    /// AppKit's window delegate is a weak reference; a strong side table kept closed panels (and their
+    /// controllers, which hold their panels) alive for the whole process, so they never left `NSApp.windows`
+    /// and `first { identifier }` found a stale invisible panel instead of a freshly shown one.
+    private final class WeakDelegate {
+        init(_ value: (any NSWindowDelegate)?) { self.value = value }
+        weak var value: (any NSWindowDelegate)?
+    }
+    private static var delegates: [ObjectIdentifier: WeakDelegate] = [:]
     fileprivate var _isReleasedWhenClosed: Bool {
         get { Self.releaseFlags[ObjectIdentifier(self)] ?? true }
         set { Self.releaseFlags[ObjectIdentifier(self)] = newValue }
     }
     fileprivate var _delegate: (any NSWindowDelegate)? {
-        get { Self.delegates[ObjectIdentifier(self)] }
-        set { Self.delegates[ObjectIdentifier(self)] = newValue }
+        get {
+            guard let box = Self.delegates[ObjectIdentifier(self)], let value = box.value else {
+                Self.delegates[ObjectIdentifier(self)] = nil
+                return nil
+            }
+            return value
+        }
+        set { Self.delegates[ObjectIdentifier(self)] = newValue.map(WeakDelegate.init) }
     }
 }

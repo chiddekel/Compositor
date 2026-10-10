@@ -1,6 +1,9 @@
 import Foundation
 import CoreGraphics
 import FoundationCompat
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// Objective-C selectors are just names here (target/action wiring is the Qt shell's job).
 public struct Selector: Hashable, ExpressibleByStringLiteral, Sendable {
@@ -483,7 +486,10 @@ public struct NSScreen {
     public var mainWindow: NSWindow?
     public func sendEvent(_ event: NSEvent) { (event.window ?? keyWindow)?.sendEvent(event) }
     /// Live windows, oldest first.
-    public var windows: [NSWindow] { NSWindow.allWindows }
+    public var windows: [NSWindow] {
+        compositorOpenTestHostWindowIfRequested()
+        return NSWindow.allWindows
+    }
     public func activate(ignoringOtherApps: Bool = true) {}
     /// A responder-chain action by name ("cut:", "undo:", ...); the host's text editing answers these (`actionHandler`).
     public var actionHandler: ((Selector) -> Bool)?
@@ -510,6 +516,27 @@ public struct NSScreen {
     public func hide(_ sender: Any?) { hideHandler?() }
     public func hideOtherApplications(_ sender: Any?) {}
     public func unhideAllApplications(_ sender: Any?) {}
+}
+
+/// Test processes only: on the Mac upstream's tests run inside the app (its test host), whose document window is open
+/// the whole time; `swift test` on Linux has no app around. When Xcode's runner environment is present (compat sets
+/// `XCTestConfigurationFilePath` before main), the first window enumeration opens such a window — on the main thread,
+/// with the Swift runtime fully up, never from a C constructor. The provider lives in the test-only `_Testing_AppHost`
+/// overlay and is looked up by name so AppKit never links against it. Inert in the shipped app: no test environment,
+/// no symbol.
+@MainActor private var compositorTestHostWindowChecked = false
+@MainActor private func compositorOpenTestHostWindowIfRequested() {
+    guard !compositorTestHostWindowChecked else { return }
+    compositorTestHostWindowChecked = true
+    #if canImport(Glibc)
+    guard getenv("XCTestConfigurationFilePath") != nil else { return }
+    typealias Opener = @convention(c) () -> Void
+    // The overlay is linked into the test binary itself (which exports its symbols), so the default handle — the
+    // whole program — finds it.
+    if let sym = dlopen(nil, RTLD_NOW).flatMap({ dlsym($0, "compositor_open_test_host_window") }) {  // glibc: -2 is not RTLD_DEFAULT
+        unsafeBitCast(sym, to: Opener.self)()
+    }
+    #endif
 }
 
 // MARK: - Controls the model layer instantiates (inert containers)

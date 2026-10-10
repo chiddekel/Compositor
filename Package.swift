@@ -214,6 +214,8 @@ let package = Package(
         .target(name: "_Testing_CoreImage", path: "Sources/Compat/TestingOverlays/_Testing_CoreImage"),
         // Test-process environment Xcode's runner provides (XCTestConfigurationFilePath); see its .c file.
         .target(name: "_Testing_XCTestEnvironment", path: "Sources/Compat/TestingOverlays/_Testing_XCTestEnvironment"),
+        .target(name: "_Testing_AppHost", dependencies: ["AppKit", "CoreGraphics"], path: "Sources/Compat/TestingOverlays/_Testing_AppHost",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // The unmodified macOS editor core (Compositor/{Document,IO,Rendering}) as the module `Compositor`, so upstream's
         // own tests (`@testable import Compositor`) run against it. Files are reached through symlinks in
         // Sources/UpstreamCore; nothing under Compositor/ is edited. Excluded: view/app code the Qt shell replaces
@@ -277,18 +279,22 @@ let package = Package(
         // Upstream's own test suite, unmodified (Swift Testing), run against the module above.
         .testTarget(
             name: "CompositorUpstreamTests",
-            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal"],
+            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal"],
             path: "CompositorTests",
             // Upstream tests that cannot run on Linux yet (Objective-C selectors and swizzling in the test itself, the
             // real layer table, the app's own window): listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
-            exclude: ["SliderSnapTests.swift", "LayerTests.swift", "CameraRawSliderTests.swift", "CommandPaletteTests.swift", "CursorTests.swift", "FloatingPanelTests.swift"],
+            exclude: ["SliderSnapTests.swift", "LayerTests.swift", "CameraRawSliderTests.swift", "CommandPaletteTests.swift", "CursorTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
                 .enableUpcomingFeature("InferSendableFromCaptures"),
                 .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat",
                               "-Xfrontend", "-import-module", "-Xfrontend", "Metal"]),
-            ]
+            ],
+            // The test-only _Testing_AppHost overlay is reached by name (dlsym from compat AppKit's lazy test-host
+            // window hook), not by a link-time dependency: AppKit must not depend on it. dlsym only sees .dynsym, so
+            // the test binary has to export its symbols.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-export-dynamic"])]
         ),
         // Tests of Linux-owned code that lives inside the Compositor module (the Sources/Overrides stand-ins), checked
         // against upstream's own behaviour.
@@ -301,7 +307,9 @@ let package = Package(
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
                 .enableUpcomingFeature("InferSendableFromCaptures"),
                 .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat"]),
-            ]
+            ],
+            // Same -export-dynamic as CompositorUpstreamTests: both merge into one test binary.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-export-dynamic"])]
         ),
         .testTarget(
             name: "CompatTests",
