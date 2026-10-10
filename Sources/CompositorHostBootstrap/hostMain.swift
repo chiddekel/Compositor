@@ -39,6 +39,11 @@ struct HostBootstrap {
             return
         }
         compositorConfigureBrushAcceleration(ProcessInfo.processInfo.environment["COMPOSITOR_BRUSH_BACKEND"] != "cpu")
+        // The canvas draws with Core Graphics unless COMPOSITOR_FORCE_GPU_CANVAS=1: the GPU canvas frame runs through the
+        // compat Core Image, on the CPU, many times slower. A user's own CompositorCPUCanvas setting still wins.
+        if ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] != "1" {
+            UserDefaults.standard.register(defaults: ["CompositorCPUCanvas": true])
+        }
         if CommandLine.arguments.contains("--color-range-smoke") {
             let result = compositor_host_color_range_smoke(CommandLine.argc, CommandLine.unsafeArgv)
             guard result == 0 else { fail("Qt Color Range smoke returned \(result)") }

@@ -58,9 +58,10 @@ final class CAMetalLayer {
             if forced == "1" { return true }
             if forced == "0" { return false }
         }
-        // Shipped default: Core Graphics canvas (Mac look on Linux). drawOnGPU present stays
-        // opt-in until GPU↔CPU pixel diffs meet tip thresholds; brush/effects already use Vulkan.
-        return false
+        // As tip's Metal device check: present wherever a Vulkan device is (GPUCanvasTests meet tip's thresholds). The
+        // app's own canvas still draws with Core Graphics by default (hostMain registers CompositorCPUCanvas): this
+        // frame is evaluated by the compat Core Image on the CPU, far slower than the Core Graphics canvas.
+        return CanvasBackends.vulkanGPUAvailable
     }
 
     private func release(keepingLastFrame: Bool) {

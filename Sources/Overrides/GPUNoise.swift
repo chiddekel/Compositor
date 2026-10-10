@@ -34,7 +34,9 @@ nonisolated enum GPUNoise {
         guard !extent.isInfinite, extent.width >= 1, extent.height >= 1, extent.width * extent.height <= 200_000_000
         else { return nil }
         let width = Int(extent.width), height = Int(extent.height)
-        let context = CIContext(options: nil)
+        // The frame's own working space (sRGB, as GPUCanvasRenderer's context), so what is under a translucent layer is
+        // mixed as the frame mixes it; a linear context re-blended it and changed its colors before the noise.
+        let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         guard let cg = context.createCGImage(image, from: extent),
               let copy = try? BrushRaster.copy(cg), let data = copy.data else { return nil }
         let pixels = data.bindMemory(to: UInt8.self, capacity: copy.bytesPerRow * height)
