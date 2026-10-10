@@ -34,9 +34,7 @@ init_end = '''        gpu = useGPU ? MetalWarp(pixels: context) : nil
     }
 '''
 assert optimized.count(init_end) == 1, 'Upstream WarpStroke init trailer changed'
-init_fill = '''        // Smudge uses the CPU dab path below (cached radialWeights). MetalWarp is for Liquify's
-        // sharp offset warp; its smudge body recomputed falloff every pixel and stalled live feedback.
-        gpu = useGPU && mode != .smudge ? MetalWarp(pixels: context) : nil
+init_fill = '''        gpu = useGPU ? MetalWarp(pixels: context) : nil
         // Defer full-canvas makeImage: building it on press delayed Liquify first-feedback past 150 ms.
         // Live preview uses snapshot(in:); commit still goes through image when needed.
         cpuImage = nil

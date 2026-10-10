@@ -51,7 +51,8 @@ import CoreImage
             memcpy(dest + y * ctx.bytesPerRow, pixels + y * bytesPerRow, width * 4)
         }
         guard let cg = ctx.makeImage() else { return nil }
-        return CIImage(cgImage: cg)
+        // As tip's texture-backed image: the top row at y = 0 (the GPU canvas builds its frame with y counting down).
+        return CIImage(cgImage: cg).transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: CGFloat(height)))
     }
 
     func read(into context: CGContext) {
@@ -124,6 +125,9 @@ import CoreImage
         }
     }
 
+    private var falloff: [Float] = []
+    private var falloffKey: (radius: Int, diameter: CGFloat, hardness: CGFloat) = (-1, 0, 0)
+
     func smudge(at center: CGPoint, radius: Int, diameter: CGFloat, hardness: CGFloat, strength: CGFloat) {
         guard carriedSide == 2 * radius + 1, !carried.isEmpty else { return }
         let cx = Int(center.x.rounded()), cy = Int(center.y.rounded())
@@ -131,7 +135,12 @@ import CoreImage
         let keep = Float(strength)
         let h = Float(hardness)
         let side = carriedSide
-        // Direct buffer math (same as WarpStroke.smudge) — sample/write + per-pixel sqrt was the live stall.
+        // The falloff by squared distance, computed once per brush (as WarpStroke's radialWeights): a square root and
+        // the weight curve for every pixel of every dab stalled live smudging.
+        if falloffKey.radius != radius || falloffKey.diameter != diameter || falloffKey.hardness != hardness {
+            falloff = (0...(2 * radius * radius)).map { weight(Float($0).squareRoot() * invR, hardness: h) }
+            falloffKey = (radius, diameter, hardness)
+        }
         for gy in 0..<side {
             let oy = gy - radius
             let py = cy + oy
@@ -140,7 +149,7 @@ import CoreImage
                 let ox = gx - radius
                 let px = cx + ox
                 guard px >= 0, px < width else { continue }
-                let w = weight(sqrt(Float(ox * ox + oy * oy)) * invR, hardness: h)
+                let w = falloff[ox * ox + oy * oy]
                 guard w > 0 else { continue }
                 let i = py * bytesPerRow + px * 4
                 let o = (gy * side + gx) * 4

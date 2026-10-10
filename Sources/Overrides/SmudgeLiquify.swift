@@ -72,9 +72,7 @@ final class WarpStroke {
         guard let data = context.data else { throw ExportError.render }
         // Top-left rows: a document point's row is its y.
         pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
-        // Smudge uses the CPU dab path below (cached radialWeights). MetalWarp is for Liquify's
-        // sharp offset warp; its smudge body recomputed falloff every pixel and stalled live feedback.
-        gpu = useGPU && mode != .smudge ? MetalWarp(pixels: context) : nil
+        gpu = useGPU ? MetalWarp(pixels: context) : nil
         // Defer full-canvas makeImage: building it on press delayed Liquify first-feedback past 150 ms.
         // Live preview uses snapshot(in:); commit still goes through image when needed.
         cpuImage = nil
