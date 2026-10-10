@@ -189,9 +189,12 @@ final class CAMetalLayer {
         CGSize(width: max(1, (width + (1 << level) - 1) >> level), height: max(1, (height + (1 << level) - 1) >> level))
     }
 
+    /// As tip's: black, then the image drawn upright (BrushRaster's contexts count rows down, so `BrushRaster.draw`).
     static func grayCopy(_ image: CGImage) throws -> CGContext {
         let context = try BrushRaster.context(width: image.width, height: image.height, mask: true)
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        context.setFillColor(gray: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        BrushRaster.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height), mask: false, context: context)
         return context
     }
 

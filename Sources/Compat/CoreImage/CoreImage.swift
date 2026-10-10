@@ -502,8 +502,7 @@ public class CIFilter {
         // Generators make an image from their parameters alone.
         if name == "CIRadialGradient" {
             let center = (inputs[kCIInputCenterKey] as? CIVector).map { CGPoint(x: $0[0], y: $0[1]) } ?? CGPoint(x: 150, y: 150)
-            let r0 = (inputs["inputRadius0"] as? NSNumber)?.doubleValue ?? (inputs["inputRadius0"] as? Double) ?? 5
-            let r1 = (inputs["inputRadius1"] as? NSNumber)?.doubleValue ?? (inputs["inputRadius1"] as? Double) ?? 100
+            let r0 = number("inputRadius0", 5), r1 = number("inputRadius1", 100)
             let c0 = inputs["inputColor0"] as? CIColor ?? CIColor(red: 1, green: 1, blue: 1)
             let c1 = inputs["inputColor1"] as? CIColor ?? CIColor(red: 0, green: 0, blue: 0)
             return CIImage(node: .radialGradient(center, r0, c0, r1, c1))
