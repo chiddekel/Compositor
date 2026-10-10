@@ -91,7 +91,7 @@ void main() {
         case 7u: shiftPlane(0u, 4u, x, y, innerDx, innerDy); break;                         // inner shadow: move
         case 8u: blurPlane(4u, 5u, x, y, innerSigma, true); break;
         case 9u: blurPlane(5u, 4u, x, y, innerSigma, false); break;
-        case 10u: p5[i] = clamp(p0[i] * (1.0 - p4[i]), 0.0, 1.0); break;                    // inside
+        case 10u: p5[i] = clamp(1.0 - p4[i], 0.0, 1.0); break;                              // inner recoloring amount
         case 11u: blurPlane(0u, 6u, x, y, outerSigma, true); break;                         // outer glow: blur rows
         case 12u: blurPlane(6u, 7u, x, y, outerSigma, false); break;                        // ... columns
         case 13u: p7[i] = clamp(p7[i] * (1.0 - p0[i]), 0.0, 1.0); break;                    // outer glow: exclude interior
@@ -99,7 +99,7 @@ void main() {
         // Inner glow runs after the shadow and outer glow passes, so their scratch planes (p3, p6) are free; p3 holds it.
         case 15u: blurPlane(0u, 6u, x, y, innerGlowSigma, true); break;                    // inner glow: blur rows
         case 16u: blurPlane(6u, 3u, x, y, innerGlowSigma, false); break;                   // ... columns
-        case 17u: p3[i] = clamp(p0[i] * (1.0 - p3[i]), 0.0, 1.0); break;                    // inner glow: keep inside
+        case 17u: p3[i] = clamp(1.0 - p3[i], 0.0, 1.0); break;                              // inner glow recoloring amount
         case 18u: p3[i] = p0[i]; break;                                                     // inner glow: no blur, copy the shape
         default: {                                                                          // compose
             vec3 colour = vec3(0.0);
@@ -120,23 +120,20 @@ void main() {
             }
             uint packed = pixels[i];
             vec4 source = vec4(float(packed & 255u), float((packed >> 8) & 255u), float((packed >> 16) & 255u), float((packed >> 24) & 255u)) / 255.0;
-            colour = source.xyz + colour * (1.0 - source.w);
-            alpha = source.w + alpha * (1.0 - source.w);
+            // Recolor the layer's own pixels before compositing, preserving alpha and the effects beneath them.
             if ((flags & 8u) != 0u) {
-                float coverage = clamp(p0[i] * overlay.w, 0.0, 1.0);
-                colour = overlay.xyz * coverage + colour * (1.0 - coverage);
-                alpha = coverage + alpha * (1.0 - coverage);
+                source.xyz = mix(source.xyz, overlay.xyz * source.w, overlay.w);
             }
             if ((flags & 64u) != 0u) {
-                float coverage = clamp(p3[i] * innerGlow.w, 0.0, 1.0);
-                colour = innerGlow.xyz * coverage + colour * (1.0 - coverage);
-                alpha = coverage + alpha * (1.0 - coverage);
+                float amount = clamp(p3[i] * innerGlow.w, 0.0, 1.0);
+                source.xyz = mix(source.xyz, innerGlow.xyz * source.w, amount);
             }
             if ((flags & 16u) != 0u) {
-                float coverage = clamp(p5[i] * inner.w, 0.0, 1.0);
-                colour = inner.xyz * coverage + colour * (1.0 - coverage);
-                alpha = coverage + alpha * (1.0 - coverage);
+                float amount = clamp(p5[i] * inner.w, 0.0, 1.0);
+                source.xyz = mix(source.xyz, inner.xyz * source.w, amount);
             }
+            colour = source.xyz + colour * (1.0 - source.w);
+            alpha = source.w + alpha * (1.0 - source.w);
             if ((flags & 1u) != 0u && (flags & 2u) != 0u) {
                 colour = stroke.xyz * strokeCoverage + colour * (1.0 - strokeCoverage);
                 alpha = strokeCoverage + alpha * (1.0 - strokeCoverage);

@@ -141,7 +141,7 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
         }
         Plane innerGlow;
         if (p->has_inner_glow) {
-            // The shape softened, kept to the shape's own interior: upstream's inner glow (blur, then the inside pass).
+            // How strongly the glow recolors the source, before its own alpha: blur, then the inside pass.
             innerGlow.resize(count);
             if (p->inner_glow_sigma > 0.01f) {
                 Plane scratch(count);
@@ -151,7 +151,7 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
             } else {
                 innerGlow = first;
             }
-            for (size_t i = 0; i < count; ++i) innerGlow[i] = clamp01(first[i] * (1.0f - innerGlow[i]));
+            for (size_t i = 0; i < count; ++i) innerGlow[i] = clamp01(1.0f - innerGlow[i]);
         }
         Plane inner;
         if (p->has_inner) {
@@ -163,10 +163,10 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
                 blur(softened, moved, w, h, p->inner_sigma, radius, false);
             }
             inner.resize(count);
-            for (size_t i = 0; i < count; ++i) inner[i] = clamp01(first[i] * (1.0f - moved[i]));
+            for (size_t i = 0; i < count; ++i) inner[i] = clamp01(1.0f - moved[i]);
         }
-        // Shadow behind, outer glow and outside stroke over it, the layer's pixels over that, then a colour overlay,
-        // an inner glow, an inner shadow and an inside stroke on top (upstream's effects_compose order).
+        // Shadow behind, outer glow and outside stroke over it, the recolored layer's pixels over that, then an
+        // inside stroke on top (upstream's effects_compose order). Recoloring keeps the source alpha.
         parallelRows(h, [&](uint32_t y0, uint32_t y1) {
             for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) {
                 float cr = 0, cg = 0, cb = 0, alpha = 0;
@@ -184,13 +184,18 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
                 };
                 if (p->has_outer) over(p->outer, clamp01(outer[i] * p->outer.opacity));
                 if (p->has_stroke && !p->stroke_inside) over(p->stroke, strokeCoverage);
-                const float sr = pixels[i * 4] / 255.0f, sg = pixels[i * 4 + 1] / 255.0f, sb = pixels[i * 4 + 2] / 255.0f,
-                            sa = pixels[i * 4 + 3] / 255.0f;
+                float sr = pixels[i * 4] / 255.0f, sg = pixels[i * 4 + 1] / 255.0f, sb = pixels[i * 4 + 2] / 255.0f;
+                const float sa = pixels[i * 4 + 3] / 255.0f;
+                auto recolor = [&](const CompositorEffectColor &c, float amount) {
+                    sr += (c.r * sa - sr) * amount;
+                    sg += (c.g * sa - sg) * amount;
+                    sb += (c.b * sa - sb) * amount;
+                };
+                if (p->has_overlay) recolor(p->overlay, p->overlay.opacity);
+                if (p->has_inner_glow) recolor(p->inner_glow, clamp01(innerGlow[i] * p->inner_glow.opacity));
+                if (p->has_inner) recolor(p->inner, clamp01(inner[i] * p->inner.opacity));
                 cr = sr + cr * (1.0f - sa); cg = sg + cg * (1.0f - sa); cb = sb + cb * (1.0f - sa);
                 alpha = sa + alpha * (1.0f - sa);
-                if (p->has_overlay) over(p->overlay, clamp01(first[i] * p->overlay.opacity));
-                if (p->has_inner_glow) over(p->inner_glow, clamp01(innerGlow[i] * p->inner_glow.opacity));
-                if (p->has_inner) over(p->inner, clamp01(inner[i] * p->inner.opacity));
                 if (p->has_stroke && p->stroke_inside) over(p->stroke, strokeCoverage);
                 out[i * 4] = byteOf(cr); out[i * 4 + 1] = byteOf(cg); out[i * 4 + 2] = byteOf(cb); out[i * 4 + 3] = byteOf(alpha);
             }

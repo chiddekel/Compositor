@@ -62,7 +62,7 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
         if (p->has_inner) {
             cv::Mat moved = shift(first, p->inner_dx, p->inner_dy);
             if (p->inner_sigma > 0.01f) moved = blur(moved, p->inner_sigma);
-            inner = first.mul(1.0 - moved);
+            inner = 1.0 - moved;
             cv::max(inner, 0.0, inner);
             cv::min(inner, 1.0, inner);
         }
@@ -74,14 +74,14 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
             cv::min(outer, 1.0, outer);
         }
         if (p->has_inner_glow) {
-            // The shape softened, kept to the shape's own interior (upstream: blur, then the inside pass).
+            // How strongly the glow recolors the source, before its own alpha (blur, then the inside pass).
             const cv::Mat softened = p->inner_glow_sigma > 0.01f ? blur(first, p->inner_glow_sigma) : first.clone();
-            innerGlow = first.mul(1.0 - softened);
+            innerGlow = 1.0 - softened;
             cv::max(innerGlow, 0.0, innerGlow);
             cv::min(innerGlow, 1.0, innerGlow);
         }
-        // Shadow behind, the glow around it, outside stroke over that, the layer's pixels over that, then a colour
-        // overlay, an inner glow, an inner shadow and an inside stroke on top.
+        // Shadow behind, the glow around it, outside stroke over that, the recolored layer's pixels over that, then
+        // an inside stroke on top. Recoloring keeps the source alpha and leaves the effects beneath untinted.
         cv::parallel_for_(cv::Range(0, h), [&](const cv::Range &rows) {
             for (int y = rows.start; y < rows.end; ++y) {
                 const uint8_t *src = pixels + static_cast<size_t>(y) * w * 4;
@@ -102,13 +102,19 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
                     const float strokeCoverage = p->has_stroke ? clamp01(ring.at<float>(y, x) * p->stroke.opacity) : 0.0f;
                     if (p->has_stroke && !p->stroke_inside) over(p->stroke, strokeCoverage);
                     const float sa = src[x * 4 + 3] / 255.0f;
-                    cr = src[x * 4] / 255.0f + cr * (1.0f - sa);
-                    cg = src[x * 4 + 1] / 255.0f + cg * (1.0f - sa);
-                    cb = src[x * 4 + 2] / 255.0f + cb * (1.0f - sa);
+                    float sr = src[x * 4] / 255.0f, sg = src[x * 4 + 1] / 255.0f, sb = src[x * 4 + 2] / 255.0f;
+                    auto recolor = [&](const CompositorEffectColor &c, float amount) {
+                        sr += (c.r * sa - sr) * amount;
+                        sg += (c.g * sa - sg) * amount;
+                        sb += (c.b * sa - sb) * amount;
+                    };
+                    if (p->has_overlay) recolor(p->overlay, p->overlay.opacity);
+                    if (p->has_inner_glow) recolor(p->inner_glow, clamp01(innerGlow.at<float>(y, x) * p->inner_glow.opacity));
+                    if (p->has_inner) recolor(p->inner, clamp01(inner.at<float>(y, x) * p->inner.opacity));
+                    cr = sr + cr * (1.0f - sa);
+                    cg = sg + cg * (1.0f - sa);
+                    cb = sb + cb * (1.0f - sa);
                     alpha = sa + alpha * (1.0f - sa);
-                    if (p->has_overlay) over(p->overlay, clamp01(first.at<float>(y, x) * p->overlay.opacity));
-                    if (p->has_inner_glow) over(p->inner_glow, clamp01(innerGlow.at<float>(y, x) * p->inner_glow.opacity));
-                    if (p->has_inner) over(p->inner, clamp01(inner.at<float>(y, x) * p->inner.opacity));
                     if (p->has_stroke && p->stroke_inside) over(p->stroke, strokeCoverage);
                     dst[x * 4] = byteOf(cr); dst[x * 4 + 1] = byteOf(cg); dst[x * 4 + 2] = byteOf(cb); dst[x * 4 + 3] = byteOf(alpha);
                 }

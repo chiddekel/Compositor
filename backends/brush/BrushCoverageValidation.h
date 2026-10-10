@@ -10,7 +10,8 @@ inline bool validBrush(const CompositorBrushUniforms *u, const CompositorBrushSe
     const float values[] = {u->a,u->b,u->c,u->d,u->origin_x,u->origin_y,u->radius,u->hardness,
         u->canvas_width,u->canvas_height,u->antialias_width,u->spacing};
     for (float v : values) if (!std::isfinite(v) || std::abs(v) > 1e9f) return false;
-    if (u->radius <= 0 || u->radius > 1000 || u->hardness < 0 || u->hardness > 1 ||
+    // BrushStroke permits internal tips up to 2100 px; Smudge/Liquify commit wider than the 2000 px UI limit.
+    if (u->radius <= 0 || u->radius > 1050 || u->hardness < 0 || u->hardness > 1 ||
         u->canvas_width <= 0 || u->canvas_height <= 0 || u->antialias_width < 0.001f || u->spacing < 0.25f) return false;
     for (size_t i = 0; i < count; ++i) {
         const auto &s = segments[i];

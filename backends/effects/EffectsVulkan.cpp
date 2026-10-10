@@ -220,7 +220,7 @@ struct CompositorVulkanEffects {
         if (p.has_inner_glow) {
             if (p.inner_glow_sigma > 0.01f) passes.insert(passes.end(), {15, 16});
             else passes.push_back(18);   // p3 = p0 (copy, no blur) before the keep-inside step
-            passes.push_back(17);
+            passes.push_back(17);       // recoloring amount, before multiplying by the source alpha in compose
         }
         passes.push_back(99);   // compose (any value the switch doesn't name explicitly)
 
