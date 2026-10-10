@@ -1683,7 +1683,6 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
                           : panel == QLatin1String("TrimSheet") ? tr("Trim")
                           : panel == QLatin1String("CanvasSizeSheet") ? tr("Canvas Size")
                           : panel == QLatin1String("ImageSizeSheet") ? tr("Image Size")
-                          : panel == QLatin1String("JPEGExportSheet") ? tr("Export JPEG")
                           : panel == QLatin1String("ExportAsSheet") ? tr("Export As")
                           : panel == QLatin1String("GridSettingsSheet") ? tr("Grid") : tr("Develop"));
     auto *layout = new QVBoxLayout(&dialog);
@@ -2559,18 +2558,16 @@ void SessionWindow::prepareDocumentForProjectIO(uint64_t handle) {
     m_sessionHandle = previous;
 }
 
-/// ProjectController.exportPNG / exportJPEG: upstream's exporter (and JPEG sheet), the save panel being the shell's,
-/// suggesting "<project or Untitled>.png|.jpg".
-void SessionWindow::exportWithUpstream(bool jpeg) {
-    if (jpeg && !sendCommand({{"action", "jpegExportSheet"}})) return;   // cancelled, or it couldn't render
+/// ProjectController.exportPNG: upstream's exporter, the save panel being the shell's, suggesting
+/// "<project or Untitled>.png". Export JPEG… is Export As starting on JPEG (exportAsWithUpstream).
+void SessionWindow::exportPNGWithUpstream() {
     const QString base = m_activeDocumentIndex >= 0 && m_activeDocumentIndex < int(m_documents.size())
         ? m_documents[m_activeDocumentIndex].title : QStringLiteral("Untitled");
-    const QString path = QFileDialog::getSaveFileName(this, jpeg ? tr("Export JPEG") : tr("Export PNG"),
-        QDir::home().filePath(base + (jpeg ? QStringLiteral(".jpg") : QStringLiteral(".png"))),
-        jpeg ? tr("JPEG image (*.jpg *.jpeg)") : tr("PNG image (*.png)"));
-    if (path.isEmpty()) { if (jpeg) sendCommandQuiet({{"action", "writeJPEG"}}); return; }
-    if (!sendCommand({{"action", jpeg ? "writeJPEG" : "exportPNG"}, {"paths", QJsonArray{path}}}))
-        m_platform.notifier->warn(jpeg ? tr("Couldn’t export JPEG") : tr("Couldn’t export PNG"), sessionState().value("error").toString());
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export PNG"),
+        QDir::home().filePath(base + QStringLiteral(".png")), tr("PNG image (*.png)"));
+    if (path.isEmpty()) return;
+    if (!sendCommand({{"action", "exportPNG"}, {"paths", QJsonArray{path}}}))
+        m_platform.notifier->warn(tr("Couldn’t export PNG"), sessionState().value("error").toString());
 }
 
 /// Tip File › Export PDF / Export As… PDF: ImageExporter.pdfData, save panel on the shell.
@@ -2631,7 +2628,7 @@ void SessionWindow::handleShellRequests() {
         }
         else if (request == QLatin1String("save")) trigger("file.save");
         else if (request == QLatin1String("saveAs")) trigger("file.saveAs");
-        else if (request == QLatin1String("exportPNG")) exportWithUpstream(false);
+        else if (request == QLatin1String("exportPNG")) exportPNGWithUpstream();
         else if (request == QLatin1String("exportJPEG")) exportAsWithUpstream(QStringLiteral("jpeg"));
         else if (request == QLatin1String("exportPDF")) exportPDFWithUpstream();
         else if (request == QLatin1String("exportAs")) exportAsWithUpstream(QString());

@@ -240,7 +240,7 @@ final class UpstreamEditor {
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
         "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "beginLevels", "beginHueSaturation",
-        "beginAdjustmentEditing", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "exportPDF", "jpegExportSheet", "writeJPEG", "exportAsSheet", "writeExport", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "beginAdjustmentEditing", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "exportPDF", "exportAsSheet", "writeExport", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textReplace", "textRestore", "textSelect", "textFinish", "textCancel",
@@ -255,8 +255,6 @@ final class UpstreamEditor {
     /// Upstream's Canvas Size / Image Size sheets while Image > Canvas Size… / Image Size… waits for their answer.
     private(set) var canvasSizeSheet: CanvasSizeSheet?
     private(set) var imageSizeSheet: ImageSizeSheet?
-    /// Upstream's Export JPEG sheet while File > Export JPEG… waits for its answer (smoke / fallback).
-    private(set) var jpegExportSheet: JPEGExportSheet?
     /// Tip File › Export As… sheet while the shell waits for PNG/JPEG/PDF bytes.
     private(set) var exportAsSheet: ExportAsSheet?
     /// View > Grid Settings…: values as they were when the sheet opened (Cancel puts them back).
@@ -264,7 +262,6 @@ final class UpstreamEditor {
     /// Resumes `gridSettingsSheet` when the shell's modal closes (OK or Cancel).
     private var gridSettingsAnswer: (() -> Void)?
     private var sizeAnswer: ((Any?) -> Void)?
-    private var pendingJPEG: Data?
     private var pendingExport: (data: Data, format: ExportFormat)?
     /// Format Export As last used (same idea as tip ProjectController.lastExportFormat).
     private var lastExportFormat: ExportFormat = .png
@@ -286,13 +283,6 @@ final class UpstreamEditor {
         answer?(options)
     }
 
-    /// Answers the open Export JPEG sheet (nil = Cancel).
-    func finishJPEGSheet(_ data: Data?) {
-        let answer = sizeAnswer
-        sizeAnswer = nil
-        jpegExportSheet = nil
-        answer?(data)
-    }
 
     /// Answers the open Export As sheet (nil = Cancel).
     func finishExportAsSheet(_ chosen: (data: Data, format: ExportFormat)?) {
@@ -335,7 +325,6 @@ final class UpstreamEditor {
         if trimSheet != nil { sheets.append("TrimSheet") }
         if canvasSizeSheet != nil { sheets.append("CanvasSizeSheet") }
         if imageSizeSheet != nil { sheets.append("ImageSizeSheet") }
-        if jpegExportSheet != nil { sheets.append("JPEGExportSheet") }
         if exportAsSheet != nil { sheets.append("ExportAsSheet") }
         if gridSettingsBackup != nil { sheets.append("GridSettingsSheet") }
         return sheets
@@ -835,8 +824,8 @@ final class UpstreamEditor {
                 let resized = try await ImageResizer.shared.resize(snapshot, to: options)
                 s.applyImageSize(resized)
             } catch { return fail(-5, "Couldn’t resize the image: \(error.localizedDescription)") }
-        // ProjectController.exportPNG() / exportJPEG(), the save panel being the shell's: `paths` = [destination]
-        // (PNG), or first the JPEG sheet ("jpegExportSheet", keeping its data) and then "writeJPEG" to `paths`.
+        // ProjectController.exportPNG(), the save panel being the shell's: `paths` = [destination]. Export JPEG… is
+        // Export As starting on JPEG, as in upstream 1.4.8 ("exportAsSheet" with kind "jpeg").
         case "exportPNG":
             guard let path = command.paths?.first, let snapshot = s.projectSnapshot() else { return fail(-1, "nothing to export") }
             do { try await ImageExporter.shared.exportPNG(snapshot, to: URL(fileURLWithPath: path)) }
@@ -845,17 +834,6 @@ final class UpstreamEditor {
             guard let path = command.paths?.first, let snapshot = s.projectSnapshot() else { return fail(-1, "nothing to export") }
             do { try await ImageExporter.shared.exportPDF(snapshot, to: URL(fileURLWithPath: path)) }
             catch { return fail(-5, "Couldn’t export PDF: \(error.localizedDescription)") }
-        case "jpegExportSheet":
-            guard let snapshot = s.projectSnapshot() else { return fail(-2, "no document") }
-            do {
-                let raster = try await ImageExporter.shared.render(snapshot)
-                let data: Data? = await withCheckedContinuation { continuation in
-                    sizeAnswer = { continuation.resume(returning: $0 as? Data) }
-                    jpegExportSheet = JPEGExportSheet(raster: raster, session: s) { [weak self] in self?.finishJPEGSheet($0) }
-                }
-                pendingJPEG = data
-                guard data != nil else { return fail(-7, "cancelled") }
-            } catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
         case "exportAsSheet":
             guard let snapshot = s.projectSnapshot() else { return fail(-2, "no document") }
             do {
@@ -888,13 +866,8 @@ final class UpstreamEditor {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 gridSettingsAnswer = { continuation.resume() }
             }
-        case "writeJPEG":
-            guard let path = command.paths?.first, let data = pendingJPEG else { return fail(-1, "nothing to write") }
-            pendingJPEG = nil
-            do { try await ImageExporter.shared.write(data, to: URL(fileURLWithPath: path)) }
-            catch { return fail(-5, "Couldn’t export JPEG: \(error.localizedDescription)") }
         case "writeExport":
-            // No path: Cancel on the save panel — drop pending bytes (same idea as writeJPEG without a path).
+            // No path: Cancel on the save panel — drop pending bytes (nothing is written).
             guard let pending = pendingExport else { return fail(-1, "nothing to write") }
             pendingExport = nil
             guard let path = command.paths?.first else { return fail(-7, "cancelled") }

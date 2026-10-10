@@ -218,7 +218,7 @@ public:
     /// Mac ProjectController.begin: commit pending Free Transform (and clear crop) before package snapshot.
     void prepareDocumentForProjectIO(uint64_t handle = 0);
     void handleShellRequests();
-    void exportWithUpstream(bool jpeg);
+    void exportPNGWithUpstream();
     void exportPDFWithUpstream();
     void exportAsWithUpstream(const QString &startFormat = QString());
     /// Tip Canvas Only (F): hide toolbars/layers/status; black canvas surround.

@@ -11,11 +11,15 @@ the override and reports, per upstream hunk:
 
 Lines compare after collapsing whitespace. Comments and lines shorter than 12 characters are ignored.
 
-"drift" entries: {"<override path>": {"mode": "tip|pinned|replaced", "upstream": ["Compositor/..."],
+"drift" entries: {"<override path>": {"mode": "tip|generated|pinned|replaced|addition", "upstream": ["Compositor/..."],
                   "allow": [{"line": "<normalized line>", "reason": "...", "commit": "<sha>"}], "reason": "..."}}
   tip       — must follow tip: every finding fails unless allowlisted
+  generated — written from tip by a generator script ("generator"), whose --check is the gate; skipped here
   pinned    — deliberately held at an older upstream version (reason required); skipped
   replaced  — a different implementation (AppKit/Metal stand-in); skipped, reason required
+  addition  — Linux-only file with no upstream counterpart; reason required
+
+Every Swift file in Sources/Overrides needs an entry, so a new override can't go unwatched.
 
   scripts/upstream-override-drift.py [--from SHA --to SHA] [--check]
 """
@@ -72,14 +76,24 @@ def main() -> int:
         return 2
     print(f"override drift over {base}..{to}", file=sys.stderr)
     failures = 0
+    for path in sorted((ROOT / "Sources/Overrides").glob("*.swift")):
+        if str(path.relative_to(ROOT)) not in drift:
+            print(f"{path.relative_to(ROOT)}: no \"drift\" entry in linux/upstream-parity.json", file=sys.stderr); failures += 1
     for override, spec in sorted(drift.items()):
         mode = spec.get("mode")
-        if mode in ("pinned", "replaced"):
+        if not (ROOT / override).exists():
+            print(f"{override}: listed under \"drift\" but missing", file=sys.stderr); failures += 1
+            continue
+        if mode == "generated":
+            if not spec.get("generator") or not (ROOT / spec["generator"]).exists():
+                print(f"{override}: mode generated needs an existing \"generator\"", file=sys.stderr); failures += 1
+            continue
+        if mode in ("pinned", "replaced", "addition"):
             if not spec.get("reason"):
                 print(f"{override}: mode {mode} needs a reason", file=sys.stderr); failures += 1
             continue
         if mode != "tip":
-            print(f"{override}: unknown mode {mode!r} (tip|pinned|replaced)", file=sys.stderr); failures += 1
+            print(f"{override}: unknown mode {mode!r} (tip|generated|pinned|replaced|addition)", file=sys.stderr); failures += 1
             continue
         body = {norm(l) for l in (ROOT / override).read_text().splitlines()}
         allowed = {norm(a["line"]) for a in spec.get("allow", [])}

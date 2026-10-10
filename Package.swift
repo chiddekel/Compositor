@@ -256,7 +256,6 @@ let package = Package(
                      "Rendering/GPUNoise.swift",
                      "Rendering/InlineTextEditor.swift",
                      "Rendering/TransformOverlay.swift",
-                     "UI/JPEGExportSheet.swift",
                      "UI/ProjectTabs.swift",
                      "UI/LayerMaskMenu.swift"],
             swiftSettings: [

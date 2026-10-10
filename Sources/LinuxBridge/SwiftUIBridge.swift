@@ -112,9 +112,6 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
     case "ImageSizeSheet":
         guard let sheet = entry.editor.imageSizeSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)
-    case "JPEGExportSheet":
-        guard let sheet = entry.editor.jpegExportSheet else { return nil }
-        resolved = ViewResolver.resolve(sheet)
     case "ExportAsSheet":
         guard let sheet = entry.editor.exportAsSheet else { return nil }
         resolved = ViewResolver.resolve(sheet)
