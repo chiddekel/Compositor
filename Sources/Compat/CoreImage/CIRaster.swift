@@ -66,6 +66,13 @@ struct Raster {
     }
 
     /// Bilinear sample at continuous device coordinates (pixel centres at +0.5); outside is transparent.
+    /// The pixel containing the point (`fx`, `fy` in pixel units from this raster's origin); transparent outside.
+    func nearest(_ fx: Double, _ fy: Double) -> (Float, Float, Float, Float) {
+        let ix = Int(floor(fx)), iy = Int(floor(fy))
+        guard ix >= 0, iy >= 0, ix < width, iy < height else { return (0, 0, 0, 0) }
+        let i = index(ix, iy); return (data[i], data[i + 1], data[i + 2], data[i + 3])
+    }
+
     func bilinear(_ fx: Double, _ fy: Double) -> (Float, Float, Float, Float) {
         let x = fx - 0.5, y = fy - 0.5
         let x0 = Int(floor(x)), y0 = Int(floor(y))
@@ -452,7 +459,7 @@ enum RasterFilters {
     }
 
     /// Inverse-maps `output` through a projective transform given by the 3x3 matrix `inverse` (device -> source).
-    static func projective(_ input: Raster, inverse m: [Double], output region: CGRect) -> Raster {
+    static func projective(_ input: Raster, inverse m: [Double], output region: CGRect, nearest: Bool = false) -> Raster {
         var out = Raster(rect: region)
         for y in 0..<out.height {
             for x in 0..<out.width {
@@ -461,7 +468,7 @@ enum RasterFilters {
                 guard abs(w) > 1e-12 else { continue }
                 let sx = (m[0] * px + m[1] * py + m[2]) / w - Double(input.rect.minX)
                 let sy = (m[3] * px + m[4] * py + m[5]) / w - Double(input.rect.minY)
-                let p = input.bilinear(sx, sy)
+                let p = nearest ? input.nearest(sx, sy) : input.bilinear(sx, sy)
                 let o = out.index(x, y)
                 out.data[o] = p.0; out.data[o + 1] = p.1; out.data[o + 2] = p.2; out.data[o + 3] = p.3
             }

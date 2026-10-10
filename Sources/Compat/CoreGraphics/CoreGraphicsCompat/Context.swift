@@ -41,6 +41,7 @@ public final class CGContext: @unchecked Sendable {
         var dashPhase: CGFloat = 0
         var shadowOffset = CGSize.zero
         var shadowBlur: CGFloat = 0
+        var shadowColor: CGColor? = nil
         var dashLengths: [CGFloat] = []
         var ctm: CGAffineTransform = .identity
     }
@@ -285,8 +286,12 @@ public final class CGContext: @unchecked Sendable {
     /// Dashed strokes are cut into their "on" runs when stroked (see `dashed`).
     public func setLineDash(phase: CGFloat, lengths: [CGFloat]) { state.dashPhase = phase; state.dashLengths = lengths }
 
-    /// Shadows are recorded but not rasterised yet.
-    public func setShadow(offset: CGSize, blur: CGFloat, color: CGColor? = nil) { state.shadowOffset = offset; state.shadowBlur = blur }
+    /// A shadow under what is drawn next, as Core Graphics casts it: `offset` and `blur` in user units, the blur a
+    /// Gaussian of half its size. Without a color, black at a third opacity. Rendered for rect fills (`fill(_:)`),
+    /// the only shape the canvas casts one from.
+    public func setShadow(offset: CGSize, blur: CGFloat, color: CGColor? = CGColor(gray: 0, alpha: 1.0 / 3)) {
+        state.shadowOffset = offset; state.shadowBlur = blur; state.shadowColor = color
+    }
     /// The path under construction (Apple exposes it as `path`).
     public var path: CGPath? { currentPath.isEmpty ? nil : currentPath }
     public func convertToDeviceSpace(_ rect: CGRect) -> CGRect { rect.applying(state.ctm) }
@@ -333,6 +338,7 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func fill(_ rect: CGRect) {
+        castShadow(of: rect)
         if let canvas, !state.shouldAntialias, fillsThroughClip {
             fillHardEdged(rect, on: canvas)
         } else if let canvas {
@@ -380,13 +386,52 @@ public final class CGContext: @unchecked Sendable {
         fillPathSwift(path, rule: rule, color: c)
     }
 
+    /// The rect's outline in the stroke color and width, centered on its edges, as `stroke(CGPath(rect:))`.
     public func stroke(_ rect: CGRect) {
-        // Simple stroke fallback: stroke rect edges
-        let lw = state.lineWidth
-        fill(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: lw))
-        fill(CGRect(x: rect.minX, y: rect.maxY - lw, width: rect.width, height: lw))
-        fill(CGRect(x: rect.minX, y: rect.minY, width: lw, height: rect.height))
-        fill(CGRect(x: rect.maxX - lw, y: rect.minY, width: lw, height: rect.height))
+        stroke(CGPath(rect: rect, transform: nil))
+    }
+
+    /// The current shadow of a filled `rect`: the rect moved by the offset and blurred, in the shadow color. A
+    /// Gaussian-blurred rectangle is a product of two error-function steps, so it is computed directly, at device
+    /// resolution, and drawn as an image before the fill.
+    private func castShadow(of rect: CGRect) {
+        guard let color = state.shadowColor, color.alpha > 0, state.shadowBlur > 0 || state.shadowOffset != .zero,
+              rect.width > 0, rect.height > 0 else { return }
+        let ctm = userSpaceToDeviceSpaceTransform
+        guard abs(ctm.b) < 1e-9, abs(ctm.c) < 1e-9 else { return }   // axis-aligned only, as the canvas draws it
+        let sigma = state.shadowBlur / 2
+        let cast = rect.offsetBy(dx: state.shadowOffset.width, dy: state.shadowOffset.height)
+        let area = cast.insetBy(dx: -3 * sigma, dy: -3 * sigma)
+        let sx = abs(ctm.a), sy = abs(ctm.d)
+        let width = Int(ceil(area.width * sx)), height = Int(ceil(area.height * sy))
+        guard width > 0, height > 0, width * height <= 64_000_000,
+              let image = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let data = image.data else { return }
+        // Coverage of the blurred rect along one axis at a pixel center, in user units.
+        func coverage(_ u: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
+            guard sigma > 0 else { return u >= lo && u < hi ? 1 : 0 }
+            let k = 1 / (sigma * 2.0.squareRoot())
+            return (erf((hi - u) * k) - erf((lo - u) * k)) / 2
+        }
+        let across = (0..<width).map { coverage(area.minX + (CGFloat($0) + 0.5) / sx, cast.minX, cast.maxX) }
+        let down = (0..<height).map { coverage(area.minY + (CGFloat($0) + 0.5) / sy, cast.minY, cast.maxY) }
+        let r = color.red, g = color.green, b = color.blue, a = color.alpha
+        let bytes = data.assumingMemoryBound(to: UInt8.self)
+        // The image's rows run along the area's y, symmetric enough that either drawing direction lands the same.
+        for y in 0..<height {
+            for x in 0..<width {
+                let alpha = a * across[x] * down[y], i = (y * width + x) * 4
+                bytes[i] = UInt8((r * alpha * 255).rounded()); bytes[i + 1] = UInt8((g * alpha * 255).rounded())
+                bytes[i + 2] = UInt8((b * alpha * 255).rounded()); bytes[i + 3] = UInt8((alpha * 255).rounded())
+            }
+        }
+        guard let shadow = image.makeImage() else { return }
+        let saved = (state.shadowOffset, state.shadowBlur, state.shadowColor)
+        state.shadowOffset = .zero; state.shadowBlur = 0; state.shadowColor = nil
+        draw(shadow, in: CGRect(x: area.minX, y: area.minY, width: CGFloat(width) / sx, height: CGFloat(height) / sy))
+        (state.shadowOffset, state.shadowBlur, state.shadowColor) = saved
     }
 
     public func strokePath() {

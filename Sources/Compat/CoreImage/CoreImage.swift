@@ -94,6 +94,8 @@ private indirect enum Node {
     /// CIBlendWithMask family: input where the mask is on, background where it is off. `channel` is which part of the
     /// mask decides: 0 red (CIBlendWithRedMask), 3 alpha (CIBlendWithAlphaMask), 4 luminance (CIBlendWithMask).
     case blendMask(Node, Node, Node, Int)
+    /// samplingNearest(): the same pixels, sampled without smoothing wherever they are transformed.
+    case nearest(Node)
     /// Source-over: `top` composited over `bottom` (CIImage.composited(over:)).
     case over(Node, Node)
     /// CIAffineTile: the image transformed, then repeated across the plane with the transformed extent as the period.
@@ -120,7 +122,7 @@ private indirect enum Node {
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
-        case .blendMask(let n, _, _, _), .curves(let n, _, _): return n.extent
+        case .blendMask(let n, _, _, _), .curves(let n, _, _), .nearest(let n): return n.extent
         case .over(let top, let bottom): return top.extent.union(bottom.extent)
         case .separable(let s, let b, _): return s.extent.union(b.extent)
         case .transform(let n, let t): return n.extent.applying(t)
@@ -128,6 +130,15 @@ private indirect enum Node {
             let xs = pts.map(\.x), ys = pts.map(\.y)
             return CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
         case .upsample(let g, _, _, _): return g.extent
+        }
+    }
+
+    /// Whether a transform of this image samples nearest pixels: samplingNearest() applied, possibly under a clamp or crop.
+    var samplesNearest: Bool {
+        switch self {
+        case .nearest: return true
+        case .clamp(let n), .crop(let n, _): return n.samplesNearest
+        default: return false
         }
     }
 
@@ -220,6 +231,8 @@ private indirect enum Node {
         case .blendMask(let n, let bg, let mask, let channel):
             return RasterFilters.blendWithMask(n.eval(region, env), background: bg.eval(region, env), mask: mask.eval(region, env),
                                                channel: channel)
+        case .nearest(let n):
+            return n.eval(region, env)
         case .over(let top, let bottom):
             let s = top.eval(region, env)
             var out = bottom.eval(region, env)
@@ -309,7 +322,7 @@ private indirect enum Node {
             let src = n.extent.isInfiniteLike ? mapped : mapped.intersection(n.extent.integral)
             let input = n.eval(src.isNull ? region : src, env)
             let m = [Double(inv.a), Double(inv.c), Double(inv.tx), Double(inv.b), Double(inv.d), Double(inv.ty), 0, 0, 1]
-            return RasterFilters.projective(input, inverse: m, output: region)
+            return RasterFilters.projective(input, inverse: m, output: region, nearest: n.samplesNearest)
         case .perspective(let n, let target, let source):
             let e = (source ?? n.extent).integral
             guard !e.isInfiniteLike, !e.isNull, e.width >= 1, e.height >= 1 else { return Raster(rect: region) }
@@ -318,7 +331,7 @@ private indirect enum Node {
             // One pixel more around the source, so sampling at its edge reads what the input has there (a clamped
             // image's own edge pixels) rather than transparency.
             let read = e.insetBy(dx: -1, dy: -1)
-            return RasterFilters.projective(n.eval(read, env), inverse: h, output: region)
+            return RasterFilters.projective(n.eval(read, env), inverse: h, output: region, nearest: n.samplesNearest)
         case .upsample(let g, let small, let spatial, let luma):
             return RasterFilters.edgePreserveUpsample(guide: g.eval(region, env), small: small.eval(small.extent.integral, env),
                                                       spatialSigma: spatial, lumaSigma: luma)
@@ -411,7 +424,7 @@ public final class CIImage: @unchecked Sendable {
     public func clampedToExtent() -> CIImage { CIImage(node: .clamp(node)) }
     public func applyingGaussianBlur(sigma: Double) -> CIImage { sigma > 0 ? CIImage(node: .gaussian(node, sigma)) : self }
     public func transformed(by matrix: CGAffineTransform) -> CIImage { CIImage(node: .transform(node, matrix)) }
-    public func samplingNearest() -> CIImage { self }
+    public func samplingNearest() -> CIImage { CIImage(node: .nearest(node)) }
 
     /// EXIF orientation 1...8, keeping the result's origin at (0, 0) like Core Image.
     public func oriented(forExifOrientation orientation: Int32) -> CIImage {
