@@ -319,7 +319,19 @@ public enum NSAccessibility {
     public var representedURL: URL?
     public var styleMask: StyleMask = []
     public var backingScaleFactor: CGFloat = 1
-    public var frame: CGRect
+    /// Moving or resizing posts AppKit's notifications (and tells the delegate of a move), which docked panels follow.
+    public var frame: CGRect {
+        didSet {
+            if frame.origin != oldValue.origin {
+                let note = Notification(name: NSWindow.didMoveNotification, object: self)
+                delegate?.windowDidMove(note)
+                NotificationCenter.default.post(note)
+            }
+            if frame.size != oldValue.size {
+                NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: self)
+            }
+        }
+    }
     public let windowNumber: Int
     public var contentViewController: NSViewController?
     public var contentView: NSView? {
@@ -372,7 +384,13 @@ public enum NSAccessibility {
     public var attachedSheet: NSWindow?
     /// The pointer in window coordinates; the host updates `NSEvent.mouseLocation`.
     open var mouseLocationOutsideOfEventStream: CGPoint { convertPoint(fromScreen: NSEvent.mouseLocation) }
-    open func close() { isVisible = false }
+    /// As AppKit: the delegate and observers hear `willClose` first, then the window goes.
+    open func close() {
+        let note = Notification(name: NSWindow.willCloseNotification, object: self)
+        delegate?.windowWillClose(note)
+        NotificationCenter.default.post(note)
+        isVisible = false
+    }
     public enum ButtonType: Int, Sendable { case closeButton, miniaturizeButton, zoomButton, toolbarButton, documentIconButton }
     private var titleBarButtons: [ButtonType: NSButton] = [:]
     /// The title bar's buttons; the close button asks the delegate first (`performClose`), as AppKit's does.
@@ -429,15 +447,30 @@ public enum NSAccessibility {
 
     /// The Qt shell installs this to show a sheet; without a host the sheet's root view settles itself.
     nonisolated(unsafe) public static var sheetPresenter: ((_ parent: NSWindow, _ sheet: NSWindow) -> Void)?
+    /// The screen the window is on: the one screen the host reports.
+    public var screen: NSScreen? { NSScreen.main }
+    /// Whether the user can drag the window around (AppKit's default: yes).
+    public var isMovable = true
+    /// The window this one is attached to as a sheet, while it is one.
+    public private(set) weak var sheetParent: NSWindow?
+    public var isSheet: Bool { sheetParent != nil }
+
     open func beginSheet(_ sheet: NSWindow, completionHandler: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        sheet.sheetParent = self
+        attachedSheet = sheet
         if let present = NSWindow.sheetPresenter { present(self, sheet); return }
         (sheet.contentViewController?.representedRootView as? SheetAutoResolving)?.resolveWithoutHost()
     }
-    open func endSheet(_ sheet: NSWindow) {}
+    open func endSheet(_ sheet: NSWindow) {
+        if attachedSheet === sheet { attachedSheet = nil }
+        sheet.sheetParent = nil
+    }
 }
 
 public struct NSScreen {
     public var frame = CGRect(x: 0, y: 0, width: 1440, height: 900)
+    /// The part of the screen windows go in (no menu bar or dock on the hosts this runs on: the whole frame).
+    public var visibleFrame: CGRect { frame }
     public var backingScaleFactor: CGFloat = 1
     @MainActor public static var main: NSScreen? = NSScreen()
     @MainActor public static var screens: [NSScreen] = [NSScreen()]

@@ -279,14 +279,9 @@ let package = Package(
             name: "CompositorUpstreamTests",
             dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal"],
             path: "CompositorTests",
-            // Tests of macOS-only UI code (ObjC-runtime NSSlider swizzling, floating panels, SwiftUI thumbnails):
-            // listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
-            exclude: ["SliderSnapTests.swift", "FloatingPanelTests.swift", "CanvasThumbnailTests.swift",
-                      "LayerTests.swift", "CursorTests.swift", "GuideTests.swift", "LevelsTests.swift",
-                      "CanvasEntryTests.swift", "ColorPickerTests.swift", "SelectionTests.swift",
-                      "TypeToolTests.swift", "GroupTests.swift", "LayerMaskTests.swift", "LayerAppearanceTests.swift",
-                      "BlendShortcutTests.swift", "TransformPressTests.swift", "CameraRawSliderTests.swift",
-                      "CommandPaletteTests.swift", "NavigatorTests.swift"],
+            // Upstream tests that cannot run on Linux yet (Objective-C selectors and swizzling in the test itself, the
+            // real layer table, the app's own window): listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
+            exclude: ["SliderSnapTests.swift", "LayerTests.swift", "CameraRawSliderTests.swift", "CommandPaletteTests.swift", "CursorTests.swift", "FloatingPanelTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),

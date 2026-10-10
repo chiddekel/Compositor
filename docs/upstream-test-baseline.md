@@ -98,3 +98,12 @@ Upstream 1.4.9 reads `CameraRawTables.bin` through `Bundle.main`, which on Linux
 executable. Before `swift test`, copy it next to the test binary:
 `install -m644 Compositor/Resources/CameraRawTables.bin .build/x86_64-unknown-linux-gnu/debug/` (the Flatpak manifest
 and `scripts/run-compositor.sh` install it beside the app binary). Without it, `CameraRawTests` fails 15 of 28 tests.
+
+**2026-10-10 (compat completion, Phase B):** 13 upstream test files run unchanged again — `CanvasEntryTests`,
+`ColorPickerTests`, `GuideTests`, `LevelsTests`, `CanvasThumbnailTests`, `NavigatorTests`, `SelectionTests`,
+`TypeToolTests`, `GroupTests`, `LayerMaskTests`, `LayerAppearanceTests`, `BlendShortcutTests`,
+`TransformPressTests` — after `NSWindow.screen/isMovable/isSheet/sheetParent`, window close/move/resize
+notifications, `NSScreen.visibleFrame` and `NSPasteboard.withUniqueName`. The single-test skips for
+`FilterTests`, `DistortTests` and `LayerAppearanceTests` above are no longer needed (they pass); only the two
+`HistoryTests` cases stay skipped (`.github/workflows/ci-build.yml`). Remaining exclusions: see
+`linux/UPSTREAM_TEST_EXCLUSIONS.md`.

@@ -54,6 +54,10 @@ public final class NSPasteboard: @unchecked Sendable {
     private init(isGeneral: Bool) { self.isGeneral = isGeneral }
     public init(name: Name = .general) { isGeneral = false }
     private var mirror: Backend? { isGeneral ? Self.backend : nil }
+    /// A new pasteboard of this process's own, as AppKit's `withUniqueName()` (never mirrored to the desktop).
+    public static func withUniqueName() -> NSPasteboard { NSPasteboard(name: Name(rawValue: "unique-\(UUID().uuidString)")) }
+    /// Lets go of a uniquely named pasteboard; its contents simply go when nothing holds it any more.
+    public func releaseGlobally() { items = [:] }
     public static func withName(_ name: Name) -> NSPasteboard {
         name == .drag ? drag : general
     }

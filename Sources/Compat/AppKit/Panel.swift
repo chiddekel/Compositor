@@ -20,11 +20,10 @@ extension NSWindowDelegate {
 }
 
 extension NSWindow {
-    /// Real AppKit posts these through the notification center on every resize/move; this compat's `frame`
-    /// setters don't post anything, so `FloatingPanel.swift`'s docked-panel frame observer never actually fires —
-    /// structurally real (the names exist, `addObserver(forName:)` compiles), inert until something posts them.
+    /// Posted by `frame`'s setter on every move/resize and by `close()`, as AppKit posts them.
     public static let didResizeNotification = Notification.Name("NSWindowDidResizeNotification")
     public static let didMoveNotification = Notification.Name("NSWindowDidMoveNotification")
+    public static let willCloseNotification = Notification.Name("NSWindowWillCloseNotification")
     public func setFrame(_ frameRect: CGRect, display: Bool) { frame = frameRect }
 }
 
