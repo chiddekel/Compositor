@@ -10,4 +10,6 @@ public final class SPUStandardUpdaterController: @unchecked Sendable {
     public init(startingUpdater: Bool, updaterDelegate: AnyObject?, userDriverDelegate: AnyObject?) {}
     public func startUpdater() {}
     public func checkForUpdates(_ sender: Any?) { Self.checkHandler?() }
+    /// Tip 1.4.9 calls the updater itself (SPUUpdater.checkForUpdates()); same Flatpak check.
+    public func checkForUpdates() { Self.checkHandler?() }
 }

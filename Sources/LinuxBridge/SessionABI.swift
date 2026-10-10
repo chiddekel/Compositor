@@ -47,6 +47,8 @@ final class Entry {
             guard margin > 0, let document = editor.session.document else { return rect }
             return rect.insetBy(dx: -margin, dy: -margin).integral.intersection(CGRect(origin: .zero, size: document.size))
         }
+        // A pixel move's tiles follow the drag only once read (EditorCanvas applies the offset before drawing).
+        if editor.session.brushStroke == nil, let move = editor.session.pixelMove { try? move.applyOffset() }
         if let stroke = editor.session.brushStroke ?? editor.session.pixelMove?.raster {
             trackedWarp = nil
             warpPointCount = 0

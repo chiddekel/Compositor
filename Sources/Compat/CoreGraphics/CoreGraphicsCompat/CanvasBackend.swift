@@ -94,7 +94,7 @@ public enum CanvasBackends {
         #if canImport(Glibc)
         typealias Fn = @convention(c) () -> Int32
         _ = CompCanvasBridge.shared.isAvailable
-        if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "compositor_vulkan_gpu_available")
+        if let sym = dlopen(nil, RTLD_NOW).flatMap({ dlsym($0, "compositor_vulkan_gpu_available") })  // glibc: -2 is not RTLD_DEFAULT
             ?? CompCanvasBridge.loadedHandle.flatMap({ dlsym($0, "compositor_vulkan_gpu_available") }) {
             return unsafeBitCast(sym, to: Fn.self)() != 0
         }

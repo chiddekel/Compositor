@@ -20,6 +20,18 @@ open class NSItemProvider {
     }
     public var registeredTypeIdentifiers: [String] { Array(representations.keys) }
 
+    public enum RepresentationVisibility: Int, Sendable { case all = 0, team = 1, group = 2, ownProcess = 3 }
+
+    /// Registers data for a type. Representations here are resolved eagerly, so the handler runs now and its data is
+    /// kept; a handler that reports an error leaves the type unregistered.
+    public func registerDataRepresentation(forTypeIdentifier typeIdentifier: String, visibility: RepresentationVisibility,
+                                           loadHandler: @escaping @Sendable (@escaping @Sendable (Data?, Error?) -> Void) -> Progress?) {
+        let box = ResolvedData()
+        _ = loadHandler { data, error in if error == nil { box.data = data } }
+        if let data = box.data { representations[typeIdentifier] = data }
+    }
+    private final class ResolvedData: @unchecked Sendable { var data: Data? }
+
     public func hasItemConformingToTypeIdentifier(_ identifier: String) -> Bool {
         guard let wanted = UTType(identifier) else { return representations[identifier] != nil }
         return representations.keys.contains { UTType($0)?.conforms(to: wanted) == true || $0 == identifier }

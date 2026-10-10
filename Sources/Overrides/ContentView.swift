@@ -14,7 +14,7 @@
 // upstream to catch drift — that's the whole maintenance cost of this exception.
 // Second (Linux-only) change: `toolHeaders`, `toolRail` and `statusBar` are internal rather than private, so the Qt
 // shell renders these very views (SwiftUIBridge) instead of copies of them.
-// Refreshed 2026-09-23 against upstream 75c4219 (stepped keyboard zoom, camera-raw docked filter panel).
+// Refreshed 2026-10-09 against upstream 22c7b8d (1.4.8: Last Filter without the panel, import alert OK role).
 
 import SwiftUI
 import UniformTypeIdentifiers
@@ -309,7 +309,8 @@ struct ContentView: View {
                     content: SelectionAmountSheet(session: session, operation: operation))
             } else { selectionAmountPanel.close() }
         }
-        .onChange(of: session.filterEdit == nil) { _, closed in
+        // Last Filter applies without the panel.
+        .onChange(of: session.filterEdit == nil || session.filterEdit?.repeating == true) { _, closed in
             if closed { filterPanel.close() }
             else {
                 filterPanel.onClose = { session.cancelFilter() }
@@ -331,7 +332,8 @@ struct ContentView: View {
         }
         .alert("Import couldn’t finish", isPresented: Binding(
             get: { session.importError != nil }, set: { if !$0 { session.importError = nil } })) {
-                Button("OK", role: .cancel) { session.importError = nil }
+                // No cancel role: an alert with only a cancel button gets a second OK of its own.
+                Button("OK") { session.importError = nil }
             } message: { Text(session.importError ?? "") }
         .alert("Couldn’t paint", isPresented: Binding(get: { session.brushError != nil },
             set: { if !$0 { session.brushError = nil } })) {

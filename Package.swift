@@ -125,6 +125,17 @@ let package = Package(
             publicHeadersPath: ".",
             cSettings: [
                 .define("COMPOSITOR_PORTABLE"),
+                // Tip 1.4.9 AdjustPixels.c splits work with dispatch_apply blocks: the toolchain's own libdispatch.
+                .unsafeFlags([
+                    "-fblocks",
+                    "-I/usr/lib/sdk/swift6/lib/swift",
+                    "-I/usr/lib/sdk/swift6/lib/swift/Block",
+                ]),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/lib/sdk/swift6/lib/swift/linux"]),
+                .linkedLibrary("dispatch"),
+                .linkedLibrary("BlocksRuntime"),
             ]
         ),
         // Tip DitherPixels.c with a serial dispatch_apply so Scanlines glow matches macOS on Linux.
@@ -168,7 +179,8 @@ let package = Package(
         // Foundation gaps (FileWrapper, NSFileCoordinator, security-scoped URLs), UTType and the headless AppKit
         // surface upstream's model code touches. Each is one Apple framework (interface segregation).
         .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3"),
-        .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers", "CSQLite"], path: "Sources/Compat/FoundationCompat",
+        .systemLibrary(name: "CLZMA", path: "Sources/CLZMA", pkgConfig: "liblzma"),
+        .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers", "CSQLite", "CLZMA"], path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Accelerate", path: "Sources/Compat/Accelerate",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -231,6 +243,8 @@ let package = Package(
                      "Rendering/WandPixels.c",
                      "Rendering/WandPixels.h",
                      "IO/CompositorApplicationDelegate.swift",
+                     // Tip 1.4.9 Sparkle user driver (its own AppKit update alert); Linux updates through Flatpak.
+                     "IO/UpdateDriver.swift",
                      "Document/DocumentHistory.swift",
                      "Document/EditorSession.swift",
                      "Document/SmudgeLiquify.swift",
@@ -244,8 +258,7 @@ let package = Package(
                      "Rendering/TransformOverlay.swift",
                      "UI/JPEGExportSheet.swift",
                      "UI/ProjectTabs.swift",
-                     "UI/LayerMaskMenu.swift",
-                     "UI/TransformInspector.swift"],
+                     "UI/LayerMaskMenu.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),

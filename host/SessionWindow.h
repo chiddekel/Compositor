@@ -428,6 +428,7 @@ private:
     QSet<uint64_t> m_closeAfterSave;
     bool m_closeWindowAfterSave = false;
     bool m_painting = false;
+    bool m_middleDrag = false;   // middle button held: upstream CanvasView pans, or with Ctrl/Meta zooms (1.4.9)
     Tool m_tool = Tool::Move;
     MarqueeMode m_marqueeMode = MarqueeMode::Rectangle;
     LassoMode m_lassoMode = LassoMode::Freehand;

@@ -241,6 +241,12 @@ nonisolated public func compositorSessionDispatchSwiftUIAction(_ handle: UInt64,
         guard let action = entry.actionHandlers[panelName]?[nodeIDString]?[handlerKeyString] else { return -1 }
         let value: Any = payloadData.isEmpty ? () : ((try? JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed])) ?? ())
         action(value)
+        // A toolbar button or picker finishes its field change in one interaction. Numeric fields and label
+        // scrubs keep their draft until focus leaves or the drag ends; explicit Free Transform still waits.
+        if panelName == "ToolHeaders", handlerKeyString == "action" || handlerKeyString == "selection",
+           let edit = entry.editor.session.transformEdit, edit.fromFields, !edit.persistent {
+            entry.editor.session.commitTransform()
+        }
         // The host keeps a field's widgets while it is being edited. Settle focus observers now so both gaining
         // and losing focus are observed, and a draft commits before the next button action (such as the picker's OK).
         if handlerKeyString == "focused" || handlerKeyString == "onSubmit" || handlerKeyString == "onExitCommand" {

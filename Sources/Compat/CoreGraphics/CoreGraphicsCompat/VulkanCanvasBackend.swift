@@ -36,7 +36,10 @@ struct VulkanGPUCanvasFactory: CanvasBackendFactory {
 
     private static func probeVulkan() -> Bool {
         typealias Fn = @convention(c) () -> Int32
-        if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "compositor_vulkan_gpu_available")
+        // The process's global symbols. Darwin spells RTLD_DEFAULT as (void *)-2; on glibc that value is not a
+        // handle at all (dlsym walks it and segfaults), and RTLD_DEFAULT is NULL, which Swift can't pass, so ask
+        // dlopen for the main program's handle instead.
+        if let sym = dlopen(nil, RTLD_NOW).flatMap({ dlsym($0, "compositor_vulkan_gpu_available") })
             ?? CompCanvasBridge.loadedHandle.flatMap({ dlsym($0, "compositor_vulkan_gpu_available") }) {
             let fn = unsafeBitCast(sym, to: Fn.self)
             return fn() != 0

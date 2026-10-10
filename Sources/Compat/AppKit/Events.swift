@@ -5,18 +5,28 @@ public typealias CGKeyCode = UInt16
 
 /// Core Graphics event objects, reduced to what synthesising and reading keyboard/mouse events needs.
 public final class CGEvent: @unchecked Sendable {
-    public enum EventType { case keyDown, keyUp, leftMouseDown, leftMouseUp, mouseMoved, flagsChanged }
+    public enum EventType {
+        case keyDown, keyUp, leftMouseDown, leftMouseUp, mouseMoved, flagsChanged
+        case leftMouseDragged, rightMouseDown, rightMouseUp, rightMouseDragged, otherMouseDown, otherMouseUp, otherMouseDragged
+    }
     public let type: EventType
     public var location: CGPoint
     public let virtualKey: CGKeyCode
+    public var mouseButton: CGMouseButton = .left
     public var flags = CGEventFlags()
     public init?(keyboardEventSource source: AnyObject?, virtualKey: CGKeyCode, keyDown: Bool) {
         type = keyDown ? .keyDown : .keyUp; self.virtualKey = virtualKey; location = .zero
     }
     public init?(mouseEventSource source: AnyObject?, mouseType: EventType, mouseCursorPosition: CGPoint, mouseButton: Int) {
         type = mouseType; self.virtualKey = 0; location = mouseCursorPosition
+        self.mouseButton = CGMouseButton(rawValue: UInt32(max(0, mouseButton))) ?? .left
+    }
+    public init?(mouseEventSource source: AnyObject?, mouseType: EventType, mouseCursorPosition: CGPoint, mouseButton: CGMouseButton) {
+        type = mouseType; self.virtualKey = 0; location = mouseCursorPosition; self.mouseButton = mouseButton
     }
 }
+public typealias CGEventType = CGEvent.EventType
+public enum CGMouseButton: UInt32, Sendable { case left = 0, right = 1, center = 2 }
 public struct CGEventFlags: OptionSet, Sendable {
     public let rawValue: UInt64
     public init(rawValue: UInt64) { self.rawValue = rawValue }
@@ -92,12 +102,22 @@ public final class NSEvent: @unchecked Sendable {
         switch cgEvent.type {
         case .keyDown: type = .keyDown; case .keyUp: type = .keyUp; case .leftMouseDown: type = .leftMouseDown
         case .leftMouseUp: type = .leftMouseUp; case .mouseMoved: type = .mouseMoved; case .flagsChanged: type = .flagsChanged
+        case .leftMouseDragged: type = .leftMouseDragged; case .rightMouseDown: type = .rightMouseDown
+        case .rightMouseUp: type = .rightMouseUp; case .rightMouseDragged: type = .rightMouseDragged
+        case .otherMouseDown: type = .otherMouseDown; case .otherMouseUp: type = .otherMouseUp
+        case .otherMouseDragged: type = .otherMouseDragged
         }
         // CGEventFlags and NSEvent.ModifierFlags share their bit positions.
         self.init(type: type, location: cgEvent.location, modifierFlags: ModifierFlags(rawValue: UInt(cgEvent.flags.rawValue)),
                   timestamp: 0, windowNumber: 0)
         keyCode = cgEvent.virtualKey
         self.cgEvent = cgEvent
+        if type != .keyDown, type != .keyUp, type != .flagsChanged {
+            // Core Graphics positions run down from the main screen's top edge; AppKit's run up from its bottom.
+            let screenHeight = Thread.isMainThread ? MainActor.assumeIsolated { NSScreen.main?.frame.height ?? 0 } : 0
+            locationInWindow = CGPoint(x: cgEvent.location.x, y: screenHeight - cgEvent.location.y)
+            buttonNumber = Int(cgEvent.mouseButton.rawValue)
+        }
         if type == .keyDown || type == .keyUp, let key = Self.ansiKeys[cgEvent.virtualKey] {
             // Like AppKit, "ignoring modifiers" still honours Shift (Shift-[ types "{" either way).
             characters = modifierFlags.contains(.shift) ? key.shifted : key.plain

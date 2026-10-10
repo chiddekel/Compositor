@@ -85,6 +85,8 @@ private struct State: Encodable {
     let transformAutoSelect: Bool
     /// Free Transform / Move handle edit in progress (Ctrl+T persistent or drag-resize).
     let transforming: Bool
+    /// Only persistent edits wait for Apply / Cancel; ordinary drags apply on release.
+    let transformPending: Bool
     let isMaskSelected: Bool
     /// Option-click mask thumbnail: canvas shows that mask alone (Photoshop).
     let viewsMaskAlone: Bool
@@ -372,6 +374,13 @@ final class UpstreamEditor {
         guard let command = try? JSONDecoder().decode(Command.self, from: json) else { error = "Invalid command JSON"; return -1 }
         guard command.version == 1 else { error = "Unsupported command version"; return -4 }
         let s = session
+        // Upstream applies a pending gradient when the tool, layer or target changes (selectTool / selectLayer →
+        // resolveGradient), in a Task that the Mac's run loop finishes before the next click reaches the canvas. The
+        // shell's commands arrive back to back (brushBegin switches tool and starts the stroke in one call), so the
+        // bridge applies it first, in order, as the Mac's next event would find it.
+        // Re-choosing the current tool is no switch (upstream selectTool resolves only when the tool changes).
+        let reselectsTool = command.action == "selectTool" && (command.kind ?? command.name) == s.tool.rawValue
+        if s.gradientEdit != nil, !reselectsTool, !Self.keepsPendingGradient.contains(command.action) { await s.commitGradient() }
         switch command.action {
         case "new":
             guard let width = command.width, let height = command.height, (1...30_000).contains(width), (1...30_000).contains(height)
@@ -581,8 +590,11 @@ final class UpstreamEditor {
                     return fail(-5, s.brushError ?? "could not leave text editing to use Gradient")
                 }
             }
+            let before = s.brushError
             s.beginGradient(at: point)
-            guard s.gradientEdit != nil else { return fail(-5, s.brushError ?? "gradient could not start") }
+            guard s.gradientEdit != nil else {
+                return fail(-5, refusal(s, before: before, cause: "gradient could not start: no layer to paint on"))
+            }
         case "gradientMove":
             guard let point = point(command) else { return fail(-1, "invalid point") }
             s.moveGradient(start: command.kind == "start" ? point : nil, end: command.kind == "start" ? nil : point)
@@ -597,8 +609,11 @@ final class UpstreamEditor {
                     return fail(-5, s.brushError ?? "could not leave text editing to use Shape")
                 }
             }
+            let before = s.brushError
             s.beginShape(at: point)
-            guard s.shapeDraft != nil else { return fail(-5, "shape could not start") }
+            guard s.shapeDraft != nil else {
+                return fail(-5, refusal(s, before: before, cause: "shape could not start: the editor is busy"))
+            }
         case "shapeDrag":
             guard let point = point(command) else { return fail(-1, "invalid point") }
             let p = command.parameters ?? [:]
@@ -709,8 +724,12 @@ final class UpstreamEditor {
             s.isMaskSelected = (p["mask"] ?? 0) != 0
             // A mask stroke paints white (reveal) or black (hide): upstream keeps that choice as the mask palette.
             if s.isMaskSelected { s.maskPaintWhite = (0.2126 * settings.red + 0.7152 * settings.green + 0.0722 * settings.blue) > 0.5 }
+            let before = s.brushError
             s.beginBrush(at: point)
-            guard s.brushStroke != nil else { return fail(-5, cloning ? "clone stamp could not start (out of range?)" : "brush could not start") }
+            guard s.brushStroke != nil else {
+                return fail(-5, refusal(s, before: before, cause: cloning ? "clone stamp could not start: the source is out of range"
+                                                                       : "brush could not start: the editor is busy"))
+            }
         // The shell's brush controls (legacy sliders, [ and ] keys) change the session's settings, as the options bar does.
         case "setBrushSettings":
             var settings = s.brushSettings
@@ -911,15 +930,6 @@ final class UpstreamEditor {
         case "setShowsTransformControls":
             guard let enabled = command.enabled else { return fail(-1, "enabled required") }
             s.showsTransformControls = enabled
-            // Same as TransformInspector's Show Controls toggle: on → Free Transform (Cancel/Apply), off → reset.
-            if enabled {
-                if s.transformEdit == nil {
-                    if s.canTransformSelection { await s.beginSelectionTransform() }
-                    else { s.beginTransform(persistent: true) }
-                }
-            } else if s.transformEdit?.persistent == true {
-                s.cancelTransform()
-            }
             // TransformOverlay.draw reads this flag; mark every hosted canvas's overlay dirty so a partial
             // blit (and the shell's invalidateOverlay) both pick up the switch.
             for canvas in UpstreamCanvases.canvases.values {
@@ -932,9 +942,9 @@ final class UpstreamEditor {
         case "transform":
             // Options-bar fields: update the live draft. While Free Transform (Ctrl+T) is open, leave it
             // pending until Enter/Esc — tip TransformInspector does the same for typed values.
-            guard var transform = s.transformEdit?.draft ?? s.activeLayer?.transform else { return fail(-5, "no layer") }
-            apply(command.parameters ?? [:], to: &transform)
             if s.transformEdit == nil { s.beginTransform(persistent: false) }
+            guard var transform = s.transformEdit?.draft else { return fail(-5, "no layer") }
+            apply(command.parameters ?? [:], to: &transform)
             s.previewTransform(transform)
             if s.transformEdit?.persistent != true { s.commitTransform() }
         case "transformPreview":
@@ -943,14 +953,11 @@ final class UpstreamEditor {
             s.previewTransform(draft)
         case "transformCommit":
             s.commitTransform()
-            // Show Controls still on: keep Free Transform open so Cancel / Apply stay enabled.
-            if s.showsTransformControls { s.beginTransform(persistent: true) }
         case "transformCommitFinal":
             // Save / export / tab switch: fold the draft into the document and leave transform idle.
             s.commitTransform()
         case "transformCancel":
             s.cancelTransform()
-            if s.showsTransformControls { s.beginTransform(persistent: true) }
         // Move tool, as EditorCanvas drags: Ctrl-dragging a handle distorts (and once distorted, handles keep distorting);
         // `value` = handle (0...7 around from top-left, 9 = the body). The edit stays pending until Enter / Apply.
         case "distortDragBegin":
@@ -1064,7 +1071,14 @@ final class UpstreamEditor {
             guard let toolName = command.kind ?? command.name,
                   let tool = NavigationTool(rawValue: toolName)
             else { return fail(-1, "unknown tool") }
+            let before = s.brushError
             s.selectTool(tool)
+            // Upstream keeps the current tool when the switch can't happen (text that can't be finished, a stroke or
+            // Levels in progress); say why instead of letting the rail and the session disagree silently.
+            guard s.tool == tool else {
+                if let message = s.brushError, message != before { return fail(-5, message) }
+                return fail(-5, "\(tool.rawValue.capitalized) can't be chosen while \(s.tool.rawValue) work is in progress")
+            }
             if let mode = command.name {
                 if let k = LassoKind(rawValue: mode) {
                     if tool == .marquee { s.marqueeKind = k }
@@ -1083,6 +1097,24 @@ final class UpstreamEditor {
     }
 
     private func fail(_ code: Int32, _ message: String) -> Int32 { error = message; return code }
+
+    /// Commands that leave a pending gradient pending, as their Mac counterparts do: the gradient's own drag and
+    /// options, the palette and color picker it previews live, and shell chrome that does not touch the document.
+    private static let keepsPendingGradient: Set<String> = [
+        "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel", "setGradientSettings",
+        "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
+        "closeColorPicker", "sampleColorPicker", "dismissAlert", "closeFloatingPanel", "showKeyboardShortcuts",
+        "dismissImporter", "setCanvasOnly", "setShowsTransformControls", "setTransformAutoSelect", "markSaved",
+        "markUnsaved", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "undo", "redo",
+    ]
+
+    /// Why a tool could not start, for the command's error: upstream's own alert text when it raised one, else its
+    /// `paintRefusal` (a folder, hidden layer, adjustment layer … , which some tools, like the gradient, decline
+    /// silently on the Mac), else the concrete cause the call site knows.
+    private func refusal(_ s: EditorSession, before: String?, cause: String) -> String {
+        if let message = s.brushError, message != before { return message }
+        return s.paintRefusal ?? cause
+    }
 
     private func apply(_ p: [String: Double], to transform: inout LayerTransform) {
         transform.origin.x = p["x"] ?? transform.origin.x
@@ -1172,7 +1204,7 @@ final class UpstreamEditor {
         FloatingPanels.observe(self)
         let active = s.activeLayer
         let state = State(width: s.document?.width ?? 0, height: s.document?.height ?? 0, resolution: s.document?.resolution ?? 72,
-            activeLayerID: s.activeLayerID, modified: s.history.isModified, canUndo: s.history.canUndo, canRedo: s.history.canRedo,
+            activeLayerID: s.activeLayerID, modified: s.history.isModified, canUndo: s.canUndo, canRedo: s.canRedo,
             undoName: s.history.undoName, redoName: s.history.redoName,
             busy: s.brushStroke != nil || s.filterEdit != nil || s.transformEdit != nil,
             layers: (s.document?.layers ?? []).map { State.Layer(id: $0.id, name: $0.name, visible: $0.isVisible, opacity: $0.opacity,
@@ -1184,6 +1216,7 @@ final class UpstreamEditor {
             showsTransformControls: s.showsTransformControls,
             transformAutoSelect: s.transformAutoSelect,
             transforming: s.transformEdit != nil,
+            transformPending: s.transformEdit?.persistent == true,
             isMaskSelected: s.isMaskSelected,
             viewsMaskAlone: s.viewsMaskAlone,
             activeLayerIsVisible: active?.isVisible ?? true,
@@ -1302,6 +1335,9 @@ final class UpstreamEditor {
         // EditorCanvas.applyFill() before drawing a pending gradient; without it paintSnapshot() is still the blank
         // raster and the Qt canvas shows no fade until Apply (commitGradient) fills it.
         if let edit = s.gradientEdit { try? edit.applyFill() }
+        // Likewise a pixel move: upstream rebuilds the moved tiles only when something reads them (EditorCanvas does
+        // before drawing), so without this the shell keeps showing the pixels where the drag began.
+        if let move = s.pixelMove { try? move.applyOffset() }
         // A pending gradient previews through its own raster edit, drawn in place of the layer as a stroke is
         // (EditorCanvas draws `gradientEdit?.raster` the same way).
         let stroke = s.brushStroke ?? s.gradientEdit?.raster ?? s.pixelMove?.raster

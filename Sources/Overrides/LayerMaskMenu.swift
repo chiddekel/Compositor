@@ -11,12 +11,13 @@ struct LayerMaskMenu: View {
     var body: some View {
         Button {
             session.addMask(revealing: NSApp.currentEvent?.modifierFlags.contains(.option) != true)
-        } label: { Image(systemName: "rectangle.inset.filled").footerHitArea() }
-            .buttonStyle(.borderless)
+        } label: { FooterIcon(systemName: "rectangle.inset.filled") }
             .help(session.selection == nil ? "Add layer mask (Option-click for a black mask)"
                   : "Add layer mask revealing the selection (Option-click to hide it)")
             .accessibilityLabel("Add layer mask")
-            .disabled(!session.canEditMask || session.activeLayer?.mask != nil)
+            // Tip 1.4.8 (06313a9): dim only for real work, not a click's brief busy moment.
+            .disabled(!session.layersLookEditable || session.selectedLayerIDs.count != 1 || session.activeLayer == nil
+                      || session.activeLayer?.mask != nil)
     }
 }
 

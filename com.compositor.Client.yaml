@@ -259,6 +259,8 @@ modules:
       # (e) Install Swift composition root. A C++ main cannot bootstrap the
       # Swift runtime + Foundation on the Freedesktop Swift SDK.
       - install -Dm755 .build/release/CompositorHostBootstrap /app/bin/compositor
+      # Upstream 1.4.9 reads its Camera Raw tables from the main bundle, which on Linux is the binary's directory.
+      - install -Dm644 Compositor/Resources/CameraRawTables.bin /app/bin/CameraRawTables.bin
       # The compat layer dlopens these at run time from /app/lib: the Skia render device (every CGContext draws
       # through it) and Qt's image codecs + text engine. Without them the canvas stays empty.
       - install -Dm755 build/libCompositorSkiaBridge.so /app/lib/libCompositorSkiaBridge.so

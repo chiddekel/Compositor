@@ -620,14 +620,6 @@ bool SessionWindow::saveCurrentDocument(bool forceChoosePath) {
             if (!m_lastProjectSaveError.isEmpty())
                 text += QStringLiteral("\n\n") + m_lastProjectSaveError;
             m_platform.notifier->warn(tr("Save failed"), text);
-        } else {
-            // startProjectSave committed Free Transform for the snapshot; re-arm Show Controls editing after save.
-            if (sessionState().value("showsTransformControls").toBool()
-                && !sessionState().value("transforming").toBool()) {
-                sendCommandQuiet({{"action", "setShowsTransformControls"}, {"enabled", true}});
-                updateTransformCommitControls();
-                updateOptionsBar();
-            }
         }
     }, true, handle)) {
         if (m_savingDocuments.contains(handle))
@@ -2551,7 +2543,7 @@ void SessionWindow::resetFreeTransform() {
 }
 
 void SessionWindow::updateTransformCommitControls() {
-    const bool pending = m_sessionHandle != 0 && sessionState().value("transforming").toBool();
+    const bool pending = m_sessionHandle != 0 && sessionState().value("transformPending").toBool();
     if (m_transformCancelBtn) m_transformCancelBtn->setVisible(pending);
     if (m_transformApplyBtn) m_transformApplyBtn->setVisible(pending);
 }
@@ -2562,7 +2554,7 @@ void SessionWindow::prepareDocumentForProjectIO(uint64_t handle) {
     const uint64_t previous = m_sessionHandle;
     m_sessionHandle = target;
     if (m_hasPendingCrop && target == previous) cancelCrop();
-    // Fold Free Transform into layer state without re-opening Show Controls (transformCommit would).
+    // Fold the pending transform into layer state before taking the project snapshot.
     sendCommandQuiet({{"action", "transformCommitFinal"}});
     m_sessionHandle = previous;
 }
@@ -3830,6 +3822,14 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
 void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
     qApp->setProperty("layerListFocused", false);   // the canvas has the keys again
     Q_UNUSED(canvas);
+    // The middle button pans from any tool, and with Ctrl (⌘) or Meta (⌃) held zooms, as in Blender: upstream's
+    // CanvasView.otherMouse* handles it (EditorCanvas, 1.4.9). Never while a left-button drag is in progress.
+    if (event->button() == Qt::MiddleButton && m_sessionHandle != 0 && !m_image.isNull() && !m_upstreamCanvasDrag && !m_painting) {
+        m_middleDrag = true;
+        syncViewportGeometry();
+        compositor_canvas_mouse(m_sessionHandle, 5, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1);
+        return;
+    }
     if (event->button() == Qt::LeftButton && routesToUpstreamCanvas()) {
         m_upstreamCanvasDrag = true;
         sendUpstreamCanvasMouse(0, event, 1);
@@ -3852,6 +3852,12 @@ void SessionWindow::flushPendingDrag() {
 
 void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (m_middleDrag) {
+        compositor_canvas_mouse(m_sessionHandle, 6, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1);
+        refreshImage();
+        if (m_canvasWidget) m_canvasWidget->update();
+        return;
+    }
     if (m_upstreamCanvasDrag) {
         const bool scheduled = !m_pendingDrags.empty();
         m_pendingDrags.emplace_back(static_cast<QMouseEvent *>(event->clone()));
@@ -3876,6 +3882,13 @@ bool SessionWindow::isBrushStrokeActive() const {
 
 void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (m_middleDrag && event->button() == Qt::MiddleButton) {
+        m_middleDrag = false;
+        compositor_canvas_mouse(m_sessionHandle, 7, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1);
+        refreshImage();
+        if (m_canvasWidget) m_canvasWidget->update();
+        return;
+    }
     if (m_upstreamCanvasDrag && event->button() == Qt::LeftButton) {
         flushPendingDrag();
         m_upstreamCanvasDrag = false;
@@ -7420,6 +7433,7 @@ void SessionWindow::setupOptionsBar() {
 void SessionWindow::updateOptionsBar() {
     PERF_SCOPE("updateOptionsBar");
     if (!m_optionsStack) return;
+    updateTransformCommitControls();
     const int idx = static_cast<int>(m_tool);
     if (idx >= 0 && idx < m_optionsStack->count()) {
         m_optionsStack->setCurrentIndex(idx);

@@ -3,6 +3,7 @@
 #include "SessionWindow.h"
 #include "ProjectPackageLimits.h"
 #include "EditorDialogs.h"
+#include "SystemClipboard.h"
 #include "compositor_host_run.h"
 #include "interfaces/IPlatformServices.h"
 #include <QAction>
@@ -14,6 +15,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QGraphicsOpacityEffect>
 #include <QImageReader>
 #include <QLabel>
 #include <QJsonArray>
@@ -252,6 +254,7 @@ struct FakeStorage final : IStorageLocator {
 
 extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    systemclipboard::install();   // This entry bypasses host_run's desktop pasteboard setup.
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     try {
         QTemporaryDir temporary;
@@ -437,11 +440,12 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
             files->exportPath = temporary.filePath("missing-dir/injected.png");
             action("Export PNG...")->trigger();
             require(notifier->warnings.size() == 1, "failed export did not reach the injected notifier");
+            QApplication::clipboard()->clear();
             action("Copy")->trigger();
             // Selection Clipboard writes through SystemClipboard → QClipboard (not IClipboardService).
             require(QApplication::clipboard()->mimeData()
-                        && (!QApplication::clipboard()->mimeData()->formats().isEmpty()
-                            || QApplication::clipboard()->mimeData()->hasImage()),
+                        && QApplication::clipboard()->mimeData()->hasImage()
+                        && !QApplication::clipboard()->image().isNull(),
                     "copy did not reach the system clipboard");
             require(injected.performAutosave(), "autosave failed against the injected storage");
             require(QDir(temporary.filePath("appdata/recovery")).exists(), "autosave ignored the injected storage locator");
@@ -795,7 +799,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
             require(spin("transform.w")->value() == 48, "fields did not refresh after handle drag");
             drag(at(20, 20), at(24, 25));  // body drag
             require(qRound(geometry().x()) == 4 && qRound(geometry().y()) == 5, "body drag did not move the layer");
-            require(window.sessionState().value("canUndo").toBool(), "transform edits left no history entry");
+            require(w2.sessionState().value("canUndo").toBool(), "transform edits left no history entry");
         }
 
         // Selection tools: New/Add combine modes, Expand, polygonal lasso.
@@ -1445,7 +1449,7 @@ extern "C" int compositor_host_text_smoke(int argc, char **argv, int (*probe)(vo
     return probe ? probe() : 1;
 }
 
-/// Focused Move / Free Transform journey: Show Controls arms Cancel/Apply, Enter apply, Esc reset, Ctrl+T.
+/// Focused Move / Free Transform journey: idle controls, drag history, explicit Apply/Cancel, and draft saves.
 extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
     try {
@@ -1459,14 +1463,143 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         window.setTool(SessionWindow::Tool::Move);
         QApplication::processEvents();
 
-        // Show Controls on → Free Transform (Cancel / Apply armed).
+        // Show Controls displays handles while ordinary editing and history remain available.
         require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", true}}),
                 "setShowsTransformControls failed");
         require(window.sessionState().value("showsTransformControls").toBool(),
                 "Show Controls did not stick in session state");
         QApplication::processEvents();
-        require(window.sessionState().value("transforming").toBool(),
-                "Show Controls on did not enter Free Transform (Cancel/Apply would stay disabled)");
+        require(!window.sessionState().value("transforming").toBool(),
+                "Show Controls entered Free Transform without an edit");
+        require(window.sessionState().value("canUndo").toBool(), "Show Controls blocked startup history");
+        const QString initialLayer = window.sessionState().value("activeLayerID").toString();
+        require(window.sendCommand({{"action", "addLayer"}}), "add layer with Show Controls failed");
+        require(window.sessionState().value("layers").toArray().size() == 2,
+                "Show Controls blocked adding a layer");
+        require(window.sendCommand({{"action", "undo"}}), "undo add layer with Show Controls failed");
+        require(window.sessionState().value("layers").toArray().size() == 1
+                    && window.sessionState().value("activeLayerID").toString() == initialLayer,
+                "Show Controls blocked undoing a layer addition");
+        auto *blend = window.findChild<QComboBox *>("blend.mode");
+        require(blend, "blend mode combo missing");
+        blend->setCurrentText("Multiply");
+        require(window.sessionState().value("layers").toArray().at(0).toObject().value("blendMode").toString()
+                    == QLatin1String("Multiply"), "Show Controls blocked blend mode editing");
+        require(window.sendCommand({{"action", "undo"}}), "undo blend mode with Show Controls failed");
+        require(window.sessionState().value("layers").toArray().at(0).toObject().value("blendMode").toString()
+                    == QLatin1String("Normal"), "Show Controls blocked undoing blend mode");
+        auto *apply = window.findChild<QPushButton *>("transform.apply");
+        auto *cancel = window.findChild<QPushButton *>("transform.cancel");
+        require(apply && cancel, "transform Apply/Cancel controls missing");
+        const auto checkTransformControls = [&](bool pending) {
+            require(window.sessionState().value("transformPending").toBool() == pending,
+                    "pending transform state disagrees with the edit");
+            // The fallback options page is hidden while the SwiftUI header is on screen; inspect each button's
+            // own visibility, then check the displayed header too, including opacity inherited from its row.
+            require(apply->isHidden() != pending && cancel->isHidden() != pending,
+                    "fallback Apply/Cancel visibility disagrees with the edit");
+            auto *header = window.findChild<QWidget *>("swiftUIOptionsContainer");
+            require(header && header->isVisible(), "SwiftUI transform header is not displayed");
+            QPushButton *headerApply = nullptr;
+            QPushButton *headerCancel = nullptr;
+            for (auto *button : header->findChildren<QPushButton *>()) {
+                if (!button->isVisible()) continue; // a replaced header can await deferred deletion
+                if (button->objectName() == QLatin1String("applyTransform")) headerApply = button;
+                if (button->text() == QLatin1String("Cancel")) headerCancel = button;
+            }
+            require(headerApply && headerCancel, "SwiftUI Apply/Cancel controls missing");
+            const auto isDrawn = [](QWidget *widget) {
+                if (!widget->isVisible()) return false;
+                for (auto *ancestor = widget; ancestor; ancestor = ancestor->parentWidget()) {
+                    if (auto *effect = qobject_cast<QGraphicsOpacityEffect *>(ancestor->graphicsEffect());
+                        effect && effect->opacity() == 0) return false;
+                }
+                return true;
+            };
+            require(isDrawn(headerApply) == pending && isDrawn(headerCancel) == pending,
+                    "SwiftUI Apply/Cancel drawing disagrees with the edit");
+        };
+        checkTransformControls(false);
+
+        const auto transformValue = [&]() {
+            return window.sessionState().value("layers").toArray().at(0).toObject().value("transform").toObject();
+        };
+        const auto headerButton = [&](const QString &title) -> QPushButton * {
+            auto *header = window.findChild<QWidget *>("swiftUIOptionsContainer");
+            require(header && header->isVisible(), "transform header missing for toolbar action");
+            for (auto *button : header->findChildren<QPushButton *>()) {
+                if (button->isVisible() && button->text() == title) {
+                    require(button->isEnabled(), "transform toolbar action is disabled");
+                    return button;
+                }
+            }
+            throw std::runtime_error("transform toolbar button missing");
+        };
+        const auto changeSampling = [&]() {
+            auto *header = window.findChild<QWidget *>("swiftUIOptionsContainer");
+            require(header && header->isVisible(), "transform header missing for Sampling");
+            for (auto *combo : header->findChildren<QComboBox *>()) {
+                if (!combo->isVisible() || combo->findText("Nearest") < 0
+                    || combo->findText("Smooth") < 0 || combo->findText("High quality") < 0) continue;
+                require(combo->isEnabled(), "transform Sampling is disabled");
+                const QString next = combo->currentText() == QLatin1String("Nearest")
+                    ? QStringLiteral("Smooth") : QStringLiteral("Nearest");
+                combo->setCurrentText(next);
+                QApplication::processEvents();
+                return next;
+            }
+            throw std::runtime_error("transform Sampling picker missing");
+        };
+
+        // Buttons and pop-up choices are complete actions: starting from idle, they must finish their own edit.
+        const QJsonObject beforeToolbarActions = transformValue();
+        headerButton(QStringLiteral("Flip H"))->click();
+        QApplication::processEvents();
+        require(!window.sessionState().value("transforming").toBool(), "toolbar Flip H left an idle transform open");
+        QJsonObject flipped = beforeToolbarActions;
+        flipped.insert("flipX", !beforeToolbarActions.value("flipX").toBool());
+        require(transformValue() == flipped, "toolbar Flip H changed the wrong transform values");
+        require(window.sessionState().value("canUndo").toBool(), "toolbar Flip H left no undo");
+        checkTransformControls(false);
+        require(window.sendCommand({{"action", "undo"}}), "toolbar Flip H undo failed");
+        require(transformValue() == beforeToolbarActions, "toolbar Flip H undo did not restore the exact transform");
+
+        QJsonObject resampled = beforeToolbarActions;
+        resampled.insert("sampling", changeSampling());
+        require(!window.sessionState().value("transforming").toBool(), "toolbar Sampling left an idle transform open");
+        require(transformValue() == resampled, "toolbar Sampling changed the wrong transform values");
+        require(window.sessionState().value("canUndo").toBool(), "toolbar Sampling left no undo");
+        checkTransformControls(false);
+        require(window.sendCommand({{"action", "undo"}}), "toolbar Sampling undo failed");
+        require(transformValue() == beforeToolbarActions, "toolbar Sampling undo did not restore the exact transform");
+
+        // The same choices join an explicit Free Transform draft, which still waits for Apply or Cancel.
+        for (const bool commit : {false, true}) {
+            window.enterFreeTransform();
+            QApplication::processEvents();
+            checkTransformControls(true);
+            headerButton(QStringLiteral("Flip H"))->click();
+            QApplication::processEvents();
+            require(window.sessionState().value("transforming").toBool(), "toolbar Flip H ended explicit Free Transform");
+            QJsonObject pending = flipped;
+            require(transformValue() == pending, "pending toolbar Flip H changed the wrong transform values");
+            pending.insert("sampling", changeSampling());
+            require(window.sessionState().value("transforming").toBool(), "toolbar Sampling ended explicit Free Transform");
+            require(transformValue() == pending, "pending toolbar Sampling changed the wrong transform values");
+            require(!window.sessionState().value("canUndo").toBool(), "pending toolbar choices exposed history");
+            checkTransformControls(true);
+            headerButton(commit ? QStringLiteral("Apply") : QStringLiteral("Cancel"))->click();
+            QApplication::processEvents();
+            require(!window.sessionState().value("transforming").toBool(), "toolbar completion left Free Transform open");
+            require(transformValue() == (commit ? pending : beforeToolbarActions),
+                    "toolbar completion did not apply or restore the exact transform");
+            checkTransformControls(false);
+            if (commit) {
+                require(window.sessionState().value("canUndo").toBool(), "applying toolbar choices left no undo");
+                require(window.sendCommand({{"action", "undo"}}), "applied toolbar choices undo failed");
+                require(transformValue() == beforeToolbarActions, "applied toolbar choices undo lost the original transform");
+            }
+        }
 
         const auto geometry = [&]() {
             const QJsonObject layer = window.sessionState().value("layers").toArray().at(0).toObject();
@@ -1491,42 +1624,51 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         require(canvas != nullptr, "editorCanvas missing");
         auto at = [&](double dx, double dy) { return window.documentToCanvasPoint(QPointF(dx, dy)); };
         auto drag = [&](QPointF from, QPointF to, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            const bool pending = window.sessionState().value("transformPending").toBool();
             auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
                 QMouseEvent ev(type, pos, canvas->mapToGlobal(pos.toPoint()), button, buttons, mods);
                 QApplication::sendEvent(canvas, &ev);
             };
             send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+            QApplication::processEvents();
+            require(window.sessionState().value("transforming").toBool(), "transform drag did not begin an edit");
+            checkTransformControls(pending);
             send(QEvent::MouseMove, (from + to) / 2, Qt::NoButton, Qt::LeftButton);
+            QApplication::processEvents();
+            checkTransformControls(pending);
             send(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
             send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
             QApplication::processEvents();
+            checkTransformControls(pending);
         };
 
-        // 1) Show Controls Free Transform: corner handle drag resizes; stays pending until Enter.
+        // 1) A Show Controls handle drag applies on release as one undo step.
         drag(at(56, 56), at(48, 48));
         require(geometry().size() == QSizeF(48, 48),
                 "corner handle drag with Show Controls did not resize (transformation missing)");
-        require(window.sessionState().value("transforming").toBool(),
-                "Show Controls Free Transform ended on mouse-up (Cancel/Apply should stay armed)");
+        require(!window.sessionState().value("transforming").toBool(),
+                "ordinary handle drag left a pending Free Transform");
+        require(window.sessionState().value("canUndo").toBool(), "handle resize left no undo");
+        require(window.sendCommand({{"action", "undo"}}), "handle resize undo failed");
+        require(geometry().size() == QSizeF(56, 56), "handle resize undo did not restore size");
+        require(window.sendCommand({{"action", "redo"}}), "handle resize redo failed");
+        require(geometry().size() == QSizeF(48, 48), "handle resize redo did not restore size");
 
-        // 2) Body drag still moves the layer (draft).
+        // 2) A body drag applies on release, with controls still visible.
         const QRectF beforeMove = geometry();
         drag(at(20, 20), at(24, 25));
         require(qRound(geometry().x()) == qRound(beforeMove.x()) + 4
                     && qRound(geometry().y()) == qRound(beforeMove.y()) + 5,
                 "body drag did not move the layer");
 
-        // Enter applies; Show Controls still on → a fresh Free Transform opens (Cancel/Apply stay armed).
-        {
-            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
-            QApplication::sendEvent(&window, &enter);
-            QApplication::processEvents();
-        }
-        require(window.sessionState().value("transforming").toBool(),
-                "after Enter with Show Controls on, Free Transform should reopen");
-        require(geometry().size() == QSizeF(48, 48), "Enter did not keep applied size");
+        require(!window.sessionState().value("transforming").toBool(),
+                "ordinary body drag left a pending Free Transform");
+        require(window.sendCommand({{"action", "undo"}}), "body drag undo failed");
+        require(geometry() == beforeMove, "body drag undo did not restore placement");
+        require(window.sendCommand({{"action", "redo"}}), "body drag redo failed");
+        require(!window.sessionState().value("transforming").toBool(), "redo re-armed Free Transform");
 
-        // 3) Show Controls off abandons pending edit; Ctrl+T enters Free Transform without Show Controls.
+        // 3) Ctrl+T explicitly enters Free Transform, independently of Show Controls.
         require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", false}}),
                 "could not turn Show Controls off");
         require(!window.sessionState().value("showsTransformControls").toBool(),
@@ -1537,8 +1679,15 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         QApplication::processEvents();
         require(window.sessionState().value("transforming").toBool(),
                 "enterFreeTransform did not enter transforming state");
+        checkTransformControls(true);
         require(window.sessionState().value("tool").toString() == QLatin1String("move"),
                 "enterFreeTransform did not select Move tool");
+        require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", true}}),
+                "could not show controls during Free Transform");
+        require(window.sessionState().value("transforming").toBool(), "showing controls ended Free Transform");
+        require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", false}}),
+                "could not hide controls during Free Transform");
+        require(window.sessionState().value("transforming").toBool(), "hiding controls cancelled explicit Free Transform");
 
         const QRectF beforePersistent = geometry();
         // Simulate leftover Ctrl from the Ctrl+T chord on the press — enterFreeTransform must have cleared
@@ -1564,7 +1713,9 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         require(window.sessionState().value("transforming").toBool(),
                 "rotation ended persistent transform early");
 
-        // Enter applies via the shell key path; Show Controls off → transforming clears.
+        // Enter applies via the shell key path with Show Controls on, without reopening an edit.
+        require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", true}}),
+                "could not show controls before applying Free Transform");
         {
             QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
             QApplication::sendEvent(&window, &enter);
@@ -1572,6 +1723,8 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         }
         require(!window.sessionState().value("transforming").toBool(),
                 "Enter did not apply Free Transform (transforming still true)");
+        require(window.sessionState().value("showsTransformControls").toBool(), "Enter hid transform controls");
+        checkTransformControls(false);
 
         // 4) Esc resets a fresh persistent transform (shell key path).
         window.enterFreeTransform();
@@ -1585,23 +1738,34 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
             QApplication::processEvents();
         }
         require(!window.sessionState().value("transforming").toBool(), "Esc did not reset Free Transform");
+        checkTransformControls(false);
         require(qAbs(geometry().width() - beforeCancel.width()) < 0.5
                     && qAbs(geometry().height() - beforeCancel.height()) < 0.5,
                 "Esc reset did not restore size");
 
-        // 5) Save while Show Controls keeps Free Transform open — Mac commits first; Linux must too.
+        // 5) Save commits an explicit pending draft and leaves Show Controls idle.
         require(window.sendCommand({{"action", "setShowsTransformControls"}, {"enabled", true}}),
                 "could not re-enable Show Controls before save");
         QApplication::processEvents();
-        require(window.sessionState().value("transforming").toBool(),
-                "Show Controls on before save did not enter Free Transform");
+        require(!window.sessionState().value("transforming").toBool(), "showing controls before save started an edit");
+        window.enterFreeTransform();
+        require(window.sendCommand({{"action", "transform"}, {"parameters", QJsonObject{{"x", geometry().x() + 3}}}}),
+                "pending transform before save failed");
+        require(window.sessionState().value("transforming").toBool(), "save fixture has no pending transform");
+        const QRectF savedGeometry = geometry();
+        const double savedRotation = rotation();
         QTemporaryDir packageDir;
         require(packageDir.isValid(), "temp dir for save smoke");
         const QString savedPath = packageDir.filePath(QStringLiteral("transform-save.comp"));
         require(window.saveProject(savedPath), "save while Free Transform active failed");
         require(QFileInfo::exists(savedPath + "/manifest.json"), "saved package missing manifest");
+        require(!window.sessionState().value("transforming").toBool(), "save re-armed Free Transform");
         // Overwrite save (atomic replace of existing .comp directory).
-        require(window.saveProject(savedPath), "overwrite save while transforming failed");
+        require(window.saveProject(savedPath), "overwrite saved transform failed");
+        require(window.loadProject(savedPath), "reopening saved transform failed");
+        require(geometry() == savedGeometry && qAbs(rotation() - savedRotation) < 0.001,
+                "saved project lost the pending transform draft");
+        require(!window.sessionState().value("transforming").toBool(), "reopening saved project re-armed Free Transform");
 
         // 6) Save As: native dialogs often create an empty file at the chosen path — package install must replace it.
         const QString saveAsPath = packageDir.filePath(QStringLiteral("save-as.comp"));
@@ -1617,7 +1781,7 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         // Save As over an existing directory package (not just a placeholder file).
         require(window.writeProjectPackage(saveAsPath), "Save As overwrite of directory package failed");
 
-        qInfo("Qt transform smoke OK (Show Controls arms Cancel/Apply, Enter/Esc, save while transforming, Save As)");
+        qInfo("Qt transform smoke OK (idle Show Controls, editing and history, Ctrl+T Enter/Esc, pending-draft save, Save As)");
         return 0;
     } catch (const std::exception &e) {
         qCritical("Qt transform smoke failed: %s", e.what());

@@ -43,7 +43,9 @@ import AppKit
             NSCursor.crosshair.set()
             return
         }
-        let type: NSEvent.EventType = [0: .leftMouseDown, 1: .leftMouseDragged, 2: .leftMouseUp, 3: .mouseMoved][kind] ?? .leftMouseDown
+        // 5–7: the middle button (CanvasView.otherMouse*: pan, or with Command/Control zoom, upstream 1.4.9).
+        let type: NSEvent.EventType = [0: .leftMouseDown, 1: .leftMouseDragged, 2: .leftMouseUp, 3: .mouseMoved,
+                                       5: .otherMouseDown, 6: .otherMouseDragged, 7: .otherMouseUp][kind] ?? .leftMouseDown
         // Qt canvas is top-left, same as this flipped CanvasView. Round-trip through convert so hit testing
         // lands on the same points TransformOverlay draws (manual height-y broke when window/view sizes drifted).
         let viewPoint = CGPoint(x: x, y: y)
@@ -53,7 +55,11 @@ import AppKit
         guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0,
                                              clickCount: max(1, clickCount), pressure: 1) else { return }
+        if kind >= 5 { event.buttonNumber = 2 }
         switch type {
+        case .otherMouseDown: view.otherMouseDown(with: event)
+        case .otherMouseDragged: view.otherMouseDragged(with: event)
+        case .otherMouseUp: view.otherMouseUp(with: event)
         case .leftMouseDown: view.mouseDown(with: event)
         case .leftMouseDragged: view.mouseDragged(with: event)
         case .leftMouseUp: view.mouseUp(with: event)

@@ -53,6 +53,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QGraphicsEffect>
+#include <QGraphicsOpacityEffect>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QIcon>
@@ -317,9 +318,10 @@ private:
     double m_strokeWidth;
 };
 
-class SwiftUIMaskEffect : public QGraphicsEffect {
+class SwiftUIMaskEffect : public QGraphicsOpacityEffect {
 public:
-    SwiftUIMaskEffect(QWidget *source, QWidget *mask) : QGraphicsEffect(source), m_mask(mask) {
+    SwiftUIMaskEffect(QWidget *source, QWidget *mask, qreal opacity = 1.0) : QGraphicsOpacityEffect(source), m_mask(mask) {
+        setOpacity(opacity);
         m_mask->setParent(source);
         m_mask->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         m_mask->hide();
@@ -327,10 +329,11 @@ public:
 
 protected:
     void draw(QPainter *painter) override {
+        if (opacity() <= 0.0) return;
         QPoint offset;
         const QPixmap source = sourcePixmap(Qt::LogicalCoordinates, &offset, QGraphicsEffect::NoPad);
         if (source.isNull() || !m_mask) {
-            drawSource(painter);
+            QGraphicsOpacityEffect::draw(painter);
             return;
         }
 
@@ -348,7 +351,10 @@ protected:
             sourcePainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
             sourcePainter.drawImage(0, 0, alpha);
         }
+        painter->save();
+        painter->setOpacity(painter->opacity() * opacity());
         painter->drawImage(offset, masked);
+        painter->restore();
     }
 
 private:
@@ -1580,6 +1586,17 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
         } else if (kind == "dragGesture") {
             widget->setProperty("swiftuiGestureCoordinateSpace", strings.value("coordinateSpace").toString());
             widget->setProperty("swiftuiGestureMinimumDistance", doubles.value("minimumDistance").toDouble(10.0));
+        } else if (kind == "opacity") {
+            // Opacity composites this view and its children together, keeping its place in the layout. Repeated
+            // modifiers multiply; a parent's effect also composites any opacity already set on its children.
+            const qreal opacity = qBound(0.0, doubles.value("value").toDouble(1.0), 1.0);
+            if (auto *effect = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect())) {
+                effect->setOpacity(effect->opacity() * opacity);
+            } else if (opacity < 1.0) {
+                auto *effect = new QGraphicsOpacityEffect(widget);
+                effect->setOpacity(opacity);
+                widget->setGraphicsEffect(effect);
+            }
         } else if (kind == "allowsHitTesting") {
             widget->setAttribute(Qt::WA_TransparentForMouseEvents, !bools.value("enabled").toBool());
         } else if (kind == "tapGesture") {
@@ -2517,7 +2534,9 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 for (QWidget *child : current->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) prepareShapes(child);
             };
             prepareShapes(mask);
-            base->setGraphicsEffect(new SwiftUIMaskEffect(base, mask));
+            // Qt permits one effect per widget, so a mask carries any opacity applied before it.
+            const auto *opacity = qobject_cast<QGraphicsOpacityEffect *>(base->graphicsEffect());
+            base->setGraphicsEffect(new SwiftUIMaskEffect(base, mask, opacity ? opacity->opacity() : 1.0));
         }
         widget = base;
     } else if (kind == "LinearGradient") {

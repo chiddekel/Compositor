@@ -80,6 +80,8 @@ private indirect enum Node {
     /// without the float round trip, which for a very large RAW would cost more memory than the image itself.
     case bitmap(CGImage)
     case color(CIColor)
+    /// CILinearGradient: color0 at point0 to color1 at point1 along their line, constant beyond either end.
+    case linearGradient(CGPoint, CIColor, CGPoint, CIColor)
     case crop(Node, CGRect)
     case clamp(Node)
     case gaussian(Node, Double)
@@ -99,7 +101,7 @@ private indirect enum Node {
         switch self {
         case .source(_, let r): return r
         case .bitmap(let image): return CGRect(x: 0, y: 0, width: image.width, height: image.height)
-        case .color, .clamp: return infiniteExtent
+        case .color, .clamp, .linearGradient: return infiniteExtent
         case .crop(let n, let r): return n.extent.intersection(r)
         case .gaussian(let n, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
@@ -146,6 +148,27 @@ private indirect enum Node {
             if env.linear { r = Gamma.toLinear(r); g = Gamma.toLinear(g); b = Gamma.toLinear(b) }
             var i = 0
             while i < out.data.count { out.data[i] = r * a; out.data[i + 1] = g * a; out.data[i + 2] = b * a; out.data[i + 3] = a; i += 4 }
+            return out
+        case .linearGradient(let p0, let c0, let p1, let c1):
+            // Premultiplied, interpolated per channel like Core Image's generator; sampled at pixel centers.
+            var out = Raster(rect: region)
+            let dx = Double(p1.x - p0.x), dy = Double(p1.y - p0.y), length2 = dx * dx + dy * dy
+            func channels(_ c: CIColor) -> [Float] {
+                var rgb = [Float(c.red), Float(c.green), Float(c.blue)]
+                if env.linear { rgb = rgb.map(Gamma.toLinear) }
+                let a = Float(c.alpha)
+                return [rgb[0] * a, rgb[1] * a, rgb[2] * a, a]
+            }
+            let a = channels(c0), b = channels(c1)
+            for y in 0..<out.height {
+                let cy = Double(region.minY) + Double(y) + 0.5
+                for x in 0..<out.width {
+                    let cx = Double(region.minX) + Double(x) + 0.5
+                    let t = length2 > 0 ? Float(min(1, max(0, ((cx - Double(p0.x)) * dx + (cy - Double(p0.y)) * dy) / length2))) : 0
+                    let o = out.index(x, y)
+                    for k in 0..<4 { out.data[o + k] = a[k] + (b[k] - a[k]) * t }
+                }
+            }
             return out
         case .crop(let n, let rect):
             let inter = region.intersection(rect)
@@ -366,6 +389,13 @@ public class CIFilter {
     }
 
     public var outputImage: CIImage? {
+        // Generators make an image from their parameters alone.
+        if name == "CILinearGradient" {
+            guard let p0 = inputs["inputPoint0"] as? CIVector, let p1 = inputs["inputPoint1"] as? CIVector else { return nil }
+            let c0 = inputs["inputColor0"] as? CIColor ?? CIColor(red: 1, green: 1, blue: 1)
+            let c1 = inputs["inputColor1"] as? CIColor ?? CIColor(red: 0, green: 0, blue: 0)
+            return CIImage(node: .linearGradient(CGPoint(x: p0[0], y: p0[1]), c0, CGPoint(x: p1[0], y: p1[1]), c1))
+        }
         guard let input = image(kCIInputImageKey) else { return nil }
         switch name {
         case "CIGaussianBlur": return input.applyingGaussianBlur(sigma: number(kCIInputRadiusKey, 10))
@@ -407,7 +437,7 @@ public class CIFilter {
              "CIHueBlendMode", "CISaturationBlendMode", "CIColorBlendMode", "CILuminosityBlendMode":
             guard let bg = image(kCIInputBackgroundImageKey) else { return nil }
             return CIImage(node: .separable(input.node, bg.node, name))
-        case "CILinearGradient", "CIRadialGradient":
+        case "CIRadialGradient":
             // Used by the GPU canvas path; Linux keeps Core Graphics for those fills.
             return input
         case "CIAffineTile":
@@ -543,17 +573,17 @@ public final class CIContext: @unchecked Sendable {
 
     public func render(_ image: CIImage, toBitmap bitmap: UnsafeMutableRawPointer, rowBytes: Int, bounds: CGRect,
                        format: CIFormat, colorSpace: CGColorSpace?) {
-        // RGBA16: render 8-bit then expand (RAW dither expects 16-bit samples before C quantize).
+        // RGBA16 (premultiplied, top row first), straight from the float graph: RawImporter.dithered quantizes
+        // these 16-bit samples itself, so rounding them to 8 bits here first would throw the dither's input away.
         if format == .RGBA16 {
-            guard let cg = createCGImage(image, from: bounds, format: .RGBA8, colorSpace: colorSpace) else { return }
-            let bytes = cg.portableImage.bytes
-            bytes.withUnsafeBufferPointer { src in
-                guard let srcBase = src.baseAddress else { return }
-                for y in 0..<cg.height {
+            guard let r = raster(image, bounds.integral) else { return }
+            let w = r.width, h = r.height
+            r.data.withUnsafeBufferPointer { src in
+                for y in 0..<h {
                     let dst = bitmap.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt16.self)
-                    let srcRow = srcBase.advanced(by: y * cg.bytesPerRow)
-                    for x in 0..<(cg.width * 4) {
-                        dst[x] = UInt16(srcRow[x]) &* 257  // 0...255 → 0...65535
+                    let row = (h - 1 - y) * w * 4
+                    for x in 0..<(w * 4) {
+                        dst[x] = UInt16(max(0, min(65535, src[row + x] * 65535 + 0.5)))
                     }
                 }
             }
