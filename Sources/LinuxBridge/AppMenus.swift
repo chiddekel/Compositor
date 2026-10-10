@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import Sparkle
 
 /// Upstream's menu bar, from its own source: `CompositorApp.body`'s `.commands` (Sources/Overrides/CompositorApp.swift,
@@ -23,6 +24,7 @@ import Sparkle
         }
         // Register HeldModifiers' local monitor before the first flagsChanged from the shell.
         _ = HeldModifiers.shared
+        NSApp.mainMenuProvider = { AppMenuBar.shared.make() }
         return CompositorApp().body.commandsContent?()
     }
 
@@ -157,6 +159,83 @@ import Sparkle
         action()
         return true
     }
+}
+
+/// `NSApp.mainMenu`: the menus the Qt menu bar shows, as live `NSMenu`s for code that reads or runs the menu bar (the
+/// command palette). SwiftUI refreshes a menu just before it opens, through its delegate; so does this — each menu
+/// re-reads its items from `AppMenus.menus()` when asked (`menuNeedsUpdate`), titles, checkmarks and enabled states
+/// included. As with SwiftUI, a disabled item has no action. Choosing an item runs it by its path, as the shell does.
+@MainActor final class AppMenuBar: NSMenuDelegate, NSSelectorDispatching {
+    static let shared = AppMenuBar()
+    private static let choose = Selector("performMenuPath:")
+
+    func make() -> NSMenu {
+        let bar = NSMenu(title: "Main Menu")
+        bar.delegate = self
+        fill(bar, with: AppMenus.menus())
+        return bar
+    }
+
+    var menuNeedsUpdate: ((NSMenu) -> Void)? { { [weak self] menu in self?.refresh(menu) } }
+
+    private func refresh(_ menu: NSMenu) {
+        var indices: [Int] = []
+        var current = menu
+        while let parent = current.supermenu {
+            guard let index = parent.items.firstIndex(where: { $0.submenu === current }) else { return }
+            indices.insert(index, at: 0)
+            current = parent
+        }
+        var items = AppMenus.menus()
+        for index in indices {
+            guard items.indices.contains(index), let children = items[index].items else { return }
+            items = children
+        }
+        fill(menu, with: items)
+    }
+
+    private func fill(_ menu: NSMenu, with items: [AppMenus.Item]) {
+        menu.removeAllItems()
+        for item in items {
+            if item.separator { menu.addItem(.separator()); continue }
+            let entry = NSMenuItem(title: item.title, action: item.items == nil && item.enabled ? Self.choose : nil,
+                                   keyEquivalent: item.key ?? "")
+            entry.keyEquivalentModifierMask = Self.flags(item.modifiers)
+            entry.isEnabled = item.enabled
+            entry.state = item.checked == true ? .on : .off
+            entry.representedObject = item.path
+            entry.target = self
+            if let children = item.items {
+                let submenu = NSMenu(title: item.title)
+                submenu.delegate = self
+                fill(submenu, with: children)
+                entry.submenu = submenu
+            }
+            menu.addItem(entry)
+        }
+    }
+
+    /// SwiftUI's `EventModifiers` bits (what AppMenus.Item.modifiers holds) as AppKit's key-equivalent mask.
+    private static func flags(_ modifiers: Int) -> NSEvent.ModifierFlags {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers & (1 << 1) != 0 { flags.insert(.shift) }
+        if modifiers & (1 << 2) != 0 { flags.insert(.control) }
+        if modifiers & (1 << 3) != 0 { flags.insert(.option) }
+        if modifiers & (1 << 4) != 0 { flags.insert(.command) }
+        return flags
+    }
+
+    func compatPerform(_ selector: Selector, with argument: Any?) -> Bool {
+        guard selector == Self.choose, let path = (argument as? NSMenuItem)?.representedObject as? String else { return false }
+        return AppMenus.perform(path)
+    }
+    func compatResponds(to selector: Selector) -> Bool { selector == Self.choose }
+}
+
+/// The menu bar `NSApp.mainMenu` reads in a process the shell never set up (a test host); retained for the caller.
+@_cdecl("compositor_main_menu")
+nonisolated public func compositorMainMenu() -> UnsafeMutableRawPointer? {
+    MainActor.assumeIsolated { Unmanaged.passRetained(AppMenuBar.shared.make()).toOpaque() }
 }
 
 /// The menu bar as JSON: [{title, items: [{title, path, enabled, checked?, key?, modifiers?, items?} | {separator}]}].

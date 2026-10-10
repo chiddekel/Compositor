@@ -225,6 +225,11 @@ public struct NumberFormatPrecision: Sendable {
     }
 }
 
+/// A key press `onKeyPress` reports on.
+public struct KeyPress: Sendable {
+    public enum Result: Sendable { case handled, ignored }
+}
+
 /// A single key for `.keyboardShortcut`/`configuredNativeShortcut` (upstream names keys like `.escape`, `.return`,
 /// or writes a plain letter as a string literal, e.g. `"p"`).
 public struct KeyEquivalent: Sendable, Equatable, ExpressibleByExtendedGraphemeClusterLiteral {

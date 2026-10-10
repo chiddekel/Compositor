@@ -5,11 +5,8 @@ excluded here, with a reason; individual tests are never edited.
 
 | File | Reason |
 |---|---|
-| `SliderSnapTests.swift` | Tests `UI/SliderSnap.swift`, which swizzles `NSSliderCell` through the Objective-C runtime |
 | `LayerTests.swift` | Drives `NativeLayerList`/`LayerTableView` (`NSTableView` subclass counting delegate calls) |
 | `CursorTests.swift` | Builds `LayersPanel` + `LayerTableView` to check cursor routing through the AppKit responder chain |
-| `CameraRawSliderTests.swift` | Tests `UI/CameraRawSlider.swift`'s real `CameraRawSliderView`/`GradientSliderCell`/`NSSliderCell`-based implementation (`#selector`/`@objc` target-action, custom `NSSliderCell` subclass) — same category as `SliderSnapTests.swift`. `Sources/Overrides/CameraRawSlider.swift` replaces it with a plain SwiftUI `Slider`; functional coverage lives in the compat layer, not this file. |
-| `CommandPaletteTests.swift` | Tests tip `UI/CommandPalette*.swift` (`NSApp.mainMenu`, `CommandPaletteMenu`, `NSControl.StateValue`). Linux UX is Qt `CommandPaletteDialog` (tip fuzzy ranking); Mac panel / menu APIs are not compiled. |
 
 ## Per-test skips (files stay compiled; pass these to `swift test --skip`)
 

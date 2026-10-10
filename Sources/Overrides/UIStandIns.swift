@@ -50,17 +50,6 @@ struct BlendModePicker: View {
 /// The layer a blend-mode menu opened on, while it is open.
 @MainActor enum BlendPreview { static var layerID: UUID? }
 
-/// STAND-IN for `CommandPaletteController` (UI/CommandPaletteView.swift). Tip menus call `toggle`; the Qt shell
-/// presents `CommandPaletteDialog` when `commandPalette` is queued.
-@MainActor final class CommandPaletteController {
-    static let shared = CommandPaletteController()
-    func toggle(session: EditorSession, over window: NSWindow?) {
-        _ = session
-        _ = window
-        ShellProjects.pending.append("commandPalette")
-    }
-}
-
 // `LayersPanel` is wired in for real (Compositor/UI/LayersPanel.swift); it uses `NativeLayerList`, which is
 // overridden (`Sources/Overrides/NativeLayerListOverride.swift` — a real functional backend swap, not a stand-in;
 // see that file for why the actual NSTableView-based `NativeLayerList.swift` is blocked).

@@ -112,3 +112,75 @@ extension NSBitmapImageRep {
     /// The colour at a pixel (top-left origin), converted to straight sRGB.
     public func colorAt(x: Int, y: Int) -> NSColor? { pixelColor(x: x, y: y) }
 }
+
+/// A color ramp drawn through Core Graphics, as AppKit's: evenly spaced stops unless given locations.
+public final class NSGradient {
+    private let gradient: CGGradient
+    public convenience init?(colors: [NSColor]) { self.init(colors: colors, atLocations: nil, colorSpace: .sRGB) }
+    public convenience init?(starting: NSColor, ending: NSColor) { self.init(colors: [starting, ending]) }
+    public init?(colors: [NSColor], atLocations locations: UnsafePointer<CGFloat>?, colorSpace: NSColorSpace) {
+        guard colors.count >= 2, let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let components = colors.flatMap { [$0.redComponent, $0.greenComponent, $0.blueComponent, $0.alphaComponent] }
+        let stops = locations.map { Array(UnsafeBufferPointer(start: $0, count: colors.count)) }
+        guard let gradient = CGGradient(colorSpace: space, colorComponents: components, locations: stops, count: colors.count)
+        else { return nil }
+        self.gradient = gradient
+    }
+    /// Fills `rect` along `angle` degrees (0 runs left to right).
+    public func draw(in rect: CGRect, angle: CGFloat) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        ctx.clip(to: rect)
+        drawAlong(rect, angle: angle, in: ctx)
+        ctx.restoreGState()
+    }
+    public func draw(in path: NSBezierPath, angle: CGFloat) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        path.addClip()
+        drawAlong(path.bounds, angle: angle, in: ctx)
+        ctx.restoreGState()
+    }
+    public func draw(from start: CGPoint, to end: CGPoint, options: CGGradientDrawingOptions) {
+        NSGraphicsContext.current?.cgContext.drawLinearGradient(gradient, start: start, end: end, options: options)
+    }
+    private func drawAlong(_ rect: CGRect, angle: CGFloat, in ctx: CGContext) {
+        let radians = angle * .pi / 180
+        let direction = CGPoint(x: cos(radians), y: sin(radians))
+        // Half the rect's extent along the direction, so the ramp spans it corner to corner as AppKit's does.
+        let half = (abs(direction.x) * rect.width + abs(direction.y) * rect.height) / 2
+        let start = CGPoint(x: rect.midX - direction.x * half, y: rect.midY - direction.y * half)
+        let end = CGPoint(x: rect.midX + direction.x * half, y: rect.midY + direction.y * half)
+        ctx.drawLinearGradient(gradient, start: start, end: end, options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+    }
+}
+
+/// Media timing curves; animations complete at once here, so the curve is only recorded.
+public final class CAMediaTimingFunction {
+    public struct Name: Hashable, RawRepresentable, Sendable {
+        public let rawValue: String
+        public init(rawValue: String) { self.rawValue = rawValue }
+        public static let linear = Name(rawValue: "linear"), easeIn = Name(rawValue: "easeIn")
+        public static let easeOut = Name(rawValue: "easeOut"), easeInEaseOut = Name(rawValue: "easeInEaseOut")
+        public static let `default` = Name(rawValue: "default")
+    }
+    public let name: Name
+    public init(name: Name) { self.name = name }
+}
+
+/// An animation group: Linux has no view animator, so the changes land immediately and the completion runs on the next
+/// main-queue turn — after the caller returns, as AppKit's does once the group ends.
+@MainActor public final class NSAnimationContext {
+    public var duration: TimeInterval = 0.25
+    public var timingFunction: CAMediaTimingFunction?
+    public var allowsImplicitAnimation = false
+    public static func runAnimationGroup(_ changes: (NSAnimationContext) -> Void, completionHandler: (@MainActor () -> Void)? = nil) {
+        changes(NSAnimationContext())
+        if let completionHandler { DispatchQueue.main.async { MainActor.assumeIsolated { completionHandler() } } }
+    }
+}
+
+extension NSView {
+    /// AppKit's animating proxy; with no animator here, it is the view itself.
+    public func animator() -> Self { self }
+}

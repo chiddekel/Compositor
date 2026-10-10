@@ -26,6 +26,8 @@ BEGIN, END = "<!-- ledger-rows:begin -->", "<!-- ledger-rows:end -->"
 GENERATORS = {  # overrides written by a generator script (their --check is the gate)
     "Compositor/CompositorApp.swift", "Compositor/Document/EditorSession.swift",
     "Compositor/Document/SmudgeLiquify.swift",
+    # scripts/gen-objc-overrides.py
+    "Compositor/UI/SliderSnap.swift", "Compositor/UI/CameraRawSlider.swift", "Compositor/UI/CommandPaletteView.swift",
 }
 
 

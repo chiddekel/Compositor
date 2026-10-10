@@ -49,7 +49,7 @@ Evidence: 378 tests green (upstream `CompositorTests` compiled unmodified except
 | Kind | Linux |
 |---|---|
 | Gaussian Blur, Motion Blur, Add Noise, Vignette, Bloom/Glow, Tonal Contrast, Lens Correction, Grain, Exposure, Gradient Map, Black & White, Color Balance, Curves, Levels, Hue/Saturation, Invert | ✅ (FilterTests, FinishingFilterTests, ImageAdjustmentTests, HueSaturationTests; CoreImage graph evaluated on CPU) |
-| Camera Raw Filter (light, colour, detail, optics, geometry, calibration) | ✅ (CameraRawTests 20) — sliders are SwiftUI sliders (CameraRawSliderTests excluded) |
+| Camera Raw Filter (light, colour, detail, optics, geometry, calibration) | ✅ (CameraRawTests 20) — sliders are SwiftUI sliders; tip CameraRawSliderView/GradientSliderCell compiled (CameraRawSliderTests 4) |
 | Content-Aware Fill | ✅ (C kernel) |
 | Remove Background | ✅ U²-Net-small (Apache-2.0) behind the Vision API, soft edges like Vision's |
 

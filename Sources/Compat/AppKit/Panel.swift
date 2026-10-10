@@ -20,6 +20,10 @@ extension NSWindowDelegate {
 }
 
 extension NSWindow {
+    public enum TitleVisibility: Int, Sendable { case visible = 0, hidden = 1 }
+}
+
+extension NSWindow {
     /// Posted by `frame`'s setter on every move/resize and by `close()`, as AppKit posts them.
     public static let didResizeNotification = Notification.Name("NSWindowDidResizeNotification")
     public static let didMoveNotification = Notification.Name("NSWindowDidMoveNotification")

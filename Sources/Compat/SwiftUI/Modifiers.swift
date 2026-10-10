@@ -270,6 +270,10 @@ extension View {
     public func onExitCommand(perform action: @escaping () -> Void) -> some View {
         modified { $0.modifiers.append(.onExitCommand(action)) }
     }
+    /// Recorded for the renderer as a `keyPress:<key>` sink; the action's result says whether the key was used.
+    public func onKeyPress(_ key: KeyEquivalent, action: @escaping () -> KeyPress.Result) -> some View {
+        modified { $0.modifiers.append(.sink("keyPress:" + String(key.character), { _ in _ = action() })) }
+    }
     /// Compat-only (the Mac does this with an NSMenuDelegate's `willHighlight`, e.g. BlendModePicker): while this
     /// Picker's menu is open, `highlight` gets the tag of the item under the pointer; when it closes, `nil`.
     public func compatPickerHighlight(_ highlight: @escaping (String?) -> Void) -> some View {
