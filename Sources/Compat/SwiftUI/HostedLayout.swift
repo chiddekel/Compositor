@@ -14,11 +14,23 @@ import Foundation
         let frame: CGRect
     }
 
-    static func place(_ root: RenderNode, in rect: CGRect) -> [Placement] {
+    static func place(_ root: RenderNode, in rect: CGRect,
+                      intrinsicSize: @escaping (String) -> CGSize? = { _ in nil }) -> [Placement] {
+        let previous = intrinsic
+        intrinsic = intrinsicSize
+        defer { intrinsic = previous }
+        geometryChanged = false
         var out: [Placement] = []
         place(root, root.modifiers.count, rect, &out)
         return out
     }
+
+    /// Whether the last `place` gave a GeometryReader a size other than the one it was resolved with: its content
+    /// must be resolved again (the hosting view does, as SwiftUI re-runs the reader's closure).
+    private(set) static var geometryChanged = false
+
+    /// A hosted view's `intrinsicContentSize` by node path (-1 on an axis it has none), for `.fixedSize()`.
+    private static var intrinsic: (String) -> CGSize? = { _ in nil }
 
     // MARK: Sizing (`depth` = how many of the node's modifiers, innermost first, still apply)
 
@@ -32,6 +44,14 @@ import Foundation
             let inner = size(node, depth - 1, CGSize(width: max(0, proposal.width - leading - trailing),
                                                     height: max(0, proposal.height - top - bottom)))
             return CGSize(width: inner.width + leading + trailing, height: inner.height + top + bottom)
+        case let .fixedSize(horizontal, vertical):
+            // A hosted AppKit view at its ideal size: its intrinsic content size on each fixed axis that has one.
+            var result = size(node, depth - 1, proposal)
+            if depth == 1, node.kind == "_Native", let ideal = intrinsic(node.id) {
+                if horizontal, ideal.width >= 0 { result.width = ideal.width }
+                if vertical, ideal.height >= 0 { result.height = ideal.height }
+            }
+            return result
         default:
             return size(node, depth - 1, proposal)
         }
@@ -64,8 +84,8 @@ import Foundation
 
     private static func baseSize(_ node: RenderNode, _ proposal: CGSize) -> CGSize {
         switch node.kind {
-        case "_Native":
-            return proposal                                     // a hosted AppKit view fills what it is offered
+        case "_Native", "GeometryReader":
+            return proposal                                     // a hosted AppKit view, or a reader, fills what it is offered
         case "HStack", "VStack":
             return stack(node, proposal).size
         default:
@@ -140,6 +160,8 @@ import Foundation
             place(node, depth - 1, CGRect(x: rect.minX + leading, y: rect.minY + top,
                                           width: max(0, rect.width - leading - trailing),
                                           height: max(0, rect.height - top - bottom)), &out)
+        case .fixedSize:
+            place(node, depth - 1, aligned(size(node, depth, rect.size), in: rect, alignment: "center"), &out)
         default:
             place(node, depth - 1, rect, &out)
         }
@@ -149,6 +171,17 @@ import Foundation
         switch node.kind {
         case "_Native":
             if let source = node.nativeSource { out.append(Placement(path: node.id, source: source, frame: rect)) }
+        case "GeometryReader":
+            // Reports the size it is laid out at, as the Qt shell does, and puts its content at its top leading corner.
+            let width = node.doubleParams["width"] ?? 0, height = node.doubleParams["height"] ?? 0
+            if abs(width - Double(rect.width)) > 0.5 || abs(height - Double(rect.height)) > 0.5, let report = node.handlers["size"] {
+                report([Double(rect.width), Double(rect.height)])
+                geometryChanged = true
+            }
+            for child in node.children {
+                let s = size(child, child.modifiers.count, rect.size)
+                place(child, child.modifiers.count, aligned(s, in: rect, alignment: "topLeading"), &out)
+            }
         case "HStack", "VStack":
             let horizontal = node.kind == "HStack"
             let (_, lengths) = stack(node, rect.size)

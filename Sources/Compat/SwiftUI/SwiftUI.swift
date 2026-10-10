@@ -38,13 +38,17 @@
 
     /// The `NSViewRepresentable`s in the tree, by tree position: made once, then re-framed and updated every layout.
     private var hosted: [String: (type: ObjectIdentifier, view: NSView, state: AnyObject)] = [:]
+    private var relayoutDepth = 0
 
     private func layoutHostedViews() {
         var root = ViewResolver.resolve(rootView)
         guard Self.containsNative(root) || !hosted.isEmpty else { return }
         root.assignIDs()
-        let placements = HostedLayout.place(root, in: CGRect(origin: .zero, size: bounds.size))
+        let placements = HostedLayout.place(root, in: CGRect(origin: .zero, size: bounds.size)) { [hosted] path in
+            hosted[path]?.view.intrinsicContentSize
+        }
         var live = Set<String>()
+        var created = false
         for placement in placements {
             live.insert(placement.path)
             var entry = hosted[placement.path]
@@ -54,6 +58,7 @@
                 entry = (placement.source._nativeTypeID, made.view, made.state)
                 addSubview(made.view)
                 hosted[placement.path] = entry
+                created = true
             }
             guard let entry else { continue }
             // Layout is top-left based; this view is not flipped, so y counts up from the bottom edge.
@@ -64,6 +69,13 @@
         for (path, entry) in hosted where !live.contains(path) {
             entry.view.removeFromSuperview()
             hosted.removeValue(forKey: path)
+        }
+        // A view made in this pass couldn't report its intrinsic size while it was being placed, and a GeometryReader
+        // given a new size resolves to new content: place again (bounded, in case a reader's content never settles).
+        if created || HostedLayout.geometryChanged, relayoutDepth < 3 {
+            relayoutDepth += 1
+            defer { relayoutDepth -= 1 }
+            layoutHostedViews()
         }
     }
     private static func containsNative(_ node: RenderNode) -> Bool {

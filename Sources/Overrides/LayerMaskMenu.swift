@@ -1,5 +1,5 @@
-// Linux override of Compositor/UI/LayerMaskMenu.swift: MaskAloneBadge is SwiftUI (no
-// NSStackView/#selector). LayerMaskMenu itself matches tip (Option-click reveal/hide).
+// Linux override of Compositor/UI/LayerMaskMenu.swift: MaskAloneBadgeView without NSStackView/#selector.
+// LayerMaskMenu and MaskAloneBadge match tip (Option-click reveal/hide).
 import SwiftUI
 import AppKit
 
@@ -22,41 +22,38 @@ struct LayerMaskMenu: View {
 }
 
 /// Over the canvas while it shows a mask by itself: whose mask it is, and a way back to the composite besides
-/// Option-clicking the thumbnail again.
-struct MaskAloneBadge: View {
+/// Option-clicking the thumbnail again. Built in AppKit, as the canvas under it is, so its button gets its clicks.
+struct MaskAloneBadge: NSViewRepresentable {
     let session: EditorSession
     let layer: ImageLayer
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "rectangle.inset.filled").font(.system(size: 11))
-            Text("Layer Mask").font(.system(size: 12, weight: .semibold))
-            Text(layer.name).font(.system(size: 12)).foregroundStyle(Color.white.opacity(0.6)).lineLimit(1)
-            Button {
-                session.viewsMaskAlone = false
-            } label: {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-            }
-            .buttonStyle(.borderless)
-            .help("Show the image again (or Option-click the mask thumbnail)")
-        }
-        .foregroundStyle(.white)
-        .padding(.leading, 11)
-        .padding(.trailing, 8)
-        .frame(height: 26)
-        .background(Color.black.opacity(0.75), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+    func makeNSView(context: Context) -> MaskAloneBadgeView {
+        MaskAloneBadgeView { [session] in session.viewsMaskAlone = false }
     }
+    func updateNSView(_ view: MaskAloneBadgeView, context: Context) { view.layerName = layer.name }
 }
 
-/// Tip AppKit badge type kept for MaskAloneTests (Linux badge is SwiftUI `MaskAloneBadge`).
+/// Tip's badge without NSStackView and the #selector close button (no Objective-C runtime on Linux): the same
+/// icon, "Layer Mask", the layer's name (at most 220 points) and an xmark, 26 points high. A click on the xmark
+/// shows the image again. The Qt shell draws its own copy over the canvas (SessionWindow::ensureMaskAloneBadge).
 final class MaskAloneBadgeView: NSView {
-    var layerName = ""
-    private let onClose: () -> Void
-    init(onClose: @escaping () -> Void) {
-        self.onClose = onClose
+    var layerName = "" { didSet { invalidateIntrinsicContentSize() } }
+    private let close: () -> Void
+    /// Leading inset, icon, title, the three 7-point gaps, xmark and trailing inset.
+    private static let chrome: CGFloat = 11 + 11 + 7 + 70 + 7 + 7 + 16 + 8
+
+    init(close: @escaping () -> Void) {
+        self.close = close
         super.init(frame: .zero)
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    required init?(coder: NSCoder) { nil }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: Self.chrome + min(220, CGFloat(layerName.count) * 7), height: 26)
+    }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if point.x >= bounds.maxX - 8 - 16 { close() }
+    }
 }
 
 extension ImageLayer {

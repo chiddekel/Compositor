@@ -190,6 +190,10 @@ public final class NSTrackingArea {
     open func layout() {}
     /// No cached intrinsic size is kept (layout asks `fittingSize` directly), so there is nothing to discard.
     open func invalidateIntrinsicContentSize() {}
+    /// The size the view's content wants, per axis; `noIntrinsicMetric` where it has none (the default), as in AppKit.
+    /// A hosting view sizes a `.fixedSize()` representable from it.
+    open var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    public static let noIntrinsicMetric: CGFloat = -1
     open func viewWillDraw() {}
     open func viewDidMoveToWindow() {}
     open func viewDidChangeBackingProperties() {}
