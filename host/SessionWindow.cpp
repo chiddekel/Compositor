@@ -7422,6 +7422,9 @@ void SessionWindow::setupOptionsBar() {
     m_swiftUIOptionsContainer = new QWidget(m_optionsToolBar);
     m_swiftUIOptionsContainer->setObjectName("swiftUIOptionsContainer");
     m_swiftUIOptionsContainer->setFixedHeight(38);
+    // Span the bar like the Mac's tool header; at its preferred width a header's ScrollView(.horizontal) was
+    // squeezed and its trailing controls cut off.
+    m_swiftUIOptionsContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *layoutSwiftUI = new QHBoxLayout(m_swiftUIOptionsContainer);
     layoutSwiftUI->setContentsMargins(0, 0, 0, 0);
     layoutSwiftUI->setSpacing(0);
@@ -7457,6 +7460,9 @@ void SessionWindow::updateOptionsBar() {
                 m_swiftUICurrentToolHeader = nullptr;
             }
             m_swiftUICurrentToolHeader = rendered;
+            // The header fills the bar's width, as SwiftUI proposes it the full width on the Mac.
+            rendered->setMaximumWidth(QWIDGETSIZE_MAX);
+            rendered->setSizePolicy(QSizePolicy::Expanding, rendered->sizePolicy().verticalPolicy());
             m_swiftUIOptionsContainer->layout()->addWidget(rendered);
             rendered->show();
             m_swiftUIOptionsContainer->show();

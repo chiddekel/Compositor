@@ -493,7 +493,17 @@ final class UpstreamEditor {
         case "colorRangeCancel": s.cancelColorRange()
         case "selectAll": s.selectAll()
         case "deselect": s.deselect()
-        case "invertSelection": s.invertSelection()
+        case "invertSelection":
+            // Linux shell: inverting a selection that already covers the whole canvas keeps it (marching ants stay,
+            // painting still works everywhere) instead of upstream's deselect. Only the shell command differs;
+            // EditorSession.invertSelection keeps upstream behavior.
+            if let document = s.document, let current = s.selection {
+                let canvas = CGPath(rect: CGRect(origin: .zero, size: document.size), transform: nil)
+                let inverse = DocumentSelection(path: canvas.subtracting(current.path, using: .winding),
+                                                antialiased: current.antialiased, feather: current.feather)
+                if inverse.isEmpty { break }
+            }
+            s.invertSelection()
         case "loadLayerSelection":
             guard let id = s.activeLayerID else { return fail(-5, "no layer") }
             s.loadLayerSelection(layerID: id)

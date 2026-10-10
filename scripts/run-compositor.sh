@@ -103,7 +103,12 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     exit 0
 fi
 
+# With the SDK installed both per-user and system-wide, flatpak run stops to ask which one; prefer the user copy.
+SDK_INSTALLATION=()
+if flatpak info --user "$SDK_REF" >/dev/null 2>&1; then SDK_INSTALLATION=(--user); fi
+
 FLATPAK_ARGS=(
+    "${SDK_INSTALLATION[@]}"
     --command=bash
     --devel
     --filesystem=host

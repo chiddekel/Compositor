@@ -1597,6 +1597,12 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 effect->setOpacity(opacity);
                 widget->setGraphicsEffect(effect);
             }
+        } else if (kind == "scrollIndicators") {
+            // .scrollIndicators(.hidden): the view still scrolls (wheel, trackpad), with no scroll bars drawn.
+            if (auto *scrollArea = qobject_cast<QScrollArea *>(widget); scrollArea && strings.value("name").toString() == "hidden") {
+                scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+                scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            }
         } else if (kind == "allowsHitTesting") {
             widget->setAttribute(Qt::WA_TransparentForMouseEvents, !bools.value("enabled").toBool());
         } else if (kind == "tapGesture") {
@@ -2290,6 +2296,20 @@ private:
     QString m_start, m_end;
 };
 
+/// A horizontal-only ScrollView asks for its content's width, as SwiftUI sizes it to its content's ideal width, so a
+/// Spacer beside it in a tool header only gets what is left over; it still shrinks and scrolls when space runs out.
+/// (QScrollArea's own hint is capped at a few dozen characters, so the Spacer took half the row.)
+class SwiftUIScrollArea : public QScrollArea {
+public:
+    QSize sizeHint() const override {
+        QSize hint = QScrollArea::sizeHint();
+        if (horizontalOnly && widget())
+            hint.setWidth(widget()->sizeHint().width() + 2 * frameWidth());
+        return hint;
+    }
+    bool horizontalOnly = false;
+};
+
 /// `VStack`/`HStack` share everything but the layout's orientation.
 QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &node, QBoxLayout::Direction direction) {
     auto *container = new QWidget;
@@ -2306,6 +2326,9 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
             if (childKind == "ScrollView" || childKind == "Spacer" || childKind == "Canvas") {
                 stretch = 1;
             }
+            // A horizontal ScrollView takes its content's width before a Spacer beside it takes the rest (stretch
+            // would split the free space evenly); its Expanding policy still lets it fill a row on its own.
+            if (auto *scroll = dynamic_cast<SwiftUIScrollArea *>(child); scroll && scroll->horizontalOnly) stretch = 0;
             const bool horizontal = direction == QBoxLayout::LeftToRight;
             // SwiftUI's Spacer grows along its stack only; growing across it too would make the whole row (a header
             // with a Spacer in it) take a share of its column's height.
@@ -3333,7 +3356,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         if (fitted) { delete label; widget = fitted; } else
         widget = label;
     } else if (kind == "ScrollView") {
-        auto *scrollArea = new QScrollArea;
+        auto *scrollArea = new SwiftUIScrollArea;
         scrollArea->setWidgetResizable(true);
         scrollArea->setFrameShape(QFrame::NoFrame);
         scrollArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -3341,6 +3364,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         // Tip tool headers use ScrollView(.horizontal); respect encoded axes (default vertical-only matches SwiftUI).
         const bool scrollH = bools.value("horizontal").toBool();
         const bool scrollV = bools.contains("vertical") ? bools.value("vertical").toBool() : !scrollH;
+        scrollArea->horizontalOnly = scrollH && !scrollV;
         scrollArea->setHorizontalScrollBarPolicy(scrollH ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
         scrollArea->setVerticalScrollBarPolicy(scrollV ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
         if (!children.isEmpty()) {
