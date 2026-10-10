@@ -7,12 +7,16 @@ import Testing
 
 /// Metal → Vulkan GPU canvas smoke: `GPUCanvasRenderer.shared` and `MetalWarp` when Vulkan/FORCE is set.
 @MainActor struct GPUCanvasLinuxTests {
-    @Test func sharedIsNilByDefaultAndAvailableWhenForced() {
-        // Shipped default: Core Graphics canvas (shared nil). FORCE=1 enables GPU present path.
-        if ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1" {
+    @Test func sharedFollowsVulkanAvailabilityAndTheOverrides() {
+        // As tip's Metal device check: the renderer exists wherever a Vulkan device does. FORCE=1 turns it on
+        // regardless, and COMPOSITOR_CPU_CANVAS=1 keeps it off.
+        let environment = ProcessInfo.processInfo.environment
+        if environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1" {
             #expect(GPUCanvasRenderer.shared != nil)
-        } else if ProcessInfo.processInfo.environment["COMPOSITOR_CPU_CANVAS"] != "1" {
+        } else if environment["COMPOSITOR_CPU_CANVAS"] == "1" || environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "0" {
             #expect(GPUCanvasRenderer.shared == nil)
+        } else {
+            #expect((GPUCanvasRenderer.shared != nil) == CanvasBackends.vulkanGPUAvailable)
         }
     }
 
