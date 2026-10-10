@@ -223,6 +223,11 @@ nonisolated public func compositorCanvasResize(_ handle: UInt64, _ width: Double
 @_cdecl("compositor_canvas_mouse")
 nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _ x: Double, _ y: Double, _ modifiers: Int32, _ clickCount: Int32) -> Int32 {
     Int32(withEntry(handle) { entry in
+        // The shell paints between slices of a long Smudge/Liquify drag (noteStrokeProgress / warp_continue), so
+        // while a button is held on the canvas, WarpStroke dabs in budgeted chunks; released or buttonless, it dabs
+        // the whole way, exactly as upstream's does. Scoping it here — not to Entry creation — keeps tests that never
+        // drive the canvas (WarpTipCacheTests' byte-exact oracle among them) on upstream's unchunked behaviour.
+        WarpStroke.timeSlicesLiveStrokes = kind == 0 || kind == 1 || kind == 4
         UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers), clickCount: Int(clickCount))
         entry.noteStrokeProgress()   // the brush painted: the shell redraws just that area mid-stroke
         return Int64(UpstreamCanvas.cursorCode(NSCursor.current))

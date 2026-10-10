@@ -131,9 +131,12 @@ append_anchor = '''    /// Continues the stroke to `point`, dabbing along the wa
 append_chunked = '''    /// Continues the stroke to `point`, dabbing along the way, then refreshes `image`.
     /// Long jumps are chunked (`dabBudget`) so the Qt shell can dirty-blit before the rest runs.
     var hasPendingDabs: Bool { pendingTarget != nil }
+    /// The Qt shell turns this on while a button is held on the canvas (UpstreamCanvas): it drives `continuePending`
+    /// between frames. Off, `append` dabs the whole way at once, as upstream's does.
+    nonisolated(unsafe) static var timeSlicesLiveStrokes = false
 
     func append(_ point: CGPoint) {
-        appendToward(point, maxDabs: dabBudget)
+        appendToward(point, maxDabs: Self.timeSlicesLiveStrokes ? dabBudget : Int.max)
     }
 
     /// Runs another budgeted slice toward `pendingTarget`. Returns whether more work remains.
