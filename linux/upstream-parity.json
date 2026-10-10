@@ -1,6 +1,8 @@
 {
   "upstream_remote": "upstream",
   "upstream_ref": "upstream/main",
+  "ledger_base": "22c7b8d",
+  "ledger_to": "b4bfdea",
   "protected_roots": [
     "Compositor",
     "CompositorTests"
@@ -26,8 +28,6 @@
     "Compositor/UI/IndicatorlessScrollView.swift": "Sources/Overrides/IndicatorlessScrollView.swift (real file is a custom NSScrollView subclass via NSViewRepresentable solely to hide indicators; replaced with ScrollView(.vertical) + .scrollIndicators(.hidden))",
     "Compositor/UI/SliderSnap.swift": "not applicable on Linux: its only caller, Compositor/IO/CompositorApplicationDelegate.swift, is already excluded above, so this file has no reachable call site in this port regardless of Objective-C availability",
     "Compositor/ContentView.swift": "Sources/Overrides/ContentView.swift (byte-for-byte copy with exactly one deviation, explicitly authorized by the user: `body`'s 11-call `.onChange` chain made Swift's constraint solver time out — proven, not assumed, by removing one of the two required `.onChange` overloads entirely, which fixed it in 25s, and by exhausting every mitigation that keeps both overloads working, including @_disfavoredOverload and every flag `swift-frontend -help-hidden` lists for solver tuning; none sufficed. `body` is split into `bodyCore` + `body`, the same technique upstream's own authors already used twice in this exact file for the identical reason (`toolHeaders`/`editorStack`/`editorChrome`) — this is a third application of an existing upstream pattern, not a new one, and does not change behavior. Also needed a minimal, honestly-scoped CompositorApplicationDelegate stand-in — carrying only the three plain members ContentView.swift reads (workspace/projects/showEditor), never the real class's NSObject/NSApplicationDelegate/Sparkle surface, which stays a deliberate Qt-owned exclusion — plus a `Button(_:role:action:)` compat addition)",
-    "Compositor/Document/TypeTool.swift": "Sources/Overrides/TypeTool.swift (generated pinned upstream 1.3.4 mixed-font model; linux/patches/text-format-11.patch)",
-    "Compositor/IO/ProjectStore.swift": "Sources/Overrides/ProjectStore.swift (generated pinned upstream 1.3.4 format-11 writer and validation; linux/patches/text-format-11.patch)",
     "Compositor/Document/EditorSession.swift": "Sources/Overrides/EditorSession.swift (generated pinned upstream 1.3.4 Color Range state and edit/history/file-operation gates; scripts/gen-color-range.py)",
     "Compositor/Document/ColorRangeSelection.swift": "Sources/Overrides/ColorRangeSelection.swift (pinned upstream 1.3.4 algorithm, serialized Linux preview worker, stale queued job cancellation, busy confirmation guard, finite sample coordinates)",
     "Compositor/UI/ColorRangeSheet.swift": "Sources/Overrides/ColorRangeSheet.swift (pinned upstream 1.3.4 panel; Linux Alt labels and disabled OK while computing)",
@@ -35,7 +35,61 @@
     "Compositor/CompositorApp.swift": "Sources/Overrides/CompositorApp.swift (generated Objective-C selector adaptation, Linux entry point, and pinned upstream 1.3.4 Select → Color Range menu command)",
     "Compositor/UI/ProjectTabs.swift": "Sources/Overrides/ProjectTabs.swift (OverflowMenuAnchor uses SwiftUI Menu instead of NSMenu/#selector; layout and reorder logic unchanged from tip)",
     "Compositor/UI/LayerMaskMenu.swift": "Sources/Overrides/LayerMaskMenu.swift (MaskAloneBadge is SwiftUI; LayerMaskMenu matches tip Option-click reveal/hide)",
-    "Compositor/UI/TransformInspector.swift": "Sources/Overrides/TransformInspector.swift (Show Controls enters persistent Free Transform so Cancel / Apply stay armed; Cancel/Apply re-arm while Show Controls is on)"
+    "Compositor/IO/UpdateDriver.swift": "excluded: tip 1.4.9 Sparkle user driver (AppKit update alert); Linux updates through Flatpak (Package.swift exclude)"
   },
-  "status": "Compositor/UI: 41 of 41 files have real functional coverage (32 unmodified symlinks, 8 via the overrides above, 1 excluded as dead code). Two real compiler-architecture bugs were found and fixed along the way, both general improvements to Sources/Compat/SwiftUI, not per-file patches: ModifiedContent was generic over its wrapped content, so every modifier in a chain nested a new type layer, which is what made Swift's constraint solver time out on long chains generally (erased it to `any View` internally); and a genuine .onDrop overload ambiguity. ContentView.swift needed one further, user-authorized exception: it's the only file in Compositor/UI not compiled from an unmodified symlink — Sources/Overrides/ContentView.swift is a byte-for-byte copy with exactly one structural change (splitting `body`, the same type-checker-driven split upstream's own authors already applied twice in this file) plus a minimal CompositorApplicationDelegate stand-in (three plain members only; the real NSObject/NSApplicationDelegate/Sparkle-based class stays excluded, Qt owns that role). See docs/platform-abstraction.md and the SwiftUI-compat-runtime plan for the generic Sources/Compat/SwiftUI runtime this replaced the old blanket 'Compositor/UI: Qt workflow adapter' entry with."
+  "status": "Compositor/UI: 41 of 41 files have real functional coverage (32 unmodified symlinks, 8 via the overrides above, 1 excluded as dead code). Two real compiler-architecture bugs were found and fixed along the way, both general improvements to Sources/Compat/SwiftUI, not per-file patches: ModifiedContent was generic over its wrapped content, so every modifier in a chain nested a new type layer, which is what made Swift's constraint solver time out on long chains generally (erased it to `any View` internally); and a genuine .onDrop overload ambiguity. ContentView.swift needed one further, user-authorized exception: it's the only file in Compositor/UI not compiled from an unmodified symlink — Sources/Overrides/ContentView.swift is a byte-for-byte copy with exactly one structural change (splitting `body`, the same type-checker-driven split upstream's own authors already applied twice in this file) plus a minimal CompositorApplicationDelegate stand-in (three plain members only; the real NSObject/NSApplicationDelegate/Sparkle-based class stays excluded, Qt owns that role). See docs/platform-abstraction.md and the SwiftUI-compat-runtime plan for the generic Sources/Compat/SwiftUI runtime this replaced the old blanket 'Compositor/UI: Qt workflow adapter' entry with.",
+  "drift": {
+    "Sources/Overrides/ContentView.swift": {
+      "mode": "tip",
+      "upstream": [
+        "Compositor/ContentView.swift"
+      ]
+    },
+    "Sources/Overrides/KeyboardShortcuts.swift": {
+      "mode": "tip",
+      "upstream": [
+        "Compositor/UI/KeyboardShortcuts.swift"
+      ]
+    },
+    "Sources/Overrides/LayerMaskMenu.swift": {
+      "mode": "tip",
+      "upstream": [
+        "Compositor/UI/LayerMaskMenu.swift"
+      ],
+      "allow": [
+        {
+          "line": ".buttonStyle(.borderless)",
+          "reason": "used by the Linux SwiftUI MaskAloneBadge close button (tip's badge is AppKit); the footer button follows tip",
+          "commit": "790195f"
+        }
+      ]
+    },
+    "Sources/Overrides/NativeLayerListOverride.swift": {
+      "mode": "replaced",
+      "upstream": [
+        "Compositor/UI/NativeLayerList.swift"
+      ],
+      "reason": "NSTableView list replaced by a SwiftUI List backend; behavior checked by the Qt layers smoke"
+    },
+    "Sources/Overrides/MetalLayerEffects.swift": {
+      "mode": "replaced",
+      "upstream": [
+        "Compositor/Rendering/MetalLayerEffects.swift"
+      ],
+      "reason": "Metal kernels replaced by backends/effects (CPU/OpenCV/Vulkan); parity in LayerEffectsBackendTests"
+    },
+    "Sources/Overrides/ColorRangeSelection.swift": {
+      "mode": "pinned",
+      "upstream": [
+        "Compositor/Document/ColorRangeSelection.swift"
+      ],
+      "reason": "pinned to upstream 1.3.4 Color Range (gen-color-range.py)"
+    },
+    "Sources/Overrides/ProjectTabs.swift": {
+      "mode": "tip",
+      "upstream": [
+        "Compositor/UI/ProjectTabs.swift"
+      ]
+    }
+  }
 }

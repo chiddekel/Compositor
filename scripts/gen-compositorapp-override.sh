@@ -12,14 +12,14 @@ trap 'rm -f "$GENERATED"' EXIT
     echo "// Changes: #selector(T.m(_:)) -> Selector((\"m:\")); @main removed. See the script for why."
     BODY=$(sed -E -e 's/#selector\(([A-Za-z]+)\.([A-Za-z]+)\(_:\)\)/Selector(("\2:"))/g' -e '/^@main$/d' \
         "$ROOT/Compositor/CompositorApp.swift")
-    if ! printf '%s\n' "$BODY" | grep -q 'beginColorRange'; then
+    if ! printf '%s\n' "$BODY" | grep 'beginColorRange' >/dev/null; then
         BODY=$(printf '%s\n' "$BODY" | sed '/\.disabled(!session.canSelectSubject)/a\
                     Button("Color Range…") { session.beginColorRange() }\
                         .disabled(!session.canSelectColorRange)')
     fi
     printf '%s\n' "$BODY"
 } > "$GENERATED"
-if tail -n +3 "$GENERATED" | grep -q "#selector"; then
+if tail -n +3 "$GENERATED" | grep "#selector" >/dev/null; then
     echo "error: a #selector the script doesn't handle is left in CompositorApp.swift" >&2; exit 1
 fi
 if [ "${1:-}" = "--check" ]; then

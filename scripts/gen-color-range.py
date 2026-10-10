@@ -89,6 +89,14 @@ with tempfile.TemporaryDirectory() as directory:
     model = model.replace('private nonisolated static func colorRangeResult', 'fileprivate nonisolated static func colorRangeResult')
     model = model.replace('private nonisolated struct ColorRangeJob', 'fileprivate nonisolated struct ColorRangeJob')
     model = model.replace('private nonisolated struct ColorRangeResult', 'fileprivate nonisolated struct ColorRangeResult')
+    # A sample point is checked before it becomes an Int: Int(.infinity) or Int(.nan) traps, and the shell can hand
+    # over a point from outside the canvas (e.g. a click on the pasteboard while the panel is open).
+    model = model.replace(
+        "        let x = Int(point.x.rounded(.down)), y = Int(point.y.rounded(.down))\n"
+        "        guard point.x.isFinite, point.y.isFinite, (0..<image.width).contains(x)",
+        "        guard point.x.isFinite, point.y.isFinite, abs(point.x) < 1e9, abs(point.y) < 1e9 else { return nil }\n"
+        "        let x = Int(point.x.rounded(.down)), y = Int(point.y.rounded(.down))\n"
+        "        guard (0..<image.width).contains(x)")
     if 'class ColorRangeTask' not in model:
         model += '''
 

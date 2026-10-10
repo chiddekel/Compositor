@@ -91,3 +91,10 @@ real bug — they pass clean (19/19, no crash) under this doc's documented invoc
 `--no-parallel`. `CIFilter`'s `supportedNames` allowlist was also missing `"CIBloom"` (silently fell back to the
 unmodified source image instead of failing loudly), and the compat `CIBloom` implementation didn't spread alpha
 past the source's opaque region the way real `CIBloom`'s glow does — both fixed, `FinishingFilterTests` now 5/5.
+
+## 2026-10-10: upstream 1.4.9 resources
+
+Upstream 1.4.9 reads `CameraRawTables.bin` through `Bundle.main`, which on Linux is the directory holding the
+executable. Before `swift test`, copy it next to the test binary:
+`install -m644 Compositor/Resources/CameraRawTables.bin .build/x86_64-unknown-linux-gnu/debug/` (the Flatpak manifest
+and `scripts/run-compositor.sh` install it beside the app binary). Without it, `CameraRawTests` fails 15 of 28 tests.
