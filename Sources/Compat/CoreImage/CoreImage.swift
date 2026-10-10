@@ -122,7 +122,8 @@ private indirect enum Node {
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
-        case .blendMask(let n, _, _, _), .curves(let n, _, _), .nearest(let n): return n.extent
+        case .blendMask(let n, let bg, _, _): return n.extent.union(bg.extent)
+        case .curves(let n, _, _), .nearest(let n): return n.extent
         case .over(let top, let bottom): return top.extent.union(bottom.extent)
         case .separable(let s, let b, _): return s.extent.union(b.extent)
         case .transform(let n, let t): return n.extent.applying(t)

@@ -136,8 +136,7 @@ final class CAMetalLayer {
             let key = patch.rect.origin, identity = ObjectIdentifier(patch.image)
             guard written[key] != identity else { continue }
             guard let tile = upload(patch.image, mask: stroke.isMask) else { continue }
-            let placed = tile.transformed(by: CGAffineTransform(translationX: patch.rect.minX, y: patch.rect.minY))
-            current = placed.composited(over: current)
+            current = Self.replacing(current, with: tile, in: patch.rect)
             written[key] = identity
         }
         strokes[id] = (stroke, current, written, frame)
@@ -148,13 +147,11 @@ final class CAMetalLayer {
         let grid = CGRect(x: 0, y: 0, width: raster.width, height: raster.height)
         var start = (raster.isMask ? CIImage(color: CIColor(red: 1, green: 1, blue: 1)) : CIImage.clear).cropped(to: grid)
         if let base = raster.base, let img = upload(base, mask: raster.isMask) {
-            start = img.transformed(by: CGAffineTransform(translationX: raster.baseRect.minX, y: raster.baseRect.minY))
-                .composited(over: start)
+            start = Self.replacing(start, with: img, in: raster.baseRect)
         }
         for patch in raster.patches {
             guard let tile = upload(patch.image, mask: raster.isMask) else { continue }
-            start = tile.transformed(by: CGAffineTransform(translationX: patch.rect.minX, y: patch.rect.minY))
-                .composited(over: start)
+            start = Self.replacing(start, with: tile, in: patch.rect)
         }
         return level == 0 ? start : Self.reduced(start, width: raster.width, height: raster.height, level: level)
     }
@@ -183,6 +180,14 @@ final class CAMetalLayer {
             dest.restoreGState()
         }
         endFrame()
+    }
+
+    /// `image` with `tile` (its origin at zero) written over `rect`, as a blit into a texture writes it: the tile's pixels
+    /// replace what was there, transparent ones too (a pixel move's hole).
+    static func replacing(_ image: CIImage, with tile: CIImage, in rect: CGRect) -> CIImage {
+        let placed = tile.transformed(by: CGAffineTransform(translationX: rect.minX, y: rect.minY))
+        return placed.applyingFilter("CIBlendWithAlphaMask", parameters: [
+            kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: CIImage(color: .white).cropped(to: rect.integral)])
     }
 
     static func size(_ width: Int, _ height: Int, level: Int) -> CGSize {
