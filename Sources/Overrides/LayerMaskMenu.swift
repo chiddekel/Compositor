@@ -55,14 +55,3 @@ final class MaskAloneBadgeView: NSView {
         if point.x >= bounds.maxX - 8 - 16 { close() }
     }
 }
-
-extension ImageLayer {
-    /// The layer's size on the canvas and, once it's scaled, by how much (from tip NativeLayerList).
-    var sizeLabel: String {
-        let text = "\(Int(size.width.rounded())) × \(Int(size.height.rounded())) px"
-        guard let pixels = asset?.image.width, pixels > 0 else { return text }
-        let percent = Double(size.width) / Double(pixels) * 100
-        guard abs(percent - 100) >= 0.05 else { return text }
-        return text + " · " + percent.formatted(.number.precision(.fractionLength(0...1))) + "%"
-    }
-}

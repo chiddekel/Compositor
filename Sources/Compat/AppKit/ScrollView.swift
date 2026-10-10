@@ -27,14 +27,28 @@ public enum NSBorderType: Int, Sendable { case noBorder, lineBorder, bezelBorder
     /// Moves the visible area's origin to `point` (document coordinates), as `NSClipView.scroll(to:)` does.
     open func scroll(to point: CGPoint) {
         let old = bounds
-        bounds = CGRect(origin: point, size: frame.size)
+        bounds = CGRect(origin: constrainedOrigin(point), size: frame.size)
         if bounds.origin != old.origin, postsBoundsChangedNotifications {
             NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: self)
         }
     }
+    /// Keeps the visible area over the document, as AppKit's `constrainBoundsRect` does: never scrolled past its end
+    /// (or before its start), and at its start when the document is smaller than the clip view.
+    func constrainedOrigin(_ point: CGPoint) -> CGPoint {
+        guard let document = documentView?.frame else { return point }
+        let maxX = max(document.minX, document.maxX - frame.width), maxY = max(document.minY, document.maxY - frame.height)
+        return CGPoint(x: min(max(point.x, document.minX), maxX), y: min(max(point.y, document.minY), maxY))
+    }
+    /// Re-applies that constraint after the document or this view changed size.
+    public func reconstrain() {
+        let origin = constrainedOrigin(bounds.origin)
+        if origin != bounds.origin { scroll(to: origin) }
+    }
     open override func setFrameSize(_ size: CGSize) {
         super.setFrameSize(size)
-        bounds = CGRect(origin: bounds.origin, size: size)
+        bounds = CGRect(origin: constrainedOrigin(bounds.origin), size: size)
+        // The document (a table tiling itself to the clip's width) lays out again for the new size.
+        documentView?.needsLayout = true
     }
 }
 
@@ -73,4 +87,29 @@ public enum NSBorderType: Int, Sendable { case noBorder, lineBorder, bezelBorder
     open var documentVisibleRect: CGRect { contentView.bounds }
     /// Scrollers would be updated here; there are none to redraw.
     open func reflectScrolledClipView(_ clipView: NSClipView) {}
+}
+
+extension NSView {
+    /// The scroll view this view scrolls in, if any.
+    public var enclosingScrollView: NSScrollView? {
+        var current = superview
+        while let view = current {
+            if let scroll = view as? NSScrollView { return scroll }
+            current = view.superview
+        }
+        return nil
+    }
+    /// Scrolls the clip view holding this view by the least that brings `rect` (this view's coordinates) into view, as
+    /// AppKit's; false when there is no clip view or nothing to scroll.
+    @discardableResult public func scrollToVisible(_ rect: CGRect) -> Bool {
+        guard let clip = superview as? NSClipView else { return false }
+        let visible = clip.bounds
+        let target = CGRect(x: rect.minX + frame.minX, y: rect.minY + frame.minY, width: rect.width, height: rect.height)
+        var origin = visible.origin
+        if target.minY < visible.minY { origin.y = target.minY } else if target.maxY > visible.maxY { origin.y = target.maxY - visible.height }
+        if target.minX < visible.minX { origin.x = target.minX } else if target.maxX > visible.maxX { origin.x = target.maxX - visible.width }
+        guard origin != visible.origin else { return false }
+        clip.scroll(to: origin)
+        return true
+    }
 }

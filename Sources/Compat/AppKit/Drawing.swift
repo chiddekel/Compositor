@@ -174,6 +174,16 @@ public final class CAMediaTimingFunction {
     public var duration: TimeInterval = 0.25
     public var timingFunction: CAMediaTimingFunction?
     public var allowsImplicitAnimation = false
+    public var completionHandler: (@MainActor () -> Void)?
+    private static var groups: [NSAnimationContext] = []
+    private static let outermost = NSAnimationContext()
+    /// The group being built (`beginGrouping`), or the implicit outermost one.
+    public static var current: NSAnimationContext { groups.last ?? outermost }
+    public static func beginGrouping() { groups.append(NSAnimationContext()) }
+    public static func endGrouping() {
+        guard let group = groups.popLast(), let handler = group.completionHandler else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { handler() } }
+    }
     public static func runAnimationGroup(_ changes: (NSAnimationContext) -> Void, completionHandler: (@MainActor () -> Void)? = nil) {
         changes(NSAnimationContext())
         if let completionHandler { DispatchQueue.main.async { MainActor.assumeIsolated { completionHandler() } } }

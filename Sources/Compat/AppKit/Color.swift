@@ -67,6 +67,19 @@ open class NSColor: @unchecked Sendable, Equatable {
     public static let green = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
     public static let blue = NSColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)
     /// The system accent colour; a fixed blue on Linux (the Qt shell owns real theming).
+    // Semantic colors, as the dark appearance gives them (the editor's).
+    public static let labelColor = NSColor(white: 1, alpha: 0.85)
+    public static let secondaryLabelColor = NSColor(white: 1, alpha: 0.55)
+    public static let tertiaryLabelColor = NSColor(white: 1, alpha: 0.25)
+    public static let quaternaryLabelColor = NSColor(white: 1, alpha: 0.1)
+    public static let separatorColor = NSColor(white: 1, alpha: 0.1)
+    public static let textColor = NSColor(white: 1, alpha: 1)
+    public static let systemRed = NSColor(srgbRed: 1, green: 0.271, blue: 0.227, alpha: 1)
+    public static let systemOrange = NSColor(srgbRed: 1, green: 0.624, blue: 0.039, alpha: 1)
+    public static let systemYellow = NSColor(srgbRed: 1, green: 0.839, blue: 0.039, alpha: 1)
+    public static let systemGreen = NSColor(srgbRed: 0.188, green: 0.82, blue: 0.345, alpha: 1)
+    public static let systemBlue = NSColor(srgbRed: 0.039, green: 0.518, blue: 1, alpha: 1)
+    public static let systemGray = NSColor(srgbRed: 0.596, green: 0.596, blue: 0.616, alpha: 1)
     public static let controlAccentColor = NSColor(srgbRed: 0, green: 0.478, blue: 1, alpha: 1)
 }
 

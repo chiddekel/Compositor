@@ -24,9 +24,11 @@
         super.init(frame: .zero)
         // A view that stands in for native content (a list, a table) — the root or anywhere below it — puts that view
         // in the hosted tree, as real SwiftUI does for an `NSViewRepresentable` inside the hosted hierarchy.
-        if let content = ViewResolver.firstNativeView(in: rootView) { addSubview(content) }
+        if let content = ViewResolver.firstNativeView(in: rootView) { nativeContent = content; addSubview(content) }
         layoutHostedViews()
     }
+    /// That stand-in native view: it fills this view (its place in the SwiftUI layout isn't worked out).
+    private var nativeContent: NSView?
     public override var frame: CGRect { didSet { if frame.size != oldValue.size { layoutHostedViews() } } }
     /// Real SwiftUI re-lays out whenever state changes; compat `@State` doesn't notify, so an explicit layout request
     /// always re-resolves (cheap for the small trees that host native views).
@@ -41,6 +43,7 @@
     private var relayoutDepth = 0
 
     private func layoutHostedViews() {
+        if let nativeContent, nativeContent.frame != bounds { nativeContent.frame = bounds }
         var root = ViewResolver.resolve(rootView)
         guard Self.containsNative(root) || !hosted.isEmpty else { return }
         root.assignIDs()

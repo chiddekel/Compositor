@@ -411,15 +411,32 @@ struct NativeLayerList: View {
     }
 }
 
-/// The AppKit side of the layers list, as `NSHostingView(rootView: LayersPanel(...))` holds it on macOS: upstream's
-/// `LayerTableView` (the `UIStandIns.swift` stand-in) as the hosted subview a user can focus. The Qt renderer never
-/// asks for this — it draws the `List` above — so it only matters to AppKit-level callers (upstream's own
-/// `BrushTests` focuses it to check that the brush keys still reach the brush from the layers panel).
+/// The AppKit side of the layers list, as `NSHostingView(rootView: LayersPanel(...))` holds it on macOS: tip's own
+/// scroll view and `LayerTableView`, made by tip's representable (`NativeLayerTable`, generated into
+/// NativeLayerListTable.swift) with its Coordinator as delegate and data source. The Qt renderer never asks for this —
+/// it draws the `List` above — so it serves AppKit-level callers: upstream's `BrushTests` focuses the table, and
+/// `CursorTests` points at its rows.
 extension NativeLayerList: HostedNativeContent {
-    func makeNativeView() -> NSView? {
-        let table = LayerTableView(frame: .zero)
-        table.session = session
-        return table
+    func makeNativeView() -> NSView? { NativeLayerTableHost(NativeLayerTable(session: session)) }
+}
+
+/// Holds a representable's view and its coordinator (the table's delegate is weak), filling this view and updating
+/// it on each layout, as SwiftUI's hosting does.
+final class NativeLayerTableHost: NSView {
+    private let representable: NativeLayerTable
+    private let content: NSView
+    private let state: AnyObject
+    init(_ representable: NativeLayerTable) {
+        self.representable = representable
+        (content, state) = representable._makeNativeView()
+        super.init(frame: .zero)
+        addSubview(content)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layout() {
+        super.layout()
+        content.frame = bounds
+        representable._updateNativeView(content, state: state)
     }
 }
 

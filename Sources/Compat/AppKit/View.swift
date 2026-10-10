@@ -94,6 +94,25 @@ public final class NSTrackingArea {
     public var window: NSWindow? { hostWindow ?? superview?.window }
     public var isHidden = false
     public var wantsLayer = false
+    /// Off for a view that constraints place (Layout.swift); its frame is then the solver's to set.
+    public var translatesAutoresizingMaskIntoConstraints = true
+    public var toolTip: String?
+    public var alphaValue: CGFloat = 1
+    /// The contextual menu; `menu(for:)` is what a right-click shows (this one, unless a view decides otherwise).
+    open var menu: NSMenu?
+    open func menu(for event: NSEvent) -> NSMenu? { menu }
+    /// The view's identifier (a table's reuse identifier for its row views).
+    open var identifier: NSUserInterfaceItemIdentifier?
+    public private(set) var registeredDraggedTypes: [NSPasteboard.PasteboardType] = []
+    open func registerForDraggedTypes(_ newTypes: [NSPasteboard.PasteboardType]) {
+        registeredDraggedTypes += newTypes.filter { !registeredDraggedTypes.contains($0) }
+    }
+    open func unregisterDraggedTypes() { registeredDraggedTypes = [] }
+    open func viewWillMove(toWindow newWindow: NSWindow?) {}
+    open func viewWillMove(toSuperview newSuperview: NSView?) {}
+    open func accessibilityPerformPress() -> Bool { false }
+    /// Scrolls the enclosing scroll view toward a drag past this view's edge; there is no scrolling to do headless.
+    @discardableResult open func autoscroll(with event: NSEvent) -> Bool { false }
     public var autoresizingMask: AutoresizingMask = []
     public struct AutoresizingMask: OptionSet, Sendable {
         public let rawValue: Int
@@ -129,7 +148,10 @@ public final class NSTrackingArea {
 
     open func addSubview(_ view: NSView) {
         view.removeFromSuperview()
+        view.viewWillMove(toSuperview: self)
+        if view.window !== window { view.viewWillMove(toWindow: window) }
         view.superview = self; subviews.append(view)
+        needsLayout = true
         view.windowDidChange()
     }
     open func addSubview(_ view: NSView, positioned place: NSWindow.OrderingMode, relativeTo other: NSView?) {
@@ -154,8 +176,16 @@ public final class NSTrackingArea {
         return false
     }
     open func removeFromSuperview() {
-        superview?.subviews.removeAll { $0 === self }
-        superview = nil
+        guard let superview else { return }
+        viewWillMove(toSuperview: nil)
+        if window != nil { viewWillMove(toWindow: nil) }
+        // As AppKit: constraints between this view and the hierarchy it leaves go with it.
+        for constraint in NSLayoutConstraint.active
+        where [constraint.firstAttribute.item, constraint.secondAttribute?.item].contains(where: { $0 === self }) {
+            constraint.isActive = false
+        }
+        superview.subviews.removeAll { $0 === self }
+        self.superview = nil
         windowDidChange()
     }
     /// Tells this view and everything below it that the window it belongs to may have changed (AppKit sends
@@ -208,6 +238,7 @@ public final class NSTrackingArea {
     private var hasDisplayed = false
     func displayTreeIfNeeded(force: Bool = false) {
         guard !isHidden else { return }
+        layoutSubtreeIfNeeded()
         if force || needsDisplay || !hasDisplayed {
             let width = min(max(Int(bounds.width.rounded(.up)), 1), 4096), height = min(max(Int(bounds.height.rounded(.up)), 1), 4096)
             if let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -226,7 +257,16 @@ public final class NSTrackingArea {
         }
         for child in subviews { child.displayTreeIfNeeded(force: force) }
     }
-    open func layoutSubtreeIfNeeded() { if needsLayout { layout(); needsLayout = false } }
+    /// As AppKit's: this view's constraints place its subviews and guides, then `layout()` runs; then the same for
+    /// each subview that needs it.
+    open func layoutSubtreeIfNeeded() {
+        if needsLayout {
+            solveConstraints()
+            layout()
+            needsLayout = false
+        }
+        for child in subviews { child.layoutSubtreeIfNeeded() }
+    }
     open func layout() {}
     /// No cached intrinsic size is kept (layout asks `fittingSize` directly), so there is nothing to discard.
     open func invalidateIntrinsicContentSize() {}
@@ -278,50 +318,50 @@ public final class NSTrackingArea {
 
     // MARK: Geometry conversion (translation only; enough for unrotated view trees)
 
-    /// Origin of this view in window coordinates.
-    private var originInWindow: CGPoint {
-        var p = frame.origin, v = superview
-        while let s = v {
-            p.x += s.frame.origin.x - s.bounds.origin.x; p.y += s.frame.origin.y - s.bounds.origin.y
-            v = s.superview
-        }
+    /// A point in this view's coordinates, in its superview's (or, at the top of the tree, the window's, which are
+    /// not flipped). Within the frame, y counts from the frame's lower edge in an unflipped parent and from its upper
+    /// edge in a flipped one; it turns over where this view and its parent disagree.
+    private func toParent(_ point: CGPoint) -> CGPoint {
+        let parentFlipped = superview?.isFlipped ?? false
+        let u = point.x - bounds.minX, v = point.y - bounds.minY
+        return CGPoint(x: frame.minX + u, y: frame.minY + (isFlipped == parentFlipped ? v : frame.height - v))
+    }
+    private func fromParent(_ point: CGPoint) -> CGPoint {
+        let parentFlipped = superview?.isFlipped ?? false
+        let u = point.x - frame.minX, v = point.y - frame.minY
+        return CGPoint(x: u + bounds.minX, y: (isFlipped == parentFlipped ? v : frame.height - v) + bounds.minY)
+    }
+    /// This view's point in window coordinates (the top of its tree when it has no window).
+    private func toWindow(_ point: CGPoint) -> CGPoint {
+        var p = point, view: NSView? = self
+        while let current = view { p = current.toParent(p); view = current.superview }
+        return p
+    }
+    private func fromWindow(_ point: CGPoint) -> CGPoint {
+        var chain: [NSView] = []
+        var view: NSView? = self
+        while let current = view { chain.append(current); view = current.superview }
+        var p = point
+        for current in chain.reversed() { p = current.fromParent(p) }
         return p
     }
     open func convert(_ point: CGPoint, from view: NSView?) -> CGPoint {
-        if view == nil {
-            // Window coords are bottom-left. Flipped views are top-left within their bounds.
-            // Use this view's bounds height (not window.frame.height): a titled window's frame can
-            // disagree with the content view, and that delta shifted every hit test vs drawn chrome.
-            let localX = point.x - originInWindow.x
-            let localY = isFlipped
-                ? (bounds.height - (point.y - originInWindow.y))
-                : (point.y - originInWindow.y)
-            return CGPoint(x: localX, y: localY)
-        }
-        let source = view?.originInWindow ?? .zero, mine = originInWindow
-        var result = CGPoint(x: point.x + source.x - mine.x, y: point.y + source.y - mine.y)
-        if (view?.isFlipped ?? false) != self.isFlipped {
-            result.y = bounds.height - result.y
-        }
-        return result
+        guard let view else { return fromWindow(point) }
+        return fromWindow(view.toWindow(point))
     }
     open func convert(_ point: CGPoint, to view: NSView?) -> CGPoint {
-        if view == nil {
-            let winX = point.x + originInWindow.x
-            let winY = isFlipped
-                ? (originInWindow.y + bounds.height - point.y)
-                : (point.y + originInWindow.y)
-            return CGPoint(x: winX, y: winY)
-        }
-        let target = view?.originInWindow ?? .zero, mine = originInWindow
-        var result = CGPoint(x: point.x + mine.x - target.x, y: point.y + mine.y - target.y)
-        if self.isFlipped != (view?.isFlipped ?? false) {
-            result.y = (view?.bounds.height ?? bounds.height) - result.y
-        }
-        return result
+        guard let view else { return toWindow(point) }
+        return view.fromWindow(toWindow(point))
     }
-    open func convert(_ rect: CGRect, from view: NSView?) -> CGRect { CGRect(origin: convert(rect.origin, from: view), size: rect.size) }
-    open func convert(_ rect: CGRect, to view: NSView?) -> CGRect { CGRect(origin: convert(rect.origin, to: view), size: rect.size) }
+    /// A rect's two corners converted (a flip in between swaps which is the origin).
+    open func convert(_ rect: CGRect, from view: NSView?) -> CGRect {
+        let a = convert(rect.origin, from: view), b = convert(CGPoint(x: rect.maxX, y: rect.maxY), from: view)
+        return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y))
+    }
+    open func convert(_ rect: CGRect, to view: NSView?) -> CGRect {
+        let a = convert(rect.origin, to: view), b = convert(CGPoint(x: rect.maxX, y: rect.maxY), to: view)
+        return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y))
+    }
     open func convertToBacking(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x * backingScaleFactor, y: point.y * backingScaleFactor) }
     open func convertFromBacking(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x / backingScaleFactor, y: point.y / backingScaleFactor) }
     open func convertToBacking(_ size: CGSize) -> CGSize { CGSize(width: size.width * backingScaleFactor, height: size.height * backingScaleFactor) }
@@ -410,14 +450,36 @@ public enum NSAccessibility {
     @discardableResult open func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         if let current = firstResponder, !current.resignFirstResponder() { return false }
         guard responder?.becomeFirstResponder() ?? true else { return false }
+        // Editing ends when focus moves on: the text goes back to its field, then the field's delegate hears of it.
+        if let field = editedField, responder !== field {
+            editedField = nil
+            if let editor = sharedFieldEditor { field.stringValue = editor.string }
+            field.delegate?.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+        }
         // Like AppKit, focusing an editable text field puts the shared field editor (an NSText) in the responder chain.
         if let field = responder as? NSTextField, field.isEditable {
             let editor = fieldEditor(true, for: field)
+            editor?.string = field.stringValue
             firstResponder = editor
+            editedField = field
+            field.delegate?.controlTextDidBeginEditing(Notification(name: NSControl.textDidBeginEditingNotification, object: field))
         } else {
             firstResponder = responder
         }
         return true
+    }
+    /// The text field the field editor is editing, while it is.
+    public internal(set) weak var editedField: NSTextField?
+    private var queuedEvents: [NSEvent] = []
+    /// Queues an event for `nextEvent(matching:)` (a host feeding a press-drag a view is tracking).
+    open func postEvent(_ event: NSEvent, atStart: Bool) {
+        if atStart { queuedEvents.insert(event, at: 0) } else { queuedEvents.append(event) }
+    }
+    /// The next queued event of these types, removing it; nil when none is waiting. Tracking loops
+    /// (`while let event = window.nextEvent(...)`) end when the host has nothing more to give.
+    open func nextEvent(matching mask: NSEvent.EventTypeMask) -> NSEvent? {
+        guard let index = queuedEvents.firstIndex(where: { mask.contains(NSEvent.EventTypeMask(type: $0.type)) }) else { return nil }
+        return queuedEvents.remove(at: index)
     }
     private var sharedFieldEditor: NSTextView?
     open func fieldEditor(_ createIfNeeded: Bool, for object: Any?) -> NSText? {
@@ -633,31 +695,141 @@ public struct NSScreen {
 
 // MARK: - Controls the model layer instantiates (inert containers)
 
+extension NSControl {
+    public static let textDidBeginEditingNotification = Notification.Name("NSControlTextDidBeginEditingNotification")
+    public static let textDidChangeNotification = Notification.Name("NSControlTextDidChangeNotification")
+    public static let textDidEndEditingNotification = Notification.Name("NSControlTextDidEndEditingNotification")
+}
 @MainActor open class NSControl: NSView {
     public var doubleValue = 0.0, floatValue: Float = 0, intValue: Int32 = 0
     public var stringValue = "", isEnabled = true
     public var target: AnyObject?
     public var action: Selector?
+    /// Sends `action` to `target` (or up the responder chain) from this control.
+    @discardableResult open func sendAction(_ action: Selector?, to target: Any?) -> Bool {
+        guard let action else { return false }
+        return NSApp.sendAction(action, to: target, from: self)
+    }
 }
+/// What a text field tells its delegate while it is edited (all optional on the Mac).
+@MainActor public protocol NSTextFieldDelegate: AnyObject {
+    func controlTextDidBeginEditing(_ obj: Notification)
+    func controlTextDidChange(_ obj: Notification)
+    func controlTextDidEndEditing(_ obj: Notification)
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool
+}
+extension NSTextFieldDelegate {
+    public func controlTextDidBeginEditing(_ obj: Notification) {}
+    public func controlTextDidChange(_ obj: Notification) {}
+    public func controlTextDidEndEditing(_ obj: Notification) {}
+    public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool { false }
+}
+
+/// A text field. Focusing an editable one puts the window's field editor in the responder chain, holding the field's
+/// text (`currentEditor()`); when focus moves on, the text comes back and the delegate hears the editing ended.
 @MainActor open class NSTextField: NSControl {
     open var isEditable = true
+    open var isSelectable = true
     open var placeholderString: String?
     open var isBezeled = true
-    public static func labelWithString(_ string: String) -> NSTextField { let f = NSTextField(frame: .zero); f.stringValue = string; return f }
+    open var isBordered = false
+    open var drawsBackground = false
+    open var backgroundColor: NSColor?
+    open var font: NSFont? = .systemFont(ofSize: 13)
+    open var textColor: NSColor? = .labelColor
+    open var alignment: NSTextAlignment = .natural
+    open var lineBreakMode: NSLineBreakMode = .byClipping
+    open var usesSingleLineMode = false
+    open var maximumNumberOfLines = 0
+    open var preferredMaxLayoutWidth: CGFloat = 0
+    public weak var delegate: (any NSTextFieldDelegate)?
+
+    public convenience init(labelWithString string: String) {
+        self.init(frame: .zero)
+        stringValue = string
+        isEditable = false; isSelectable = false; isBezeled = false; isBordered = false; drawsBackground = false
+    }
+    public convenience init(string: String) { self.init(frame: .zero); stringValue = string }
+    public static func labelWithString(_ string: String) -> NSTextField { NSTextField(labelWithString: string) }
+
+    /// The field editor while this field is being edited, else nil.
+    open func currentEditor() -> NSText? {
+        guard let window, window.editedField === self else { return nil }
+        return window.fieldEditor(false, for: self)
+    }
+    open func selectText(_ sender: Any?) {
+        window?.makeFirstResponder(self)
+        currentEditor()?.selectAll(sender)
+    }
+    /// One line of text in the field's font (a label's own size, as AppKit measures it, approximately).
+    open override var intrinsicContentSize: NSSize {
+        let size = font?.pointSize ?? 13
+        let longest = stringValue.split(separator: "\n", omittingEmptySubsequences: false).map(\.count).max() ?? 0
+        let lines = usesSingleLineMode || maximumNumberOfLines == 1 ? 1 : max(1, stringValue.split(separator: "\n").count)
+        return NSSize(width: ceil(CGFloat(longest) * size * 0.55) + 4, height: ceil(size * 1.2) * CGFloat(lines) + 2)
+    }
 }
+
+public enum NSImageScaling: UInt, Sendable {
+    case scaleProportionallyDown = 0, scaleAxesIndependently, scaleNone, scaleProportionallyUpOrDown
+}
+extension NSControl {
+    public enum ImagePosition: UInt, Sendable {
+        case noImage = 0, imageOnly, imageLeft, imageRight, imageBelow, imageAbove, imageOverlaps, imageLeading, imageTrailing
+    }
+}
+
 @MainActor open class NSButton: NSControl {
-    public var title = "", state = 0
+    public enum BezelStyle: UInt, Sendable {
+        case automatic = 0, push, flexiblePush, disclosure, circular, helpButton, smallSquare, toolbar, accessoryBarAction
+        case accessoryBar, pushDisclosure, badge, inline, texturedRounded, regularSquare, roundRect, recessed
+    }
+    public enum ButtonType: UInt, Sendable {
+        case momentaryLight = 0, pushOnPushOff, toggle, `switch`, radio, momentaryChange, onOff, momentaryPushIn
+        case accelerator, multiLevelAccelerator
+    }
+    public var title = ""
+    public var state: NSControl.StateValue = .off
     public var isBordered = true
     public var keyEquivalent = ""
+    public var keyEquivalentModifierMask: NSEvent.ModifierFlags = []
+    public var image: NSImage?
+    public var alternateImage: NSImage?
+    public var imagePosition: NSControl.ImagePosition = .noImage
+    public var imageScaling: NSImageScaling = .scaleProportionallyDown
+    public var contentTintColor: NSColor?
+    public var bezelStyle: BezelStyle = .automatic
+    public var allowsMixedState = false
+    public private(set) var buttonType: ButtonType = .momentaryPushIn
+    public func setButtonType(_ type: ButtonType) { buttonType = type }
     /// What a click does when AppKit itself owns the button (an alert's, a window's close button).
     var clickHandler: (() -> Void)?
-    /// Clicks the button: its own action (an alert or title-bar button), else its target-action, as AppKit does.
+    /// Clicks the button: its own action (an alert or title-bar button), else its target-action, as AppKit does. A
+    /// toggling button flips its state first.
     open func performClick(_ sender: Any?) {
         guard isEnabled else { return }
+        if [.pushOnPushOff, .toggle, .switch, .onOff].contains(buttonType) { state = state == .on ? .off : .on }
+        else if buttonType == .radio { state = .on }
         if let clickHandler { clickHandler(); return }
         if let action { NSApp.sendAction(action, to: target, from: self) }
     }
+    /// A press clicks the button (the press and release are one event here).
+    open override func mouseDown(with event: NSEvent) { performClick(self) }
+    open override var intrinsicContentSize: NSSize {
+        if imagePosition == .imageOnly, let image { return image.size }
+        return NSSize(width: CGFloat(title.count) * 7 + (isBordered ? 24 : 4), height: isBordered ? 22 : 16)
+    }
 }
+
+/// A table row's view: a plain view with the outlets AppKit's cell views have.
+@MainActor open class NSTableCellView: NSView {
+    public enum BackgroundStyle: Int, Sendable { case normal = 0, emphasized, raised, lowered }
+    public var textField: NSTextField?
+    public var imageView: NSView?
+    public var objectValue: Any?
+    open var backgroundStyle: BackgroundStyle = .normal
+}
+
 @MainActor open class NSTableColumn { public var identifier: NSUserInterfaceItemIdentifier; public var width: CGFloat = 100
     public init(identifier: NSUserInterfaceItemIdentifier) { self.identifier = identifier } }
 public struct NSUserInterfaceItemIdentifier: Hashable, RawRepresentable, ExpressibleByStringLiteral, Sendable {
@@ -667,26 +839,64 @@ public struct NSUserInterfaceItemIdentifier: Hashable, RawRepresentable, Express
     public init(stringLiteral value: String) { rawValue = value }
 }
 
-/// AppKit splits the table's backing store from its row views; both are optional methods on the Mac.
-public protocol NSTableViewDataSource: AnyObject {
+/// AppKit splits the table's backing store from its row views; every method is optional on the Mac (defaults below).
+@MainActor public protocol NSTableViewDataSource: AnyObject {
     func numberOfRows(in tableView: NSTableView) -> Int
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting?
+    func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
+                   proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation
+    func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
+                   dropOperation: NSTableView.DropOperation) -> Bool
 }
-public protocol NSTableViewDelegate: AnyObject {
+extension NSTableViewDataSource {
+    public func numberOfRows(in tableView: NSTableView) -> Int { 0 }
+    public func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? { nil }
+    public func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
+                          proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation { [] }
+    public func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
+                          dropOperation: NSTableView.DropOperation) -> Bool { false }
+}
+@MainActor public protocol NSTableViewDelegate: AnyObject {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat
     func tableViewSelectionDidChange(_ notification: Notification)
 }
 extension NSTableViewDelegate {
     public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { nil }
+    public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { tableView.rowHeight }
     public func tableViewSelectionDidChange(_ notification: Notification) {}
 }
 
-/// A minimal table backend: top-down row rects (the table is flipped), `row(at:)`, row views the dataSource/delegate
-/// make, selection with the change notification. With no dataSource it stays inert — 0 rows, no views — which is what
-/// bare `LayerTableView()` constructions (upstream tests) expect; the Qt shell keeps drawing the SwiftUI list.
+/// A table backend: rows stacked top down (the table is flipped), each as tall as the delegate says, `intercellSpacing`
+/// between them; `row(at:)`; row views the delegate makes, kept at their rows; selection with its notification; a
+/// click selecting rows and sending `action` (`doubleAction` on a double click) with `clickedRow` set; and the data
+/// source's drag and drop. With no data source it stays inert — 0 rows, no views — as a bare `LayerTableView()` is.
 @MainActor open class NSTableView: NSControl {
+    public enum DropOperation: UInt, Sendable { case on = 0, above = 1 }
+    public enum Style: Int, Sendable { case automatic, fullWidth, inset, sourceList, plain }
+    public enum ColumnAutoresizingStyle: UInt, Sendable {
+        case noColumnAutoresizing, uniformColumnAutoresizingStyle, sequentialColumnAutoresizingStyle
+        case reverseSequentialColumnAutoresizingStyle, lastColumnOnlyAutoresizingStyle, firstColumnOnlyAutoresizingStyle
+    }
+    public enum DraggingDestinationFeedbackStyle: Int, Sendable { case none = -1, regular = 0, sourceList, gap }
+    public enum SelectionHighlightStyle: Int, Sendable { case none = -1, regular = 0, sourceList = 1 }
+
     public weak var dataSource: (any NSTableViewDataSource)?
     public weak var delegate: (any NSTableViewDelegate)?
     public private(set) var tableColumns: [NSTableColumn] = []
+    public var headerView: NSView?
+    public var backgroundColor: NSColor = .clear
+    public var style: Style = .automatic
+    public var columnAutoresizingStyle: ColumnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+    public var draggingDestinationFeedbackStyle: DraggingDestinationFeedbackStyle = .regular
+    public var selectionHighlightStyle: SelectionHighlightStyle = .regular
+    public var usesAlternatingRowBackgroundColors = false
+    public var allowsMultipleSelection = false
+    public var allowsEmptySelection = true
+    public var doubleAction: Selector?
+    /// The row (and column) of the click being handled, -1 outside one, as AppKit sets them around `action`.
+    public private(set) var clickedRow = -1
+    public private(set) var clickedColumn = -1
     open var selectedRow: Int { selectedRowIndexes.first ?? -1 }
     open var selectedRowIndexes = IndexSet() {
         didSet {
@@ -697,32 +907,133 @@ extension NSTableViewDelegate {
         }
     }
     public static let selectionDidChangeNotification = Notification.Name("NSTableViewSelectionDidChange")
-    /// The height of every row; `intercellSpacing.height` more sits between rows.
-    open var rowHeight: CGFloat = 17
-    public var intercellSpacing: CGSize = CGSize(width: 1, height: 2)
+    /// The height of a row the delegate doesn't size; `intercellSpacing.height` more sits between rows.
+    open var rowHeight: CGFloat = 17 { didSet { rowOrigins = nil } }
+    public var intercellSpacing: CGSize = CGSize(width: 1, height: 2) { didSet { rowOrigins = nil } }
     private var rowViews: [Int: NSView] = [:]
     private var recycledViews: [NSUserInterfaceItemIdentifier: [NSView]] = [:]
+    /// Each row's top, then the end of the last: worked out once per reload or height change.
+    private var rowOrigins: [CGFloat]?
+    private var localDragMask: NSDragOperation = .every, externalDragMask: NSDragOperation = []
+    /// Where the drop being validated would land (`setDropRow`), -1 with none.
+    public private(set) var dropRow = -1
+    public private(set) var dropOperation: DropOperation = .above
+
     open func addTableColumn(_ column: NSTableColumn) { tableColumns.append(column) }
     open func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool) {
         selectedRowIndexes = extend ? selectedRowIndexes.union(indexes) : indexes
     }
+    open func deselectAll(_ sender: Any?) { if allowsEmptySelection { selectedRowIndexes = [] } }
     /// AppKit's Select All: every row. `LayerTableView` overrides this to select the canvas instead.
     open func selectAll(_ sender: Any?) {
         selectRowIndexes(IndexSet(integersIn: 0..<numberOfRows), byExtendingSelection: false)
     }
     open var numberOfRows: Int { dataSource?.numberOfRows(in: self) ?? 0 }
-    /// Drops the cached row views, as AppKit's; the next `view(atColumn:row:makeIfNecessary: true)` makes fresh ones.
-    open func reloadData() { rowViews.values.forEach { $0.removeFromSuperview() }; rowViews = [:] }
+    open var numberOfColumns: Int { tableColumns.count }
+
+    /// Drops the row views, as AppKit's reload does (to the reuse pool); the next `view(atColumn:row:makeIfNecessary:
+    /// true)` asks the delegate again.
+    open func reloadData() {
+        for (_, view) in rowViews {
+            view.removeFromSuperview()
+            if let identifier = view.identifier { recycledViews[identifier, default: []].append(view) }
+        }
+        rowViews = [:]
+        rowOrigins = nil
+        needsDisplay = true
+        needsLayout = true
+    }
+    /// Reloads just these rows' views: the delegate configures each again.
+    open func reloadData(forRowIndexes rows: IndexSet, columnIndexes: IndexSet) {
+        for row in rows {
+            guard let view = rowViews.removeValue(forKey: row) else { continue }
+            view.removeFromSuperview()
+            if let identifier = view.identifier { recycledViews[identifier, default: []].append(view) }
+            _ = self.view(atColumn: 0, row: row, makeIfNecessary: true)
+        }
+    }
+    /// Some rows' heights changed: rows below them move.
+    open func noteHeightOfRows(withIndexesChanged indexSet: IndexSet) {
+        rowOrigins = nil
+        for (row, view) in rowViews { view.frame = rect(ofRow: row) }
+        needsLayout = true
+    }
+    open func noteNumberOfRowsChanged() { rowOrigins = nil; needsLayout = true }
+    open func scrollRowToVisible(_ row: Int) {
+        guard row >= 0, row < numberOfRows else { return }
+        scrollToVisible(rect(ofRow: row))
+    }
     open override var isFlipped: Bool { true }
-    private var rowStride: CGFloat { max(rowHeight + intercellSpacing.height, 1) }
+
+    /// The part of the table its clip view shows (all of it outside one).
+    open override var visibleRect: CGRect {
+        guard let clip = superview as? NSClipView else { return bounds }
+        let shown = CGRect(x: clip.bounds.minX - frame.minX, y: clip.bounds.minY - frame.minY,
+                           width: clip.bounds.width, height: clip.bounds.height)
+        return shown.intersection(bounds)
+    }
+    /// Sizes the table as AppKit's `tile` does in a clip view: its width, and at least its height or the rows' height.
+    open func tile() {
+        guard let clip = superview as? NSClipView else { return }
+        let rowsHeight = origins.last ?? 0
+        let size = CGSize(width: clip.bounds.width, height: max(clip.bounds.height, rowsHeight))
+        if frame.size != size { frame = CGRect(origin: frame.origin, size: size) }
+        clip.reconstrain()
+    }
+    /// Tiles, then gives the visible rows their views (the delegate makes them) at their rows, as AppKit's layout does.
+    open override func layout() {
+        super.layout()
+        tile()
+        let visible = rows(in: visibleRect)
+        guard visible.location != NSNotFound else { return }
+        for row in visible.location..<(visible.location + visible.length) {
+            let view = self.view(atColumn: 0, row: row, makeIfNecessary: true)
+            let frame = rect(ofRow: row)
+            if view?.frame != frame { view?.frame = frame }
+        }
+    }
+
+    private var origins: [CGFloat] {
+        if let rowOrigins { return rowOrigins }
+        var origins: [CGFloat] = [0]
+        origins.reserveCapacity(numberOfRows + 1)
+        for row in 0..<numberOfRows {
+            let height = delegate?.tableView(self, heightOfRow: row) ?? rowHeight
+            origins.append(origins[row] + max(height, 1) + intercellSpacing.height)
+        }
+        rowOrigins = origins
+        return origins
+    }
     open func rect(ofRow row: Int) -> CGRect {
-        CGRect(x: 0, y: CGFloat(row) * rowStride, width: bounds.width, height: rowHeight)
+        let origins = origins
+        guard row >= 0, row + 1 < origins.count else { return .zero }
+        return CGRect(x: 0, y: origins[row], width: bounds.width, height: origins[row + 1] - origins[row] - intercellSpacing.height)
     }
     open func row(at point: CGPoint) -> Int {
-        guard numberOfRows > 0, point.y >= 0 else { return -1 }
-        let index = Int(point.y / rowStride)
-        guard index < numberOfRows, point.y - CGFloat(index) * rowStride <= rowHeight else { return -1 }
-        return index
+        let origins = origins
+        guard origins.count > 1, point.y >= 0 else { return -1 }
+        // The last row whose top is at or above the point, if the point is inside it rather than in the gap below.
+        var low = 0, high = origins.count - 2
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if origins[mid] <= point.y { low = mid } else { high = mid - 1 }
+        }
+        return point.y < origins[low + 1] - intercellSpacing.height ? low : -1
+    }
+    /// The rows `rect` touches, as a range (`NSNotFound` location when none).
+    open func rows(in rect: CGRect) -> NSRange {
+        let count = numberOfRows
+        guard count > 0 else { return NSRange(location: NSNotFound, length: 0) }
+        // An empty rect (a table never laid out) covers every row, so updates still reach them.
+        guard rect.height > 0 else { return NSRange(location: 0, length: count) }
+        var first = -1, last = -1
+        for row in 0..<count {
+            let frame = self.rect(ofRow: row)
+            guard frame.maxY > rect.minY, frame.minY < rect.maxY else { continue }
+            if first < 0 { first = row }
+            last = row
+        }
+        return first < 0 ? NSRange(location: NSNotFound, length: 0) : NSRange(location: first, length: last - first + 1)
     }
     open func view(atColumn column: Int, row: Int, makeIfNecessary: Bool) -> NSView? {
         if let cached = rowViews[row] { return cached }
@@ -733,11 +1044,74 @@ extension NSTableViewDelegate {
         addSubview(view)
         return view
     }
-    /// AppKit recycles row views by identifier after `reloadData`; a simple pool is enough here.
+    /// A row view the reuse pool has for `identifier` (one `reloadData` gave back), or nil to make a new one.
     open func makeView(withIdentifier identifier: NSUserInterfaceItemIdentifier, owner: Any?) -> NSView? {
         recycledViews[identifier]?.popLast()
     }
     open func recycleRowView(_ view: NSView, for identifier: NSUserInterfaceItemIdentifier) {
         recycledViews[identifier, default: []].append(view)
+    }
+
+    // MARK: Clicks
+
+    /// A click: it selects the row under it (Command toggles it, Shift extends to it, when several may be selected),
+    /// then `action` — or `doubleAction` on a second click — goes to `target` with `clickedRow` set.
+    open override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point)
+        clickedRow = row
+        clickedColumn = row >= 0 && !tableColumns.isEmpty ? 0 : -1
+        defer { clickedRow = -1; clickedColumn = -1 }
+        if row >= 0 {
+            if allowsMultipleSelection, event.modifierFlags.contains(.command) {
+                var rows = selectedRowIndexes
+                if rows.contains(row) { if rows.count > 1 || allowsEmptySelection { rows.remove(row) } } else { rows.insert(row) }
+                selectRowIndexes(rows, byExtendingSelection: false)
+            } else if allowsMultipleSelection, event.modifierFlags.contains(.shift), let anchor = selectedRowIndexes.first {
+                selectRowIndexes(IndexSet(integersIn: min(anchor, row)...max(anchor, row)), byExtendingSelection: false)
+            } else if !selectedRowIndexes.contains(row) || selectedRowIndexes.count > 1 {
+                selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+        } else if allowsEmptySelection {
+            selectRowIndexes([], byExtendingSelection: false)
+        }
+        if event.clickCount >= 2, let doubleAction {
+            NSApp.sendAction(doubleAction, to: target, from: self)
+        } else if let action {
+            NSApp.sendAction(action, to: target, from: self)
+        }
+    }
+
+    // MARK: Drag and drop
+
+    open func setDraggingSourceOperationMask(_ mask: NSDragOperation, forLocal isLocal: Bool) {
+        if isLocal { localDragMask = mask } else { externalDragMask = mask }
+    }
+    open func draggingSourceOperationMask(forLocal isLocal: Bool) -> NSDragOperation { isLocal ? localDragMask : externalDragMask }
+    /// Retargets the drop being validated, as AppKit's: the data source calls this from `validateDrop`.
+    open func setDropRow(_ row: Int, dropOperation: DropOperation) { dropRow = row; self.dropOperation = dropOperation }
+
+    /// The pasteboard items a drag of `rows` carries (the data source's writers), or nil when the source won't drag them.
+    public func draggingItems(forRows rows: IndexSet) -> [NSPasteboardWriting]? {
+        let writers = rows.compactMap { dataSource?.tableView(self, pasteboardWriterForRow: $0) }
+        return writers.isEmpty ? nil : writers
+    }
+    /// What dropping `info` over `point` (table coordinates) would do: the proposed row is the one under the pointer,
+    /// on it in its middle half and above it otherwise, as AppKit proposes; the data source may retarget it.
+    public func validateDrop(_ info: NSDraggingInfo, at point: CGPoint) -> (operation: NSDragOperation, row: Int, dropOperation: DropOperation) {
+        var proposed = row(at: point), operation = DropOperation.above
+        if proposed < 0 { proposed = point.y < 0 ? 0 : numberOfRows }
+        else {
+            let frame = rect(ofRow: proposed)
+            let fraction = (point.y - frame.minY) / max(frame.height, 1)
+            if (0.25...0.75).contains(fraction) { operation = .on } else if fraction > 0.75 { proposed += 1 }
+        }
+        dropRow = proposed; dropOperation = operation
+        let result = dataSource?.tableView(self, validateDrop: info, proposedRow: proposed, proposedDropOperation: operation) ?? []
+        return (result, dropRow, dropOperation)
+    }
+    /// Drops `info` where the last `validateDrop` put it.
+    @discardableResult public func acceptDrop(_ info: NSDraggingInfo) -> Bool {
+        dataSource?.tableView(self, acceptDrop: info, row: dropRow, dropOperation: dropOperation) ?? false
     }
 }

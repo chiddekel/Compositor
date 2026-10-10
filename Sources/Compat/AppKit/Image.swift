@@ -29,6 +29,15 @@ open class NSImage: @unchecked Sendable {
     /// rasterized once and scaled.
     var svgData: Data?
     public init(size: CGSize) { self.size = size }
+    /// A template image is drawn in its view's tint (the host draws symbols tinted).
+    public var isTemplate = false
+    public var accessibilityDescription: String?
+    public private(set) var representations: [NSImageRep] = []
+    /// Adds a representation; a bitmap one gives an image without pixels its pixels.
+    public func addRepresentation(_ rep: NSImageRep) {
+        representations.append(rep)
+        if bitmap == nil, let bitmapRep = rep as? NSBitmapImageRep { bitmap = bitmapRep.cgImage }
+    }
     /// A file's image: SVG kept as vectors (drawn by the host's SVG renderer), anything else decoded as ImageIO does.
     public convenience init?(contentsOf url: URL) {
         guard let data = try? Data(contentsOf: url) else { return nil }

@@ -97,19 +97,23 @@ def command_palette_view():
 def native_layer_list():
     tip = 'Compositor/UI/NativeLayerList.swift'
     source = (root / tip).read_text()
-    # The representable itself is the Qt shell's (NativeLayerListOverride.swift draws the list as SwiftUI); everything
-    # behind it — the Coordinator, LayerTableView and the row views — is tip's, so the table it hosts is the real one.
+    # `NativeLayerList` itself is the SwiftUI view the Qt shell draws (NativeLayerListOverride.swift). Tip's
+    # representable is kept whole under another name, `NativeLayerTable`, so the AppKit side — the scroll view and
+    # table it makes, its Coordinator, LayerTableView and the row views — is tip's; `NativeLayerList.Coordinator`
+    # names the same class.
     header_line = 'struct NativeLayerList: NSViewRepresentable {\n'
-    start = source.index(header_line)
-    coordinator = source.index('    final class Coordinator: NSObject', start)
-    doc = source.rfind('\n\n', 0, start) + 2
-    source = source[:doc] + 'extension NativeLayerList {\n' + source[coordinator:]
-    return header(tip, 'Tip\'s file through scripts/objc_selectors.py, except the NSViewRepresentable members of\n'
-                       '`NativeLayerList` (NativeLayerListOverride.swift is the view the Qt shell draws): its Coordinator,\n'
-                       'LayerTableView and row views are tip\'s, with selectors by name.') + objc_selectors.port(source)
+    if source.count(header_line) != 1:
+        raise SystemExit(f'{tip}: representable declaration not found')
+    source = source.replace(header_line, 'struct NativeLayerTable: NSViewRepresentable {\n')
+    source += ('\nextension NativeLayerList {\n'
+               '    typealias Coordinator = NativeLayerTable.Coordinator\n'
+               '}\n')
+    return header(tip, 'Tip\'s file through scripts/objc_selectors.py, its representable renamed `NativeLayerTable`\n'
+                       '(`NativeLayerList` is the SwiftUI view in NativeLayerListOverride.swift, which hosts this one).') + objc_selectors.port(source)
 
 
 OUTPUTS = {
+    'Sources/Overrides/NativeLayerListTable.swift': native_layer_list,
     'Sources/Overrides/CommandPaletteView.swift': command_palette_view,
     'Sources/Overrides/SliderSnap.swift': slider_snap,
     'Sources/Overrides/CameraRawSlider.swift': camera_raw_slider,

@@ -28,6 +28,7 @@ GENERATORS = {  # overrides written by a generator script (their --check is the 
     "Compositor/Document/SmudgeLiquify.swift",
     # scripts/gen-objc-overrides.py
     "Compositor/UI/SliderSnap.swift", "Compositor/UI/CameraRawSlider.swift", "Compositor/UI/CommandPaletteView.swift",
+    "Compositor/UI/NativeLayerList.swift",
 }
 
 
