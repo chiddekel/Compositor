@@ -1225,6 +1225,9 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     registerSwiftUIActionListener([this](uint64_t handle, const QString &panel) {
         if (handle != m_sessionHandle) return;
+        // The menu bar's accelerators come from the shortcut table (upstream's commands): Save in Keyboard Shortcuts
+        // changes them without changing the session, so they are read again right away rather than at the next refresh.
+        if (panel == QLatin1String("KeyboardShortcutsSheet")) QTimer::singleShot(0, this, [this] { syncAppMenus(); });
         if (panel == "ToolRail") {
             syncPaletteFromSession();   // swatches, swap/reset and "open the picker" live in the rail
             syncToolFromSession();
@@ -4743,6 +4746,8 @@ void SessionWindow::syncCropFromSession(const QJsonObject &state) {
     }
 }
 
+/// Mirrors the session's tool into the shell (its checked tool action, options bar, rail and canvas): `tool` is always
+/// what the session reports, never a choice of the shell's own, except before there is a session at all.
 void SessionWindow::applyToolLocally(Tool tool) {
     m_tool = tool;
     if (m_toolActions.contains(tool) && !m_toolActions[tool]->isChecked()) {
@@ -4775,7 +4780,7 @@ void SessionWindow::requestTool(Tool tool) {
             refreshImage();
             before = sessionState();
         }
-        if (m_tool == Tool::Crop && tool != Tool::Crop) {
+        if (sessionTool == Tool::Crop && tool != Tool::Crop) {
             // Local overlay; session cancelCrop runs inside selectTool.
             cancelCrop();
         }

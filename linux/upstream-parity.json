@@ -1,8 +1,8 @@
 {
   "upstream_remote": "upstream",
   "upstream_ref": "upstream/main",
-  "ledger_base": "22c7b8d",
-  "ledger_to": "b4bfdea",
+  "ledger_base": "b4bfdea",
+  "ledger_to": "3081719",
   "protected_roots": [
     "Compositor",
     "CompositorTests"

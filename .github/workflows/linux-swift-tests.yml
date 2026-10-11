@@ -1,0 +1,49 @@
+name: linux swift tests
+
+# The Linux contracts that must hold on every push: tools used one after another leave the editor usable
+# (ToolCombinationTests), layer effects match upstream's renderer (LayerEffectsBackendTests), and upstream's editor runs
+# unmodified under the compat layer (UpstreamEditorTests). The full suite runs weekly in ci-build.yml; these three are
+# the ones a change to the Qt shell or the compat layer most often breaks. Same Flatpak SDK as development (see
+# scripts/run-compositor.sh), so what passes here passes there.
+on:
+  push:
+    branches: [GNU_Linux]
+  pull_request:
+    branches: [GNU_Linux]
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The SDK version the manifest declares (the binary links against that SDK's Qt), not a pinned copy of it.
+      - name: Read required KDE SDK version from the manifest
+        id: sdk
+        run: |
+          version=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.compositor.Client.yaml | head -n1)
+          if [ -z "$version" ]; then echo "::error::couldn't read runtime-version from the manifest"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Flatpak + KDE SDK
+        run: |
+          sudo apt-get update && sudo apt-get install -y flatpak
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y --noninteractive flathub org.kde.Sdk//${{ steps.sdk.outputs.version }}
+          sudo flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.swift6//25.08 || \
+          sudo flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.swift6
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ steps.sdk.outputs.version }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: swiftpm-${{ steps.sdk.outputs.version }}-
+
+      - name: swift test (tool combinations, layer effects parity, upstream editor)
+        run: |
+          flatpak run --command=sh --devel --filesystem="$PWD" --env=QT_QPA_PLATFORM=offscreen \
+            --env=FLATPAK_ENABLE_SDK_EXT=swift6 org.kde.Sdk//${{ steps.sdk.outputs.version }} -c \
+            'cd "$1" && PATH=/usr/lib/sdk/swift6/bin:$PATH swift test \
+               --filter "ToolCombinationTests|LayerEffectsBackendTests|UpstreamEditorTests"' sh "$PWD"

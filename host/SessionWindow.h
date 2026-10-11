@@ -430,6 +430,8 @@ private:
     bool m_closeWindowAfterSave = false;
     bool m_painting = false;
     bool m_middleDrag = false;   // middle button held: upstream CanvasView pans, or with Ctrl/Meta zooms (1.4.9)
+    /// The session's tool as last read (sessionState().tool): a mirror for the shell's own drawing and routing, written
+    /// only by applyToolLocally with what the session reports. The rail is upstream's ToolRail, drawn from the session.
     Tool m_tool = Tool::Move;
     MarqueeMode m_marqueeMode = MarqueeMode::Rectangle;
     LassoMode m_lassoMode = LassoMode::Freehand;

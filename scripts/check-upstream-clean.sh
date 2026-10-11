@@ -41,7 +41,8 @@ if [ "$#" -eq 0 ]; then
   # Hand-kept overrides have taken every upstream change in the ledger range; the ledger matches git.
   python3 "$ROOT/scripts/upstream-override-drift.py" --check
   python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.6-1.4.8-ledger.md --from 11d8d7a --to 22c7b8d
-  python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.9-ledger.md
+  python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.9-ledger.md --from 22c7b8d --to b4bfdea
+  python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-after-1.4.9-ledger.md
   echo "UPSTREAM CLEAN: protected trees match $REF"
   exit 0
 fi

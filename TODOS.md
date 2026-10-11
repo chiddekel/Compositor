@@ -4,8 +4,8 @@
 - **Command palette**: Qt host Command Palette (`Ctrl+Shift+P` / `F1`) implemented with fuzzy action search, keyboard navigation, and smoke verification. (DONE)
 - **Finger-touch large-target mode**: larger hit areas when touch is used. Deferred by design phase.
 - **Crash-recovery autosave implementation (R61)**: Periodic background autosave snapshot (`autosave.comp` + `autosave.info`), startup recovery check, recovery restore, and clean shutdown clearing implemented and smoke verified. (DONE)
-- **HEIC and TIFF import**: separately gated after decoder hardening (R56).
-- **Research-risk features** (Content-Aware Fill, Remove Background, Liquify, Lens Correction, Healing): need their own decision per R6.
+- **HEIC and TIFF import**: TIFF through Qt's image plugin, HEIC/HEIF/AVIF through libheif (`host/QtImageIO.cpp`), both read by the ImageIO compat layer an import goes through; `Tests/CompatTests/HeicTiffImportTests.swift` checks size, orientation and pixels. (DONE)
+- **Research-risk features** (Content-Aware Fill, Remove Background, Liquify, Lens Correction, Healing): upstream ships all five and Linux compiles them from tip (ContentFill/HealPixels/LensPixels kernels, SmudgeLiquify, U²-Net for Remove Background). (DONE)
 - **Cancelled new adjustment sheet discard (R26)**: Discard/undo newly created adjustment layer on dialog rejection implemented and smoke verified. (DONE)
 - **Layers tree multi-selection (R22)**: `ExtendedSelection` in `m_layersView` + multi-layer selection deletion implemented and smoke verified. (DONE)
 - **Stage 4 & 5 (CoreGraphicsCompat Shim & Skia Raster Backend)**: 100% complete (`3d617c7`, `39f1d88`, `02a8178`, `835a7f0`). 22 canvas ops mapped to Skia C ABI, dynamic `.so` loader, comprehensive parity tests passing, `COMPOSITOR_RENDERER=skia|swift` env switch verified.
@@ -14,7 +14,7 @@
 
 ## Linux port: upstream catch-up and tool combinations (from /autoplan 2026-10-09)
 
-### Linux `swift test` CI job
+### Linux `swift test` CI job (DONE: `.github/workflows/linux-swift-tests.yml`, every push to GNU_Linux; the effects parity suite is `LayerEffectsBackendTests`)
 **What:** Add a workflow next to `.github/workflows/ci-guard.yml` that runs `ToolCombinationTests`, `EffectsRecolorParityTests` and `UpstreamEditorTests` in the Flatpak Swift SDK.
 **Why:** The tool-combination contract only holds if something runs it on every push; today no workflow runs Linux Swift tests.
 **Context:** ci-guard runs only `check-upstream-clean.sh` and the audit. Swift builds only in the Flatpak SDK (see memory linux-port-swift-sandbox-verify).
@@ -22,7 +22,10 @@
 **Priority:** P2
 **Depends on:** commits 1 and 4 of docs/upstream-1.4.8-catchup-and-tool-combos-2026-10-09.md
 
-### Table-driven Qt accelerators
+### Table-driven Qt accelerators (DONE)
+**Resolution:** the menu bar is upstream's commands (`syncAppMenus`), whose shortcuts come from `configuredKeyboardShortcut`, i.e. the
+shortcut table; the shell's own menus are hidden and stripped of their shortcuts at install, and single keys go to the
+canvas through `ShortcutSettings.canvasEvent`. Saving in Keyboard Shortcuts now re-reads the menu bar at once.
 **What:** Build Qt `QAction` shortcuts from the generated `KeyboardShortcuts` table instead of hard-coded `QKeySequence`s in `host/SessionWindow.cpp`.
 **Why:** Shortcuts re-recorded in Settings don't change Qt accelerators; the key-parity smoke only catches defaults.
 **Context:** ~77 hard-coded sites. Recorded as a deviation in `linux/upstream-parity.json`.
@@ -30,7 +33,9 @@
 **Priority:** P3
 **Depends on:** gen-keyboard-shortcuts.py
 
-### Tool rail as a pure view of session state
+### Tool rail as a pure view of session state (DONE)
+**Resolution:** the rail is upstream's ToolRail (SwiftUI), drawn from the session. `m_tool` is a documented mirror, written only
+by `applyToolLocally` with the session's reported tool; `requestTool` decides from the session's tool, not the mirror.
 **What:** Make the Qt rail render only from `sessionState().tool` with no local tool state.
 **Why:** Structurally prevents "rail shows X, session in Y".
 **Context:** Trigger: the first `--combo-smoke` rail/session mismatch. `applyToolLocally` already mirrors; the rewrite removes `m_tool` as authority.
@@ -38,7 +43,10 @@
 **Priority:** P3
 **Depends on:** --combo-smoke
 
-### Retire remaining hand overrides behind AppKit/Metal
+### Retire remaining hand overrides behind AppKit/Metal (DONE 2026-10-11)
+**Resolution:** every Compositor/UI file is tip-generated (scripts/gen-objc-overrides.py, scripts/gen-patched-overrides.py);
+the Qt shell draws AppKit representables through compat SwiftUI NativeLowering. MetalBrushCoverage, MetalLayerEffects,
+MetalWarp, GPUCanvas and GPUNoise stay replaced: their job is Metal itself, done on Linux by the CPU/Vulkan backends.
 **What:** Convert NativeLayerListOverride, UIStandIns, CameraRawSlider, MetalBrushCoverage to generated or tip-compiled forms where the compat layer allows.
 **Why:** Every hand override needs drift policing; generated ones don't.
 **Context:** ContentView, LayerMaskMenu and KeyboardShortcuts move to generators in this plan.
