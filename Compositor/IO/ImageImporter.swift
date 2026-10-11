@@ -12,6 +12,28 @@ nonisolated struct ImportedImage: @unchecked Sendable {
     var raster: RasterSnapshot? = nil
 }
 
+/// A folder brought in as images: the ones directly inside it, not its subfolders'.
+nonisolated enum ImageFolder {
+    /// A plain folder: not a file, and not a package such as a Compositor project.
+    static func matches(_ url: URL) -> Bool {
+        guard url.isFileURL, url.pathExtension.lowercased() != "comp",
+              let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]) else { return false }
+        return values.isDirectory == true && values.isPackage != true
+    }
+
+    /// The importable images directly inside `folder`, in the Finder's name order ("2" before "10").
+    static func images(in folder: URL) -> [URL] {
+        let contents = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                                                                      options: [.skipsHiddenFiles])) ?? []
+        return contents.filter { url in
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  let type = UTType(filenameExtension: url.pathExtension) else { return false }
+            return UTType.importableImages.contains { type.conforms(to: $0) }
+        }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+}
+
 nonisolated enum ImageImportError: LocalizedError {
     case unreadable, unsupported, tooLarge
     var errorDescription: String? {

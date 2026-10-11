@@ -180,4 +180,38 @@ struct ImageImportTests {
         #expect(session.document?.layers.map(\.name) == [first, second].map { $0.deletingPathExtension().lastPathComponent })
         #expect(session.importError == nil)
     }
+
+    /// A folder brings in the images directly inside it, in the Finder's name order: not its other files, its hidden
+    /// ones, or what's in its subfolders. A project is a folder on disk too, but not one to import from.
+    @Test func folderImportsTheImagesDirectlyInsideIt() async throws {
+        let manager = FileManager.default
+        let folder = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let nested = folder.appendingPathComponent("More", isDirectory: true)
+        let project = folder.appendingPathComponent("Project.comp", isDirectory: true)
+        try manager.createDirectory(at: nested, withIntermediateDirectories: true)
+        try manager.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: folder) }
+        try manager.moveItem(at: try fixture(.png), to: folder.appendingPathComponent("10 Ten.png"))
+        try manager.moveItem(at: try fixture(.jpeg), to: folder.appendingPathComponent("2 Two.jpeg"))
+        try manager.moveItem(at: try fixture(.png), to: folder.appendingPathComponent(".Hidden.png"))
+        try manager.moveItem(at: try fixture(.png), to: nested.appendingPathComponent("Nested.png"))
+        try Data("notes".utf8).write(to: folder.appendingPathComponent("Notes.txt"))
+        #expect(ImageFolder.matches(folder))
+        #expect(!ImageFolder.matches(project))
+        let session = EditorSession()
+        await session.importImages([folder])
+        #expect(session.document?.layers.map(\.name) == ["2 Two", "10 Ten"])
+        #expect(session.importError == nil)
+    }
+
+    @Test func folderWithoutImagesSaysSo() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data("notes".utf8).write(to: folder.appendingPathComponent("Notes.txt"))
+        let session = EditorSession()
+        await session.importImages([folder])
+        #expect(session.document == nil)
+        #expect(session.importError?.contains("has no images to import") == true)
+    }
 }
