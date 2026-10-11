@@ -273,6 +273,12 @@ public final class NSTrackingArea {
     /// The size the view's content wants, per axis; `noIntrinsicMetric` where it has none (the default), as in AppKit.
     /// A hosting view sizes a `.fixedSize()` representable from it.
     open var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    /// The size that fits the content: the intrinsic size where the view has one, its current size otherwise.
+    open var fittingSize: NSSize {
+        let intrinsic = intrinsicContentSize
+        return NSSize(width: intrinsic.width >= 0 ? intrinsic.width : frame.width,
+                      height: intrinsic.height >= 0 ? intrinsic.height : frame.height)
+    }
     public static let noIntrinsicMetric: CGFloat = -1
     open func viewWillDraw() {}
     open func viewDidMoveToWindow() {}
@@ -770,6 +776,9 @@ extension NSTextFieldDelegate {
     }
 }
 
+public enum NSImageAlignment: UInt, Sendable {
+    case alignCenter = 0, alignTop, alignTopLeft, alignTopRight, alignLeft, alignBottom, alignBottomLeft, alignBottomRight, alignRight
+}
 public enum NSImageScaling: UInt, Sendable {
     case scaleProportionallyDown = 0, scaleAxesIndependently, scaleNone, scaleProportionallyUpOrDown
 }
@@ -798,6 +807,7 @@ extension NSControl {
     public var imagePosition: NSControl.ImagePosition = .noImage
     public var imageScaling: NSImageScaling = .scaleProportionallyDown
     public var contentTintColor: NSColor?
+    public var symbolConfiguration: NSImage.SymbolConfiguration?
     public var bezelStyle: BezelStyle = .automatic
     public var allowsMixedState = false
     public private(set) var buttonType: ButtonType = .momentaryPushIn
@@ -813,11 +823,46 @@ extension NSControl {
         if let clickHandler { clickHandler(); return }
         if let action { NSApp.sendAction(action, to: target, from: self) }
     }
+    /// An image-only button, as `NSButton(image:target:action:)` makes one.
+    public convenience init(image: NSImage, target: AnyObject?, action: Selector?) {
+        self.init(frame: .zero)
+        self.image = image
+        imagePosition = .imageOnly
+        self.target = target
+        self.action = action
+    }
+    /// A push button with a title, as `NSButton(title:target:action:)` makes one.
+    public convenience init(title: String, target: AnyObject?, action: Selector?) {
+        self.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+    }
     /// A press clicks the button (the press and release are one event here).
     open override func mouseDown(with event: NSEvent) { performClick(self) }
     open override var intrinsicContentSize: NSSize {
         if imagePosition == .imageOnly, let image { return image.size }
         return NSSize(width: CGFloat(title.count) * 7 + (isBordered ? 24 : 4), height: isBordered ? 22 : 16)
+    }
+}
+
+/// Shows an image (a symbol is drawn by the host in `contentTintColor`), as AppKit's.
+@MainActor open class NSImageView: NSControl {
+    public var image: NSImage?
+    public var symbolConfiguration: NSImage.SymbolConfiguration?
+    public var contentTintColor: NSColor?
+    public var imageScaling: NSImageScaling = .scaleProportionallyDown
+    public var imageAlignment: NSImageAlignment = .alignCenter
+    public convenience init(image: NSImage) {
+        self.init(frame: .zero)
+        self.image = image
+    }
+    open override var intrinsicContentSize: NSSize {
+        guard let image else { return NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+        if image.symbolName != nil, let points = symbolConfiguration?.pointSize, points > 0 {
+            return NSSize(width: points, height: points)
+        }
+        return image.size
     }
 }
 

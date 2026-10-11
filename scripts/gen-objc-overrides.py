@@ -112,7 +112,59 @@ def native_layer_list():
                        '(`NativeLayerList` is the SwiftUI view in NativeLayerListOverride.swift, which hosts this one).') + objc_selectors.port(source)
 
 
+def window_delegate_methods():
+    """The compat `NSWindowDelegate` requirements: [(name, parameter list, return clause)]."""
+    text = (root / 'Sources/Compat/AppKit/Panel.swift').read_text()
+    body = text[text.index('public protocol NSWindowDelegate'):]
+    body = body[:body.index('}')]
+    import re
+    return re.findall(r'func (\w+)\(([^)]*)\)\s*(->\s*\w+)?', body)
+
+
+def project_window_bridge():
+    tip = 'Compositor/UI/ProjectWindowBridge.swift'
+    source = (root / tip).read_text()
+    # Tip forwards every NSWindowDelegate callback it doesn't implement to the delegate it replaced, through the
+    # Objective-C runtime (responds(to:) / forwardingTarget(for:)). Without a runtime the same forwarding is written
+    # out: one forwarder per compat NSWindowDelegate callback the proxy doesn't declare.
+    owner = 'private final class ProjectWindowDelegate: NSObject, NSWindowDelegate {'
+    start = source.index(owner)
+    end = source.index('\n}\n', start)
+    declared = set(objc_selectors.re.findall(r'func (\w+)\(', source[start:end]))
+    for header_line in ('    override func responds(to selector: Selector!) -> Bool {',
+                        '    override func forwardingTarget(for selector: Selector!) -> Any? {'):
+        source = objc_selectors.drop_declaration(source, header_line)
+    forwarders = []
+    for name, params, returns in window_delegate_methods():
+        if name in declared:
+            continue
+        if returns:
+            raise SystemExit(f'{tip}: NSWindowDelegate.{name} returns a value; forwarding it needs a default')
+        label, _, rest = params.partition(' ')
+        argument = rest.split(':')[0].strip()
+        forwarders.append(f'    func {name}({params}) {{ previous?.{name}({argument}) }}\n')
+    end = source.index('\n}\n', source.index(owner))
+    source = source[:end + 1] + '    // Forwarded to the delegate this one replaced (tip: forwardingTarget(for:)).\n' + ''.join(forwarders) + source[end + 1:]
+    return header(tip, 'Only the forwarding differs: tip forwards unhandled NSWindowDelegate callbacks to `previous` through\n'
+                       'the Objective-C runtime; here each compat NSWindowDelegate callback the proxy doesn\'t declare is\n'
+                       'forwarded explicitly.') + objc_selectors.port(source)
+
+
+def plain(tip, note):
+    """Tip's file through scripts/objc_selectors.py and nothing else."""
+    def make():
+        return header(tip, note) + objc_selectors.port((root / tip).read_text())
+    return make
+
+
 OUTPUTS = {
+    'Sources/Overrides/ProjectWindowBridge.swift': project_window_bridge,
+    'Sources/Overrides/InlineTextEditor.swift': plain(
+        'Compositor/Rendering/InlineTextEditor.swift',
+        'Tip\'s file through scripts/objc_selectors.py: undo:/redo: reach CanvasTextView by name.'),
+    'Sources/Overrides/LayerMaskMenu.swift': plain(
+        'Compositor/UI/LayerMaskMenu.swift',
+        'Tip\'s file through scripts/objc_selectors.py: the badge\'s close button reaches closeClicked by name.'),
     'Sources/Overrides/NativeLayerListTable.swift': native_layer_list,
     'Sources/Overrides/CommandPaletteView.swift': command_palette_view,
     'Sources/Overrides/SliderSnap.swift': slider_snap,

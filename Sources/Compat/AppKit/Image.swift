@@ -29,6 +29,8 @@ open class NSImage: @unchecked Sendable {
     /// rasterized once and scaled.
     var svgData: Data?
     public init(size: CGSize) { self.size = size }
+    /// An empty image (no size, no pixels), as AppKit's `NSImage()`.
+    public convenience init() { self.init(size: .zero) }
     /// A template image is drawn in its view's tint (the host draws symbols tinted).
     public var isTemplate = false
     public var accessibilityDescription: String?

@@ -1598,8 +1598,10 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 widget->setGraphicsEffect(effect);
             }
         } else if (kind == "scrollIndicators") {
-            // .scrollIndicators(.hidden): the view still scrolls (wheel, trackpad), with no scroll bars drawn.
-            if (auto *scrollArea = qobject_cast<QScrollArea *>(widget); scrollArea && strings.value("name").toString() == "hidden") {
+            // .scrollIndicators(.hidden / .never): the view still scrolls (wheel, trackpad), with no scroll bars drawn.
+            // Qt has no system "always show scrollers" setting to override, so both hide them alike.
+            const QString visibility = strings.value("name").toString();
+            if (auto *scrollArea = qobject_cast<QScrollArea *>(widget); scrollArea && (visibility == "hidden" || visibility == "never")) {
                 scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
                 scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
             }

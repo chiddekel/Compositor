@@ -87,7 +87,7 @@
     public required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     /// The size the hosted view would take up. No real layout engine runs the resolved tree yet, so this is a
     /// fixed placeholder rather than a measured value — enough for callers that only need *a* nonzero size.
-    public var fittingSize: CGSize { CGSize(width: 320, height: 240) }
+    public override var fittingSize: CGSize { CGSize(width: 320, height: 240) }
     /// Real SwiftUI's `NSHostingSizingOptions` — controls whether AppKit measures the hosted view's intrinsic
     /// size. No real layout engine runs here, so this is inert; it exists so `host.sizingOptions = []` compiles.
     public var sizingOptions: NSHostingSizingOptions = .standardBounds

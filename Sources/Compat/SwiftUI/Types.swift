@@ -160,7 +160,7 @@ extension StyleToken {
     public static let borderlessButton = StyleToken("borderlessButton")
     public static let inline = StyleToken("inline"), none = StyleToken("none"), high = StyleToken("high")
     // ScrollIndicatorVisibility-shaped members.
-    public static let hidden = StyleToken("hidden"), visible = StyleToken("visible")
+    public static let hidden = StyleToken("hidden"), visible = StyleToken("visible"), never = StyleToken("never")
     public func weight(_ weight: StyleToken) -> StyleToken { StyleToken("\(name)+weight:\(weight.name)") }
     public func bold() -> StyleToken { StyleToken("\(name)+bold") }
     public func monospacedDigit() -> StyleToken { StyleToken("\(name)+monospacedDigit") }

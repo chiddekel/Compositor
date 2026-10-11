@@ -340,3 +340,17 @@ nonisolated public func compositorNoteRecentProject(_ path: UnsafePointer<CChar>
 nonisolated public func compositorAppDidBecomeActive() {
     onMain { Foundation.NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil) }
 }
+
+extension ProjectWindowBridge {
+    /// The Linux delegate's `projects` (ShellProjects) stands for the current tab's controller.
+    @MainActor init(controller projects: ShellProjects) {
+        self.init(controller: (projects.workspace ?? Workspace.shared).current.controller)
+    }
+}
+
+extension ProjectWindowView {
+    /// The Linux delegate's `projects` (ShellProjects) stands for the current tab's controller.
+    convenience init(controller projects: ShellProjects) {
+        self.init(controller: (projects.workspace ?? Workspace.shared).current.controller)
+    }
+}
