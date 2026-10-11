@@ -34,3 +34,6 @@ void registerSwiftUIActionListener(std::function<void(uint64_t handle, const QSt
 /// True while a SwiftUI DragGesture is tracking the pointer (hue/SB field, levels, …).
 bool swiftUIDragGestureActive(uint64_t sessionHandle);
 
+/// True while an AppKit tracking loop (a press in an `_AppKit` view) runs the event pump: the shell's periodic refresh
+/// waits, so no panel is rebuilt under the press.
+bool swiftUIAppKitTracking();

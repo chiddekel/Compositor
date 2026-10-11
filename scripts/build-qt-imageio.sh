@@ -5,7 +5,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$ROOT/build/lib"
-flatpak run --command=bash --devel --filesystem=host org.kde.Sdk//6.11 -c "
+# The user installation when there is one (as run-compositor.sh): with both, flatpak would stop to ask which.
+INSTALLATION=()
+if flatpak info --user org.kde.Sdk//6.11 >/dev/null 2>&1; then INSTALLATION=(--user); fi
+flatpak run "${INSTALLATION[@]}" --command=bash --devel --filesystem=host org.kde.Sdk//6.11 -c "
   set -e
   cd '$ROOT'
   HEIF=''

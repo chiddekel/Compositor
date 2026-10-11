@@ -218,6 +218,7 @@ public:
     /// Mac ProjectController.begin: commit pending Free Transform (and clear crop) before package snapshot.
     void prepareDocumentForProjectIO(uint64_t handle = 0);
     void handleShellRequests();
+    void showPopUpMenu();
     void exportPNGWithUpstream();
     void exportPDFWithUpstream();
     void exportAsWithUpstream(const QString &startFormat = QString());

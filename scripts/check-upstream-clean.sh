@@ -33,6 +33,7 @@ if [ "$#" -eq 0 ]; then
   python3 "$ROOT/scripts/gen-project-validation.py" --check
   python3 "$ROOT/scripts/gen-preview-renderer.py" --check
   python3 "$ROOT/scripts/gen-objc-overrides.py" --check
+  python3 "$ROOT/scripts/gen-patched-overrides.py" --check
   python3 "$ROOT/scripts/gen-linux-test-mirrors.py" --check
   # Vulkan shader headers match their .comp sources (effects recolor, brush coverage, composite).
   if command -v glslangValidator >/dev/null 2>&1; then python3 "$ROOT/scripts/build-brush-shader.py" --check

@@ -10,7 +10,10 @@ AppKit's `NSSelectorDispatching`), plus the smallest Linux replacement where tip
 """
 import argparse
 from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import objc_selectors  # noqa: E402
@@ -41,43 +44,6 @@ def slider_snap():
                        'replaced startTracking(at:in:) through the Objective-C runtime.') + source
 
 
-# The Qt shell draws SwiftUI, not hosted NSSliders, so the representable stays a SwiftUI `Slider` with the same API.
-CAMERA_RAW_SLIDER_VIEW = """\
-/// Camera Raw slider (Linux): the same API as tip's `NSViewRepresentable`, drawn as a SwiftUI `Slider` by the Qt shell —
-/// the track's colors across the whole bar, as `GradientSliderCell` draws them, and a double-click restores the default.
-struct CameraRawSlider: View {
-    var value: Double
-    var range: ClosedRange<Double>
-    var track: CameraRawSliderTrack
-    var help: String
-    var onChange: (Double) -> Void
-    var onReset: () -> Void
-
-    var body: some View {
-        Slider(value: Binding(get: { value }, set: { onChange($0) }), in: range)
-            .compatSliderTrack(track.colors?.map { (Double($0.redComponent), Double($0.greenComponent), Double($0.blueComponent),
-                                                    Double($0.alphaComponent)) })
-            .onTapGesture(count: 2) { onReset() }
-            .help(help)
-            .accessibilityLabel(help)
-    }
-}
-"""
-
-
-def camera_raw_slider():
-    tip = 'Compositor/UI/CameraRawSlider.swift'
-    source = (root / tip).read_text()
-    marker = 'struct CameraRawSlider: NSViewRepresentable {'
-    start = source.index(marker)
-    doc = source.rfind('\n\n', 0, start) + 2
-    rest = objc_selectors.drop_declaration(source, marker)
-    source = rest[:doc] + CAMERA_RAW_SLIDER_VIEW + rest[doc:]
-    return header(tip, 'Tip\'s file through scripts/objc_selectors.py, except `struct CameraRawSlider`: the Qt shell draws a\n'
-                       'SwiftUI Slider with the same API. CameraRawSliderTrack, CameraRawSliderView and GradientSliderCell are tip\'s.'
-                  ) + objc_selectors.port(source)
-
-
 def command_palette_view():
     tip = 'Compositor/UI/CommandPaletteView.swift'
     source = (root / tip).read_text()
@@ -92,24 +58,6 @@ def command_palette_view():
     return header(tip, 'Only `toggle` differs: the Qt shell presents CommandPaletteDialog (queued as "commandPalette") where\n'
                        'tip builds an NSPanel. Search, ranking, the model and `skipped` are tip\'s (UI/CommandPalette.swift).'
                   ) + objc_selectors.port(source)
-
-
-def native_layer_list():
-    tip = 'Compositor/UI/NativeLayerList.swift'
-    source = (root / tip).read_text()
-    # `NativeLayerList` itself is the SwiftUI view the Qt shell draws (NativeLayerListOverride.swift). Tip's
-    # representable is kept whole under another name, `NativeLayerTable`, so the AppKit side — the scroll view and
-    # table it makes, its Coordinator, LayerTableView and the row views — is tip's; `NativeLayerList.Coordinator`
-    # names the same class.
-    header_line = 'struct NativeLayerList: NSViewRepresentable {\n'
-    if source.count(header_line) != 1:
-        raise SystemExit(f'{tip}: representable declaration not found')
-    source = source.replace(header_line, 'struct NativeLayerTable: NSViewRepresentable {\n')
-    source += ('\nextension NativeLayerList {\n'
-               '    typealias Coordinator = NativeLayerTable.Coordinator\n'
-               '}\n')
-    return header(tip, 'Tip\'s file through scripts/objc_selectors.py, its representable renamed `NativeLayerTable`\n'
-                       '(`NativeLayerList` is the SwiftUI view in NativeLayerListOverride.swift, which hosts this one).') + objc_selectors.port(source)
 
 
 def window_delegate_methods():
@@ -150,25 +98,71 @@ def project_window_bridge():
                        'forwarded explicitly.') + objc_selectors.port(source)
 
 
-def plain(tip, note):
-    """Tip's file through scripts/objc_selectors.py and nothing else."""
+def patched(tip, patch):
+    """Tip's file with a Linux patch (linux/patches) applied, exactly (no fuzz)."""
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / tip
+        target.parent.mkdir(parents=True)
+        shutil.copy(root / tip, target)
+        subprocess.run(['patch', '--batch', '--fuzz=0', '--quiet', '-p1', '-d', directory, '-i', str(root / patch)],
+                       check=True, stdout=subprocess.DEVNULL)
+        return target.read_text()
+
+
+def keyboard_shortcuts():
+    tip = 'Compositor/UI/KeyboardShortcuts.swift'
+    patch = 'linux/patches/keyboard-shortcuts-linux.patch'
+    return header(tip, f'Tip\'s file with {patch} (Linux key names and messages, the sheet kept while open, defaults\n'
+                       'written at once), through scripts/objc_selectors.py. The recorder is tip\'s NSButton; the Qt shell\n'
+                       'draws it as a Button and hands it the next key while it is first responder (compat NativeLowering).'
+                  ) + objc_selectors.port(patched(tip, patch))
+
+
+def plain(tip, note, rewrites=()):
+    """Tip's file through scripts/objc_selectors.py, plus exact `(old, new)` rewrites each found exactly once."""
     def make():
-        return header(tip, note) + objc_selectors.port((root / tip).read_text())
+        source = (root / tip).read_text()
+        for old, new in rewrites:
+            if source.count(old) != 1:
+                raise SystemExit(f'{tip}: {old!r} found {source.count(old)} times')
+            source = source.replace(old, new)
+        return header(tip, note) + objc_selectors.port(source)
     return make
 
 
 OUTPUTS = {
+    'Sources/Overrides/KeyboardShortcuts.swift': keyboard_shortcuts,
     'Sources/Overrides/ProjectWindowBridge.swift': project_window_bridge,
+    'Sources/Overrides/BlendModePicker.swift': plain(
+        'Compositor/UI/BlendModePicker.swift',
+        'Tip\'s file through scripts/objc_selectors.py: the pop-up\'s action reaches its Coordinator by name. The Qt shell\n'
+        'draws the NSPopUpButton as a Picker (compat SwiftUI NativeLowering).'),
+    'Sources/Overrides/TypeControls.swift': plain(
+        'Compositor/UI/TypeControls.swift',
+        'Tip\'s file through scripts/objc_selectors.py: the font pop-up\'s action reaches its Coordinator by name. The Qt\n'
+        'shell draws the NSPopUpButton as a Picker, each face in its own font (compat SwiftUI NativeLowering). Linux\n'
+        'Foundation\'s NSAttributedString has no init(): the empty string is made with init(string: "").',
+        rewrites=[('return NSAttributedString()', 'return NSAttributedString(string: "")')]),
+    'Sources/Overrides/ProjectTabs.swift': plain(
+        'Compositor/UI/ProjectTabs.swift',
+        'Tip\'s file through scripts/objc_selectors.py: the overflow menu\'s items reach the anchor by name; the Qt shell\n'
+        'shows the NSMenu at the pointer (NSMenu.presenter).'),
     'Sources/Overrides/InlineTextEditor.swift': plain(
         'Compositor/Rendering/InlineTextEditor.swift',
         'Tip\'s file through scripts/objc_selectors.py: undo:/redo: reach CanvasTextView by name.'),
     'Sources/Overrides/LayerMaskMenu.swift': plain(
         'Compositor/UI/LayerMaskMenu.swift',
         'Tip\'s file through scripts/objc_selectors.py: the badge\'s close button reaches closeClicked by name.'),
-    'Sources/Overrides/NativeLayerListTable.swift': native_layer_list,
+    'Sources/Overrides/NativeLayerList.swift': plain(
+        'Compositor/UI/NativeLayerList.swift',
+        'Tip\'s file through scripts/objc_selectors.py: menus, buttons and the table reach their targets by name. The\n'
+        'Qt shell draws the table as pixels and hands it the pointer and keys as AppKit events (compat NativeLowering).'),
     'Sources/Overrides/CommandPaletteView.swift': command_palette_view,
     'Sources/Overrides/SliderSnap.swift': slider_snap,
-    'Sources/Overrides/CameraRawSlider.swift': camera_raw_slider,
+    'Sources/Overrides/CameraRawSlider.swift': plain(
+        'Compositor/UI/CameraRawSlider.swift',
+        'Tip\'s file through scripts/objc_selectors.py: the slider\'s action reaches its Coordinator by name. The Qt shell\n'
+        'draws the NSSlider as a Slider whose track shows GradientSliderCell\'s colors (compat NativeLowering).'),
 }
 
 

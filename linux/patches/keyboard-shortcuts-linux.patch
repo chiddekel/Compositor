@@ -1,0 +1,107 @@
+--- a/Compositor/UI/KeyboardShortcuts.swift
++++ b/Compositor/UI/KeyboardShortcuts.swift
+@@ -22,7 +22,7 @@
+         case 126: key = "\u{f700}"
+         default:
+             let typed = event.charactersIgnoringModifiers?.lowercased() ?? ""
+-            key = ["{": "[", "}": "]", "+": "=", "_": "-" ][typed] ?? typed
++            key = ["{": "[", "}": "]", "+": "=", "_": "-"][typed] ?? typed
+         }
+     }
+     var eventModifiers: EventModifiers {
+@@ -42,11 +42,12 @@
+         return flags
+     }
+     var label: String {
+-        let special = ["\u{7f}": "Delete", "\r": "Return", "\u{1b}": "Esc", "\t": "Tab", " ": "Space",
++        let special = ["\u{7f}": "Backspace", "\r": "Return", "\u{1b}": "Esc", "\t": "Tab", " ": "Space",
+                        "\u{f702}": "←", "\u{f703}": "→", "\u{f701}": "↓", "\u{f700}": "↑"]
+-        return (modifiers & 4 != 0 ? "⌃" : "") + (modifiers & 2 != 0 ? "⌥" : "")
+-            + (modifiers & 8 != 0 ? "⇧" : "") + (modifiers & 1 != 0 ? "⌘" : "")
+-            + (special[key] ?? key.uppercased())
++        // Linux names the keys the chords are pressed with (⌘ is Ctrl, ⌥ Alt, ⌃ Meta), as the menus show them
++        // (MACOS_UI_PARITY_RULES.md §12.2); the Mac draws its glyphs.
++        return (modifiers & 1 != 0 ? "Ctrl+" : "") + (modifiers & 4 != 0 ? "Meta+" : "") + (modifiers & 2 != 0 ? "Alt+" : "")
++            + (modifiers & 8 != 0 ? "Shift+" : "") + (special[key] ?? key.uppercased())
+     }
+     func event(like event: NSEvent) -> NSEvent? {
+         let codes: [String: UInt16] = ["\u{7f}": 51, "\r": 36, "\u{1b}": 53, "\t": 48, " ": 49,
+@@ -127,11 +128,10 @@
+     }()
+ }
+ 
+-@MainActor @Observable
+-final class ShortcutSettings {
++@MainActor final class ShortcutSettings {
+     static let shared = ShortcutSettings()
+     private(set) var overrides: [String: ShortcutChord] = [:]
+-    @ObservationIgnored private let panel = FloatingPanelController(name: "keyboardShortcuts")
++    private let panel = FloatingPanelController(name: "keyboardShortcuts")
+     private static let storageKey = "keyboardShortcuts.v1"
+     private init() {
+         if let data = UserDefaults.standard.data(forKey: Self.storageKey),
+@@ -153,14 +153,20 @@
+         guard let definition = ShortcutDefinition.all.first(where: { !$0.isMenu && $0.original == original }) else { return original }
+         return chord(definition)
+     }
++    /// The sheet while it is open (its @State — the draft being edited — lives in this instance); the Linux bridge
++    /// shows it as a floating panel (FloatingPanels.swift), as `panel` does on the Mac.
++    private(set) var sheet: KeyboardShortcutsSheet?
+     func show() {
+-        panel.show(title: "Keyboard Shortcuts", content: KeyboardShortcutsSheet(settings: self))
++        if sheet == nil { sheet = KeyboardShortcutsSheet(settings: self) }
++        panel.show(title: "Keyboard Shortcuts", content: sheet!)
+     }
+-    func close() { panel.close() }
++    func close() { sheet = nil; panel.close() }
+     func save(_ values: [String: ShortcutChord]) {
+         guard Self.problem(in: values) == nil, let data = try? JSONEncoder().encode(values) else { return }
+         overrides = values
+         UserDefaults.standard.set(data, forKey: Self.storageKey)
++        // Linux Foundation keeps defaults in memory until told to write them (the Mac writes them for us).
++        UserDefaults.standard.synchronize()
+         close()
+     }
+     static func problem(in values: [String: ShortcutChord]) -> String? {
+@@ -169,10 +175,10 @@
+             let chord = values[definition.id] ?? definition.original
+             guard chord.key.count == 1, (0...15).contains(chord.modifiers) else { return "Choose a single key with optional modifiers." }
+             if definition.group == "Text Editing", chord.modifiers & 7 == 0 {
+-                return "Text-editing shortcuts need Command, Option, or Control so they do not replace normal typing."
++                return "Text-editing shortcuts need Ctrl, Alt, or Meta so they do not replace normal typing."
+             }
+             if [ShortcutChord("q", 1), ShortcutChord(",", 1), ShortcutChord("m", 3)].contains(chord) {
+-                return "\(chord.label) is reserved by macOS."
++                return "\(chord.label) is reserved by the app."
+             }
+             if let other = assigned[chord] { return "\(chord.label) is assigned to both \(other) and \(definition.title)." }
+             assigned[chord] = definition.title
+@@ -226,7 +232,7 @@
+     }
+ }
+ 
+-private struct KeyboardShortcutsSheet: View {
++struct KeyboardShortcutsSheet: View {
+     let settings: ShortcutSettings
+     @State private var draft: [String: ShortcutChord]
+     @State private var search = ""
+@@ -238,7 +244,7 @@
+                 .foregroundStyle(.secondary)
+             TextField("Search shortcuts", text: $search).textFieldStyle(.roundedBorder)
+             ScrollView {
+-                LazyVStack(alignment: .leading, spacing: 6) {
++                VStack(alignment: .leading, spacing: 6) {
+                     ForEach(["Menus", "Canvas & Layers", "Text Editing"], id: \.self) { group in
+                         Text(group).font(.headline).padding(.top, 8)
+                         ForEach(ShortcutDefinition.all.filter { $0.group == group && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }) { definition in
+@@ -258,8 +264,8 @@
+                     }
+                     Divider().padding(.vertical, 8)
+                     Text("Contextual keys & mouse gestures").font(.headline)
+-                    Text("Text fields keep standard macOS editing keys. Dialogs share the Apply/Cancel assignments above. Numeric fields use Up/Down, with Shift for larger steps. Standard macOS commands include ⌘Q to quit and ⌃⌘F for full screen. The shortcut editor itself always uses Return to save and Esc to cancel when not recording.")
+-                    Text("Option temporarily selects the eyedropper in painting tools. Shift constrains shapes/movement or adds to a selection; Option subtracts from selections or draws from center. Command-drag moves selected pixels; Command-Option-drag copies them. Option-drag duplicates layers/folders/effects; Option-click at a layer boundary toggles clipping. Command-click a thumbnail loads its selection. Control bypasses snapping. Right-drag adjusts brush size. Modifier-and-mouse gestures are fixed.")
++                    Text("Text fields keep standard Linux editing keys. Dialogs share the Apply/Cancel assignments above. Numeric fields use Up/Down, with Shift for larger steps. Ctrl+Q quits, F toggles full screen (Esc also leaves) and Meta+Ctrl+F repeats the last filter. The shortcut editor itself always uses Return to save and Esc to cancel when not recording.")
++                    Text("Alt temporarily selects the eyedropper in painting tools. Shift constrains shapes/movement or adds to a selection; Alt subtracts from selections or draws from center. Ctrl-drag moves selected pixels; Ctrl+Alt-drag copies them. Alt-drag duplicates layers/folders/effects; Alt-click at a layer boundary toggles clipping. Ctrl-click a thumbnail loads its selection. Meta bypasses snapping. Right-drag adjusts brush size. Modifier-and-mouse gestures are fixed.")
+                 }.padding(.trailing, 8)
+             }.frame(height: 465)
+             // Only a conflict takes room here; an empty line left a wide gap above the buttons.

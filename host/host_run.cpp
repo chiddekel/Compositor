@@ -417,30 +417,38 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 break;
             }
         }
+        // The Layers list is tip's table drawn as an AppKit view (an `_AppKit` widget): rows 52 points tall with 2 between
+        // them (rows without effects), the eye 18 points in, the name from 88. A gesture's later events are queued before
+        // its press, since the press runs the table's tracking loop, which takes them as they come.
+        auto layerTable = [&]() -> QWidget * {
+            for (QWidget *w : window.findChildren<QWidget *>()) if (w->property("appKitView").toBool() && w->isVisible()) return w;
+            return nullptr;
+        };
+        auto rowPoint = [](int row, double fraction, double x) { return QPointF(x, row * 54.0 + 52.0 * fraction); };
+        auto gesture = [&](QWidget *table, const QPointF &from, const QList<QPointF> &path, Qt::KeyboardModifiers modifiers) {
+            // What came before (a command adding layers) reaches the list first: the shell refreshes panels on a timer.
+            QPointer<QWidget> alive(table);
+            { QElapsedTimer before; before.start(); while (before.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20); }
+            if (!alive) table = layerTable();
+            if (!table) return;
+            for (const QPointF &at : path)
+                QCoreApplication::postEvent(table, new QMouseEvent(QEvent::MouseMove, at, table->mapToGlobal(at), Qt::NoButton, Qt::LeftButton, modifiers));
+            const QPointF end = path.isEmpty() ? from : path.last();
+            QCoreApplication::postEvent(table, new QMouseEvent(QEvent::MouseButtonRelease, end, table->mapToGlobal(end), Qt::LeftButton, Qt::NoButton, modifiers));
+            QMouseEvent press(QEvent::MouseButtonPress, from, table->mapToGlobal(from), Qt::LeftButton, Qt::LeftButton, modifiers);
+            QCoreApplication::sendEvent(table, &press);
+            QElapsedTimer settle; settle.start();
+            while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        };
         // COMPOSITOR_GRAB_EYE_SWIPE="from,to": press the eye of Layers row `from` (top first), drag to row `to`, let go.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_EYE_SWIPE").isEmpty()) {
             const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_EYE_SWIPE").split(QLatin1Char(','));
-            QList<QWidget *> eyes;
-            for (QWidget *w : window.findChildren<QWidget *>())
-                if (w->property("swipeGroup").toString() == QLatin1String("layerEyes") && w->isVisible()) eyes << w;
-            std::sort(eyes.begin(), eyes.end(), [](QWidget *a, QWidget *b) { return a->mapToGlobal(QPoint()).y() < b->mapToGlobal(QPoint()).y(); });
-            // One per row (a rebuilt panel can leave an old copy behind for a moment).
-            eyes.erase(std::unique(eyes.begin(), eyes.end(), [](QWidget *a, QWidget *b) { return a->mapToGlobal(QPoint()).y() == b->mapToGlobal(QPoint()).y(); }), eyes.end());
-            const int from = v.value(0).toInt(), to = v.value(1).toInt();
-            if (from < eyes.size() && to < eyes.size()) {
-                QWidget *start = eyes[from];
-                const QPointF local(start->width() / 2.0, start->height() / 2.0);
-                QMouseEvent press(QEvent::MouseButtonPress, local, start->mapToGlobal(local), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-                QCoreApplication::sendEvent(start, &press);
-                const int step = from <= to ? 1 : -1;
-                for (int i = from; i != to + step; i += step) {
-                    const QPointF global = eyes[i]->mapToGlobal(QPointF(eyes[i]->width() / 2.0, eyes[i]->height() / 2.0));
-                    QMouseEvent move(QEvent::MouseMove, start->mapFromGlobal(global), global, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-                    QCoreApplication::sendEvent(start, &move);
-                }
-                QMouseEvent release(QEvent::MouseButtonRelease, local, start->mapToGlobal(local), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-                QCoreApplication::sendEvent(start, &release);
-                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+            if (QWidget *table = layerTable()) {
+                const int from = v.value(0).toInt(), to = v.value(1).toInt(), step = from <= to ? 1 : -1;
+                QList<QPointF> path;
+                for (int row = from; row != to + step; row += step) path << rowPoint(row, 0.5, 18);
+                gesture(table, rowPoint(from, 0.5, 18), path, Qt::NoModifier);
             }
         }
         // COMPOSITOR_GRAB_ACTION=<menu action objectName, e.g. filter.Vignette>: triggered as if chosen from the menu.
@@ -453,33 +461,16 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 break;
             }
         }
-        // COMPOSITOR_GRAB_LAYER_DROP="source,row,fraction": a drag of the Layers list's row `source` dropped on row `row`
-        // at `fraction` of its height (0 top, 0.5 middle — into a folder, 1 bottom), as the list's drop handler gets it.
+        // COMPOSITOR_GRAB_LAYER_DROP="source,row,fraction": drag the Layers list's row `source` by its name and drop it on
+        // row `row` at `fraction` of its height (0 top, 0.5 middle — into a folder, 1 bottom).
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_DROP").isEmpty()) {
             const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_DROP").split(',');
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
-            QWidget *content = nullptr;
-            for (QWidget *w : window.findChildren<QWidget *>())
-                if (w->acceptDrops() && w->property("listRow").isNull() && !w->findChildren<QWidget *>().isEmpty()
-                    && std::any_of(w->children().cbegin(), w->children().cend(), [](QObject *c) { return c->property("listRow").isValid(); })) { content = w; break; }
-            if (content && v.size() == 3) {
-                QWidget *target = nullptr;
-                for (QObject *c : content->children())
-                    if (auto *w = qobject_cast<QWidget *>(c); w && w->property("listRow").toInt() == v[1].toInt() && w->property("listRow").isValid()) { target = w; break; }
-                if (target) {
-                    const QRect r = target->geometry();
-                    const QPoint at(r.center().x(), r.top() + int(r.height() * v[2].toDouble()));
-                    auto *mime = new QMimeData;
-                    mime->setData("application/x-compositor-list-row", v[0].toUtf8());
-                    QDragEnterEvent enter(at, Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
-                    QCoreApplication::sendEvent(content, &enter);
-                    QDragMoveEvent move(at, Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
-                    QCoreApplication::sendEvent(content, &move);
-                    QDropEvent drop(at, Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
-                    QCoreApplication::sendEvent(content, &drop);
-                    QElapsedTimer settle; settle.start();
-                    while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-                }
+            if (QWidget *table = layerTable(); table && v.size() == 3) {
+                const QPointF from = rowPoint(v[0].toInt(), 0.5, 150), to = rowPoint(v[1].toInt(), v[2].toDouble(), 150);
+                QList<QPointF> path;
+                for (int i = 1; i <= 8; ++i) path << from + (to - from) * (i / 8.0);
+                gesture(table, from, path, Qt::NoModifier);
             }
         }
         // COMPOSITOR_GRAB_REBIND="<shortcut title>,<key>": through the Keyboard Shortcuts editor as a user would — click
@@ -521,33 +512,28 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         }
         // COMPOSITOR_GRAB_LAYER_MENU=<row>: right-click that Layers-list row and capture its context menu as <path>.menu.png;
         // COMPOSITOR_GRAB_LAYER_CLICK="<row>,ctrl|shift": then click another row with that modifier (multi-select).
-        auto layerRow = [&](int row) -> QWidget * {
-            for (QWidget *w : window.findChildren<QWidget *>())
-                if (w->property("listRow").isValid() && w->property("listRow").toInt() == row && w->parentWidget()
-                    && !w->parentWidget()->property("listRow").isValid()) return w;
-            return nullptr;
-        };
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_MENU").isEmpty()) {
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
-            if (QWidget *row = layerRow(qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_MENU").toInt())) {
+            if (QWidget *table = layerTable()) {
                 QTimer::singleShot(300, [] {
                     if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
                         menu->grab().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".menu.png");
                         menu->close();
                     }
                 });
-                QContextMenuEvent context(QContextMenuEvent::Mouse, QPoint(20, 10), row->mapToGlobal(QPoint(20, 10)));
-                QCoreApplication::sendEvent(row, &context);
+                const QPointF at = rowPoint(qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_MENU").toInt(), 0.5, 150);
+                QMouseEvent press(QEvent::MouseButtonPress, at, table->mapToGlobal(at), Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(table, &press);
+                QElapsedTimer t; t.start(); while (t.elapsed() < 600) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
             }
         }
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_CLICK").isEmpty()) {
             const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_CLICK").split(',');
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
-            if (QWidget *row = layerRow(v.value(0).toInt())) {
+            if (QWidget *table = layerTable()) {
                 const Qt::KeyboardModifiers mods = v.value(1) == "shift" ? Qt::ShiftModifier : Qt::ControlModifier;
-                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(60, 10), row->mapToGlobal(QPointF(60, 10)), Qt::LeftButton, Qt::NoButton, mods);
-                QCoreApplication::sendEvent(row, &release);
-                QElapsedTimer t; t.start(); while (t.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                const QPointF at = rowPoint(v.value(0).toInt(), 0.5, 150);
+                gesture(table, at, {}, mods);
             }
         }
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_STROKE").isEmpty()) {
@@ -682,55 +668,36 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             }
             std::fprintf(stderr, "HOVER sent=%d rounds=%d in %lld ms\n", sent, rounds, (long long)spent.elapsed());
         }
-        // COMPOSITOR_GRAB_LAYER_POINT="row,fraction[,alt|ctrl|shift|double]": a click in that row of the layers list, `fraction`
-        // of the way down it (0 top ... 1 bottom), with those keys held — on whatever view is there, as a mouse would.
+        // COMPOSITOR_GRAB_LAYER_POINT="row,fraction[,x=N][,alt|ctrl|shift|double]": a click in that row of the layers list,
+        // `fraction` of the way down it (0 top ... 1 bottom), with those keys held, as a mouse would; "double" clicks twice.
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_POINT").isEmpty()) {
             const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_POINT").split(QLatin1Char(','));
             window.show();
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
-            QWidget *row = nullptr;
-            for (QWidget *w : window.findChildren<QWidget *>())
-                if (w->isVisible() && w->property("listRow").isValid() && w->property("listRow").toInt() == v.value(0).toInt()
-                    && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())) { row = w; break; }
-            if (row) {
+            if (QWidget *table = layerTable()) {
                 Qt::KeyboardModifiers modifiers;
                 if (v.contains(QStringLiteral("alt"))) modifiers |= Qt::AltModifier;
                 if (v.contains(QStringLiteral("ctrl"))) modifiers |= Qt::ControlModifier;
                 if (v.contains(QStringLiteral("shift"))) modifiers |= Qt::ShiftModifier;
-                int x = 120;   // "x=<points>" among the values picks another spot along the row
-                for (const QString &part : v) if (part.startsWith(QStringLiteral("x="))) x = part.mid(2).toInt();
-                const QPoint at(std::min(row->width() - 1, x), std::min(row->height() - 1, int(row->height() * v.value(1).toDouble())));
-                // Whatever is on top at that point, as the mouse would find it (an overlay above the row's content).
-                const QPoint inWindow = row->mapTo(&window, at);
-                QPointer<QWidget> target = window.childAt(inWindow) ? window.childAt(inWindow) : row;
-                const QPoint local = target->mapFrom(&window, inWindow);
-                const QPoint global = target->mapToGlobal(local);
-                std::fprintf(stderr, "LAYERPOINT row %d at %d,%d -> %s tap=%d %d,%d %dx%d\n", v.value(0).toInt(), at.x(), at.y(), target->metaObject()->className(), target->property("swiftuiTapGestureCount").toInt(), target->x(), target->y(), target->width(), target->height());
-                QMouseEvent press(QEvent::MouseButtonPress, local, global, Qt::LeftButton, Qt::LeftButton, modifiers);
-                QCoreApplication::sendEvent(target, &press);
-                if (target) {   // the press may have rebuilt the panel
-                    QMouseEvent release(QEvent::MouseButtonRelease, local, global, Qt::LeftButton, Qt::NoButton, modifiers);
-                    QCoreApplication::sendEvent(target, &release);
-                }
-                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
+                double x = 120;   // "x=<points>" among the values picks another spot along the row
+                for (const QString &part : v) if (part.startsWith(QStringLiteral("x="))) x = part.mid(2).toDouble();
+                const QPointF at = rowPoint(v.value(0).toInt(), v.value(1).toDouble(), x);
+                std::fprintf(stderr, "LAYERPOINT row %d at %.0f,%.0f\n", v.value(0).toInt(), at.x(), at.y());
+                gesture(table, at, {}, modifiers);
                 if (v.contains(QStringLiteral("double"))) {
-                    target = window.childAt(inWindow);
-                    if (target) {
-                        const QPoint secondLocal = target->mapFrom(&window, inWindow);
-                        QMouseEvent doubleClick(QEvent::MouseButtonDblClick, secondLocal, global, Qt::LeftButton, Qt::LeftButton, modifiers);
-                        QCoreApplication::sendEvent(target, &doubleClick);
-                        if (target) {
-                            QMouseEvent release(QEvent::MouseButtonRelease, secondLocal, global, Qt::LeftButton, Qt::NoButton, modifiers);
-                            QCoreApplication::sendEvent(target, &release);
-                        }
+                    if (QWidget *again = layerTable()) {
+                        QCoreApplication::postEvent(again, new QMouseEvent(QEvent::MouseButtonRelease, at, again->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, modifiers));
+                        QMouseEvent second(QEvent::MouseButtonDblClick, at, again->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, modifiers);
+                        QCoreApplication::sendEvent(again, &second);
                     }
                     QElapsedTimer settle; settle.start();
-                    while (settle.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-                    for (QLineEdit *field : window.findChildren<QLineEdit *>())
-                        if (field->isVisible() && field->placeholderText() == QLatin1String("Layer name"))
-                            std::fprintf(stderr, "RENAME field visible enabled=%d focused=%d selected=%s\n", field->isEnabled(), field->hasFocus(), qPrintable(field->selectedText()));
+                    while (settle.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+                    if (QWidget *now = layerTable())
+                        for (QLineEdit *field : now->findChildren<QLineEdit *>())
+                            if (field->isVisible())
+                                std::fprintf(stderr, "RENAME field visible enabled=%d focused=%d selected=%s\n", field->isEnabled(), field->hasFocus(), qPrintable(field->selectedText()));
                 }
-            } else std::fprintf(stderr, "LAYERPOINT no row %d\n", v.value(0).toInt());
+            } else std::fprintf(stderr, "LAYERPOINT no layers table\n");
         }
         // COMPOSITOR_GRAB_FOCUS_KEYS="v,delete,left,shift+down,5": keys typed at whatever has the focus (after a click in
         // the layers list, say); prints the focus and the session's tool, layers and active layer after each.
@@ -770,8 +737,8 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             QElapsedTimer settle; settle.start();
             while (settle.elapsed() < 300) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
             int editors = 0;
-            for (QLineEdit *field : window.findChildren<QLineEdit *>())
-                if (field->isVisible() && field->placeholderText() == QLatin1String("Layer name")) ++editors;
+            if (QWidget *table = layerTable())
+                for (QLineEdit *field : table->findChildren<QLineEdit *>()) if (field->isVisible()) ++editors;
             QWidget *add = window.findChild<QWidget *>(QStringLiteral("addBlankLayer"));
             QStringList names;
             const QJsonObject state = window.sessionState();
@@ -785,114 +752,38 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             const QStringList v = qEnvironmentVariable("COMPOSITOR_GRAB_LAYER_CURSOR").split(QLatin1Char(','));
             window.show();
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
-            QWidget *row = nullptr;
-            for (QWidget *w : window.findChildren<QWidget *>())
-                if (w->isVisible() && w->property("listRow").isValid() && w->property("listRow").toInt() == v.value(0).toInt()
-                    && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())) { row = w; break; }
-            if (row) {
-                int x = 120;
-                for (const QString &part : v) if (part.startsWith(QStringLiteral("x="))) x = part.mid(2).toInt();
-                const QPoint at(std::min(row->width() - 1, x), std::min(row->height() - 1, int(row->height() * v.value(1).toDouble())));
-                const QPoint global = row->mapToGlobal(at);
-                QCursor::setPos(global);
-                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();   // the move lands before the key goes down
+            if (QWidget *table = layerTable()) {
+                double x = 120;
+                for (const QString &part : v) if (part.startsWith(QStringLiteral("x="))) x = part.mid(2).toDouble();
+                const QPointF at = rowPoint(v.value(0).toInt(), v.value(1).toDouble(), x);
                 const Qt::KeyboardModifiers keys = v.contains(QStringLiteral("alt")) ? Qt::AltModifier : Qt::ControlModifier;
-                QWidget *under = window.childAt(window.mapFromGlobal(global));
-                if (!under) under = row;
-                // The key goes down (as a keyboard sends it), then the pointer moves there.
-                QKeyEvent press(QEvent::KeyPress, keys == Qt::AltModifier ? Qt::Key_Alt : Qt::Key_Control, keys);
-                QCoreApplication::sendEvent(&window, &press);
-                QHoverEvent hover(QEvent::HoverMove, under->mapFromGlobal(global), global, under->mapFromGlobal(global), keys);
-                QCoreApplication::sendEvent(under, &hover);
+                QMouseEvent move(QEvent::MouseMove, at, table->mapToGlobal(at), Qt::NoButton, Qt::NoButton, keys);
+                QCoreApplication::sendEvent(table, &move);
                 for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
-                const QCursor *cursor = QApplication::overrideCursor();
-                std::fprintf(stderr, "LAYERCURSOR %s\n", cursor ? "override" : "none");
-                if (cursor) cursor->pixmap().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".cursor.png");
+                const QCursor cursor = table->cursor();
+                std::fprintf(stderr, "LAYERCURSOR shape %d\n", int(cursor.shape()));
+                if (cursor.shape() == Qt::BitmapCursor) cursor.pixmap().save(qEnvironmentVariable("COMPOSITOR_GRAB_PATH") + ".cursor.png");
             }
         }
-        // COMPOSITOR_GRAB_EFFECT_DROP=<row>: the first effect row in the list, dropped on that row as an Option-drag ends
-        // (the drop half of the gesture; a real QDrag needs a window system).
-        if (!qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DROP").isEmpty()) {
-            for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
-            QString source;
-            for (QWidget *w : window.findChildren<QWidget *>())
-                if (w->isVisible() && w->objectName().startsWith(QStringLiteral("layerEffectRow:"))) { source = w->objectName().mid(15); break; }
-            QWidget *row = nullptr;
-            const int target = qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DROP").toInt();
-            for (QWidget *w : window.findChildren<QWidget *>())
-                if (w->isVisible() && w->property("listRow").isValid() && w->property("listRow").toInt() == target
-                    && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())) { row = w; break; }
-            if (row && !source.isEmpty()) {
-                QWidget *content = row->parentWidget();
-                while (content && !content->acceptDrops()) content = content->parentWidget();
-                const QPointF at = content->mapFrom(row, QPoint(row->width() / 2, row->height() / 2));
-                auto *mime = new QMimeData;
-                mime->setData("com.compositor.layer-effect", source.toUtf8());
-                QDragEnterEvent enter(at.toPoint(), Qt::CopyAction, mime, Qt::LeftButton, Qt::AltModifier);
-                QCoreApplication::sendEvent(content, &enter);
-                QDropEvent drop(at, Qt::CopyAction, mime, Qt::LeftButton, Qt::AltModifier);
-                QCoreApplication::sendEvent(content, &drop);
-                for (int i = 0; i < 20; ++i) QCoreApplication::processEvents();
-                std::fprintf(stderr, "EFFECTDROP %s on row %d accepted=%d\n", qPrintable(source), target, drop.isAccepted());
-            } else {
-                std::fprintf(stderr, "EFFECTDROP nothing to drop (source '%s')\n", qPrintable(source));
-                for (QWidget *w : window.findChildren<QWidget *>())
-                    if (w->property("listRow").isValid() && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid()))
-                        std::fprintf(stderr, "EFFECTDROP row %d visible %d %dx%d\n", w->property("listRow").toInt(), w->isVisible(), w->width(), w->height());
-            }
-        }
-        // COMPOSITOR_GRAB_EFFECT_DRAG=<row>: the whole Option-drag of the list's first effect row onto that row — the
-        // press, a move past the drag distance (the list starts its QDrag) and the release over the target, which Qt's
-        // drag loop answers with a drop there.
+        // COMPOSITOR_GRAB_EFFECT_DRAG=<row>: Option-drag the first effect of the list's first row onto that row (its effect
+        // rows sit under the row's 52-point top, 24 points each).
         if (!qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DRAG").isEmpty()) {
             window.show();
             for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
-            QWidget *effect = nullptr, *row = nullptr;
-            const int target = qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DRAG").toInt();
-            for (QWidget *w : window.findChildren<QWidget *>()) {
-                if (!effect && w->isVisible() && w->objectName().startsWith(QStringLiteral("layerEffectRow:"))) effect = w;
-                if (!row && w->isVisible() && w->property("listRow").isValid() && w->property("listRow").toInt() == target
-                    && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())) row = w;
-            }
-            if (effect && row) {
-                const QString before = window.sessionState().value("undoName").toString(), effectName = effect->objectName();
-                QWindow *handle = window.windowHandle();
-                const QPoint from = effect->mapToGlobal(effect->rect().center()), to = row->mapToGlobal(row->rect().center());
-                bool dropped = false;
-                // The pointer arrives over the target, stays while the drop target answers (XDND status), then lets go.
-                QTimer::singleShot(150, &window, [handle, to] {
-                    QCursor::setPos(to);
-                    const QPointF local = handle->mapFromGlobal(QPointF(to));
-                    QMouseEvent move(QEvent::MouseMove, local, QPointF(to), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
-                    QCoreApplication::sendEvent(handle, &move);
-                });
-                QTimer::singleShot(700, &window, [handle, to, &dropped] {
-                    const QPointF local = handle->mapFromGlobal(QPointF(to));
-                    QMouseEvent release(QEvent::MouseButtonRelease, local, QPointF(to), Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
-                    QCoreApplication::sendEvent(handle, &release);
-                    dropped = true;
-                });
-                QTimer::singleShot(3000, &window, [] { QDrag::cancel(); });   // never left hanging
-                QCursor::setPos(from);
-                QMouseEvent press(QEvent::MouseButtonPress, effect->mapFromGlobal(from), from, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
-                QCoreApplication::sendEvent(effect, &press);
-                const QPoint past = from + QPoint(0, 3 * QApplication::startDragDistance());
-                QPointer<QWidget> source = effect;
-                if (source) {
-                    QMouseEvent move(QEvent::MouseMove, source->mapFromGlobal(past), past, Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
-                    QCoreApplication::sendEvent(source, &move);   // returns when the drag is over
-                }
-                for (int i = 0; i < 40; ++i) QCoreApplication::processEvents();
-                QStringList names;
-                for (const auto &l : window.sessionState().value("layers").toArray()) names << l.toObject().value("name").toString();
-                std::fprintf(stderr, "EFFECTDRAG layers [%s] from %s\n", qPrintable(names.join(',')), qPrintable(effectName));
-                std::fprintf(stderr, "EFFECTDRAG onto row %d released=%d undo '%s' -> '%s'\n", target, dropped, qPrintable(before), qPrintable(window.sessionState().value("undoName").toString()));
-            } else {
-                std::fprintf(stderr, "EFFECTDRAG no %s\n", effect ? "target row" : "effect row");
-                for (QWidget *w : window.findChildren<QWidget *>())
-                    if (w->objectName().startsWith(QStringLiteral("layerEffectRow:")) || (w->property("listRow").isValid() && !(w->parentWidget() && w->parentWidget()->property("listRow").isValid())))
-                        std::fprintf(stderr, "EFFECTDRAG  %s row %d visible %d\n", qPrintable(w->objectName().left(20)), w->property("listRow").toInt(), w->isVisible());
-            }
+            if (QWidget *table = layerTable()) {
+                const QString before = window.sessionState().value("undoName").toString();
+                const int target = qEnvironmentVariable("COMPOSITOR_GRAB_EFFECT_DRAG").toInt();
+                const QPointF from(120, 52 + 12);
+                int effects = 0;   // the first row's effects push the rows below it down
+                const QJsonArray layers = window.sessionState().value("layers").toArray();
+                if (!layers.isEmpty()) effects = layers.last().toObject().value("effects").toObject().value("kinds").toArray().size();
+                const QPointF to(120, target == 0 ? 26 : 52 + 24.0 * effects + 2 + (target - 1) * 54.0 + 26);
+                QList<QPointF> path;
+                for (int i = 1; i <= 8; ++i) path << from + (to - from) * (i / 8.0);
+                gesture(table, from, path, Qt::AltModifier);
+                std::fprintf(stderr, "EFFECTDRAG onto row %d undo '%s' -> '%s'\n", target, qPrintable(before),
+                             qPrintable(window.sessionState().value("undoName").toString()));
+            } else std::fprintf(stderr, "EFFECTDRAG no layers table\n");
         }
         // COMPOSITOR_GRAB_CLIPBOARD_REPORT=1: what the desktop clipboard holds now (after the menu items above).
         if (qEnvironmentVariableIsSet("COMPOSITOR_GRAB_CLIPBOARD_REPORT")) {

@@ -190,7 +190,14 @@ extension NSView: NSLayoutItem {
     /// Positions the subviews and guides that constraints place (those with
     /// `translatesAutoresizingMaskIntoConstraints` off), in this view's bounds.
     func solveConstraints() {
-        let mine = constraints
+        // Only what this view lays out: constraints entirely among itself and its own subviews and guides. One that
+        // places it among its siblings is its superview's to solve, in the superview's space.
+        let mine = constraints.filter { constraint in
+            [constraint.firstAttribute, constraint.secondAttribute].allSatisfy { anchor in
+                guard let item = anchor?.item else { return true }
+                return item === self || item.layoutContainer === self
+            }
+        }
         guard !mine.isEmpty else { return }
         var solver = LayoutSolver(container: self)
         solver.solve(mine)

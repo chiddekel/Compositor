@@ -1,0 +1,26 @@
+--- a/Compositor/Rendering/TransformOverlay.swift
++++ b/Compositor/Rendering/TransformOverlay.swift
+@@ -23,8 +23,13 @@
+         showsRotation = false
+     }
+ 
++    /// Hit slop around handles / edges (view points). Tip uses 10; Linux mouse aiming needs a wider grab
++    /// than the drawn 7×7 squares — detection only, not the drawn size.
++    static let hitSlop: CGFloat = 16
++
+     func hit(_ point: CGPoint) -> TransformDrag.Mode? {
+-        func near(_ other: CGPoint) -> Bool { hypot(point.x - other.x, point.y - other.y) <= 10 }
++        let slop = Self.hitSlop
++        func near(_ other: CGPoint) -> Bool { hypot(point.x - other.x, point.y - other.y) <= slop }
+         if showsRotation, near(rotationHandle) { return .rotate }
+         if let index = handles.firstIndex(where: near) { return .resize(index) }
+         for (start, end, handle) in [(0, 2, 1), (2, 4, 3), (4, 6, 5), (6, 0, 7)] {
+@@ -33,7 +38,7 @@
+             let lengthSquared = dx * dx + dy * dy
+             guard lengthSquared > 0 else { continue }
+             let t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared
+-            if (0...1).contains(t), hypot(point.x - a.x - t * dx, point.y - a.y - t * dy) <= 10 {
++            if (0...1).contains(t), hypot(point.x - a.x - t * dx, point.y - a.y - t * dy) <= slop {
+                 return .resize(handle)
+             }
+         }

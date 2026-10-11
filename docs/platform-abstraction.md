@@ -90,3 +90,24 @@ Upstream's own tests never call layer effects, so these checks live in `Tests/Li
 Timing (release, 2400x1600 layer, stroke + shadow + inner shadow): OpenCV 0.19 s, C++ 0.77 s, Vulkan on llvmpipe 1.6 s, Skia raster 5.2 s.
 Hence OpenCV is in `auto`, Skia is opt-in (with a GPU-backed Skia it becomes the tier to try after Vulkan). Not done:
 device-local staging buffers for discrete GPUs.
+
+## AppKit views inside SwiftUI (`NSViewRepresentable`)
+
+The Qt shell draws compat SwiftUI's resolved trees itself, so it cannot place a real AppKit view. While the bridge
+resolves a panel (`SwiftUIBridge.swift` sets `NativeLowering.isActive`), compat SwiftUI's `NativeLowering` turns each
+representable into nodes the renderer already knows. The representable's view is made once per tree position, updated on
+every resolve, and lives in an offscreen window, so first-responder logic works. What it shows is read back from the real
+controls, and what the user does goes to them:
+
+| AppKit view | Drawn as | What reaches AppKit |
+|---|---|---|
+| `NSPopUpButton` | Picker (menu), each item in its own face when it has one | menu open / highlight / close to the menu's delegate, the choice as the button's action |
+| `NSButton` | Button (title or symbol) | `performClick` |
+| `NSTextField` | Text, or TextField when editable | text, `controlTextDidChange`, the action on Return |
+| `NSSlider` | Slider, its track in the colors the cell's bar draws | value and action; a double-click as a two-click press on the knob |
+| `NSStackView`, `NSScrollView`, `NSHostingView` | HStack / VStack, ScrollView, the hosted SwiftUI tree | — |
+| anything else (the layers table) | `_AppKit`: the pixels `drawHierarchy` draws (controls draw themselves, `ControlDrawing.swift`) | the pointer and keys as `NSEvent`s: hit testing, the responder chain, tracking loops (`NSWindow.nextEvent` runs Qt's event loop through `NSApp.eventPump`), drag sessions routed to the table under the pointer, tracking areas, `menu(for:)` |
+
+`NSMenu.popUp` shows the menu at the pointer through the shell (`NSMenu.presenter`, a "popUpMenu" shell request). A text
+field being edited inside an `_AppKit` view gets a real Qt field over it. Tests and `NSHostingView` keep hosting the real
+views (`HostedLayout`); lowering is only for the shell.

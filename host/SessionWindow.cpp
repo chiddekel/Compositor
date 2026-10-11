@@ -95,6 +95,7 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QFrame>
 #include <QToolButton>
 #include <QMenu>
+#include <QCursor>
 #include <QPixmap>
 #include <QWheelEvent>
 #include <QNativeGestureEvent>
@@ -121,7 +122,6 @@ void compositor_set_symbol_renderer(compositor_symbol_renderer render);
 int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
 int32_t compositor_canvas_magnify(uint64_t handle, double x, double y, double magnification);
 int32_t compositor_canvas_key(uint64_t handle, int32_t keyCode, const char *characters, int32_t modifiers, int32_t isRepeat);
-int32_t compositor_layer_list_key(uint64_t handle, int32_t keyCode, int32_t modifiers);
 int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double y, int32_t modifiers, int32_t clickCount);
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
 int64_t compositor_canvas_overlay_region(uint64_t handle, int32_t x, int32_t y, int32_t width, int32_t height, uint8_t *output, size_t capacity);
@@ -132,6 +132,10 @@ int64_t compositor_session_dirty_panels(uint64_t handle, uint8_t *output, size_t
 int64_t compositor_app_menus(uint8_t *output, size_t capacity);
 int32_t compositor_app_menu_perform(const char *path);
 int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
+int64_t compositor_popup_menu_items(uint8_t *output, size_t capacity);
+void compositor_register_event_pump(int32_t (*pump)(void));
+int32_t compositor_host_pump_events(void);
+void compositor_popup_menu_choose(int32_t index);
 int32_t compositor_session_viewport_update(uint64_t handle, int32_t op, double a, double b, double c);
 typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
 void compositor_set_sheet_presenter(void (*presenter)(void *context, const char *panel), void *context);
@@ -1285,9 +1289,13 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     // Swift's main queue has no other pump under Qt's event loop: upstream async work started from a panel
     // (previews, Task {} in button actions) runs here, and whatever it changed shows.
+    // AppKit tracking loops (NSWindow.nextEvent) wait on Qt's event loop.
+    compositor_register_event_pump(compositor_host_pump_events);
     m_mainPumpTimer = new QTimer(this);
     m_mainPumpTimer->setInterval(16);
     connect(m_mainPumpTimer, &QTimer::timeout, this, [this] {
+        // An AppKit tracking loop (a press in the layers table) is waiting in the event pump: nothing rebuilds under it.
+        if (swiftUIAppKitTracking()) return;
         compositor_pump_main();
         if (m_sessionHandle == 0 || m_painting) return;
         updateInvalidOverlay();   // upstream's timers (the marching ants) redraw what they invalidated
@@ -1981,27 +1989,6 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
-    // Up/Down after a click in the layers list move its row selection (NSTableView), unless Move or a transform nudges.
-    if ((event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) && qApp->property("layerListFocused").toBool()
-        && compositor_layer_list_key(m_sessionHandle, event->key() == Qt::Key_Down ? 125 : 126, chordBits(event->modifiers())) == 1) {
-        compositor_pump_main();
-        refreshLayers();
-        updateLayersPanel();
-        updateOptionsBar();
-        event->accept();
-        return;
-    }
-    // Cmd-A with the layers list focused: select the canvas (LayerTableView.selectAll), never every layer.
-    if (event->key() == Qt::Key_A && qApp->property("layerListFocused").toBool()
-        && (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
-        && !(event->modifiers() & Qt::AltModifier)) {
-        if (cmd(m_sessionHandle, R"({"version":1,"action":"selectAll"})") == 0) {
-            refreshImage();
-            refreshLayers();
-        }
-        event->accept();
-        return;
-    }
     // Free Transform: Enter applies, Esc resets. Handle here before routesToUpstreamCanvas — Move tool would
     // forward Return/Esc to compositor_canvas_key and return without running the shell apply/reset path.
     if (event->modifiers() == Qt::NoModifier
@@ -2635,6 +2622,8 @@ void SessionWindow::handleShellRequests() {
         else if (request.startsWith(QLatin1String("exportAs:"))) exportAsWithUpstream(request.mid(9));
         else if (request == QLatin1String("toggleCanvasOnly")) applyCanvasOnly(sessionState().value("canvasOnly").toBool());
         else if (request == QLatin1String("commandPalette")) showCommandPalette();
+        else if (request == QLatin1String("popUpMenu")) showPopUpMenu();
+        else if (request == QLatin1String("showEditor")) { showNormal(); raise(); activateWindow(); }
         else if (request == QLatin1String("close")) trigger("file.closeProject");
         else if (request == QLatin1String("canvasSize") || request == QLatin1String("imageSize")) {
             // Upstream's own sheet (CanvasSizeSheet / ImageSizeSheet) and resizer.
@@ -2663,6 +2652,34 @@ void SessionWindow::handleShellRequests() {
 }
 
 /// AppKit's standard About panel: the app icon, its name in bold, "Version x (build)", centred in a small window.
+/// An AppKit menu upstream pops up (`NSMenu.popUp`, e.g. the tab bar's overflow pill): shown at the pointer, and the
+/// choice (or its dismissal) goes back to Swift, which runs the item's action.
+void SessionWindow::showPopUpMenu() {
+    const int64_t size = compositor_popup_menu_items(nullptr, 0);
+    if (size <= 0) return;
+    QByteArray bytes(static_cast<int>(size), Qt::Uninitialized);
+    if (compositor_popup_menu_items(reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return;
+    QMenu menu(this);
+    int index = 0;
+    for (const QJsonValue &value : QJsonDocument::fromJson(bytes).array()) {
+        const QJsonObject item = value.toObject();
+        if (item.value("separator").toBool()) {
+            menu.addSeparator();
+        } else {
+            QAction *action = menu.addAction(item.value("title").toString());
+            action->setEnabled(item.value("enabled").toBool(true));
+            action->setCheckable(item.value("checked").toBool());
+            action->setChecked(item.value("checked").toBool());
+            action->setData(index);
+        }
+        ++index;
+    }
+    QAction *chosen = menu.exec(QCursor::pos());
+    compositor_popup_menu_choose(chosen ? chosen->data().toInt() : -1);
+    compositor_pump_main();
+    refreshDirtyPanels();
+}
+
 void SessionWindow::showAboutPanel() {
     auto *panel = new QDialog(this, Qt::Dialog);
     panel->setAttribute(Qt::WA_DeleteOnClose);
@@ -3817,7 +3834,6 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
 }
 
 void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
-    qApp->setProperty("layerListFocused", false);   // the canvas has the keys again
     Q_UNUSED(canvas);
     // The middle button pans from any tool, and with Ctrl (⌘) or Meta (⌃) held zooms, as in Blender: upstream's
     // CanvasView.otherMouse* handles it (EditorCanvas, 1.4.9). Never while a left-button drag is in progress.

@@ -36,7 +36,7 @@ Evidence: 378 tests green (upstream `CompositorTests` compiled unmodified except
 | Raster layers, folders (nested), folder opacity | ✅ | GroupTests, GroupingSelectionTests |
 | Opacity, 24 blend modes (Normal … Luminosity), blend hover preview | ✅ | LayerAppearanceTests |
 | Visibility, eye swipe | ✅ | |
-| Rename (double-click), duplicate (Alt-drag), delete, reorder by drag, into folder | ✅ | Qt draws `NativeLayerListOverride`'s SwiftUI list; tip's `NSTableView` list is compiled with selectors by name (LayerTests 21 via mirror, CursorTests 7) |
+| Rename (double-click), duplicate (Alt-drag), delete, reorder by drag, into folder | ✅ | Tip's own `NSTableView` list (selectors by name): the Qt shell draws it as pixels and hands it the pointer and keys as AppKit events, so its tracking loops, drag sessions, menus and inline rename run as on the Mac (compat SwiftUI NativeLowering). LayerTests 21 via mirror, CursorTests 7 |
 | Layer masks: reveal/hide, paint anywhere, link/unlink, invert, blur/feather, thumbnails white/black | ✅ | LayerMaskTests, LiveMaskTests, MaskTransformTests |
 | Adjustment layers (12 kinds) | ✅ | AdjustmentLayerTests |
 | Text layers (live text) | ✅ | TypeToolTests |

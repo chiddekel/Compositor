@@ -179,11 +179,12 @@ import Foundation
     }
 }
 
-/// A callable `openWindow(id:)` action, matching real SwiftUI's `OpenWindowAction`. Inert here (this compat layer
-/// hosts one Qt-owned top-level window, not a multi-`WindowGroup` scene graph) — same honesty as `.onReceive`.
+/// `openWindow(id:)`: shows the scene's window with that id. The host owns the windows (`handler`, installed by it);
+/// without one it does nothing.
 public struct OpenWindowAction {
-    public func callAsFunction(id: String) {}
-    public func callAsFunction(id: String, value: some Hashable) {}
+    nonisolated(unsafe) public static var handler: ((String) -> Void)?
+    public func callAsFunction(id: String) { Self.handler?(id) }
+    public func callAsFunction(id: String, value: some Hashable) { Self.handler?(id) }
 }
 
 public struct EnvironmentValues {

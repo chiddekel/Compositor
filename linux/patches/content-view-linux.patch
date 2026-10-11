@@ -1,0 +1,107 @@
+--- a/Compositor/ContentView.swift
++++ b/Compositor/ContentView.swift
+@@ -1,5 +1,30 @@
+ import SwiftUI
+ import UniformTypeIdentifiers
++import Sparkle
++
++/// The app delegate ContentView reads, on Linux: tip's (IO/CompositorApplicationDelegate.swift, an
++/// NSApplicationDelegate with Sparkle) is excluded, since the Qt shell owns the app's lifecycle. This carries what the
++/// views and menus use: the workspace, the project commands (the shell performs them), the updater and the editor.
++@MainActor final class CompositorApplicationDelegate {
++    let workspace: ProjectWorkspace
++    /// The project commands (upstream's ProjectController for the current tab): on Linux the shell performs them.
++    let projects: ShellProjects
++    var showEditor: (() -> Void)?
++    /// Compositor > Check for Updates…: the shell's Flatpak check (SPUStandardUpdaterController.checkHandler).
++    let updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
++    var session: EditorSession { workspace.current.session }
++    init(workspace: ProjectWorkspace) {
++        self.workspace = workspace
++        projects = ShellProjects(workspace: workspace)
++    }
++    /// A fresh workspace, as the real delegate starts with (`let workspace = ProjectWorkspace()`).
++    convenience init() { self.init(workspace: ProjectWorkspace()) }
++    /// Tip View › Toggle Fullscreen / Canvas Only (F). Qt hosts chrome; flip session flag and ask the shell.
++    func toggleCanvasOnly() {
++        session.canvasOnly.toggle()
++        ShellProjects.pending.append("toggleCanvasOnly")
++    }
++}
+ 
+ struct ContentView: View {
+     /// The Layers panel's width, remembered across launches.
+@@ -12,7 +42,6 @@
+     @State private var levelsPanel = FloatingPanelController(name: "levelsPanel")
+     @State private var adjustmentPanel = FloatingPanelController(name: "adjustmentPanel")
+     @State private var selectionAmountPanel = FloatingPanelController(name: "selectionAmountPanel")
+-    @State private var colorRangePanel = FloatingPanelController(name: "colorRangePanel")
+     @State private var filterPanel = FloatingPanelController(name: "filterPanel")
+     @State private var effectsPanel = FloatingPanelController(name: "effectsPanel")
+     @State private var isDropTargeted = false
+@@ -24,7 +53,7 @@
+         return workspace.canReceiveDrag(into: workspace.current.id)
+     }
+     // Extracted from `body`: as one expression the type checker times out (Xcode 26.1).
+-    @ViewBuilder private var toolHeaders: some View {
++    @ViewBuilder var toolHeaders: some View {   // Linux: internal, so the Qt shell renders it (SwiftUIBridge)
+         Group {
+             if session.tool == .move {
+                 TransformInspector(session: session).id(session.activeLayerID)
+@@ -218,7 +247,12 @@
+         }
+     }
+ 
+-    var body: some View {
++    // Split from `body` (the ONE deviation from upstream in this file): the same "chain outgrew the type checker"
++    // pattern the two splits above already document, one level deeper. `bodyCore` carries the first four
++    // `.onChange` calls (through the one whose closure body itself is thorniest, `session.document?.layers`);
++    // `body` chains the rest onto it exactly as it chains everything onto `editorChrome` above. Purely a
++    // compile-time restructuring — the resolved view tree and all behavior are unchanged.
++    @ViewBuilder private var bodyCore: some View {
+         editorChrome
+         .onChange(of: session.levels == nil) { _, closed in
+             if closed { levelsPanel.close() }
+@@ -227,13 +261,6 @@
+                 levelsPanel.show(title: "Levels", content: LevelsSheet(session: session))
+             }
+         }
+-        .onChange(of: session.colorRange == nil) { _, closed in
+-            if closed { colorRangePanel.close() }
+-            else {
+-                colorRangePanel.onClose = { session.cancelColorRange() }
+-                colorRangePanel.show(title: "Color Range", content: ColorRangeSheet(session: session))
+-            }
+-        }
+         .onChange(of: session.hueSaturation == nil) { _, closed in
+             if closed { adjustmentPanel.close() }
+             else {
+@@ -255,6 +282,10 @@
+                 session.effectsEditingOriginal = nil
+             }
+         }
++    }
++
++    var body: some View {
++        bodyCore
+         .onChange(of: session.selectionAmountOperation) { _, operation in
+             if let operation {
+                 selectionAmountPanel.onClose = { session.selectionAmountOperation = nil }
+@@ -301,7 +332,7 @@
+         if let applicationDelegate { Task { await applicationDelegate.projects.newCanvas() } }
+         else { session.clearProject() }
+     }
+-    private var toolRail: some View {
++    var toolRail: some View {   // Linux: internal, see toolHeaders
+         // Scrolls when the window is too short for every tool, rather than pushing the bars above and below away.
+         IndicatorlessScrollView {
+         VStack(spacing: 10) {
+@@ -340,7 +371,7 @@
+             onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
+             onOpen: { Task { await applicationDelegate?.projects.open() } })
+     }
+-    private var statusBar: some View {
++    var statusBar: some View {   // Linux: internal, see toolHeaders
+         HStack(spacing: 16) {
+             if let document = session.document {
+                 Text(session.viewport.zoom, format: .percent.precision(.fractionLength(0...1)))

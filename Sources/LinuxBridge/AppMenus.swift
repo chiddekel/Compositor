@@ -25,6 +25,9 @@ import Sparkle
         // Register HeldModifiers' local monitor before the first flagsChanged from the shell.
         _ = HeldModifiers.shared
         NSApp.mainMenuProvider = { AppMenuBar.shared.make() }
+        PopUpMenus.install()
+        // openWindow(id: "editor") (ContentView's showEditor): the shell shows its window.
+        OpenWindowAction.handler = { _ in ShellProjects.pending.append("showEditor") }
         return CompositorApp().body.commandsContent?()
     }
 
@@ -353,4 +356,52 @@ extension ProjectWindowView {
     convenience init(controller projects: ShellProjects) {
         self.init(controller: (projects.workspace ?? Workspace.shared).current.controller)
     }
+}
+
+/// Context and pop-up menus (`NSMenu.popUp`): the shell shows the menu at the pointer ("popUpMenu" request), reading its
+/// items here, and reports the choice back.
+@MainActor enum PopUpMenus {
+    struct Item: Encodable { let title: String; let enabled: Bool; let checked: Bool; let separator: Bool }
+    static var current: (menu: NSMenu, finish: (Int?) -> Void)?
+    static func install() {
+        NSMenu.presenter = { menu, finish in
+            current?.finish(nil)
+            current = (menu, finish)
+            ShellProjects.pending.append("popUpMenu")
+        }
+    }
+}
+
+/// The items of the menu waiting to be shown, as JSON [{title, enabled, checked, separator}] (same buffer convention
+/// as the state call); empty when none is waiting.
+@_cdecl("compositor_popup_menu_items")
+nonisolated public func compositorPopUpMenuItems(_ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    onMain {
+        let items = PopUpMenus.current?.menu.items.filter { !$0.isHidden }.map {
+            PopUpMenus.Item(title: $0.title, enabled: $0.isEnabled, checked: $0.state == .on, separator: $0.isSeparatorItem)
+        } ?? []
+        let data = (try? JSONEncoder().encode(items)) ?? Data("[]".utf8)
+        guard let output else { return Int64(data.count) }
+        guard capacity >= data.count else { return -1 }
+        data.copyBytes(to: output, count: data.count)
+        return Int64(data.count)
+    }
+}
+
+/// The shown menu closed: `index` is the chosen item among the visible ones, or -1 when it was dismissed.
+@_cdecl("compositor_popup_menu_choose")
+nonisolated public func compositorPopUpMenuChoose(_ index: Int32) {
+    onMain {
+        guard let current = PopUpMenus.current else { return }
+        PopUpMenus.current = nil
+        let visible = current.menu.items.enumerated().filter { !$0.element.isHidden }.map(\.offset)
+        current.finish(index >= 0 && Int(index) < visible.count ? visible[Int(index)] : nil)
+    }
+}
+
+/// The shell's event pump (one turn of Qt's event loop, answering whether the left button is still down): AppKit
+/// tracking loops wait on it in NSWindow.nextEvent, as they wait on the run loop on the Mac.
+@_cdecl("compositor_register_event_pump")
+nonisolated public func compositorRegisterEventPump(_ pump: (@convention(c) () -> Int32)?) {
+    onMain { NSApp.eventPump = pump.map { pump in { pump() != 0 } } }
 }

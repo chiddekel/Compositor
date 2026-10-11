@@ -107,18 +107,28 @@ public struct ScrollView<Content: View>: View, PrimitiveView {
     }
 }
 
+/// `scrollTo(_:)`: asks the reader's scroll view to show the view with that `.id`. The request waits for the reader's
+/// next resolve (SwiftUI scrolls on its next update too), which hands it to the host as `scrollTarget`.
 public struct ScrollViewProxy {
-    public func scrollTo(_ id: AnyHashable, anchor: UnitPoint? = nil) {}
+    let key: String
+    init(key: String = "") { self.key = key }
+    public func scrollTo(_ id: AnyHashable, anchor: UnitPoint? = nil) { ScrollTargets.requests[key] = "\(id.base)" }
 }
+
+/// Pending `scrollTo` requests, by reader (its tree and place).
+enum ScrollTargets { nonisolated(unsafe) static var requests: [String: String] = [:] }
 
 public struct ScrollViewReader<Content: View>: View, PrimitiveView {
     let content: (ScrollViewProxy) -> Content
     public init(@ViewBuilder content: @escaping (ScrollViewProxy) -> Content) {
         self.content = content
     }
-    public var _childViews: [any View] { [content(ScrollViewProxy())] }
+    /// The reader's place: its tree and the view it is resolved under.
+    private var key: String { "\(StateStore.currentScope ?? "")|\(ViewResolver.currentViewPath)" }
+    public var _childViews: [any View] { [content(ScrollViewProxy(key: key))] }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "ScrollViewReader")
+        if let target = ScrollTargets.requests.removeValue(forKey: key) { node.stringParams["scrollTarget"] = target }
         node.children = children
         return node
     }

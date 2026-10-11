@@ -37,28 +37,35 @@ public func NSPerform(_ target: Any?, _ selector: Selector, with argument: Any? 
     open var acceptsFirstResponder: Bool { false }
     open func becomeFirstResponder() -> Bool { true }
     open func resignFirstResponder() -> Bool { true }
-    open var nextResponder: NSResponder?
+    /// The next responder up the chain (a view's superview, unless set).
+    open var nextResponder: NSResponder? {
+        get { storedNextResponder }
+        set { storedNextResponder = newValue }
+    }
+    var storedNextResponder: NSResponder?
     open var undoManager: UndoManager? { nil }
-    open func mouseDown(with event: NSEvent) {}
-    open func mouseUp(with event: NSEvent) {}
-    open func mouseDragged(with event: NSEvent) {}
-    open func mouseMoved(with event: NSEvent) {}
+    // As AppKit's: an event a responder doesn't handle goes on to the next one (a click on a table cell's label reaches
+    // the table).
+    open func mouseDown(with event: NSEvent) { nextResponder?.mouseDown(with: event) }
+    open func mouseUp(with event: NSEvent) { nextResponder?.mouseUp(with: event) }
+    open func mouseDragged(with event: NSEvent) { nextResponder?.mouseDragged(with: event) }
+    open func mouseMoved(with event: NSEvent) { nextResponder?.mouseMoved(with: event) }
     open func mouseEntered(with event: NSEvent) {}
     open func mouseExited(with event: NSEvent) {}
-    open func rightMouseDown(with event: NSEvent) {}
-    open func rightMouseUp(with event: NSEvent) {}
-    open func rightMouseDragged(with event: NSEvent) {}
-    open func otherMouseDown(with event: NSEvent) {}
-    open func otherMouseUp(with event: NSEvent) {}
-    open func otherMouseDragged(with event: NSEvent) {}
-    open func scrollWheel(with event: NSEvent) {}
-    open func magnify(with event: NSEvent) {}
-    open func keyDown(with event: NSEvent) {}
-    open func keyUp(with event: NSEvent) {}
-    open func flagsChanged(with event: NSEvent) {}
+    open func rightMouseDown(with event: NSEvent) { nextResponder?.rightMouseDown(with: event) }
+    open func rightMouseUp(with event: NSEvent) { nextResponder?.rightMouseUp(with: event) }
+    open func rightMouseDragged(with event: NSEvent) { nextResponder?.rightMouseDragged(with: event) }
+    open func otherMouseDown(with event: NSEvent) { nextResponder?.otherMouseDown(with: event) }
+    open func otherMouseUp(with event: NSEvent) { nextResponder?.otherMouseUp(with: event) }
+    open func otherMouseDragged(with event: NSEvent) { nextResponder?.otherMouseDragged(with: event) }
+    open func scrollWheel(with event: NSEvent) { nextResponder?.scrollWheel(with: event) }
+    open func magnify(with event: NSEvent) { nextResponder?.magnify(with: event) }
+    open func keyDown(with event: NSEvent) { nextResponder?.keyDown(with: event) }
+    open func keyUp(with event: NSEvent) { nextResponder?.keyUp(with: event) }
+    open func flagsChanged(with event: NSEvent) { nextResponder?.flagsChanged(with: event) }
     open func cursorUpdate(with event: NSEvent) {}
-    open func tabletPoint(with event: NSEvent) {}
-    open func tabletProximity(with event: NSEvent) {}
+    open func tabletPoint(with event: NSEvent) { nextResponder?.tabletPoint(with: event) }
+    open func tabletProximity(with event: NSEvent) { nextResponder?.tabletProximity(with: event) }
     open func performKeyEquivalent(with event: NSEvent) -> Bool { false }
 }
 
@@ -90,6 +97,12 @@ public final class NSTrackingArea {
     public var frameRotation: CGFloat = 0
     public private(set) var subviews: [NSView] = []
     public private(set) weak var superview: NSView?
+    /// The superview, as AppKit sets it when a view is added (or what was set instead); the window's content view's is
+    /// the window.
+    open override var nextResponder: NSResponder? {
+        get { storedNextResponder ?? superview ?? hostWindow }
+        set { storedNextResponder = newValue }
+    }
     public fileprivate(set) weak var hostWindow: NSWindow?
     public var window: NSWindow? { hostWindow ?? superview?.window }
     public var isHidden = false
@@ -305,13 +318,18 @@ public final class NSTrackingArea {
         return self
     }
     open func draw(_ dirtyRect: CGRect) {}
-    open func setAccessibilityElement(_ isElement: Bool) {}
+    private var accessibilityElementStorage = false
+    private var accessibilityRoleStorage: NSAccessibility.Role?
+    /// Whether assistive technology sees this view as an element of its own (AppKit's accessor pair).
+    open func isAccessibilityElement() -> Bool { accessibilityElementStorage }
+    open func setAccessibilityElement(_ isElement: Bool) { accessibilityElementStorage = isElement }
+    open func accessibilityRole() -> NSAccessibility.Role? { accessibilityRoleStorage }
     open func setAccessibilityIdentifier(_ identifier: String?) {}
     private var accessibilityLabelStorage: String?
     /// The label `setAccessibilityLabel(_:)` stored, as AppKit's accessor pair; the plain getter the tests read.
     @discardableResult open func accessibilityLabel() -> String? { accessibilityLabelStorage }
     open func setAccessibilityLabel(_ label: String?) { accessibilityLabelStorage = label }
-    open func setAccessibilityRole(_ role: NSAccessibility.Role?) {}
+    open func setAccessibilityRole(_ role: NSAccessibility.Role?) { accessibilityRoleStorage = role }
     /// AppKit's property: hidden here, or in any ancestor up the window's view tree.
     public var isHiddenOrHasHiddenAncestor: Bool {
         var current: NSView? = self
@@ -481,12 +499,32 @@ public enum NSAccessibility {
     open func postEvent(_ event: NSEvent, atStart: Bool) {
         if atStart { queuedEvents.insert(event, at: 0) } else { queuedEvents.append(event) }
     }
-    /// The next queued event of these types, removing it; nil when none is waiting. Tracking loops
-    /// (`while let event = window.nextEvent(...)`) end when the host has nothing more to give.
+    /// The next queued event of these types, removing it. As AppKit's tracking loops do, it waits for one: the host's
+    /// event loop runs (`NSApp.eventPump`) while the pointer is still down, and its events for this window arrive here
+    /// (`isTrackingEvents`). Nil once nothing more can come — no pump (a test), or the button let go elsewhere.
     open func nextEvent(matching mask: NSEvent.EventTypeMask) -> NSEvent? {
+        func take() -> NSEvent? {
+            guard let index = queuedEvents.firstIndex(where: { mask.contains(NSEvent.EventTypeMask(type: $0.type)) }) else { return nil }
+            return queuedEvents.remove(at: index)
+        }
+        if let event = take() { return event }
+        guard let pump = NSApp.eventPump else { return nil }
+        trackingDepth += 1
+        defer { trackingDepth -= 1 }
+        while pump() {
+            if let event = take() { return event }
+        }
+        return take()
+    }
+    /// The next queued event of these types without waiting for one (nil when none is queued).
+    public func dequeueEvent(matching mask: NSEvent.EventTypeMask) -> NSEvent? {
         guard let index = queuedEvents.firstIndex(where: { mask.contains(NSEvent.EventTypeMask(type: $0.type)) }) else { return nil }
         return queuedEvents.remove(at: index)
     }
+    /// Whether a tracking loop is waiting in `nextEvent`: the host's events for this window go to its queue
+    /// (`postEvent`) rather than to its views.
+    public var isTrackingEvents: Bool { trackingDepth > 0 }
+    private var trackingDepth = 0
     private var sharedFieldEditor: NSTextView?
     open func fieldEditor(_ createIfNeeded: Bool, for object: Any?) -> NSText? {
         if sharedFieldEditor == nil, createIfNeeded {
@@ -611,6 +649,9 @@ public struct NSScreen {
 @MainActor public let NSApp = NSApplicationShared()
 @MainActor public final class NSApplicationShared {
     public var currentEvent: NSEvent?
+    /// Installed by the host: runs its event loop for a moment (a tracking loop waiting in `NSWindow.nextEvent`), and
+    /// says whether the pointer is still pressed — false ends the wait.
+    public var eventPump: (() -> Bool)?
     public var keyWindow: NSWindow?
     public var mainWindow: NSWindow?
     public func sendEvent(_ event: NSEvent) { (event.window ?? keyWindow)?.sendEvent(event) }
@@ -711,6 +752,8 @@ extension NSControl {
     public var stringValue = "", isEnabled = true
     public var target: AnyObject?
     public var action: Selector?
+    /// The bezel's shape (macOS 26); the host draws its controls' own shapes.
+    public var borderShape: BorderShape = .automatic
     /// Sends `action` to `target` (or up the responder chain) from this control.
     @discardableResult open func sendAction(_ action: Selector?, to target: Any?) -> Bool {
         guard let action else { return false }
@@ -734,6 +777,7 @@ extension NSTextFieldDelegate {
 /// A text field. Focusing an editable one puts the window's field editor in the responder chain, holding the field's
 /// text (`currentEditor()`); when focus moves on, the text comes back and the delegate hears the editing ended.
 @MainActor open class NSTextField: NSControl {
+    open override func draw(_ dirtyRect: CGRect) { drawField() }
     open var isEditable = true
     open var isSelectable = true
     open var placeholderString: String?
@@ -789,15 +833,18 @@ extension NSControl {
 }
 
 @MainActor open class NSButton: NSControl {
+    open override func draw(_ dirtyRect: CGRect) { drawButton() }
     public enum BezelStyle: UInt, Sendable {
         case automatic = 0, push, flexiblePush, disclosure, circular, helpButton, smallSquare, toolbar, accessoryBarAction
         case accessoryBar, pushDisclosure, badge, inline, texturedRounded, regularSquare, roundRect, recessed
+        /// The push button's older name.
+        public static let rounded = BezelStyle.push
     }
     public enum ButtonType: UInt, Sendable {
         case momentaryLight = 0, pushOnPushOff, toggle, `switch`, radio, momentaryChange, onOff, momentaryPushIn
         case accelerator, multiLevelAccelerator
     }
-    public var title = ""
+    open var title = ""
     public var state: NSControl.StateValue = .off
     public var isBordered = true
     public var keyEquivalent = ""
@@ -848,6 +895,7 @@ extension NSControl {
 
 /// Shows an image (a symbol is drawn by the host in `contentTintColor`), as AppKit's.
 @MainActor open class NSImageView: NSControl {
+    open override func draw(_ dirtyRect: CGRect) { drawImageView() }
     public var image: NSImage?
     public var symbolConfiguration: NSImage.SymbolConfiguration?
     public var contentTintColor: NSColor?
@@ -917,6 +965,11 @@ extension NSTableViewDelegate {
 /// click selecting rows and sending `action` (`doubleAction` on a double click) with `clickedRow` set; and the data
 /// source's drag and drop. With no data source it stays inert — 0 rows, no views — as a bare `LayerTableView()` is.
 @MainActor open class NSTableView: NSControl {
+    open override func draw(_ dirtyRect: CGRect) { drawRows() }
+    /// A table takes the keys when clicked (arrows, type-select), as AppKit's does.
+    open override var acceptsFirstResponder: Bool { true }
+    /// While a drag is over the table (a host routing a drag session): `dropRow` shows where it would land.
+    public var showsDropIndicator = false
     public enum DropOperation: UInt, Sendable { case on = 0, above = 1 }
     public enum Style: Int, Sendable { case automatic, fullWidth, inset, sourceList, plain }
     public enum ColumnAutoresizingStyle: UInt, Sendable {
@@ -1120,6 +1173,24 @@ extension NSTableViewDelegate {
         } else if allowsEmptySelection {
             selectRowIndexes([], byExtendingSelection: false)
         }
+        // AppKit tracks the press: dragging it a few points carries the selected rows (or the pressed one) away as the
+        // data source writes them, and no action follows; letting go is the click.
+        if row >= 0, let window {
+            while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+                if next.type == .leftMouseUp { break }
+                let dx = next.locationInWindow.x - event.locationInWindow.x, dy = next.locationInWindow.y - event.locationInWindow.y
+                guard dx * dx + dy * dy >= 9 else { continue }
+                let rows = selectedRowIndexes.contains(row) ? selectedRowIndexes : IndexSet(integer: row)
+                guard let writers = draggingItems(forRows: rows) else { continue }
+                let items = zip(rows, writers).map { row, writer -> NSDraggingItem in
+                    let item = NSDraggingItem(pasteboardWriter: writer)
+                    item.setDraggingFrame(rect(ofRow: row), contents: nil)
+                    return item
+                }
+                beginDraggingSession(with: items, event: event, source: self)
+                return
+            }
+        }
         if event.clickCount >= 2, let doubleAction {
             NSApp.sendAction(doubleAction, to: target, from: self)
         } else if let action {
@@ -1158,5 +1229,12 @@ extension NSTableViewDelegate {
     /// Drops `info` where the last `validateDrop` put it.
     @discardableResult public func acceptDrop(_ info: NSDraggingInfo) -> Bool {
         dataSource?.tableView(self, acceptDrop: info, row: dropRow, dropOperation: dropOperation) ?? false
+    }
+}
+
+/// A table is the source of the rows it drags: what it allows is what `setDraggingSourceOperationMask` set.
+extension NSTableView: NSDraggingSource {
+    public func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        draggingSourceOperationMask(forLocal: context == .withinApplication)
     }
 }

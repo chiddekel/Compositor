@@ -81,6 +81,9 @@ open class NSColor: @unchecked Sendable, Equatable {
     public static let systemBlue = NSColor(srgbRed: 0.039, green: 0.518, blue: 1, alpha: 1)
     public static let systemGray = NSColor(srgbRed: 0.596, green: 0.596, blue: 0.616, alpha: 1)
     public static let controlAccentColor = NSColor(srgbRed: 0, green: 0.478, blue: 1, alpha: 1)
+    /// A selected row in a list that has the keys, and in one that doesn't (dark appearance).
+    public static let selectedContentBackgroundColor = NSColor(srgbRed: 0, green: 0.345, blue: 0.816, alpha: 1)
+    public static let unemphasizedSelectedContentBackgroundColor = NSColor(white: 0.275, alpha: 1)
 }
 
 public final class NSColorSpace: @unchecked Sendable {

@@ -12,6 +12,7 @@
 #include <QPainter>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QRawFont>
 #include <QGuiApplication>
 #include <QString>
 #include <QStringList>
@@ -506,6 +507,15 @@ extern "C" int compositor_qt_font_metrics(const char *name, double pointSize, do
     if (ascent) *ascent = metrics.ascent();
     if (descent) *descent = -metrics.descent();
     if (leading) *leading = metrics.leading();
+    return 1;
+}
+
+// Which of `count` code points the face `name` draws itself (NSFont.coveredCharacterSet): out[i] is 1 or 0.
+extern "C" int32_t compositor_qt_font_covers(const char *name, const uint32_t *codes, int32_t count, uint8_t *out) {
+    if (!qGuiApp || !codes || !out || count < 0) return 0;
+    const QRawFont raw = QRawFont::fromFont(fontFor(name, 13));
+    if (!raw.isValid()) return 0;
+    for (int32_t i = 0; i < count; ++i) out[i] = raw.supportsCharacter(codes[i]) ? 1 : 0;
     return 1;
 }
 

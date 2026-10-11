@@ -1,0 +1,12 @@
+--- a/Compositor/UI/IndicatorlessScrollView.swift
++++ b/Compositor/UI/IndicatorlessScrollView.swift
+@@ -32,6 +32,9 @@
+         }
+ 
+         required init?(coder: NSCoder) { nil }
++        // Linux: Swift 6.3.3 crashes emitting this generic class's main-actor deinit (SILGen emitIsolatingDestructor);
++        // it has nothing to tear down, so a nonisolated one says the same.
++        nonisolated deinit {}
+ 
+         override func layout() {
+             super.layout()

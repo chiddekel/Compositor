@@ -43,6 +43,8 @@
     private var relayoutDepth = 0
 
     private func layoutHostedViews() {
+        // A host drawing the tree itself (NativeLowering) shows the root as nodes; nothing is placed here.
+        guard !NativeLowering.isActive else { return }
         if let nativeContent, nativeContent.frame != bounds { nativeContent.frame = bounds }
         var root = ViewResolver.resolve(rootView)
         guard Self.containsNative(root) || !hosted.isEmpty else { return }
@@ -173,6 +175,16 @@ extension NSViewRepresentable {
         node.nativeSource = self
         return node
     }
+}
+
+/// A size a container offers a view, either dimension unspecified (nil), as `sizeThatFits` receives it.
+public struct ProposedViewSize: Equatable, Sendable {
+    public var width: CGFloat?
+    public var height: CGFloat?
+    public init(width: CGFloat?, height: CGFloat?) { self.width = width; self.height = height }
+    public static let zero = ProposedViewSize(width: 0, height: 0)
+    public static let unspecified = ProposedViewSize(width: nil, height: nil)
+    public static let infinity = ProposedViewSize(width: .infinity, height: .infinity)
 }
 
 /// Type-erased make/update for an `NSViewRepresentable`, so `HostedLayout` can drive any representable's lifecycle

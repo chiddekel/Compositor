@@ -6,6 +6,8 @@ import ImageIO
 open class NSImage: @unchecked Sendable {
     public var size: CGSize
     private var bitmap: CGImage?
+    /// The bitmap `lockFocus` draws into, until `unlockFocus`.
+    private var focusContext: CGContext?
     /// An SF Symbol this image stands for, and the color a symbol configuration gave it: drawn through the host's icons.
     public internal(set) var symbolName: String?
     public internal(set) var symbolColor: NSColor?
@@ -114,8 +116,26 @@ open class NSImage: @unchecked Sendable {
         draw(in: rect, from: source, operation: operation, fraction: fraction)
         context.restoreGState()
     }
-    public func lockFocus() {}
-    public func unlockFocus() {}
+    /// Drawing goes into this image until `unlockFocus`: a bitmap of its size, holding what it shows already.
+    public func lockFocus() {
+        let w = max(1, Int(size.width.rounded(.up))), h = max(1, Int(size.height.rounded(.up)))
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        if let current = cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            context.draw(current, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        focusContext = context
+    }
+    public func unlockFocus() {
+        guard let context = focusContext else { return }
+        focusContext = nil
+        NSGraphicsContext.restoreGraphicsState()
+        bitmap = context.makeImage()
+        svgData = nil
+    }
 }
 
 open class NSImageRep {

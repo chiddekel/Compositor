@@ -19,11 +19,15 @@ import SwiftUI
         // re-fetches just the panels that changed (compositor_session_dirty_panels) instead of polling them all.
         DirtyPanels.clear(entry, panel)
         let key = DirtyPanels.Key(entry: ObjectIdentifier(entry), panel: panel)
+        // The shell draws the tree itself: NSViewRepresentables resolve to what their AppKit views show.
+        NativeLowering.isActive = true
         let node = withObservationTracking { resolvePanelTree(panel, entry: entry) } onChange: { DirtyPanels.mark(key) }
+        NativeLowering.isActive = false
         StateStore.end()
         guard var node else {
             StateStore.discard(scope: scope)
             ChangeTracker.discard(scope: scope)
+            NativeLowering.discard(scope: scope)
             entry.resultHandlers[panel] = [:]
             return nil
         }

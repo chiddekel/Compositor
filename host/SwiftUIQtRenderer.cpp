@@ -76,6 +76,9 @@ int64_t compositor_session_render_swiftui_canvas(uint64_t handle, const char *pa
 
 namespace {
 
+// Defined below (with the cursor codes); the AppKit view widget applies it after each pointer event.
+static void applyCompositorCursor(QWidget *widget);
+
 class SwiftUIAccessibleWidget : public QAccessibleWidget {
 public:
     explicit SwiftUIAccessibleWidget(QWidget *widget)
@@ -163,7 +166,145 @@ private:
     QString m_panel, m_nodeID;
 };
 
+/// The `_AppKit` view (panel|node) that has the keys, so a rebuilt panel's widget for it takes them back.
+QString g_appKitFocusedNode;
+/// The `_AppKit` widget a press is being tracked in (an AppKit tracking loop running the event pump), if any.
+QPointer<QWidget> g_appKitTracking;
+int g_appKitPumpDepth = 0;
+
+/// Qt's modifiers as the shell's chord bits (1 Ctrl, 2 Alt, 4 Meta, 8 Shift).
+int appKitModifierBits(Qt::KeyboardModifiers m) {
+    return (m & Qt::ControlModifier ? 1 : 0) | (m & Qt::AltModifier ? 2 : 0) | (m & Qt::MetaModifier ? 4 : 0) | (m & Qt::ShiftModifier ? 8 : 0);
+}
+
+/// An `_AppKit` node (compat SwiftUI's NativeLowering): an AppKit view hierarchy Swift draws — tip's layers table, say
+/// — shown as its pixels, with the pointer and (while focused) the keys going back to it as AppKit events, so its own
+/// hit testing, tracking loops, drags and menus run. Its children are views over it (a field being edited), placed
+/// where the node says.
+class SwiftUIAppKitWidget : public SwiftUICanvasWidget {
+public:
+    SwiftUIAppKitWidget(uint64_t handle, QString panel, QString nodeID, QWidget *parent = nullptr)
+        : SwiftUICanvasWidget(handle, panel, nodeID, parent), m_handle(handle), m_panel(panel), m_nodeID(nodeID) {
+        setMouseTracking(true);
+        setFocusPolicy(Qt::ClickFocus);
+        setProperty("appKitView", true);   // headless journeys find it by this
+        setProperty("appKitNode", key());
+        // The view had the keys before its panel was rebuilt: it keeps them.
+        if (g_appKitFocusedNode == key()) QTimer::singleShot(0, this, [this] { setFocus(Qt::OtherFocusReason); });
+        setAttribute(Qt::WA_OpaquePaintEvent, false);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override { press(event); }
+    void mouseDoubleClickEvent(QMouseEvent *event) override { press(event); }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        send((event->buttons() & Qt::LeftButton) ? "drag" : "move", event->position(), event->modifiers());
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (event->button() != Qt::LeftButton) return;
+        releaseMouse();
+        send("up", event->position(), event->modifiers());
+    }
+    void leaveEvent(QEvent *) override { send("exit", QPointF(-1, -1), QGuiApplication::keyboardModifiers()); }
+    bool event(QEvent *event) override {
+        // Tab is the table's key (tip's keyDown cycles the tool mode), not focus navigation.
+        if (event->type() == QEvent::KeyPress) { key(static_cast<QKeyEvent *>(event)); return true; }
+        if (event->type() == QEvent::FocusIn) g_appKitFocusedNode = key();
+        if (event->type() == QEvent::FocusOut) {
+            // A rebuilt panel replaces this widget with one for the same view, which takes the focus back (buildNode):
+            // the view only loses the keys when the focus really went elsewhere.
+            const QString node = key();
+            const uint64_t handle = m_handle; const QString panel = m_panel, nodeID = m_nodeID;
+            QTimer::singleShot(0, qApp, [node, handle, panel, nodeID] {
+                QWidget *focus = QApplication::focusWidget();
+                if (focus && focus->property("appKitNode").toString() == node) return;
+                if (g_appKitFocusedNode == node) g_appKitFocusedNode.clear();
+                const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8();
+                compositor_session_dispatch_swiftui_action(handle, panelUtf8.constData(), nodeUtf8.constData(), "focus",
+                                                           reinterpret_cast<const uint8_t *>("false"), 5);
+            });
+        }
+        return SwiftUICanvasWidget::event(event);
+    }
+
+private:
+    void press(QMouseEvent *event) {
+        if (event->button() == Qt::RightButton) { send("rightDown", event->position(), event->modifiers()); return; }
+        if (event->button() != Qt::LeftButton) { event->ignore(); return; }
+        setFocus(Qt::MouseFocusReason);
+        const QPoint at = event->position().toPoint();
+        const bool repeat = m_clickTimer.isValid() && m_clickTimer.elapsed() < QApplication::doubleClickInterval()
+            && (at - m_lastPress).manhattanLength() < 5;
+        // Qt has already judged a double-click (its own timing and distance): that is the second click at least.
+        m_clicks = event->type() == QEvent::MouseButtonDblClick ? qMax(2, m_clicks + 1) : repeat ? m_clicks + 1 : 1;
+        m_clickTimer.restart();
+        m_lastPress = at;
+        grabMouse();
+        QPointer<QWidget> self(this);
+        g_appKitTracking = this;
+        send("down", event->position(), event->modifiers());
+        if (g_appKitTracking == self) g_appKitTracking = nullptr;
+    }
+    void send(const char *type, const QPointF &at, Qt::KeyboardModifiers modifiers) {
+        const QJsonObject payload{{"type", QLatin1String(type)}, {"x", at.x()}, {"y", at.y()}, {"clicks", m_clicks},
+                                  {"modifiers", appKitModifierBits(modifiers)}};
+        QPointer<QWidget> self(this);
+        dispatchQuietly("pointer", QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        if (!self) return;   // what it did rebuilt the panel
+        update();
+        applyCompositorCursor(this);
+    }
+    void key(QKeyEvent *event) {
+        static const QHash<int, int> codes{{Qt::Key_Return, 36}, {Qt::Key_Enter, 76}, {Qt::Key_Escape, 53}, {Qt::Key_Backspace, 51},
+            {Qt::Key_Delete, 117}, {Qt::Key_Tab, 48}, {Qt::Key_Backtab, 48}, {Qt::Key_Space, 49}, {Qt::Key_Left, 123},
+            {Qt::Key_Right, 124}, {Qt::Key_Down, 125}, {Qt::Key_Up, 126}, {Qt::Key_Home, 115}, {Qt::Key_End, 119},
+            {Qt::Key_PageUp, 116}, {Qt::Key_PageDown, 121}};
+        static const QHash<int, QString> typed{{Qt::Key_Return, "\r"}, {Qt::Key_Enter, "\u0003"}, {Qt::Key_Escape, "\u001b"},
+            {Qt::Key_Backspace, "\u007f"}, {Qt::Key_Delete, QString(QChar(0xf728))}, {Qt::Key_Tab, "\t"}, {Qt::Key_Backtab, "\u0019"},
+            {Qt::Key_Left, QString(QChar(0xf702))}, {Qt::Key_Right, QString(QChar(0xf703))}, {Qt::Key_Down, QString(QChar(0xf701))},
+            {Qt::Key_Up, QString(QChar(0xf700))}};
+        const int k = event->key();
+        if (k == Qt::Key_Control || k == Qt::Key_Shift || k == Qt::Key_Alt || k == Qt::Key_Meta || k == Qt::Key_AltGr) return;
+        QString characters = typed.value(k);
+        if (characters.isEmpty()) characters = (k >= 0x20 && k < 0x7f) ? QString(QChar(k)).toLower() : event->text();
+        if (event->modifiers() & Qt::ShiftModifier && k >= 0x20 && k < 0x7f && !event->text().isEmpty()) characters = event->text();
+        const QJsonObject payload{{"characters", characters}, {"keyCode", codes.value(k, 0xffff)},
+                                  {"modifiers", appKitModifierBits(event->modifiers())}, {"repeat", event->isAutoRepeat()}};
+        QPointer<QWidget> self(this);
+        dispatchQuietly("key", QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        if (self) update();
+    }
+    /// Straight to Swift: what the event changed marks the panels it touched dirty (Observation), and the shell's
+    /// refresh picks that up, rather than every pointer move rebuilding panels here.
+    void dispatchQuietly(const char *handlerKey, const QByteArray &payload) {
+        const QByteArray panelUtf8 = m_panel.toUtf8(), nodeUtf8 = m_nodeID.toUtf8();
+        compositor_session_dispatch_swiftui_action(m_handle, panelUtf8.constData(), nodeUtf8.constData(), handlerKey,
+                                                   reinterpret_cast<const uint8_t *>(payload.constData()), static_cast<size_t>(payload.size()));
+    }
+
+    QString key() const { return m_panel + QLatin1Char('|') + m_nodeID; }
+
+    uint64_t m_handle;
+    QString m_panel, m_nodeID;
+    int m_clicks = 1;
+    QElapsedTimer m_clickTimer;
+    QPoint m_lastPress;
+};
+
 } // namespace
+
+/// The event pump AppKit tracking loops run while they wait for the press's next event (NSApp.eventPump, registered
+/// at startup): one turn of Qt's event loop. The shell's periodic refresh stands aside meanwhile (swiftUIAppKitTracking),
+/// so no panel is rebuilt under the press. Returns whether the left button is still down.
+extern "C" int32_t compositor_host_pump_events(void) {
+    ++g_appKitPumpDepth;
+    QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents);
+    if (g_appKitTracking) g_appKitTracking->update();
+    --g_appKitPumpDepth;
+    return (QGuiApplication::mouseButtons() & Qt::LeftButton) ? 1 : 0;
+}
+
+bool swiftUIAppKitTracking() { return g_appKitPumpDepth > 0; }
 
 /// A small SVG for a style sheet's `image: url(...)`: Qt style sheets take files, not data: URLs, so each image is
 /// written once to a per-user runtime directory and referenced by path.
@@ -648,325 +789,6 @@ private:
     uint64_t m_handle;
     QString m_panel, m_nodeID;
     QByteArray m_lastPayload;
-};
-
-extern "C" int32_t compositor_layer_list_cursor(int32_t kind);
-extern "C" int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
-
-/// The layer list's pointer, as LayerTableView.refreshClippingCursor keeps it: with Alt (Option) held, the clipping
-/// cursor over a row's bottom edge (making or releasing a clipping mask) and the duplicate cursor over the rest; with
-/// Ctrl (Command) over a thumbnail, the load-selection cursor; otherwise the ordinary arrow. It follows the pointer and
-/// the modifier keys (pressed or released without moving), as the Mac's flagsChanged monitor does.
-class ListCursorController : public QObject {
-public:
-    ListCursorController(QWidget *content, QList<QWidget *> rows, const QString &info)
-        : QObject(content), m_content(content), m_rows(std::move(rows)), m_info(info.split(QLatin1Char(','), Qt::KeepEmptyParts)) {
-        content->setMouseTracking(true);
-        for (QWidget *w : content->findChildren<QWidget *>()) { w->setMouseTracking(true); w->installEventFilter(this); }
-        content->installEventFilter(this);
-        qApp->installEventFilter(this);   // modifier keys, wherever the focus is
-    }
-    ~ListCursorController() override { if (m_shown >= 0) QApplication::restoreOverrideCursor(); }
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override {
-        switch (event->type()) {
-        case QEvent::MouseButtonPress:
-            // A click in the list makes it the first responder, as the Mac's table becomes: its arrows move the row
-            // selection until a click on the canvas takes the keys back (SessionWindow::keyPressEvent).
-            if (auto *w = qobject_cast<QWidget *>(watched); w && (w == m_content || m_content->isAncestorOf(w)))
-                qApp->setProperty("layerListFocused", true);
-            break;
-        case QEvent::MouseMove: case QEvent::KeyPress: case QEvent::KeyRelease:
-            // The keys as this event reports them (a released Alt already left out). Hover events Qt makes from a
-            // move don't carry them reliably, so only real input sets them.
-            heldKeys() = static_cast<QInputEvent *>(event)->modifiers();
-            QTimer::singleShot(0, this, [this] { refresh(); });
-            break;
-        case QEvent::HoverMove: case QEvent::Enter: case QEvent::Leave:
-            QTimer::singleShot(0, this, [this] { refresh(); });
-            break;
-        default: break;
-        }
-        return false;
-    }
-private:
-    void refresh() {
-        const QPoint pos = m_content->mapFromGlobal(QCursor::pos());
-        const Qt::KeyboardModifiers keys = heldKeys();
-        int kind = 0;
-        if (m_content->isVisible() && m_content->rect().contains(pos)) {
-            int row = -1;
-            for (int i = 0; i < m_rows.size(); ++i) if (m_rows[i]->geometry().contains(pos)) { row = i; break; }
-            const QString flags = row >= 0 && row < m_info.size() ? m_info[row] : QString();
-            if (row >= 0 && keys.testFlag(Qt::AltModifier) && !keys.testFlag(Qt::ControlModifier)) {
-                const QRect r = m_rows[row]->geometry();
-                const bool strip = pos.y() >= r.bottom() + 1 - std::min(10, r.height() / 3);
-                // Option over a mask thumbnail: show-mask-alone cursor (duplicate + eye), as NativeLayerList.
-                QWidget *under = m_content->childAt(pos);
-                bool overMask = false;
-                for (QWidget *w = under; w && w != m_content; w = w->parentWidget())
-                    if (w->objectName().startsWith(QStringLiteral("layerMaskThumb:"))) { overMask = true; break; }
-                if (overMask) kind = 5;
-                else if (strip && flags.startsWith(QLatin1Char('c'))) kind = 2;
-                else if (strip && flags.startsWith(QLatin1Char('r'))) kind = 3;
-                else if (flags.endsWith(QLatin1Char('d'))) kind = 1;
-            } else if (row >= 0 && keys.testFlag(Qt::ControlModifier)) {
-                QWidget *under = m_content->childAt(pos);
-                for (QWidget *w = under; w && w != m_content; w = w->parentWidget())
-                    if (w->objectName().startsWith(QStringLiteral("layerThumb:")) || w->objectName().startsWith(QStringLiteral("layerMaskThumb:"))) { kind = 4; break; }
-            }
-        }
-        if (kind == m_shown || (kind == 0 && m_shown < 0)) return;
-        if (m_shown >= 0) QApplication::restoreOverrideCursor();
-        m_shown = -1;
-        if (kind == 0) return;
-        compositor_layer_list_cursor(kind);
-        int32_t w = 0, h = 0; double hx = 0, hy = 0;
-        const int64_t size = compositor_canvas_cursor_image(&w, &h, &hx, &hy, nullptr, 0);
-        if (size <= 0 || size != int64_t(w) * h * 4) return;
-        QByteArray bytes(qsizetype(size), Qt::Uninitialized);
-        compositor_canvas_cursor_image(&w, &h, &hx, &hy, reinterpret_cast<uint8_t *>(bytes.data()), size_t(bytes.size()));
-        const QImage image = QImage(reinterpret_cast<const uchar *>(bytes.constData()), w, h, w * 4, QImage::Format_RGBA8888_Premultiplied).copy();
-        QApplication::setOverrideCursor(QCursor(QPixmap::fromImage(image), qRound(hx), qRound(hy)));
-        m_shown = kind;
-    }
-    QWidget *m_content;
-    QList<QWidget *> m_rows;
-    QStringList m_info;
-    int m_shown = -1;
-    /// Shared by every list: a key pressed while one panel was showing still counts after it is rebuilt.
-    static Qt::KeyboardModifiers &heldKeys() { static Qt::KeyboardModifiers keys; return keys; }
-};
-
-/// Drag-and-drop for a List whose view asked for it (`compatListDrop`): press a row and drag to move it; the drop
-/// lands above the nearer row edge, or into a folder row's middle (highlighted), Alt copies. The List's own handler
-/// ("listDrop": [source row, row under the drop, fraction within it, copying]) decides what the drop does.
-class ListDragController : public QObject {
-public:
-    ListDragController(QWidget *content, QList<QWidget *> rows, QString folders, QString layerIdentifiers,
-                       QString maskDragIdentifiers, QString maskDropIdentifiers,
-                       uint64_t handle, QString panel, QString nodeID)
-        : QObject(content), m_content(content), m_rows(std::move(rows)), m_folders(std::move(folders)),
-          m_layerIdentifiers(std::move(layerIdentifiers)), m_maskDragIdentifiers(std::move(maskDragIdentifiers)),
-          m_maskDropIdentifiers(std::move(maskDropIdentifiers)), m_handle(handle),
-          m_panel(std::move(panel)), m_nodeID(std::move(nodeID)) {
-        content->setAcceptDrops(true);
-        content->installEventFilter(this);
-        for (int i = 0; i < m_rows.size(); ++i) watch(m_rows[i], i);
-        m_indicator = new QFrame(content);
-        m_indicator->setAttribute(Qt::WA_TransparentForMouseEvents);
-        m_indicator->hide();
-    }
-protected:
-    bool eventFilter(QObject *obj, QEvent *event) override {
-        switch (event->type()) {
-        case QEvent::MouseButtonPress: {
-            auto *e = static_cast<QMouseEvent *>(event);
-            if (e->button() == Qt::LeftButton && obj->property("listRow").isValid()) {
-                const int row = obj->property("listRow").toInt();
-                if (m_pressRow != row) {
-                    m_pressRow = row;
-                    m_pressPos = e->globalPosition().toPoint();
-                    const bool alt = e->modifiers().testFlag(Qt::AltModifier) && !e->modifiers().testFlag(Qt::ControlModifier);
-                    m_pressMaskSource = alt ? obj->property("listMaskDragSource").toString() : QString();
-                    m_pressEffectSource = alt ? obj->property("listEffectDragSource").toString() : QString();
-                }
-            }
-            break;
-        }
-        case QEvent::MouseMove: {
-            auto *e = static_cast<QMouseEvent *>(event);
-            if (m_pressRow < 0 || !(e->buttons() & Qt::LeftButton)) break;
-            if ((e->globalPosition().toPoint() - m_pressPos).manhattanLength() < QApplication::startDragDistance()) break;
-            if (!m_pressEffectSource.isEmpty()) {
-                const QString source = m_pressEffectSource;
-                m_pressRow = -1;
-                m_pressEffectSource.clear();
-                m_pressMaskSource.clear();
-                auto *drag = new QDrag(m_content);
-                auto *mime = new QMimeData;
-                mime->setData("com.compositor.layer-effect", source.toUtf8());
-                drag->setMimeData(mime);
-                QPointer<ListDragController> alive(this);   // the drop can rebuild the panel inside exec's loop
-                drag->exec(Qt::CopyAction, Qt::CopyAction);
-                if (alive) m_indicator->hide();
-                return true;
-            }
-            if (!m_pressMaskSource.isEmpty()) {
-                const QString source = m_pressMaskSource;
-                m_pressRow = -1;
-                m_pressMaskSource.clear();
-                auto *drag = new QDrag(m_content);
-                auto *mime = new QMimeData;
-                mime->setData("com.compositor.layer-mask", source.toUtf8());
-                drag->setMimeData(mime);
-                QPointer<ListDragController> alive(this);   // the drop can rebuild the panel inside exec's loop
-                drag->exec(Qt::CopyAction, Qt::CopyAction);
-                if (alive) m_indicator->hide();
-                return true;
-            }
-            const int source = m_pressRow;
-            m_pressRow = -1;
-            auto *drag = new QDrag(m_content);
-            auto *mime = new QMimeData;
-            mime->setData("application/x-compositor-list-row", QByteArray::number(source));
-            const QStringList layerIdentifiers = m_layerIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
-            if (source < layerIdentifiers.size() && !layerIdentifiers[source].isEmpty())
-                mime->setData("com.compositor.layer-row", layerIdentifiers[source].toUtf8());
-            drag->setMimeData(mime);
-            if (source < m_rows.size()) {
-                const QPixmap snapshot = m_rows[source]->grab();
-                drag->setPixmap(snapshot);
-                drag->setHotSpot(m_rows[source]->mapFromGlobal(e->globalPosition().toPoint()));
-            }
-            QPointer<ListDragController> alive(this);   // the drop can rebuild the panel inside exec's loop
-            drag->exec(Qt::MoveAction | Qt::CopyAction, Qt::MoveAction);
-            if (alive) m_indicator->hide();
-            return true;
-        }
-        case QEvent::MouseButtonRelease:
-            m_pressRow = -1;
-            m_pressMaskSource.clear();
-            m_pressEffectSource.clear();
-            break;
-        case QEvent::DragEnter:
-        case QEvent::DragMove: {
-            if (obj != m_content) break;
-            auto *e = static_cast<QDropEvent *>(event);
-            if (e->mimeData()->hasFormat("com.compositor.layer-effect")) {
-                // Upstream decides whether the effect can go there (canCopyEffect); a row is always a candidate.
-                if (locate(e->position().toPoint()).first >= m_rows.size()) { m_indicator->hide(); break; }
-                e->setDropAction(Qt::CopyAction);
-                e->accept();
-                showMaskIndicator(e->position().toPoint());
-                return true;
-            }
-            if (e->mimeData()->hasFormat("com.compositor.layer-mask")) {
-                if (!canCopyMaskAt(e->mimeData()->data("com.compositor.layer-mask"), e->position().toPoint())) break;
-                e->setDropAction(Qt::CopyAction);
-                e->accept();
-                showMaskIndicator(e->position().toPoint());
-                return true;
-            }
-            if (!e->mimeData()->hasFormat("application/x-compositor-list-row")) break;
-            e->setDropAction((e->modifiers() & Qt::AltModifier) ? Qt::CopyAction : Qt::MoveAction);
-            e->accept();
-            showIndicator(e->position().toPoint());
-            return true;
-        }
-        case QEvent::DragLeave:
-            if (obj == m_content) m_indicator->hide();
-            break;
-        case QEvent::Drop: {
-            if (obj != m_content) break;
-            auto *e = static_cast<QDropEvent *>(event);
-            if (e->mimeData()->hasFormat("com.compositor.layer-effect")) {
-                const int row = locate(e->position().toPoint()).first;
-                if (row >= m_rows.size()) break;
-                const QByteArray payload = QJsonDocument(QJsonArray{QString::fromUtf8(e->mimeData()->data("com.compositor.layer-effect")), row})
-                    .toJson(QJsonDocument::Compact);
-                e->setDropAction(Qt::CopyAction);
-                e->accept();
-                m_indicator->hide();
-                const uint64_t handle = m_handle; const QString panel = m_panel, node = m_nodeID;
-                QTimer::singleShot(0, [handle, panel, node, payload] { dispatch(handle, panel, node, QStringLiteral("listEffectDrop"), payload); });
-                return true;
-            }
-            if (e->mimeData()->hasFormat("com.compositor.layer-mask")) {
-                const QByteArray source = e->mimeData()->data("com.compositor.layer-mask");
-                const QPoint position = e->position().toPoint();
-                const int row = locate(position).first;
-                if (!canCopyMaskAt(source, position) || row >= m_rows.size()) break;
-                const QStringList targets = m_maskDropIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
-                if (row >= targets.size() || targets[row].isEmpty()) break;
-                const QJsonArray data{QString::fromUtf8(source), targets[row]};
-                const QByteArray payload = QJsonDocument(data).toJson(QJsonDocument::Compact);
-                e->setDropAction(Qt::CopyAction);
-                e->accept();
-                m_indicator->hide();
-                const uint64_t handle = m_handle; const QString panel = m_panel, node = m_nodeID;
-                QTimer::singleShot(0, [handle, panel, node, payload] { dispatch(handle, panel, node, QStringLiteral("listMaskDrop"), payload); });
-                return true;
-            }
-            if (!e->mimeData()->hasFormat("application/x-compositor-list-row")) break;
-            const int source = e->mimeData()->data("application/x-compositor-list-row").toInt();
-            const auto [row, fraction] = locate(e->position().toPoint());
-            const bool copying = e->modifiers() & Qt::AltModifier;
-            e->setDropAction(copying ? Qt::CopyAction : Qt::MoveAction);
-            e->accept();
-            m_indicator->hide();
-            const QByteArray payload = QJsonDocument(QJsonArray{source, row, fraction, copying}).toJson(QJsonDocument::Compact);
-            // After this event returns: the handler rebuilds the panel, which deletes these rows.
-            const uint64_t handle = m_handle; const QString panel = m_panel, node = m_nodeID;
-            QTimer::singleShot(0, [handle, panel, node, payload] { dispatch(handle, panel, node, QStringLiteral("listDrop"), payload); });
-            return true;
-        }
-        default: break;
-        }
-        return QObject::eventFilter(obj, event);
-    }
-private:
-    bool canCopyMaskAt(const QByteArray &source, const QPoint &position) const {
-        const QString sourceID = QString::fromUtf8(source);
-        const QStringList sources = m_maskDragIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
-        const QStringList targets = m_maskDropIdentifiers.split(QLatin1Char(','), Qt::KeepEmptyParts);
-        if (!sources.contains(sourceID)) return false;
-        const int row = locate(position).first;
-        return row < m_rows.size() && row < targets.size() && !targets[row].isEmpty() && targets[row] != sourceID;
-    }
-    void watch(QWidget *widget, int row, QString maskSource = {}) {
-        widget->setProperty("listRow", row);
-        if (widget->objectName().startsWith(QStringLiteral("layerMaskThumb:")))
-            maskSource = widget->objectName().mid(QStringLiteral("layerMaskThumb:").size());
-        if (!maskSource.isEmpty()) widget->setProperty("listMaskDragSource", maskSource);
-        // An effect row (LayerEffectRow): Option-dragging it carries a copy of the effect.
-        if (widget->objectName().startsWith(QStringLiteral("layerEffectRow:")))
-            widget->setProperty("listEffectDragSource", widget->objectName().mid(QStringLiteral("layerEffectRow:").size()));
-        else if (widget->parentWidget() && widget->parentWidget()->property("listEffectDragSource").isValid())
-            widget->setProperty("listEffectDragSource", widget->parentWidget()->property("listEffectDragSource"));
-        widget->installEventFilter(this);
-        for (QWidget *child : widget->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) watch(child, row, maskSource);
-    }
-    /// The row under `pos` (content coordinates) and where in it (0 top ... 1 bottom); past the last row: rows.size().
-    std::pair<int, double> locate(const QPoint &pos) const {
-        for (int i = 0; i < m_rows.size(); ++i) {
-            const QRect r = m_rows[i]->geometry();
-            if (pos.y() < r.bottom() + 1) return {i, r.height() > 0 ? std::clamp(double(pos.y() - r.top()) / r.height(), 0.0, 1.0) : 0.5};
-        }
-        return {int(m_rows.size()), 0.0};
-    }
-    void showIndicator(const QPoint &pos) {
-        const auto [row, fraction] = locate(pos);
-        const bool folder = row < m_rows.size() && row < m_folders.size() && m_folders[row] == QLatin1Char('1');
-        if (folder && fraction >= 0.25 && fraction <= 0.75) {   // into the folder: its row outlined
-            m_indicator->setStyleSheet("background: rgba(0, 122, 255, 0.18); border: 2px solid #007aff; border-radius: 5px;");
-            m_indicator->setGeometry(m_rows[row]->geometry());
-        } else {                                                // between rows: a line at the nearer edge
-            const int y = row >= m_rows.size() ? (m_rows.isEmpty() ? 0 : m_rows.last()->geometry().bottom() + 1)
-                        : (fraction < 0.5 ? m_rows[row]->geometry().top() : m_rows[row]->geometry().bottom() + 1);
-            m_indicator->setStyleSheet("background: #007aff; border: none; border-radius: 1px;");
-            m_indicator->setGeometry(4, y - 1, m_content->width() - 8, 2);
-        }
-        m_indicator->raise();
-        m_indicator->show();
-    }
-    void showMaskIndicator(const QPoint &pos) {
-        const auto [row, fraction] = locate(pos);
-        Q_UNUSED(fraction);
-        if (row >= m_rows.size()) { m_indicator->hide(); return; }
-        m_indicator->setStyleSheet("background: rgba(0, 122, 255, 0.18); border: 2px solid #007aff; border-radius: 5px;");
-        m_indicator->setGeometry(m_rows[row]->geometry());
-        m_indicator->raise();
-        m_indicator->show();
-    }
-    QWidget *m_content;
-    QList<QWidget *> m_rows;
-    QString m_folders, m_layerIdentifiers, m_maskDragIdentifiers, m_maskDropIdentifiers, m_pressMaskSource, m_pressEffectSource;
-    uint64_t m_handle;
-    QString m_panel, m_nodeID;
-    QFrame *m_indicator = nullptr;
-    int m_pressRow = -1;
-    QPoint m_pressPos;
 };
 
 /// A view that records a key (compatKeyCapture, e.g. a shortcut being rebound): while it exists, the next key pressed
@@ -1679,6 +1501,7 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 else if (part == QLatin1String("bold")) font.setWeight(QFont::Bold);
                 else if (part == QLatin1String("monospacedDigit")) font.setFeature(QFont::Tag("tnum"), 1);
                 else if (part == QLatin1String("design:monospaced")) font.setFamilies({QStringLiteral("DejaVu Sans Mono"), QStringLiteral("monospace")});
+                else if (part.startsWith(QLatin1String("family:"))) font.setFamilies({part.mid(7)});   // Font.custom(_:size:)
             }
             widget->setFont(font);
         } else if (kind == "rotationEffect") {
@@ -1824,6 +1647,8 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 if (kind == "help") widget->setToolTip(text);
                 else widget->setAccessibleName(text);
             }
+        } else if (kind == "identifier") {
+            widget->setProperty("swiftuiIdentifier", strings.value("text").toString());   // .id(_:), for scrollTo
         } else if (kind == "accessibilityIdentifier") {
             const QString id = strings.value("text").toString();
             if (!id.isEmpty()) widget->setObjectName(id);
@@ -2129,63 +1954,6 @@ protected:
     QString m_panel, m_id, m_key;
     QSizeF m_resolved;
     QList<QWidget *> m_children;
-};
-
-/// compatSwipe: a press on one of a group's views, then a drag over the others (Photoshop's eye swipe).
-class SwipeFilter : public QObject {
-public:
-    SwipeFilter(QWidget *widget, uint64_t handle, QString panel, QString id, QString group)
-        : QObject(widget), m_widget(widget), m_handle(handle), m_panel(std::move(panel)), m_id(std::move(id)), m_group(std::move(group)) {
-        widget->setProperty("swipeGroup", m_group);
-        widget->setProperty("swipeNodeID", m_id);
-        widget->installEventFilter(this);
-        members().removeAll(nullptr);
-        members() << widget;
-    }
-    static QList<QPointer<QWidget>> &members() { static QList<QPointer<QWidget>> all; return all; }
-    bool eventFilter(QObject *, QEvent *event) override {
-        auto *me = static_cast<QMouseEvent *>(event);
-        switch (event->type()) {
-        case QEvent::MouseButtonPress:
-            if (me->button() != Qt::LeftButton) return false;
-            m_last = m_id;
-            m_widget->grabMouse();
-            send(m_id, "swipeBegan");
-            return true;
-        case QEvent::MouseMove: {
-            if (m_last.isEmpty()) return false;
-            // The group's view under the pointer, by row: a swipe runs down a column, so only the height has to match.
-            const QPoint at = me->globalPosition().toPoint();
-            for (const QPointer<QWidget> &w : members()) {
-                if (!w || !w->isVisible() || w->property("swipeGroup").toString() != m_group) continue;
-                const QRect r(w->mapToGlobal(QPoint(0, 0)), w->size());
-                if (at.y() < r.top() || at.y() > r.bottom()) continue;
-                const QString id = w->property("swipeNodeID").toString();
-                if (id != m_last) { m_last = id; send(id, "swipeEntered"); }
-                break;
-            }
-            return true;
-        }
-        case QEvent::MouseButtonRelease:
-            if (m_last.isEmpty()) return false;
-            m_widget->releaseMouse();
-            m_last.clear();
-            send(m_id, "swipeEnded");
-            notifyListeners(m_handle, m_panel);
-            return true;
-        default: return false;
-        }
-    }
-private:
-    void send(const QString &id, const char *key) {
-        const QByteArray panelUtf8 = m_panel.toUtf8(), nodeUtf8 = id.toUtf8();
-        compositor_session_dispatch_swiftui_action(m_handle, panelUtf8.constData(), nodeUtf8.constData(), key, nullptr, 0);
-        // The rows repaint as they change (the panel itself rebuilds when the swipe ends).
-        for (QWidget *top : QApplication::topLevelWidgets()) top->update();
-    }
-    QWidget *m_widget;
-    uint64_t m_handle;
-    QString m_panel, m_id, m_group, m_last;
 };
 
 /// Keeps an overlay laid over its base view at the overlay's alignment (SwiftUI's `.overlay`).
@@ -3020,6 +2788,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         struct ItemData {
             QString text;
             QString tag;
+            QString family;   // An item shown in its own face (a font menu's Font.custom), else empty.
         };
         QVector<ItemData> items;
         for (int i = 1; i < children.size(); ++i) {
@@ -3027,14 +2796,17 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             // A Divider between items is the menu's separator line.
             if (item.value("kind").toString() == QLatin1String("Divider")) { items.push_back({QString(), QStringLiteral("\u0001separator")}); continue; }
             QString itemText = item.value("stringParams").toObject().value("text").toString();
-            QString itemTag = itemText;
+            QString itemTag = itemText, itemFamily;
             for (const auto &mv : item.value("modifiers").toArray()) {
                 const QJsonObject mo = mv.toObject();
                 if (mo.value("kind").toString() == "tag") {
                     itemTag = mo.value("stringParams").toObject().value("text").toString();
+                } else if (mo.value("kind").toString() == "font") {
+                    for (const QString &part : mo.value("stringParams").toObject().value("name").toString().split(QLatin1Char('+')))
+                        if (part.startsWith(QLatin1String("family:"))) itemFamily = part.mid(7);
                 }
             }
-            items.push_back({itemText, itemTag});
+            items.push_back({itemText, itemTag, itemFamily});
         }
 
         if (isRadioGroup) {
@@ -3113,6 +2885,11 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             for (int i = 0; i < items.size(); ++i) {
                 if (items[i].tag == QStringLiteral("\u0001separator")) { combo->insertSeparator(combo->count()); tags << QString(); continue; }
                 combo->addItem(items[i].text);
+                if (!items[i].family.isEmpty()) {
+                    QFont face = combo->font();
+                    face.setFamilies({items[i].family});
+                    combo->setItemData(combo->count() - 1, face, Qt::FontRole);
+                }
                 tags << items[i].tag;
                 if (items[i].tag.compare(selection, Qt::CaseInsensitive) == 0 ||
                     items[i].text.compare(selection, Qt::CaseInsensitive) == 0) {
@@ -3374,22 +3151,6 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 content->setSizePolicy(scrollH && !scrollV ? QSizePolicy::Preferred : QSizePolicy::Expanding,
                                        scrollV ? QSizePolicy::Preferred : QSizePolicy::Fixed);
                 scrollArea->setWidget(content);
-                // A List whose view handles drops (compatListDrop): its rows are the stack's items, minus the trailing
-                // Spacer every List ends with.
-                bool dropping = false;
-                for (const auto &k : node.value("handlerKeys").toArray()) dropping = dropping || k.toString() == QLatin1String("listDrop");
-                if (dropping && content->layout()) {
-                    QList<QWidget *> rows;
-                    for (int i = 0; i < content->layout()->count(); ++i)
-                        if (QWidget *item = content->layout()->itemAt(i)->widget()) rows << item;
-                    if (!rows.isEmpty()) rows.removeLast();
-                    auto *controller = new ListDragController(content, rows, strings.value("listFolders").toString(),
-                                           strings.value("listLayerIdentifiers").toString(),
-                                           strings.value("listMaskDragIdentifiers").toString(),
-                                           strings.value("listMaskDropIdentifiers").toString(), handle, panel, id);
-                    if (strings.contains("listCursorInfo")) new ListCursorController(content, rows, strings.value("listCursorInfo").toString());
-                    Q_UNUSED(controller);
-                }
             }
         }
         widget = scrollArea;
@@ -3420,6 +3181,31 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = line;
     } else if (kind == "Canvas") {
         widget = new SwiftUICanvasWidget(handle, panel, id);
+    } else if (kind == "_AppKit") {
+        auto *appKit = new SwiftUIAppKitWidget(handle, panel, id);
+        const QJsonObject doubles = node.value("doubleParams").toObject();
+        if (doubles.contains("height")) {
+            appKit->setFixedHeight(qMax(1, qRound(doubles.value("height").toDouble())));
+            appKit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        }
+        if (doubles.contains("width")) appKit->setMinimumWidth(qRound(doubles.value("width").toDouble()));
+        // Views over it (a field being edited), where the node puts them; a field takes the keys with its text selected.
+        for (const QJsonValue &childValue : children) {
+            const QJsonObject child = childValue.toObject();
+            QWidget *over = buildNode(handle, panel, child);
+            if (!over) continue;
+            const QJsonObject frame = child.value("doubleParams").toObject();
+            over->setParent(appKit);
+            over->setGeometry(qRound(frame.value("frameX").toDouble()), qRound(frame.value("frameY").toDouble()),
+                              qMax(20, qRound(frame.value("frameW").toDouble())), qMax(16, qRound(frame.value("frameH").toDouble())));
+            over->show();
+            if (child.value("boolParams").toObject().value("focused").toBool()) {
+                QLineEdit *edit = qobject_cast<QLineEdit *>(over);
+                if (!edit) edit = over->findChild<QLineEdit *>();
+                QTimer::singleShot(0, over, [edit] { if (edit) { edit->setFocus(Qt::OtherFocusReason); edit->selectAll(); } });
+            }
+        }
+        widget = appKit;
     } else if (kind == "ProgressView") {
         auto *progress = new QProgressBar;
         progress->setRange(0, 0);
@@ -3442,6 +3228,22 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 }
             }
             widget = container;
+        }
+    } else if (kind == "ScrollViewReader") {
+        // Its content as it is; a `scrollTo` it asked for shows the view with that `.id` in the scroll view around it.
+        widget = children.isEmpty() ? new QWidget : buildNode(handle, panel, children.first().toObject());
+        if (!widget) widget = new QWidget;
+        const QString target = strings.value("scrollTarget").toString();
+        if (!target.isEmpty()) {
+            QTimer::singleShot(0, widget, [root = QPointer<QWidget>(widget), target] {
+                if (!root) return;
+                for (QWidget *child : root->findChildren<QWidget *>()) {
+                    if (child->property("swiftuiIdentifier").toString() != target) continue;
+                    for (QWidget *up = child->parentWidget(); up; up = up->parentWidget())
+                        if (auto *area = qobject_cast<QScrollArea *>(up)) { area->ensureWidgetVisible(child, 0, 0); break; }
+                    break;
+                }
+            });
         }
     } else {
         // Not yet mapped (e.g. _Native/LinearGradient land in later phases) — skip, don't crash.
@@ -3472,7 +3274,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         // A view with gestures of its own takes the mouse, even one drawn passive (an Image: the layer and effect eyes),
         // unless SwiftUI turned its hit-testing off.
         static const QStringList interactive{QStringLiteral("dragChanged"), QStringLiteral("dragEnded"), QStringLiteral("onContinuousHover"),
-            QStringLiteral("swipeBegan"), QStringLiteral("onTapGesture"), QStringLiteral("spatialTapGesture"), QStringLiteral("contextMenu")};
+            QStringLiteral("onTapGesture"), QStringLiteral("spatialTapGesture"), QStringLiteral("contextMenu")};
         if (std::any_of(interactive.begin(), interactive.end(), [&](const QString &key) { return hKeys.contains(key); })) {
             bool hitTestingOff = false;
             for (const auto &entry : node.value("modifiers").toArray()) {
@@ -3487,7 +3289,6 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             for (QWidget *inner : widget->findChildren<QWidget *>()) new DragPressFilter(inner, widget, handle, panel, id);
         }
         if (hKeys.contains(QStringLiteral("onContinuousHover"))) new HoverFilter(widget, handle, panel, id);
-        if (hKeys.contains(QStringLiteral("swipeBegan"))) new SwipeFilter(widget, handle, panel, id, strings.value("swipeGroup").toString());
         if (hKeys.contains(QStringLiteral("onTapGesture")) || hKeys.contains(QStringLiteral("spatialTapGesture"))) {
             widget->setCursor(Qt::PointingHandCursor);
             auto onTap = [handle, panel, id](int modifiers) {

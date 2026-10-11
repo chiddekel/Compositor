@@ -55,7 +55,13 @@ extension NSWindow {
             contentView.frame = CGRect(origin: .zero, size: size)
         }
     }
-    public func center() {}
+    /// Centers the window on its screen, a little above the middle as AppKit puts it.
+    public func center() {
+        let screen = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        var origin = CGPoint(x: screen.midX - frame.width / 2, y: screen.midY - frame.height / 2)
+        origin.y += (screen.height - frame.height) / 6
+        setFrameOrigin(origin)
+    }
     public func makeKey() { isVisible = true }
     public func convertToScreen(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: frame.minX, dy: frame.minY) }
 }

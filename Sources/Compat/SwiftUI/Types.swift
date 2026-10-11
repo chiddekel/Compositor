@@ -163,6 +163,8 @@ extension StyleToken {
     public static let hidden = StyleToken("hidden"), visible = StyleToken("visible"), never = StyleToken("never")
     public func weight(_ weight: StyleToken) -> StyleToken { StyleToken("\(name)+weight:\(weight.name)") }
     public func bold() -> StyleToken { StyleToken("\(name)+bold") }
+    /// `Font.custom(_:size:)`: a named face at a size.
+    public static func custom(_ name: String, size: Double) -> StyleToken { StyleToken("system:\(size)+family:\(name)") }
     public func monospacedDigit() -> StyleToken { StyleToken("\(name)+monospacedDigit") }
     /// `Font.body.monospaced()`: the same style in the fixed-pitch design.
     public func monospaced() -> StyleToken { StyleToken("\(name)+design:monospaced") }

@@ -23,13 +23,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BEGIN, END = "<!-- ledger-rows:begin -->", "<!-- ledger-rows:end -->"
-GENERATORS = {  # overrides written by a generator script (their --check is the gate)
-    "Compositor/CompositorApp.swift", "Compositor/Document/EditorSession.swift",
-    "Compositor/Document/SmudgeLiquify.swift",
-    # scripts/gen-objc-overrides.py
-    "Compositor/UI/SliderSnap.swift", "Compositor/UI/CameraRawSlider.swift", "Compositor/UI/CommandPaletteView.swift",
-    "Compositor/UI/NativeLayerList.swift",
-}
+def generated_overrides() -> set[str]:
+    """Upstream files whose override a generator writes (its --check is the gate): the parity file's drift entries."""
+    parity = json.loads((ROOT / "linux/upstream-parity.json").read_text())
+    return {up for entry in parity["drift"].values() if entry.get("mode") == "generated" for up in entry["upstream"]}
+
+
+GENERATORS = generated_overrides()
 
 
 def git(*args: str) -> str:

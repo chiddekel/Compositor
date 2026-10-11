@@ -275,6 +275,9 @@ public enum ViewResolver {
     /// view keeps its `@State` for as long as it keeps its path (StateStore).
     nonisolated(unsafe) private static var currentPath = ""
 
+    /// The path of the view being resolved (a reader's place, for its `scrollTo` requests).
+    static var currentViewPath: String { currentPath }
+
     /// A view resolved while another's `body` is being built (an `.overlay`'s content) gets a path under that view.
     static func nestedPath(_ tag: String) -> String { currentPath + "/" + tag }
 
@@ -310,6 +313,13 @@ public enum ViewResolver {
                 EnvironmentValues.current.isEnabled = savedEnabled && !disables
             }
             defer { EnvironmentValues.current.isEnabled = savedEnabled }
+            // A host drawing the tree itself gets the nodes an NSViewRepresentable's AppKit view stands for.
+            if NativeLowering.isActive, let source = primitive as? any _NativeViewSource {
+                // Lowering only runs inside the host's main-thread resolves.
+                var lowered = RenderNode(kind: "_Empty")
+                MainActor.assumeIsolated { lowered = NativeLowering.node(for: source, path: path) }
+                return [lowered]
+            }
             let children = primitive._childViews.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
             return [primitive._makeNode(children: children)]
         }

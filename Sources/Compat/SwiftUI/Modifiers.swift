@@ -281,55 +281,9 @@ extension View {
             $0.modifiers.append(.sink("pickerHighlight", { value in highlight(value as? String) }))
         }
     }
-    /// Compat-only (the Mac does this with an NSButton tracking its own drag, e.g. NativeLayerList's EyeSwipeButton):
-    /// pressing this view runs `began`; dragging over other views in the same `group` runs their `entered`; letting go
-    /// runs the pressed view's `ended`.
-    public func compatSwipe(group: String, began: @escaping () -> Void, entered: @escaping () -> Void,
-                            ended: @escaping () -> Void) -> some View {
-        modified {
-            $0.stringParams["swipeGroup"] = group
-            $0.modifiers.append(.sink("swipeBegan", { _ in began() }))
-            $0.modifiers.append(.sink("swipeEntered", { _ in entered() }))
-            $0.modifiers.append(.sink("swipeEnded", { _ in ended() }))
-        }
-    }
-    /// Compat-only (no SwiftUI counterpart — AppKit's NSTableView drag-and-drop stands in for it on the Mac): lets the
-    /// Qt shell drag this List's rows. `folders` marks the rows a drop can land *into*; `perform` gets the dragged row,
-    /// the row under the drop, where in that row it landed (0 top ... 1 bottom) and whether Option/Alt copies.
-    public func compatListDrop(folders: [Bool], layerIdentifiers: [String] = [],
-                               perform action: @escaping (_ source: Int, _ row: Int, _ fraction: Double, _ copying: Bool) -> Void) -> some View {
-        modified {
-            $0.stringParams["listFolders"] = folders.map { $0 ? "1" : "0" }.joined()
-            $0.stringParams["listLayerIdentifiers"] = layerIdentifiers.joined(separator: ",")
-            $0.modifiers.append(.sink("listDrop", { value in
-                // JSON numbers arrive as Int / Double / Bool on Linux (NSNumber on the Mac): read either.
-                func number(_ v: Any) -> Double? {
-                    if let d = v as? Double { return d }
-                    if let i = v as? Int { return Double(i) }
-                    if let b = v as? Bool { return b ? 1 : 0 }
-                    return (v as? NSNumber)?.doubleValue
-                }
-                guard let values = value as? [Any], values.count == 4, let source = number(values[0]), let row = number(values[1]),
-                      let fraction = number(values[2]), let copying = number(values[3]) else { return }
-                action(Int(source), Int(row), fraction, copying != 0)
-            }))
-        }
-    }
-    /// Compat-only: Option-dragging a row's effect (a view identified "layerEffectRow:<layer>:<effect>") onto another
-    /// row hands `action` that "<layer>:<effect>" and the row index it was dropped on.
-    public func compatListEffectDrop(perform action: @escaping (_ source: String, _ row: Int) -> Void) -> some View {
-        modified {
-            $0.boolParams["listEffectDrop"] = true
-            $0.modifiers.append(.sink("listEffectDrop", { value in
-                guard let values = value as? [Any], values.count == 2, let source = values[0] as? String else { return }
-                action(source, (values[1] as? Int) ?? Int((values[1] as? Double) ?? -1))
-            }))
-        }
-    }
-    /// Compat-only: per-row flags the Qt list reads to choose its pointer as the Mac's list does (see NativeLayerList).
-    public func compatListCursorInfo(_ rows: [String]) -> some View {
-        modified { $0.stringParams["listCursorInfo"] = rows.joined(separator: ",") }
-    }
+    /// Compat-only: a List's mask drag-and-drop as the old Linux layers list encoded it (identifiers of the rows a mask
+    /// is dragged from and dropped on; `action` gets both). No view uses it since tip's own table is drawn; kept for
+    /// Tests/LinuxOverrideTests/SwiftUIListMaskDropProbeTests.swift.
     public func compatListMaskDrop(dragIdentifiers: [String], dropTargetIdentifiers: [String],
                                    perform action: @escaping (_ source: String, _ target: String) -> Void) -> some View {
         modified {
@@ -339,18 +293,6 @@ extension View {
                 guard let values = value as? [Any], values.count == 2,
                       let source = values[0] as? String, let target = values[1] as? String else { return }
                 action(source, target)
-            }))
-        }
-    }
-    /// Compat-only (AppKit's `keyDown(with:)` on a recording control stands in for it on the Mac): while this view is
-    /// shown, the Qt shell hands it the next key pressed — `key` in ShortcutChord's form ("a", "\r", "\u{f702}", …, or ""
-    /// for Esc, meaning cancel) and `modifiers` as Command 1 / Option 2 / Control 4 / Shift 8 (Ctrl, Alt, Meta, Shift).
-    public func compatKeyCapture(perform action: @escaping (_ key: String, _ modifiers: Int) -> Void) -> some View {
-        modified {
-            $0.modifiers.append(.sink("keyCapture", { value in
-                guard let values = value as? [Any], values.count == 2, let key = values[0] as? String else { return }
-                let modifiers = (values[1] as? Int) ?? Int((values[1] as? Double) ?? 0)
-                action(key, modifiers)
             }))
         }
     }

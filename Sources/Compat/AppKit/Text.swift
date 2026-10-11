@@ -31,6 +31,20 @@ open class NSFont: @unchecked Sendable {
     public var ascender: CGFloat { TextBackend.metrics(self)?.ascender ?? pointSize * 0.8 }
     public var descender: CGFloat { TextBackend.metrics(self)?.descender ?? -pointSize * 0.2 }
     public var leading: CGFloat { TextBackend.metrics(self)?.leading ?? 0 }
+    /// The size of the system font in controls.
+    public static var systemFontSize: CGFloat { 13 }
+    public static var smallSystemFontSize: CGFloat { 11 }
+    /// The letters the face draws itself (Latin, Greek and Cyrillic, which font menus test names against), from the
+    /// Qt text engine; without it, every one of them.
+    public var coveredCharacterSet: CharacterSet {
+        let scalars = (0x20...0x24F).compactMap(Unicode.Scalar.init) + (0x370...0x4FF).compactMap(Unicode.Scalar.init)
+        guard let covered = TextBackend.covered(self, scalars) else {
+            var all = CharacterSet(); scalars.forEach { all.insert($0) }; return all
+        }
+        var set = CharacterSet()
+        for (scalar, yes) in zip(scalars, covered) where yes { set.insert(scalar) }
+        return set
+    }
     public static func systemFont(ofSize size: CGFloat) -> NSFont { NSFont(system: size) }
     public static func systemFont(ofSize size: CGFloat, weight: Weight) -> NSFont { NSFont(system: size) }
     public static func monospacedDigitSystemFont(ofSize size: CGFloat, weight: Weight = .regular) -> NSFont { NSFont(system: size) }

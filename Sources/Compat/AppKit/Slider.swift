@@ -13,6 +13,10 @@ public enum NSUserInterfaceLayoutDirection: Int, Sendable { case leftToRight = 0
     open var intValue: Int32 { get { Int32(doubleValue) } set { doubleValue = Double(newValue) } }
     public weak var controlView: NSView?
     open var userInterfaceLayoutDirection: NSUserInterfaceLayoutDirection = .leftToRight
+    open var lineBreakMode: NSLineBreakMode = .byWordWrapping
+    open var usesSingleLineMode = false
+    open var alignment: NSTextAlignment = .natural
+    open var font: NSFont?
     open func draw(withFrame cellFrame: CGRect, in controlView: NSView) { drawInterior(withFrame: cellFrame, in: controlView) }
     open func drawInterior(withFrame cellFrame: CGRect, in controlView: NSView) {}
     /// AppKit calls this as a press starts tracking; true lets tracking go on.
@@ -106,6 +110,8 @@ public enum NSUserInterfaceLayoutDirection: Int, Sendable { case leftToRight = 0
 /// A slider control: its value lives in its `NSSliderCell`.
 @MainActor open class NSSlider: NSControl {
     open class var cellClass: NSSliderCell.Type { NSSliderCell.self }
+    /// Whether the action is sent while the knob moves, not just when it is let go.
+    public var isContinuous = false
     public var cell: NSCell? {
         didSet { cell?.controlView = self; (cell as? NSActionCell).map { $0.target = target; $0.action = action } }
     }

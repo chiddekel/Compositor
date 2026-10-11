@@ -51,6 +51,27 @@ import Foundation
         }
     }
 
+    /// Shows the menu at `location` in `view` (AppKit tracks it there and runs the chosen item's action). The host draws
+    /// it (`presenter`), which reports the chosen item's index, or nil when the menu was dismissed; without a host the
+    /// menu opens and closes with nothing chosen.
+    @discardableResult public func popUp(positioning item: NSMenuItem?, at location: NSPoint, in view: NSView?) -> Bool {
+        delegate?.menuNeedsUpdate?(self)
+        update()
+        delegate?.menuWillOpen(self)
+        NotificationCenter.default.post(name: Self.didBeginTrackingNotification, object: self)
+        let finish: (Int?) -> Void = { [self] index in
+            if let index { performActionForItem(at: index) }
+            delegate?.menuDidClose(self)
+            NotificationCenter.default.post(name: Self.didEndTrackingNotification, object: self)
+        }
+        guard let presenter = Self.presenter else { finish(nil); return false }
+        presenter(self, finish)
+        return true
+    }
+    /// Installed by the host: shows `menu` where the pointer is and calls back with the chosen item's index (nil:
+    /// dismissed).
+    public static var presenter: ((NSMenu, @escaping (Int?) -> Void) -> Void)?
+
     /// Chooses the item at `index`, as a click on it does: its action goes to its target (or the responder chain).
     public func performActionForItem(at index: Int) {
         guard let item = item(at: index), item.isEnabled, let action = item.action else { return }
@@ -58,14 +79,23 @@ import Foundation
     }
 }
 
-/// `menuNeedsUpdate` is an optional method on the Mac (`delegate?.menuNeedsUpdate?(menu)`); without the Objective-C
-/// runtime an optional requirement is a closure property, so that call compiles unchanged. A delegate that implements
-/// the method answers through `menuNeedsUpdateHandler`.
+/// What a menu tells its delegate. `menuNeedsUpdate` is an optional method on the Mac, called as
+/// `delegate?.menuNeedsUpdate?(menu)`; without the Objective-C runtime an optional requirement is a closure property,
+/// so that call compiles unchanged. A delegate may supply the closure (AppMenuBar) or implement the method
+/// (`func menuNeedsUpdate(_:)`), which the default closure calls.
 @MainActor public protocol NSMenuDelegate: AnyObject {
     var menuNeedsUpdate: ((NSMenu) -> Void)? { get }
+    func menuNeedsUpdate(_ menu: NSMenu)
+    func menuWillOpen(_ menu: NSMenu)
+    func menuDidClose(_ menu: NSMenu)
+    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?)
 }
 extension NSMenuDelegate {
-    public var menuNeedsUpdate: ((NSMenu) -> Void)? { nil }
+    public var menuNeedsUpdate: ((NSMenu) -> Void)? { { [weak self] menu in self?.menuNeedsUpdate(menu) } }
+    public func menuNeedsUpdate(_ menu: NSMenu) {}
+    public func menuWillOpen(_ menu: NSMenu) {}
+    public func menuDidClose(_ menu: NSMenu) {}
+    public func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {}
 }
 
 @MainActor public protocol NSMenuItemValidation: AnyObject {
@@ -84,6 +114,8 @@ extension NSMenuDelegate {
     public var tag = 0
     public var representedObject: Any?
     public var image: NSImage?
+    /// A styled title (a font face shown in its own face); `title` stays the plain string.
+    public var attributedTitle: NSAttributedString?
     public var toolTip: String?
     public var indentationLevel = 0
     public internal(set) weak var menu: NSMenu?

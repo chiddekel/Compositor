@@ -64,6 +64,27 @@ public enum TextBackend {
         return nil
     }()
 
+    typealias CoversFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<UInt32>?, Int32, UnsafeMutablePointer<UInt8>?) -> Int32
+    nonisolated(unsafe) static let coversFn: CoversFn? = {
+        #if canImport(Glibc)
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_font_covers") else { continue }
+            return unsafeBitCast(sym, to: CoversFn.self)
+        }
+        #endif
+        return nil
+    }()
+
+    /// Which of `scalars` the face draws itself, from the Qt text engine; nil without it.
+    static func covered(_ font: NSFont, _ scalars: [Unicode.Scalar]) -> [Bool]? {
+        guard let coversFn else { return nil }
+        let codes = scalars.map(\.value)
+        var out = [UInt8](repeating: 0, count: codes.count)
+        guard coversFn(font.fontName, codes, Int32(codes.count), &out) == 1 else { return nil }
+        return out.map { $0 != 0 }
+    }
+
     /// Ascender, descender (negative) and leading of `font`, in points, from the Qt text engine; nil without it.
     static func metrics(_ font: NSFont) -> (ascender: CGFloat, descender: CGFloat, leading: CGFloat)? {
         guard let metricsFn else { return nil }

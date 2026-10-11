@@ -251,17 +251,6 @@ nonisolated public func compositorCanvasKey(_ handle: UInt64, _ keyCode: Int32, 
     })
 }
 
-/// Up/Down while the layers list holds the focus (LayerListKeys.arrow): 1 when the list moved its selection.
-@_cdecl("compositor_layer_list_key")
-nonisolated public func compositorLayerListKey(_ handle: UInt64, _ keyCode: Int32, _ modifiers: Int32) -> Int32 {
-    Int32(withEntry(handle) { entry in
-        // Mac keyCode 0 with Command is unused here; arrows stay 125/126. Select-All is routed from the shell when
-        // layerListFocused (SessionWindow) and from NSApp.sendAction via selectAllHandler.
-        if LayerListKeys.arrow(entry.editor.session, keyCode: Int(keyCode), modifiers: Int(modifiers)) { return 1 }
-        return 0
-    })
-}
-
 /// The overlay's pixels (width × height × 4); returns the byte count, -1 if `capacity` is too small.
 @_cdecl("compositor_canvas_overlay")
 nonisolated public func compositorCanvasOverlay(_ handle: UInt64, _ width: Int32, _ height: Int32,
