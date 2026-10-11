@@ -26,7 +26,15 @@ cache = '''
     private let radialWeights: [Float]?
     /// When a long jump needs more dabs than one turn's budget, the remaining target waits here
     /// so the shell can paint mid-stroke (see `continuePending` / `flushPending`).
-    private var pendingTarget: CGPoint?
+    private var pendingTargets: [CGPoint] = []
+    private var pendingIndex = 0
+    private struct Segment {
+        let from: CGPoint, target: CGPoint
+        let steps: Int
+        var nextStep = 1
+        var previous: CGPoint
+    }
+    private var pendingSegment: Segment?
 '''
 optimized = source.replace(anchor, anchor + cache)
 init_end = '''        gpu = useGPU ? MetalWarp(pixels: context) : nil
@@ -130,72 +138,71 @@ append_anchor = '''    /// Continues the stroke to `point`, dabbing along the wa
 
 append_chunked = '''    /// Continues the stroke to `point`, dabbing along the way, then refreshes `image`.
     /// Long jumps are chunked (`dabBudget`) so the Qt shell can dirty-blit before the rest runs.
-    var hasPendingDabs: Bool { pendingTarget != nil }
-    /// The Qt shell turns this on while a button is held on the canvas (UpstreamCanvas): it drives `continuePending`
-    /// between frames. Off, `append` dabs the whole way at once, as upstream's does.
+    var hasPendingDabs: Bool { pendingSegment != nil || pendingIndex < pendingTargets.count }
     nonisolated(unsafe) static var timeSlicesLiveStrokes = false
 
     func append(_ point: CGPoint) {
-        appendToward(point, maxDabs: Self.timeSlicesLiveStrokes ? dabBudget : Int.max)
+        pendingTargets.append(point)
+        drain(maxDabs: Self.timeSlicesLiveStrokes ? dabBudget : Int.max)
     }
 
-    /// Runs another budgeted slice toward `pendingTarget`. Returns whether more work remains.
     @discardableResult
     func continuePending() -> Bool {
-        guard let target = pendingTarget else { return false }
-        appendToward(target, maxDabs: dabBudget)
-        return pendingTarget != nil
+        drain(maxDabs: dabBudget)
+        return hasPendingDabs
     }
 
-    /// Drains every deferred dab before commit / cancel so the finished stroke matches a sync append.
     func flushPending() {
-        while pendingTarget != nil { appendToward(pendingTarget!, maxDabs: 10_000) }
+        drain(maxDabs: Int.max)
     }
 
-    /// Smudge spacing is ~5× denser than Liquify; keep CPU time per turn inside the 150 ms feedback budget.
-    /// Four dabs (~5 px at a 256 px tip) is enough for the live-feedback edge sample to change.
     private var dabBudget: Int { mode == .smudge ? 4 : 48 }
 
-    private func appendToward(_ point: CGPoint, maxDabs: Int) {
-        guard let from = last else {
-            last = point
-            pendingTarget = nil
-            if mode == .smudge {
-                if let gpu { gpu.pickUp(at: point, radius: radius); gpu.commit() } else { pickUp(at: point) }
-            }
-            return
-        }
-        let distance = hypot(point.x - from.x, point.y - from.y)
-        // Smudge drags the pixels one dab's spacing at a time and mixes them with what's there: spaced widely, each step
-        // left a faint copy of what it dragged, echoes along the stroke. A pixel apart (a little more for a huge brush)
-        // the steps run together into one smear, as Photoshop's does.
-        let spacing = max(1, diameter * (mode == .smudge ? 0.005 : 0.025))
-        guard distance >= spacing else { pendingTarget = nil; return }
-        let steps = Int((distance / spacing).rounded(.up))
-        var previous = from
+    /// Keep each segment's upstream interpolation intact across frame boundaries. New samples wait in order.
+    private func drain(maxDabs: Int) {
         var done = 0
-        for step in 1...steps {
-            let t = CGFloat(step) / CGFloat(steps)
-            let next = CGPoint(x: from.x + (point.x - from.x) * t, y: from.y + (point.y - from.y) * t)
+        while done < maxDabs, hasPendingDabs {
+            if pendingSegment == nil {
+                let target = pendingTargets[pendingIndex]
+                pendingIndex += 1
+                guard let from = last else {
+                    last = target
+                    if mode == .smudge {
+                        if let gpu { gpu.pickUp(at: target, radius: radius); gpu.commit() } else { pickUp(at: target) }
+                    }
+                    continue
+                }
+                let distance = hypot(target.x - from.x, target.y - from.y)
+                let spacing = max(1, diameter * (mode == .smudge ? 0.005 : 0.025))
+                guard distance >= spacing else { continue }
+                pendingSegment = Segment(from: from, target: target,
+                    steps: Int((distance / spacing).rounded(.up)), previous: from)
+            }
+            guard var segment = pendingSegment else { continue }
+            let t = CGFloat(segment.nextStep) / CGFloat(segment.steps)
+            let next = CGPoint(x: segment.from.x + (segment.target.x - segment.from.x) * t,
+                               y: segment.from.y + (segment.target.y - segment.from.y) * t)
             if let gpu {
                 if mode == .smudge { gpu.smudge(at: next, radius: radius, diameter: diameter, hardness: hardness, strength: strength) }
-                else { gpu.push(from: previous, to: next, radius: radius, diameter: diameter, hardness: hardness, strength: strength) }
-            } else if mode == .smudge { smudge(at: next) } else { push(from: previous, to: next) }
+                else { gpu.push(from: segment.previous, to: next, radius: radius, diameter: diameter, hardness: hardness, strength: strength) }
+            } else if mode == .smudge { smudge(at: next) } else { push(from: segment.previous, to: next) }
             points.append(next)
-            previous = next
+            segment.previous = next
+            segment.nextStep += 1
             done += 1
-            if done >= maxDabs && step < steps {
-                last = next
-                pendingTarget = point
-                if let gpu { gpu.commit() }
-                cpuImage = nil
-                return
-            }
+            if segment.nextStep > segment.steps {
+                last = segment.target
+                pendingSegment = nil
+            } else { pendingSegment = segment }
         }
-        last = point
-        pendingTarget = nil
-        if let gpu { gpu.commit() }
-        cpuImage = nil
+        if pendingIndex == pendingTargets.count {
+            pendingTargets.removeAll(keepingCapacity: true)
+            pendingIndex = 0
+        }
+        if done > 0 {
+            if let gpu { gpu.commit() }
+            cpuImage = nil
+        }
     }
 
     /// Document-pixel crop of the working buffer without building a full-canvas CGImage.
@@ -273,51 +280,8 @@ finish_old = '''    func finishWarp() {
         } catch { brushError = error.localizedDescription }
     }
 '''
-finish_new = '''    func finishWarp() {
-        guard let warp = warpStroke else { return }
-        // Drain chunked dabs so commit matches a fully synchronous stroke.
-        warp.flushPending()
-        warpStroke = nil
-        brushRevision += 1
-        guard !warp.points.isEmpty else { return }
-        // Commit only the stroke's dirty tip union — full-canvas makeImage + dense tip replay
-        // was the ~1s release hang after long Liquify/Smudge strokes on Full HD.
-        let pad = ceil(warp.diameter / 2) + 2
-        var dirty = CGRect.null
-        for point in warp.points {
-            dirty = dirty.union(CGRect(x: point.x - pad, y: point.y - pad,
-                                       width: pad * 2, height: pad * 2))
-        }
-        let canvas = CGRect(x: 0, y: 0, width: warp.width, height: warp.height)
-        dirty = dirty.integral.intersection(canvas)
-        guard !dirty.isNull, !dirty.isEmpty, let result = warp.snapshot(in: dirty),
-              let current = document?.layers.first(where: { $0.id == warp.layer.id }),
-              current.asset?.image === warp.layer.asset?.image, current.transform == warp.layer.transform else { return }
-        do {
-            var settings = brushSettings
-            // Hard tip a little wider than the brush; sparse stamps still cover a solid tip.
-            let tip = warp.diameter + 4
-            settings.diameter = tip
-            settings.hardness = 1
-            settings.opacity = 1
-            let stroke = try makeRasterEdit(for: current, settings: settings)
-            stroke.clone = (result, dirty, false)
-            stroke.replacesWithClone = true
-            stroke.editName = warp.mode.rawValue
-            // Hard circular tip of diameter `tip` covers when centers are ≤ tip apart; 0.05 was 10× denser
-            // than needed and dominated release after intensive strokes.
-            let spacing = max(1, tip * 0.5)
-            var kept: CGPoint?
-            for (index, point) in warp.points.enumerated() {
-                if let kept, index < warp.points.count - 1, hypot(point.x - kept.x, point.y - kept.y) < spacing { continue }
-                try stroke.append(point)
-                kept = point
-            }
-            try stroke.flush()
-            if !stroke.patches.isEmpty { try commitPaintSnapshot(stroke) }
-        } catch { brushError = error.localizedDescription }
-    }
-'''
+finish_new = finish_old.replace('        warpStroke = nil\n',
+    '        warp.flushPending()\n        warpStroke = nil\n', 1)
 assert optimized.count(finish_old) == 1, 'Upstream finishWarp changed'
 optimized = optimized.replace(finish_old, finish_new)
 
@@ -340,11 +304,14 @@ assert optimized.rstrip().endswith('}'), 'Unexpected file ending'
 optimized = optimized.rstrip() + '\n' + continue_hook
 
 header = '// GENERATED by scripts/gen-smudge-liquify-override.py; regenerate after upstream merges.\n'
+reference_finish = finish_old.replace('func finishWarp()', 'func finishReferenceWarp(_ warp: ReferenceWarpStroke)', 1)
+reference_finish = reference_finish.replace('        guard let warp = warpStroke else { return }\n        warpStroke = nil\n', '', 1)
 outputs = {
     root / 'Sources/Overrides/SmudgeLiquify.swift': header + optimized,
     root / 'Tests/LinuxOverrideTests/ReferenceWarpStroke.swift': header + 'import AppKit\n@testable import Compositor\n\n@MainActor\n' +
         source[source.index('final class WarpStroke {'):source.index('\nextension EditorSession {')]
-        .replace('final class WarpStroke {', 'final class ReferenceWarpStroke {', 1),
+        .replace('final class WarpStroke {', 'final class ReferenceWarpStroke {', 1) +
+        '\n@MainActor\nextension EditorSession {\n' + reference_finish + '}\n',
 }
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--check', action='store_true')
@@ -353,4 +320,5 @@ for path, content in outputs.items():
     if args.check:
         assert path.read_text() == content, f'Stale generated source: {path}'
     else:
-        path.write_text(content)
+        if not path.exists() or path.read_text() != content:
+            path.write_text(content)

@@ -186,38 +186,48 @@ struct UpstreamEditorTests {
         #expect(left == right)
     }
 
-    @Test func historyStopsAtNewCanvas() async throws {
+    @Test func historyIncludesNewCanvas() async throws {
         let e = UpstreamEditor()
         await send(e, cmd("new", #""width":50,"height":40"#), cmd("addLayer"), cmd("setOpacity", #""value":0.5"#))
         #expect(state(e)["undoName"] as? String == "Layer Opacity" && state(e)["canUndo"] as? Bool == true)
         await send(e, cmd("undo"), cmd("undo"), cmd("undo"))
         #expect(state(e)["canUndo"] as? Bool == false)
-        #expect(state(e)["width"] as? Int == 50 && state(e)["height"] as? Int == 40)
+        #expect(state(e)["width"] as? Int == 0 && state(e)["height"] as? Int == 0)
+        #expect(state(e)["canRedo"] as? Bool == true)
+        #expect(state(e)["redoName"] as? String == "New Canvas")
         #expect(layers(e).isEmpty)
-        await send(e, cmd("redo"), cmd("redo"))
+        await send(e, cmd("redo"), cmd("redo"), cmd("redo"))
+        #expect(state(e)["width"] as? Int == 50 && state(e)["height"] as? Int == 40)
         #expect(layers(e).count == 1)
         #expect(layers(e).first?["opacity"] as? Double == 0.5)
     }
 
-    @Test func newCanvasKeepsItsInitialLayerAndUnsavedState() throws {
+    @Test func newCanvasUndoRedoRestoresInitialLayerAndUnsavedState() throws {
         for emptyLayer in [false, true] {
             let session = EditorSession()
             session.createDocument(width: 80, height: 60, emptyLayer: emptyLayer)
             let initial = try #require(session.document)
             let selection = session.activeLayerID
-            #expect(!session.canUndo && !session.canRedo)
+            #expect(session.canUndo && !session.canRedo)
+            #expect(session.history.undoName == "New Canvas")
             #expect(session.isModified)
             session.undo()
-            #expect(session.document == initial)
+            #expect(session.document == nil && session.activeLayerID == nil)
+            #expect(!session.canUndo && session.canRedo && !session.isModified)
+            session.redo()
+            #expect(session.document == initial && session.activeLayerID == selection)
+            #expect(session.isModified)
             session.addBlankLayer()
             let edited = session.document
             #expect(session.canUndo)
             session.undo()
             #expect(session.document == initial)
             #expect(session.activeLayerID == selection)
-            #expect(!session.canUndo && session.isModified)
+            #expect(session.canUndo && session.isModified)
             session.undo()
-            #expect(session.document == initial)
+            #expect(session.document == nil && !session.isModified)
+            session.redo()
+            #expect(session.document == initial && session.activeLayerID == selection)
             session.redo()
             #expect(session.document == edited)
             session.undo()
@@ -229,12 +239,32 @@ struct UpstreamEditorTests {
         }
     }
 
-    @Test func gaussianBlurGrowsTheLayer() async throws {
-        let e = loaded()
+    @Test(arguments: [true, false])
+    func gaussianBlurRespectsCanvasEdges(atCanvasEdge: Bool) async throws {
+        let e: UpstreamEditor
+        if atCanvasEdge { e = loaded() }
+        else {
+            e = UpstreamEditor()
+            #expect(await send(e, cmd("new", #""width":80,"height":60"#)) == [0])
+            #expect(e.importRGBA(pattern(40, 30), width: 40, height: 30, name: "Inset", replacing: false) == 0)
+        }
+        let before = try e.renderRGBA().bytes
+        let originalTransform = try #require(layers(e).first?["transform"] as? [String: Any])
         #expect(await send(e, cmd("filterBegin", #""kind":"Gaussian Blur","parameters":{"radius":2}"#), cmd("filterCommit")) == [0, 0])
         let size = try #require(((layers(e).first?["transform"] as? [String: Any])?["size"]) as? [Double])
-        #expect(size == [51, 42], "grows by 3 sigma each side")
-        #expect(state(e)["width"] as? Int == 40 && state(e)["height"] as? Int == 30)
+        #expect(size == (atCanvasEdge ? [40, 30] : [51, 42]), "blur spreads only on sides inside the canvas")
+        #expect(state(e)["width"] as? Int == (atCanvasEdge ? 40 : 80))
+        #expect(state(e)["height"] as? Int == (atCanvasEdge ? 30 : 60))
+        let blurred = try e.renderRGBA().bytes
+        #expect(blurred != before)
+        if atCanvasEdge { #expect(pixel(blurred, 0, 0)[3] == 255, "opaque canvas borders stay solid") }
+        #expect(await send(e, cmd("undo")) == [0])
+        #expect(try e.renderRGBA().bytes == before)
+        let undone = try #require(layers(e).first?["transform"] as? [String: Any])
+        #expect(try JSONSerialization.data(withJSONObject: undone, options: [.sortedKeys])
+            == JSONSerialization.data(withJSONObject: originalTransform, options: [.sortedKeys]))
+        #expect(await send(e, cmd("redo")) == [0])
+        #expect(try e.renderRGBA().bytes == blurred)
     }
 
     @Test func maskStrokeHidesOnlyTheStroke() async throws {

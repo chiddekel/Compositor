@@ -32,9 +32,17 @@ struct Raw : LibRaw {
 
 struct RawHandle {
     Raw raw;
+    libraw_image_sizes_t sensorSizes = {};
+    libraw_colordata_t sensorColor = {};
+    int nativeWidth = 0, nativeHeight = 0;
+    uint32_t capabilities = 0;
+    uint8_t sensorCFA[48][48] = {};
+    bool mosaicPreview = false;
     float asShotMul[4] = {1, 1, 1, 1};
     float asShotTemperature = 5000;
     float asShotTint = 0;
+    float defaultNoiseReduction = 0;
+    int defaultHighlightMode = 0;
     // Draft previews: the file decoded once at half size, in linear camera RGB with unit white balance, averaged down
     // to the preview size. Every slider change re-applies the pipeline to this small buffer (see developPreview).
     std::vector<float> preview;   // w * h * 3, 0...1
@@ -100,6 +108,23 @@ CompositorRaw *compositor_raw_open(const char *path, int32_t *width, int32_t *he
     const libraw_data_t &d = handle->raw.imgdata;
     int w = d.sizes.width, h = d.sizes.height;
     if (d.sizes.flip & 4) std::swap(w, h);   // 90° rotations swap the developed size
+    handle->sensorSizes = d.sizes;
+    handle->sensorColor = d.color;
+    handle->nativeWidth = w; handle->nativeHeight = h;
+    handle->mosaicPreview = d.rawdata.raw_image && d.idata.filters && !handle->raw.fujiRotated() && d.idata.colors == 3;
+    if (handle->mosaicPreview)
+        for (int row = 0; row < 48; ++row)
+            for (int col = 0; col < 48; ++col) {
+                const int channel = handle->raw.COLOR(row, col);
+                handle->sensorCFA[row][col] = uint8_t(channel == 3 ? 1 : channel);
+            }
+    // LibRaw packs mosaic channels into a half-size working image for wavelet denoising.
+    const bool shrink = d.idata.filters && !d.rawdata.color4_image && !d.rawdata.color3_image
+                      && !d.rawdata.float4_image && !d.rawdata.float3_image;
+    const int noiseW = shrink ? (w + 1) / 2 : w, noiseH = shrink ? (h + 1) / 2 : h;
+    const uint64_t count = uint64_t(noiseW) * noiseH;
+    handle->capabilities = (noiseW >= 65 && noiseH >= 65 && count < 0x15540000ULL ? 1u : 0u)
+                         | (d.idata.colors >= 3 && w >= 8 && h >= 8 ? 4u : 0u);
     if (width) *width = w;
     if (height) *height = h;
     // As-shot white balance: camera multipliers against the daylight (pre_mul) ones. Warm light (tungsten) makes the
@@ -138,28 +163,25 @@ int32_t compositor_raw_probe(const char *path, int32_t *width, int32_t *height) 
 // for 150 MP. False when the layout isn't a plain mosaic (the LibRaw path below handles those).
 static bool buildPreviewFromMosaic(RawHandle *handle, int targetW, int targetH) {
     const libraw_data_t &d = handle->raw.imgdata;
-    const unsigned filters = d.idata.filters;
-    if (!d.rawdata.raw_image || !filters || handle->raw.fujiRotated() || d.idata.colors != 3) return false;
+    if (!d.rawdata.raw_image || !handle->mosaicPreview) return false;
     if (qEnvironmentVariable("COMPOSITOR_RAW_PREVIEW") == QLatin1String("libraw")) return false;   // A/B switch
     PERF_SCOPE("raw.preview from mosaic");
-    const int width = d.sizes.width, height = d.sizes.height;
-    const int top = d.sizes.top_margin, left = d.sizes.left_margin;
-    const size_t pitch = d.sizes.raw_pitch / 2;
+    const int width = handle->sensorSizes.width, height = handle->sensorSizes.height;
+    const int top = handle->sensorSizes.top_margin, left = handle->sensorSizes.left_margin;
+    const size_t pitch = handle->sensorSizes.raw_pitch / 2;
     if (width <= 0 || height <= 0 || size_t(left + width) > pitch) return false;
     // The CFA repeats within 48 x 48 for every layout LibRaw reports (Bayer 2x2 / 16x16 tables, X-Trans 6x6).
-    uint8_t cfa[48][48];
-    for (int r = 0; r < 48; ++r)
-        for (int c = 0; c < 48; ++c) { const int k = handle->raw.COLOR(r, c); cfa[r][c] = uint8_t(k == 3 ? 1 : k); }
+    const auto &cfa = handle->sensorCFA;
     // Black: the common level plus each colour's offset (and a repeating pattern, when the camera has one).
-    const unsigned *cb = d.color.cblack;
+    const unsigned *cb = handle->sensorColor.cblack;
     const unsigned common = std::min({cb[0], cb[1], cb[2], cb[3]});
-    const float base = float(d.color.black + common);
-    const float range = std::max(1.0f, float(d.color.maximum) - base);
+    const float base = float(handle->sensorColor.black + common);
+    const float range = std::max(1.0f, float(handle->sensorColor.maximum) - base);
     const float channelBlack[4] = {base + float(cb[0] - common), base + float(cb[1] - common),
                                    base + float(cb[2] - common), base + float(cb[3] - common)};
     // Phase One compressed (IIQ): the black level is the file's base less per-column and per-row calibration, as
     // LibRaw's phase_one_subtract_black applies it before developing (raw coordinates, split at split_col/row).
-    const auto &p1 = d.color.phase_one_data;
+    const auto &p1 = handle->sensorColor.phase_one_data;
     // (Unpacked by RawSpeed, the data sits in raw_image until LibRaw's first develop moves it to raw_alloc.)
     const bool phaseOne = handle->raw.phaseOneCompressed()
         && (d.rawdata.raw_alloc || (d.process_warnings & LIBRAW_WARN_RAWSPEED3_PROCESSED));
@@ -169,7 +191,7 @@ static bool buildPreviewFromMosaic(RawHandle *handle, int targetW, int targetH) 
     const int patternH = int(cb[4]), patternW = int(cb[5]);
     const bool pattern = patternH > 0 && patternW > 0 && patternH * patternW <= LIBRAW_CBLACK_SIZE - 6;
     // Accumulate in the sensor's orientation; rows of the grid are split between threads, so no sums are shared.
-    const bool transpose = d.sizes.flip & 4;
+    const bool transpose = handle->sensorSizes.flip & 4;
     const int gridW = transpose ? targetH : targetW, gridH = transpose ? targetW : targetH;
     std::vector<float> sums(size_t(gridW) * gridH * 3, 0.0f), counts(size_t(gridW) * gridH * 3, 0.0f);
     std::vector<int> column(width);
@@ -213,8 +235,8 @@ static bool buildPreviewFromMosaic(RawHandle *handle, int targetW, int targetH) 
         for (int col = 0; col < targetW; ++col) {
             int r = row, c = col;
             if (transpose) std::swap(r, c);
-            if (d.sizes.flip & 2) r = gridH - 1 - r;
-            if (d.sizes.flip & 1) c = gridW - 1 - c;
+            if (handle->sensorSizes.flip & 2) r = gridH - 1 - r;
+            if (handle->sensorSizes.flip & 1) c = gridW - 1 - c;
             const size_t from = (size_t(r) * gridW + c) * 3, to = (size_t(row) * targetW + col) * 3;
             for (int k = 0; k < 3; ++k) handle->preview[to + k] = counts[from + k] > 0 ? sums[from + k] / counts[from + k] : 0.0f;
         }
@@ -233,6 +255,7 @@ static bool buildPreview(RawHandle *handle, int targetW, int targetH) {
     p.use_camera_wb = 0; p.use_auto_wb = 0;
     for (float &m : p.user_mul) m = 1;
     p.gamm[0] = 1; p.gamm[1] = 1; p.no_auto_bright = 1; p.exp_correc = 0;
+    p.threshold = handle->defaultNoiseReduction * 1000.0f; p.highlight = handle->defaultHighlightMode;
     if (handle->raw.dcraw_process() != LIBRAW_SUCCESS) return false;
     int error = 0;
     libraw_processed_image_t *image = handle->raw.dcraw_make_mem_image(&error);
@@ -270,7 +293,6 @@ static int32_t developPreview(RawHandle *handle, float exposure, float temperatu
                               int targetW, int targetH, uint8_t **pixels) {
     if (!buildPreview(handle, targetW, targetH)) return -2;
     PERF_SCOPE("raw.preview develop (per change)");
-    const libraw_data_t &d = handle->raw.imgdata;
     const float warm = std::pow(std::max(1.0f, temperature) / handle->asShotTemperature, 0.6f);
     const float magenta = std::exp(-(tint - handle->asShotTint) / 300.0f);
     float mul[3] = {handle->asShotMul[0] * warm, handle->asShotMul[1] * magenta, handle->asShotMul[2] / warm};
@@ -283,7 +305,7 @@ static int32_t developPreview(RawHandle *handle, float exposure, float temperatu
         const float *cam = &handle->preview[i * 3];
         const float r = std::min(1.0f, cam[0] * mul[0]), g = std::min(1.0f, cam[1] * mul[1]), b = std::min(1.0f, cam[2] * mul[2]);
         for (int c = 0; c < 3; ++c) {
-            const float v = d.color.rgb_cam[c][0] * r + d.color.rgb_cam[c][1] * g + d.color.rgb_cam[c][2] * b;
+            const float v = handle->sensorColor.rgb_cam[c][0] * r + handle->sensorColor.rgb_cam[c][1] * g + handle->sensorColor.rgb_cam[c][2] * b;
             rgb[i * 3 + c] = std::clamp(v * shift, 0.0f, 1.0f);
         }
     }
@@ -325,24 +347,41 @@ static int fullDemosaic() {
 
 // Develops the opened file. `scale` (0 < scale <= 1) is the output size relative to the full size; `draft` allows the
 // fast half-size path. Returns 0 and a malloc'd premultiplied RGBA8 buffer (the caller frees it).
+int32_t compositor_raw_capabilities(CompositorRaw *raw, uint32_t *flags, float *noise, int32_t *lens, int32_t *highlight) {
+    auto *handle = reinterpret_cast<RawHandle *>(raw);
+    if (!handle || !flags || !noise || !lens || !highlight) return -1;
+    *flags = handle->capabilities;
+    *noise = handle->defaultNoiseReduction;
+    *lens = 0;  // No lens-profile engine is installed.
+    *highlight = handle->defaultHighlightMode > 2 ? 1 : 0;
+    return 0;
+}
+
 int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float temperature, float tint, float boost,
+                               float noiseReduction, int32_t lensCorrection, int32_t highlightRecovery,
                                float scale, int32_t draft, uint8_t **pixels, int32_t *outWidth, int32_t *outHeight) {
     auto *handle = reinterpret_cast<RawHandle *>(raw);
     if (!handle || !pixels || !outWidth || !outHeight) return -1;
-    if (draft && scale <= 0.5f) {   // preview: the cached small buffer, re-developed in milliseconds
-        int fullW = handle->raw.imgdata.sizes.width, fullH = handle->raw.imgdata.sizes.height;
-        if (handle->raw.imgdata.sizes.flip & 4) std::swap(fullW, fullH);
+    uint32_t capabilities = 0; float defaultNoise = 0; int32_t defaultLens = 0, defaultHighlight = 0;
+    compositor_raw_capabilities(raw, &capabilities, &defaultNoise, &defaultLens, &defaultHighlight);
+    const float noise = capabilities & 1u && std::isfinite(noiseReduction) ? std::clamp(noiseReduction, 0.0f, 1.0f) : defaultNoise;
+    const bool recover = capabilities & 4u ? highlightRecovery != 0 : defaultHighlight != 0;
+    (void)lensCorrection;
+    if (draft && scale <= 0.5f && noise == defaultNoise && recover == (defaultHighlight != 0)) {   // preview: the cached small buffer, re-developed in milliseconds
+        const int fullW = handle->nativeWidth, fullH = handle->nativeHeight;
         const int w = std::max(1, int(std::lround(fullW * scale))), h = std::max(1, int(std::lround(fullH * scale)));
         const int32_t status = developPreview(handle, exposure, temperature, tint, boost, w, h, pixels);
         if (status == 0) { *outWidth = w; *outHeight = h; }
         return status;
     }
     libraw_output_params_t &p = handle->raw.imgdata.params;
+    p.threshold = noise * 1000.0f;
+    p.highlight = recover ? 3 : handle->defaultHighlightMode;
     p.output_bps = 8;
     p.output_color = 1;                 // sRGB
     p.use_camera_wb = 0;
     p.use_auto_wb = 0;
-    p.half_size = (draft && scale <= 0.5f) ? 1 : 0;
+    p.half_size = (draft && scale <= 0.5f && (!noise || (handle->nativeWidth >= 130 && handle->nativeHeight >= 130))) ? 1 : 0;
     p.user_qual = p.half_size ? 0 : fullDemosaic();
     // White balance: the as-shot multipliers, moved by the temperature / tint offsets.
     const float warm = std::pow(std::max(1.0f, temperature) / handle->asShotTemperature, 0.6f);
@@ -364,7 +403,8 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
     PERF_SCOPE(p.half_size ? "raw.develop(draft, half size)" : "raw.develop(full)");
     {
         PERF_SCOPE("raw.develop: dcraw_process");
-        if (handle->raw.dcraw_process() != LIBRAW_SUCCESS) return -2;
+        const int status = handle->raw.dcraw_process();
+        if (status != LIBRAW_SUCCESS) { qWarning("RAW develop failed: %s", libraw_strerror(status)); return -2; }
     }
     int error = 0;
     libraw_processed_image_t *image = nullptr;
@@ -373,13 +413,12 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
         image = handle->raw.dcraw_make_mem_image(&error);
     }
     if (!image || error != LIBRAW_SUCCESS || image->colors != 3 || image->bits != 8) {
+        qWarning("RAW output failed: error=%d colors=%d bits=%d", error, image ? image->colors : 0, image ? image->bits : 0);
         if (image) LibRaw::dcraw_clear_mem(image);
         return -2;
     }
     PERF_SCOPE("raw.develop: to RGBA");
-    const libraw_data_t &d = handle->raw.imgdata;
-    int fullW = d.sizes.width, fullH = d.sizes.height;
-    if (d.sizes.flip & 4) std::swap(fullW, fullH);
+    const int fullW = handle->nativeWidth, fullH = handle->nativeHeight;
     const int targetW = std::max(1, int(std::lround(fullW * std::min(1.0f, scale))));
     const int targetH = std::max(1, int(std::lround(fullH * std::min(1.0f, scale))));
     if (image->width == targetW && image->height == targetH) {
@@ -422,16 +461,17 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
 }
 
 typedef CompositorRaw *(*CompositorRawOpenFn)(const char *, int32_t *, int32_t *, float *, float *);
-typedef int32_t (*CompositorRawDevelopFn)(CompositorRaw *, float, float, float, float, float, int32_t, uint8_t **, int32_t *, int32_t *);
+typedef int32_t (*CompositorRawDevelopFn)(CompositorRaw *, float, float, float, float, float, int32_t, int32_t, float, int32_t, uint8_t **, int32_t *, int32_t *);
+typedef int32_t (*CompositorRawCapabilitiesFn)(CompositorRaw *, uint32_t *, float *, int32_t *, int32_t *);
 typedef void (*CompositorRawCloseFn)(CompositorRaw *);
 typedef int32_t (*CompositorRawProbeFn)(const char *, int32_t *, int32_t *);
 void compositor_raw_register(CompositorRawProbeFn probe, CompositorRawOpenFn open, CompositorRawDevelopFn develop,
-                             CompositorRawCloseFn close) __attribute__((weak));
+                             CompositorRawCloseFn close, CompositorRawCapabilitiesFn capabilities) __attribute__((weak));
 
 // Called at startup (with the image codecs): hands the decoder to the compat layer.
 int compositor_raw_install(void) {
     if (!compositor_raw_register) return 0;
-    compositor_raw_register(compositor_raw_probe, compositor_raw_open, compositor_raw_develop, compositor_raw_close);
+    compositor_raw_register(compositor_raw_probe, compositor_raw_open, compositor_raw_develop, compositor_raw_close, compositor_raw_capabilities);
     return 1;
 }
 

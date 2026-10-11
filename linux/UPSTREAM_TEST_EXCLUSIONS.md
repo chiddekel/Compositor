@@ -7,25 +7,20 @@ excluded here, with a reason; individual tests are never edited.
 |---|---|
 | `LayerTests.swift` | Uses `#selector(NativeLayerList.Coordinator.…)` itself, which Linux Swift (no Objective-C interop) cannot compile. It runs as a generated mirror instead; see "Selector test mirrors" below. |
 
-## Per-test skips (files stay compiled; pass these to `swift test --skip`)
+## Per-test skips
 
-| Test | Reason |
-|---|---|
-| `everyLayerEditRoundTripsWithSelection` and `historyBlockedDuringImportsAndDialogs` (`HistoryTests`) | Deliberate GNU/Linux behavior: undo stops at the initially created canvas. These upstream tests expect undoing New Canvas to remove the document. Linux coverage is `UpstreamEditorTests.historyStopsAtNewCanvas` and `newCanvasKeepsItsInitialLayerAndUnsavedState`; replacement-canvas and import history tests still run unchanged. |
+None. DocumentHistory compiles unchanged from upstream; initial New Canvas is undoable to no document.
+Both formerly skipped HistoryTests run in the per-push contract and full weekly jobs.
 
-## Format-11 Linux test mirrors
+## Format-11 tests
 
-`TypeToolTests.swift`, `GroupTests.swift`, `LayerMaskTests.swift`, and
-`LayerAppearanceTests.swift` are excluded from `CompositorUpstreamTests` and
-compiled instead from generated Linux-owned copies in `Tests/LinuxOverrideTests`.
-No tests are dropped. `scripts/gen-text-format-11.py --check` verifies the copies:
-TypeToolTests uses the exact upstream 1.3.4 mixed-font diff; the other three suites
-change only their expected writer version from 10 to 11. The original protected
-files remain unchanged. Existing per-test skips above still apply.
+`TypeToolTests.swift`, `GroupTests.swift`, `LayerMaskTests.swift`, and `LayerAppearanceTests.swift`
+compile unmodified in `CompositorUpstreamTests`. Their four legacy Linux copies have been retired.
+`scripts/gen-text-format-11.py --check` rejects stale copies when tip already owns format 11;
+its pre-1.3.4 branch retains the adaptations needed for an older tip. No per-test skips apply.
 
-The image factory used by GroupTests is copied unchanged from ImageImportTests
-into a generated `ImageImportFixture.swift`; its test cases remain in the original
-test target and are not duplicated.
+The image factory is copied unchanged from ImageImportTests into a generated `ImageImportFixture.swift`
+for Linux-owned tests; its test cases remain in the original test target and are not duplicated.
 
 ## Selector test mirrors
 

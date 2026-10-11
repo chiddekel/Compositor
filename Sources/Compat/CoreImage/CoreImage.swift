@@ -85,6 +85,8 @@ private indirect enum Node {
     case linearGradient(CGPoint, CIColor, CGPoint, CIColor)
     case crop(Node, CGRect)
     case clamp(Node)
+    case unpremultiply(Node)
+    case alphaOne(Node, CGRect)
     case gaussian(Node, Double)
     case bloom(Node, Double, Double)          // radius, intensity
     case motion(Node, Double, Double)
@@ -123,7 +125,8 @@ private indirect enum Node {
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
         case .blendMask(let n, let bg, _, _): return n.extent.union(bg.extent)
-        case .curves(let n, _, _), .nearest(let n): return n.extent
+        case .curves(let n, _, _), .nearest(let n), .unpremultiply(let n): return n.extent
+        case .alphaOne(let n, let rect): return n.extent.union(rect)
         case .over(let top, let bottom): return top.extent.union(bottom.extent)
         case .separable(let s, let b, _): return s.extent.union(b.extent)
         case .transform(let n, let t): return n.extent.applying(t)
@@ -210,6 +213,21 @@ private indirect enum Node {
                 let sx = Int(region.minX) + x - Int(inner.rect.minX), sy = Int(region.minY) + y - Int(inner.rect.minY)
                 let p = inner.clamped(sx, sy), o = out.index(x, y)
                 out.data[o] = p.0; out.data[o + 1] = p.1; out.data[o + 2] = p.2; out.data[o + 3] = p.3
+            } }
+            return out
+        case .unpremultiply(let n):
+            var out = n.eval(region, env)
+            for i in stride(from: 0, to: out.data.count, by: 4) {
+                let alpha = out.data[i + 3]
+                for c in 0..<3 { out.data[i + c] = alpha > 0 ? out.data[i + c] / alpha : 0 }
+            }
+            return out
+        case .alphaOne(let n, let rect):
+            var out = n.eval(region, env)
+            for y in 0..<out.height { for x in 0..<out.width {
+                if rect.contains(CGPoint(x: region.minX + CGFloat(x) + 0.5, y: region.minY + CGFloat(y) + 0.5)) {
+                    out.data[out.index(x, y) + 3] = 1
+                }
             } }
             return out
         case .gaussian(let n, let sigma):
@@ -422,6 +440,8 @@ public final class CIImage: @unchecked Sendable {
     public static var clear: CIImage { CIImage(color: .clear) }
 
     public func cropped(to rect: CGRect) -> CIImage { CIImage(node: .crop(node, rect)) }
+    public func unpremultiplyingAlpha() -> CIImage { CIImage(node: .unpremultiply(node)) }
+    public func settingAlphaOne(in rect: CGRect) -> CIImage { CIImage(node: .alphaOne(node, rect)) }
     public func clampedToExtent() -> CIImage { CIImage(node: .clamp(node)) }
     public func applyingGaussianBlur(sigma: Double) -> CIImage { sigma > 0 ? CIImage(node: .gaussian(node, sigma)) : self }
     public func transformed(by matrix: CGAffineTransform) -> CIImage { CIImage(node: .transform(node, matrix)) }
@@ -730,15 +750,19 @@ public final class CIContext: @unchecked Sendable {
     }
 }
 
-/// Decodes and develops camera RAW files (`Compositor/IO/RawImporter.swift`). Apple's own RAWFilter has no open
-/// equivalent bundled here yet — every initialiser fails, so `RawImporter` reports RAW files unreadable rather than
-/// mis-decoding them. A real backend (e.g. LibRaw) would replace this file only; upstream's `RawImporter.swift` and
-/// its UI stay unmodified either way.
+/// Decodes camera RAW files through the host's registered LibRaw backend. Capability flags and defaults
+/// come from that engine; upstream's importer and controls consume the same CIRAWFilter interface.
 public final class CIRAWFilter: @unchecked Sendable {
     public var exposure: Float = 0
     public var neutralTemperature: Float = 5000
     public var neutralTint: Float = 0
     public var boostAmount: Float = 1
+    public var luminanceNoiseReductionAmount: Float = 0
+    public var isLensCorrectionEnabled = false
+    public var isHighlightRecoveryEnabled = false
+    public var isLuminanceNoiseReductionSupported: Bool { raw.capabilities.supportsNoiseReduction }
+    public var isLensCorrectionSupported: Bool { raw.capabilities.supportsLensCorrection }
+    public var isHighlightRecoverySupported: Bool { raw.capabilities.supportsHighlightRecovery }
     public var scaleFactor: Float = 1
     public var isDraftModeEnabled = false
     private let raw: RawDecoding.Handle
@@ -749,6 +773,9 @@ public final class CIRAWFilter: @unchecked Sendable {
         raw = handle
         neutralTemperature = handle.asShotTemperature
         neutralTint = handle.asShotTint
+        luminanceNoiseReductionAmount = handle.capabilities.noiseReduction
+        isLensCorrectionEnabled = handle.capabilities.lensCorrection
+        isHighlightRecoveryEnabled = handle.capabilities.highlightRecovery
     }
 
     public var nativeSize: CGSize { CGSize(width: raw.width, height: raw.height) }
@@ -757,7 +784,9 @@ public final class CIRAWFilter: @unchecked Sendable {
     public var outputImage: CIImage? {
         let scale = min(1, max(0.01, scaleFactor))
         guard let developed = raw.develop(exposure: exposure, temperature: neutralTemperature, tint: neutralTint,
-                                          boost: boostAmount, scale: scale, draft: isDraftModeEnabled) else { return nil }
+                                          boost: boostAmount, scale: scale, draft: isDraftModeEnabled,
+                                          noiseReduction: luminanceNoiseReductionAmount, lensCorrection: isLensCorrectionEnabled,
+                                          highlightRecovery: isHighlightRecoveryEnabled) else { return nil }
         RawDecoding.releaseIfConsumed(raw)
         guard let provider = CGDataProvider(data: Data(developed.bytes) as CFData),
               let image = CGImage(width: developed.width, height: developed.height, bitsPerComponent: 8, bitsPerPixel: 32,

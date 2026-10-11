@@ -144,7 +144,7 @@ let package = Package(
             dependencies: [],
             path: "linux/kernels",
             exclude: [
-                "CheckedAdjustPixels.c", "CheckedBrushPixels.c", "CheckedContentFill.c",
+                "CheckedAdjustPixels.c", "CheckedBrushPixels.c", "CheckedPatchPixels.c",
                 "CheckedHealPixels.c", "CheckedLensPixels.c", "CheckedNoisePixels.c", "CheckedWandPixels.c",
                 "CompositorKernelChecks.h",
             ],
@@ -230,8 +230,8 @@ let package = Package(
                      "Rendering/AdjustPixels.h",
                      "Rendering/BrushPixels.c",
                      "Rendering/BrushPixels.h",
-                     "Rendering/ContentFill.c",
-                     "Rendering/ContentFill.h",
+                     "Rendering/PatchPixels.c",
+                     "Rendering/PatchPixels.h",
                      "Rendering/DitherPixels.c",
                      "Rendering/DitherPixels.h",
                      "Rendering/HealPixels.c",
@@ -247,7 +247,6 @@ let package = Package(
                      "IO/CompositorApplicationDelegate.swift",
                      // Tip 1.4.9 Sparkle user driver (its own AppKit update alert); Linux updates through Flatpak.
                      "IO/UpdateDriver.swift",
-                     "Document/DocumentHistory.swift",
                      "Document/EditorSession.swift",
                      "Document/SmudgeLiquify.swift",
                      "Document/ColorRangeSelection.swift",
@@ -259,7 +258,8 @@ let package = Package(
                      "Rendering/InlineTextEditor.swift",
                      "Rendering/TransformOverlay.swift",
                      "UI/ProjectTabs.swift",
-                     "UI/LayerMaskMenu.swift"],
+                     "UI/LayerMaskMenu.swift",
+                     "UI/RawDevelopSheet.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),
@@ -346,6 +346,7 @@ let package = Package(
             // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
             // the link follows the same condition; RawDecoder.cpp likewise with LibRaw (static, plus OpenMP's runtime).
             linkerSettings: (FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : [])
+                + [.linkedLibrary("z"), .linkedLibrary("tiff")]
                 + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"] + rawspeedLibraries), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
         ),
         .executableTarget(

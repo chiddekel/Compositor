@@ -1,3 +1,4 @@
+#include "CompositorUIFont.h"
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -83,25 +84,8 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     // POSIX, as it is on macOS ("128.33", not "128,33"). Locale-aware formatting goes through Foundation's Locale.
     setlocale(LC_NUMERIC, "C");
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
-    // macOS draws its UI in the system font (SF Pro) at 13 pt; Inter is its open stand-in (MACOS_UI_PARITY_RULES.md
-    // §4.2), shipped with the app, with Noto Sans as the fallback.
-    {
-        QString family;
-        for (const QString &path : {QCoreApplication::applicationDirPath() + QStringLiteral("/../share/compositor/fonts"),
-                                    QDir::currentPath() + QStringLiteral("/third_party/fonts/inter")}) {
-            const QDir dir(path);
-            for (const QString &file : dir.entryList({QStringLiteral("Inter-*.ttf")}, QDir::Files)) {
-                const int id = QFontDatabase::addApplicationFont(dir.filePath(file));
-                if (id >= 0 && family.isEmpty() && !QFontDatabase::applicationFontFamilies(id).isEmpty())
-                    family = QFontDatabase::applicationFontFamilies(id).first();
-            }
-            if (!family.isEmpty()) break;
-        }
-        QFont ui(family.isEmpty() ? QStringLiteral("Noto Sans") : family);
-        ui.setPixelSize(13);
-        ui.setHintingPreference(QFont::PreferNoHinting);   // CoreText doesn't hint either
-        app.setFont(ui);
-    }
+    // Bundled Inter, then Noto Sans and the desktop sans face (MACOS_UI_PARITY_RULES.md §4.2).
+    installCompositorUIFont(app);
     // Qt image plugins become the ImageIO compat backend (JPEG/TIFF/WebP/... beyond the portable PNG codec).
     compositor_qt_imageio_install();
     compositor_raw_install();   // camera RAW via LibRaw (a no-op when built without it)

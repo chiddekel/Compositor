@@ -219,6 +219,7 @@ public:
     void prepareDocumentForProjectIO(uint64_t handle = 0);
     void handleShellRequests();
     void showPopUpMenu();
+    void installTouchTargets();
     void exportPNGWithUpstream();
     void exportPDFWithUpstream();
     void exportAsWithUpstream(const QString &startFormat = QString());
@@ -514,6 +515,7 @@ private:
     QStackedWidget *m_layersStack = nullptr;
     QWidget *m_swiftUILayersContainer = nullptr;
     QWidget *m_swiftUICurrentLayersPanel = nullptr;
+    bool m_layersResizeQueued = false;
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
     QWidget *m_welcomeContent = nullptr;

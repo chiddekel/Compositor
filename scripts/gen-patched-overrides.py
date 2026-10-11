@@ -17,20 +17,20 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 
 OUTPUTS = {
+    'Sources/Overrides/RawDevelopSheet.swift': (
+        'Compositor/UI/RawDevelopSheet.swift', 'linux/patches/raw-develop-sheet-linux.patch',
+        'The Linux RAW backend has no lens-profile engine; its disabled tooltip states that limitation.'),
     'Sources/Overrides/ContentView.swift': (
         'Compositor/ContentView.swift', 'linux/patches/content-view-linux.patch',
         'The Qt shell renders toolHeaders, toolRail and statusBar on their own (internal here), shows Color Range in its\n'
         'own panel, and `body` is split in two so the compat type checker finishes; a stand-in app delegate (tip\'s is\n'
         'excluded: Qt owns the app\'s lifecycle).'),
-    'Sources/Overrides/DocumentHistory.swift': (
-        'Compositor/Document/DocumentHistory.swift', 'linux/patches/document-history-linux.patch',
-        'Creating the first canvas is the undo baseline on Linux (the canvas stays unsaved).'),
     'Sources/Overrides/IndicatorlessScrollView.swift': (
         'Compositor/UI/IndicatorlessScrollView.swift', 'linux/patches/indicatorless-scroll-view-linux.patch',
         'Only an explicit nonisolated deinit added: Swift 6.3.3 crashes emitting the generic Container\'s main-actor deinit.'),
     'Sources/Overrides/TransformOverlay.swift': (
         'Compositor/Rendering/TransformOverlay.swift', 'linux/patches/transform-overlay-linux.patch',
-        'Transform handles take the pointer from 16 points away rather than 10 (the drawn squares stay 7 × 7).'),
+        'Transform handles take the pointer from 16 points away rather than 10, 28 for a finger (the drawn squares stay 7 × 7).'),
 }
 
 
@@ -55,6 +55,13 @@ def main():
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     stale = []
+    # History now compiles unchanged from upstream; reject old copies that would duplicate the type.
+    retired = root / "Sources/Overrides/DocumentHistory.swift"
+    if retired.exists():
+        if args.check:
+            stale.append(str(retired.relative_to(root)))
+        else:
+            retired.unlink()
     for path, (tip, patch, note) in OUTPUTS.items():
         text = generate(tip, patch, note)
         target = root / path

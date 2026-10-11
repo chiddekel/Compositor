@@ -37,6 +37,8 @@ final class Entry {
     /// whose `EditorSession` this entry's editor wraps. A plain `compositor_session_create` handle leaves this nil —
     /// it isn't a document tab, just a bare session (e.g. the SwiftUI render-tree debug path).
     var workspaceTabID: UUID?
+    /// The native Layers dock's width, shared with its upstream SwiftUI body.
+    var layersPanelWidth: Double = 252
 
     /// BrushStroke.dirtyDocumentRect covers only its latest publish; several moves can land between two frames, so
     /// the area painted since the last frame accumulates here (compositor_session_render_dirty takes it). Called after
@@ -78,6 +80,10 @@ final class Entry {
 
     init(editor: UpstreamEditor = UpstreamEditor()) {
         self.editor = editor
+        let saved = (UserDefaults.standard.object(forKey: "layersPanelWidth") as? NSNumber)?.doubleValue ?? 252
+        if saved.isFinite {
+            layersPanelWidth = min(LayersPanel.widths.upperBound, max(LayersPanel.widths.lowerBound, saved))
+        }
     }
 }
 

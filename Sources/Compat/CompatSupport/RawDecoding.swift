@@ -12,9 +12,20 @@ public enum RawDecoding {
     public typealias ProbeFn = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
     public typealias OpenFn = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?,
                                               UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> OpaquePointer?
-    public typealias DevelopFn = @convention(c) (OpaquePointer?, Float, Float, Float, Float, Float, Int32,
+    public typealias DevelopFn = @convention(c) (OpaquePointer?, Float, Float, Float, Float, Float, Int32, Int32, Float, Int32,
                                                  UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
                                                  UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
+    public typealias CapabilitiesFn = @convention(c) (OpaquePointer?, UnsafeMutablePointer<UInt32>?,
+        UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
+    public struct Capabilities: Sendable {
+        public let flags: UInt32
+        public let noiseReduction: Float
+        public let lensCorrection: Bool, highlightRecovery: Bool
+        public var supportsNoiseReduction: Bool { flags & 1 != 0 }
+        public var supportsLensCorrection: Bool { flags & 2 != 0 }
+        public var supportsHighlightRecovery: Bool { flags & 4 != 0 }
+    }
+    nonisolated(unsafe) static var capabilitiesFn: CapabilitiesFn?
     public typealias CloseFn = @convention(c) (OpaquePointer?) -> Void
 
     nonisolated(unsafe) static var probeFn: ProbeFn?
@@ -45,24 +56,38 @@ public enum RawDecoding {
         public let path: String
         public let width: Int, height: Int
         public let asShotTemperature: Float, asShotTint: Float
+        public let capabilities: Capabilities
         /// A full-resolution develop has been made: the import is done, so it isn't kept around afterwards.
         fileprivate var consumed = false
         private let lock = NSLock()
+        private let close: CloseFn?
 
         fileprivate init(raw: OpaquePointer, path: String, width: Int, height: Int, temperature: Float, tint: Float) {
+            close = RawDecoding.closeFn
             self.raw = raw; self.path = path; self.width = width; self.height = height
             asShotTemperature = temperature; asShotTint = tint
+            var flags: UInt32 = 0, noise: Float = 0
+            var lens: Int32 = 0, highlight: Int32 = 0
+            if RawDecoding.capabilitiesFn?(raw, &flags, &noise, &lens, &highlight) != 0 {
+                flags = 0; noise = 0; lens = 0; highlight = 0
+            }
+            capabilities = Capabilities(flags: flags, noiseReduction: noise, lensCorrection: lens != 0, highlightRecovery: highlight != 0)
         }
-        deinit { RawDecoding.closeFn?(raw) }
+        deinit { close?(raw) }
 
         /// Premultiplied RGBA8, `scale` of the full size; `draft` allows the half-size fast path.
-        public func develop(exposure: Float, temperature: Float, tint: Float, boost: Float, scale: Float, draft: Bool)
+        public func develop(exposure: Float, temperature: Float, tint: Float, boost: Float, scale: Float, draft: Bool,
+                            noiseReduction: Float = 0, lensCorrection: Bool = false, highlightRecovery: Bool = false)
             -> (bytes: [UInt8], width: Int, height: Int)? {
             guard let developFn = RawDecoding.developFn else { return nil }
             lock.lock(); defer { lock.unlock() }   // one develop at a time per handle (LibRaw keeps state)
             var pixels: UnsafeMutablePointer<UInt8>?
             var w: Int32 = 0, h: Int32 = 0
-            let status = developFn(raw, exposure, temperature, tint, boost, scale, draft ? 1 : 0, &pixels, &w, &h)
+            let noise = capabilities.supportsNoiseReduction && noiseReduction.isFinite ? min(1, max(0, noiseReduction)) : capabilities.noiseReduction
+            let lens = capabilities.supportsLensCorrection ? lensCorrection : capabilities.lensCorrection
+            let highlight = capabilities.supportsHighlightRecovery ? highlightRecovery : capabilities.highlightRecovery
+            let status = developFn(raw, exposure, temperature, tint, boost, noise, lens ? 1 : 0, highlight ? 1 : 0,
+                                   scale, draft ? 1 : 0, &pixels, &w, &h)
             guard status == 0, let pixels, w > 0, h > 0 else { return nil }
             defer { free(pixels) }
             if scale >= 1, !draft { consumed = true }
@@ -104,9 +129,10 @@ public enum RawDecoding {
 
 @_cdecl("compositor_raw_register")
 public func compositor_raw_register(_ probe: RawDecoding.ProbeFn?, _ open: RawDecoding.OpenFn?,
-                                    _ develop: RawDecoding.DevelopFn?, _ close: RawDecoding.CloseFn?) {
+                                    _ develop: RawDecoding.DevelopFn?, _ close: RawDecoding.CloseFn?, _ capabilities: RawDecoding.CapabilitiesFn?) {
     RawDecoding.probeFn = probe
     RawDecoding.openFn = open
     RawDecoding.developFn = develop
     RawDecoding.closeFn = close
+    RawDecoding.capabilitiesFn = capabilities
 }

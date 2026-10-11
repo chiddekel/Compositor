@@ -15,6 +15,7 @@
 #   --layers-smoke       Run Qt layers dock interactive smoke test
 #   --brush-smoke        Run Qt brush engine smoke test
 #   --transform-smoke    Run Move / Free Transform: Ctrl+T enter, Enter apply, Esc reset
+#   --combo-smoke        Run native selection, gradient, pixel move, transform, text and refusal journeys
 #   --offscreen          Run headless using Qt offscreen platform plugin
 #   --release            Optimized build (~5x faster painting/rendering; slower first build)
 #   -h, --help           Show this help message

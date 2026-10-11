@@ -108,7 +108,14 @@ public final class NSTrackingArea {
     public var isHidden = false
     public var wantsLayer = false
     /// Off for a view that constraints place (Layout.swift); its frame is then the solver's to set.
-    public var translatesAutoresizingMaskIntoConstraints = true
+    public var translatesAutoresizingMaskIntoConstraints = true {
+        didSet {
+            if translatesAutoresizingMaskIntoConstraints != oldValue {
+                needsLayout = true
+                superview?.needsLayout = true
+            }
+        }
+    }
     public var toolTip: String?
     public var alphaValue: CGFloat = 1
     /// The contextual menu; `menu(for:)` is what a right-click shows (this one, unless a view decides otherwise).
@@ -192,10 +199,21 @@ public final class NSTrackingArea {
         guard let superview else { return }
         viewWillMove(toSuperview: nil)
         if window != nil { viewWillMove(toWindow: nil) }
-        // As AppKit: constraints between this view and the hierarchy it leaves go with it.
-        for constraint in NSLayoutConstraint.active
-        where [constraint.firstAttribute.item, constraint.secondAttribute?.item].contains(where: { $0 === self }) {
-            constraint.isActive = false
+        // Remove constraints crossing the detached subtree's boundary. Its own constraints must survive,
+        // including anchors from the root to its children, so a reused table cell keeps its layout.
+        func belongsToSubtree(_ item: NSLayoutItem) -> Bool {
+            var view = (item as? NSView) ?? item.layoutContainer
+            while let current = view {
+                if current === self { return true }
+                view = current.superview
+            }
+            return false
+        }
+        for constraint in NSLayoutConstraint.active {
+            let items = [constraint.firstAttribute.item, constraint.secondAttribute?.item].compactMap { $0 }
+            if items.contains(where: belongsToSubtree) && items.contains(where: { !belongsToSubtree($0) }) {
+                constraint.isActive = false
+            }
         }
         superview.subviews.removeAll { $0 === self }
         self.superview = nil
@@ -274,6 +292,8 @@ public final class NSTrackingArea {
     /// each subview that needs it.
     open func layoutSubtreeIfNeeded() {
         if needsLayout {
+            updateConstraints()
+            for child in subviews { child.updateConstraints() }
             solveConstraints()
             layout()
             needsLayout = false
@@ -281,8 +301,9 @@ public final class NSTrackingArea {
         for child in subviews { child.layoutSubtreeIfNeeded() }
     }
     open func layout() {}
-    /// No cached intrinsic size is kept (layout asks `fittingSize` directly), so there is nothing to discard.
-    open func invalidateIntrinsicContentSize() {}
+    open func updateConstraints() {}
+    /// Intrinsic metrics are read during the containing view's constraint pass; changing them must schedule it.
+    open func invalidateIntrinsicContentSize() { superview?.needsLayout = true }
     /// The size the view's content wants, per axis; `noIntrinsicMetric` where it has none (the default), as in AppKit.
     /// A hosting view sizes a `.fixedSize()` representable from it.
     open var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
@@ -444,14 +465,58 @@ public enum NSAccessibility {
                 NotificationCenter.default.post(note)
             }
             if frame.size != oldValue.size {
+                contentView?.frame = CGRect(origin: .zero, size: frame.size)
                 NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: self)
             }
         }
     }
     public let windowNumber: Int
+    private var explicitContentMinimum = CGSize.zero
+    private var explicitContentMaximum = CGSize(width: CGFloat(Float.greatestFiniteMagnitude), height: CGFloat(Float.greatestFiniteMagnitude))
+    private var hostingContentMinimum: CGSize?
+    private var hostingContentMaximum: CGSize?
+    public var contentMinSize: CGSize {
+        get {
+            func axis(_ value: CGFloat?, _ fallback: CGFloat) -> CGFloat {
+                guard let value, value.isFinite, value >= 0 else { return fallback }
+                return value
+            }
+            return CGSize(width: axis(hostingContentMinimum?.width, explicitContentMinimum.width),
+                          height: axis(hostingContentMinimum?.height, explicitContentMinimum.height))
+        }
+        set { explicitContentMinimum = newValue; hostingContentMinimum = nil }
+    }
+    public var contentMaxSize: CGSize {
+        get {
+            func axis(_ value: CGFloat?, _ fallback: CGFloat) -> CGFloat {
+                guard let value, value >= 0 else { return fallback }
+                if value == .infinity { return CGFloat(Float.greatestFiniteMagnitude) }
+                return value.isFinite ? value : fallback
+            }
+            return CGSize(width: axis(hostingContentMaximum?.width, explicitContentMaximum.width),
+                          height: axis(hostingContentMaximum?.height, explicitContentMaximum.height))
+        }
+        set { explicitContentMaximum = newValue; hostingContentMaximum = nil }
+    }
+    /// A hosting root supplies measured bounds without losing explicit limits needed when hosting sizing ends.
+    public func _setHostingContentSizeLimits(from view: NSView, minimum: CGSize?, maximum: CGSize?) {
+        guard contentView === view else { return }
+        hostingContentMinimum = minimum
+        hostingContentMaximum = maximum
+    }
     public var contentViewController: NSViewController?
     public var contentView: NSView? {
         didSet {
+            hostingContentMinimum = nil
+            hostingContentMaximum = nil
+            if oldValue !== contentView {
+                oldValue?.hostWindow = nil
+                oldValue?.windowDidChange()
+            }
+            if let contentView, let previous = contentView.window, previous !== self, previous.contentView === contentView {
+                previous.contentView = nil
+            }
+            contentView?.removeFromSuperview()
             // AppKit fills the window's content rect with its content view.
             contentView?.frame = CGRect(origin: .zero, size: frame.size)
             contentView?.hostWindow = self
@@ -1013,6 +1078,9 @@ extension NSTableViewDelegate {
     /// Each row's top, then the end of the last: worked out once per reload or height change.
     private var rowOrigins: [CGFloat]?
     private var localDragMask: NSDragOperation = .every, externalDragMask: NSDragOperation = []
+    private var keyboardSelectionAnchor: Int?
+    private var keyboardSelectionExtent: Int?
+    private var keyboardSelectionIndexes = IndexSet()
     /// Where the drop being validated would land (`setDropRow`), -1 with none.
     public private(set) var dropRow = -1
     public private(set) var dropOperation: DropOperation = .above
@@ -1059,6 +1127,7 @@ extension NSTableViewDelegate {
     open func noteNumberOfRowsChanged() { rowOrigins = nil; needsLayout = true }
     open func scrollRowToVisible(_ row: Int) {
         guard row >= 0, row < numberOfRows else { return }
+        tile()
         scrollToVisible(rect(ofRow: row))
     }
     open override var isFlipped: Bool { true }
@@ -1148,6 +1217,42 @@ extension NSTableViewDelegate {
     }
     open func recycleRowView(_ view: NSView, for identifier: NSUserInterfaceItemIdentifier) {
         recycledViews[identifier, default: []].append(view)
+    }
+
+    // MARK: Keys
+
+    /// The table's default Up/Down handling. A subclass can consume the arrows first (the layer table's Move tool
+    /// nudges the layer), then forward other arrows here to select and reveal rows.
+    open override func keyDown(with event: NSEvent) {
+        guard isEnabled, [125, 126].contains(event.keyCode),
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
+            super.keyDown(with: event)
+            return
+        }
+        let count = numberOfRows
+        guard count > 0 else { return }
+        let down = event.keyCode == 125
+        let selected = selectedRowIndexes.intersection(IndexSet(integersIn: 0..<count))
+        let extending = allowsMultipleSelection && event.modifierFlags.contains(.shift)
+        if !extending || keyboardSelectionAnchor == nil || keyboardSelectionIndexes != selected {
+            keyboardSelectionAnchor = extending ? (down ? selected.first : selected.last) : nil
+            keyboardSelectionExtent = down ? selected.last : selected.first
+        }
+        let row = keyboardSelectionExtent.map { min(max($0 + (down ? 1 : -1), 0), count - 1) }
+            ?? (down ? 0 : count - 1)
+        let indexes: IndexSet
+        if extending {
+            let anchor = keyboardSelectionAnchor ?? row
+            keyboardSelectionAnchor = anchor
+            indexes = IndexSet(integersIn: min(anchor, row)...max(anchor, row))
+        } else {
+            indexes = IndexSet(integer: row)
+        }
+        keyboardSelectionExtent = row
+        keyboardSelectionIndexes = indexes
+        selectRowIndexes(indexes, byExtendingSelection: false)
+        scrollRowToVisible(row)
+        needsDisplay = true
     }
 
     // MARK: Clicks

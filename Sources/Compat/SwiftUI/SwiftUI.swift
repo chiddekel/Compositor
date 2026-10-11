@@ -18,7 +18,7 @@
 
 /// Hosts a view tree as an NSView (the Qt shell renders the real UI).
 @MainActor public final class NSHostingView<Root: View>: NSView {
-    public var rootView: Root { didSet { layoutHostedViews() } }
+    public var rootView: Root { didSet { layoutHostedViews(); invalidateIntrinsicContentSize() } }
     public init(rootView: Root) {
         self.rootView = rootView
         super.init(frame: .zero)
@@ -49,9 +49,9 @@
         var root = ViewResolver.resolve(rootView)
         guard Self.containsNative(root) || !hosted.isEmpty else { return }
         root.assignIDs()
-        let placements = HostedLayout.place(root, in: CGRect(origin: .zero, size: bounds.size)) { [hosted] path in
-            hosted[path]?.view.intrinsicContentSize
-        }
+        let placements = HostedLayout.place(root, in: CGRect(origin: .zero, size: bounds.size),
+            intrinsicSize: { [hosted] path in hosted[path]?.view.intrinsicContentSize },
+            nativeSize: { [self] node, proposal in measureNative(node, proposal: proposal) })
         var live = Set<String>()
         var created = false
         for placement in placements {
@@ -86,19 +86,96 @@
     private static func containsNative(_ node: RenderNode) -> Bool {
         node.nativeSource != nil || node.children.contains(where: containsNative)
     }
+    private func measureNative(_ node: RenderNode, proposal: ProposedViewSize) -> CGSize? {
+        guard let source = node.nativeSource, let entry = hosted[node.id], entry.type == source._nativeTypeID else { return nil }
+        source._updateNativeView(entry.view, state: entry.state)
+        return source._sizeThatFits(proposal, view: entry.view, state: entry.state)
+    }
     public required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    /// The size the hosted view would take up. No real layout engine runs the resolved tree yet, so this is a
-    /// fixed placeholder rather than a measured value — enough for callers that only need *a* nonzero size.
-    public override var fittingSize: CGSize { CGSize(width: 320, height: 240) }
-    /// Real SwiftUI's `NSHostingSizingOptions` — controls whether AppKit measures the hosted view's intrinsic
-    /// size. No real layout engine runs here, so this is inert; it exists so `host.sizingOptions = []` compiles.
-    public var sizingOptions: NSHostingSizingOptions = .standardBounds
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateWindowSizeBounds()
+    }
+    public override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        updateWindowSizeBounds()
+    }
+    private var updatingWindowSizeBounds = false
+    private func updateWindowSizeBounds() {
+        guard !updatingWindowSizeBounds, let window, window.contentView === self else { return }
+        updatingWindowSizeBounds = true
+        defer { updatingWindowSizeBounds = false }
+        window._setHostingContentSizeLimits(from: self,
+            minimum: sizingOptions.contains(.minSize) ? measuredIdealSize(.zero) : nil,
+            maximum: sizingOptions.contains(.maxSize) ? measuredIdealSize(.infinity) : nil)
+    }
+    /// Frames, native intrinsic sizes and renderer-owned text/control sizes determine natural bounds.
+    /// Unsupported leaves retain the fallback so they cannot collapse a panel to padding alone.
+    public override var fittingSize: CGSize {
+        let size = measuredIdealSize()
+        return size.width >= 0 && size.height >= 0 ? size : CGSize(width: 320, height: 240)
+    }
+    public override var intrinsicContentSize: CGSize {
+        sizingOptions.contains(.intrinsicContentSize) ? measuredIdealSize()
+            : CGSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+    private func measuredIdealSize(_ proposal: ProposedViewSize = .unspecified) -> CGSize {
+        let lowering = NativeLowering.isActive
+        NativeLowering.isActive = false
+        defer { NativeLowering.isActive = lowering }
+        layoutHostedViews()
+        var root = ViewResolver.resolve(rootView)
+        root.assignIDs()
+        if proposal != .unspecified {
+            return HostedLayout.proposedSize(root, proposal: proposal,
+                intrinsicSize: { hosted[$0]?.view.intrinsicContentSize },
+                nativeSize: { node, proposal in measureNative(node, proposal: proposal) })
+        }
+        return HostedLayout.idealSize(root,
+            intrinsicSize: { hosted[$0]?.view.intrinsicContentSize },
+            nativeSize: { node, proposal in measureNative(node, proposal: proposal) })
+    }
+    private var sizingConstraints: [String: NSLayoutConstraint] = [:]
+    public override func updateConstraints() {
+        super.updateConstraints()
+        updateWindowSizeBounds()
+        let participates = !translatesAutoresizingMaskIntoConstraints && superview != nil
+        let minimum = participates && sizingOptions.contains(.minSize) ? measuredIdealSize(.zero) : nil
+        let maximum = participates && sizingOptions.contains(.maxSize) ? measuredIdealSize(.infinity) : nil
+        var live = Set<String>()
+        func update(_ key: String, _ value: CGFloat?, _ anchor: NSLayoutDimension, minimum: Bool) {
+            guard let value, value.isFinite, value >= 0 else { return }
+            live.insert(key)
+            if let constraint = sizingConstraints[key] {
+                if constraint.constant != value { constraint.constant = value }
+            } else {
+                let constraint = minimum ? anchor.constraint(greaterThanOrEqualToConstant: value)
+                    : anchor.constraint(lessThanOrEqualToConstant: value)
+                constraint.identifier = key
+                constraint.isActive = true
+                sizingConstraints[key] = constraint
+            }
+        }
+        update("compositor.hosting.min.width", minimum?.width, widthAnchor, minimum: true)
+        update("compositor.hosting.min.height", minimum?.height, heightAnchor, minimum: true)
+        update("compositor.hosting.max.width", maximum?.width, widthAnchor, minimum: false)
+        update("compositor.hosting.max.height", maximum?.height, heightAnchor, minimum: false)
+        for (key, constraint) in sizingConstraints where !live.contains(key) {
+            constraint.isActive = false
+            sizingConstraints.removeValue(forKey: key)
+        }
+    }
+    /// Enabled minimum/maximum metrics become required dimension constraints in Auto Layout. Ideal metrics
+    /// remain intrinsic; explicitly sized hosts using [] can still request fitting bounds.
+    public var sizingOptions: NSHostingSizingOptions = .standardBounds {
+        didSet { if sizingOptions != oldValue { invalidateIntrinsicContentSize() } }
+    }
 }
 
 public struct NSHostingSizingOptions: OptionSet, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
-    public static let standardBounds = NSHostingSizingOptions(rawValue: 1 << 0)
+    public static let standardBounds: NSHostingSizingOptions = [.minSize, .intrinsicContentSize, .maxSize]
     public static let minSize = NSHostingSizingOptions(rawValue: 1 << 1)
     public static let maxSize = NSHostingSizingOptions(rawValue: 1 << 2)
     public static let intrinsicContentSize = NSHostingSizingOptions(rawValue: 1 << 3)
@@ -164,6 +241,7 @@ public struct EventModifiers: OptionSet, Sendable {
     typealias Context = NSViewRepresentableContext<Self>
     func makeNSView(context: Context) -> NSViewType
     func updateNSView(_ nsView: NSViewType, context: Context)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize?
     func makeCoordinator() -> Coordinator
     static func dismantleNSView(_ nsView: NSViewType, coordinator: Coordinator)
 }
@@ -194,6 +272,7 @@ public struct ProposedViewSize: Equatable, Sendable {
     var _nativeTypeID: ObjectIdentifier { get }
     func _makeNativeView() -> (view: NSView, state: AnyObject)
     func _updateNativeView(_ view: NSView, state: AnyObject)
+    func _sizeThatFits(_ proposal: ProposedViewSize, view: NSView, state: AnyObject) -> CGSize?
 }
 final class _CoordinatorBox<Value> { let value: Value; init(_ value: Value) { self.value = value } }
 extension NSViewRepresentable {
@@ -205,6 +284,15 @@ extension NSViewRepresentable {
     public func _updateNativeView(_ view: NSView, state: AnyObject) {
         guard let view = view as? NSViewType, let box = state as? _CoordinatorBox<Coordinator> else { return }
         updateNSView(view, context: Context(coordinator: box.value))
+    }
+    public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? { nil }
+    public func _sizeThatFits(_ proposal: ProposedViewSize, view: NSView, state: AnyObject) -> CGSize? {
+        guard let view = view as? NSViewType, let box = state as? _CoordinatorBox<Coordinator>,
+              let size = sizeThatFits(proposal, nsView: view, context: Context(coordinator: box.value)),
+              (size.width.isFinite || (size.width == .infinity && proposal.width == .infinity)),
+              (size.height.isFinite || (size.height == .infinity && proposal.height == .infinity)),
+              size.width >= 0, size.height >= 0 else { return nil }
+        return size
     }
 }
 public struct NSViewRepresentableContext<Representable: NSViewRepresentable> {

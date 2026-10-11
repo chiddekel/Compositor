@@ -4,7 +4,7 @@
 // Contract:
 //   - If OpenCV is present (COMPOSITOR_HAS_OPENCV), delegates to OpenCV's cv::inpaint
 //     and cv::ximgproc::guidedFilter for performance/refinement.
-//   - If OpenCV is not linked, falls back to the deterministic C kernels (ContentFill.c)
+//   - If OpenCV is not linked, falls back to the deterministic C kernels (PatchPixels.c)
 //     and internal running-sum box filter / guided filter, preserving 1:1 parity and
 //     guaranteeing zero regression across all platforms and environments.
 
@@ -24,7 +24,7 @@
 #endif
 
 extern "C" {
-#include "ContentFill.h"
+#include "PatchPixels.h"
 }
 
 int compositor_has_opencv(void) {
@@ -67,7 +67,7 @@ int compositor_content_aware_fill(uint8_t *rgba, size_t rgba_stride,
     return 1;
 #else
     // Pure C kernel fallback (deterministic exemplar patch synthesis)
-    return content_fill(rgba, rgba_stride, mask, mask_stride, width, height);
+    return patch_fill(rgba, rgba_stride, mask, mask_stride, width, height, 0);
 #endif
 }
 

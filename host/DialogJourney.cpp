@@ -1,9 +1,12 @@
+#include "CompositorUIFont.h"
 // Qt event-loop journey, invoked by the Swift composition root with --dialog-smoke.
 // Uses actual menu actions, modal controls, codecs, and the real Swift session.
 #include "SessionWindow.h"
 #include "ProjectPackageLimits.h"
 #include "EditorDialogs.h"
 #include "SystemClipboard.h"
+#include "ImageImportDialog.h"
+#include "RawControlJourney.h"
 #include "compositor_host_run.h"
 #include "interfaces/IPlatformServices.h"
 #include <QAction>
@@ -14,6 +17,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QGraphicsOpacityEffect>
 #include <QImageReader>
@@ -27,6 +31,8 @@
 #include <QStandardItemModel>
 #include <QPushButton>
 #include <QSlider>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QTextCursor>
@@ -47,11 +53,430 @@
 #include <QDebug>
 #include <QUuid>
 #include <QThread>
+#include <QStatusBar>
+#include <QTouchEvent>
+#include <QTabletEvent>
+#include <QPointingDevice>
+#include <QtTest/qtestkeyboard.h>
 #include <stdexcept>
 #include <cstring>
 
+/// Tool combinations through the visible Qt rail, canvas events and inline text editor.
+extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
+    QApplication app(argc, argv);
+    installCompositorUIFont(app);
+    try {
+        const auto check = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
+        QTemporaryDir temporary;
+        check(temporary.isValid(), "combination temporary directory unavailable");
+        SessionWindow window;
+        window.resize(1200, 900); window.show(); QApplication::setActiveWindow(&window); QApplication::processEvents();
+        auto *canvas = window.findChild<QWidget *>("editorCanvas");
+        check(canvas, "combination canvas missing");
+        const auto pump = [&](const std::function<bool()> &done, const char *message = "combination did not settle within five seconds") {
+            QElapsedTimer clock; clock.start();
+            while (!done() && clock.elapsed() < 5000) {
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+                QThread::msleep(1);
+            }
+            if (!done()) {
+                const auto state = window.sessionState();
+                qWarning().noquote() << "combination timeout:" << message << "tool=" << state.value("tool").toString()
+                    << "busy=" << state.value("busy").toBool() << "gradientLine=" << state.value("gradientLine").toArray();
+                throw std::runtime_error(message);
+            }
+        };
+        const auto command = [&](QJsonObject value) {
+            check(window.sendCommand(value), "combination setup command failed");
+            QApplication::processEvents();
+        };
+        const auto mouse = [&](QWidget *target, QEvent::Type type, QPointF position,
+                               Qt::MouseButton button, Qt::MouseButtons held, Qt::KeyboardModifiers modifiers) {
+            QMouseEvent event(type, position, target->mapToGlobal(position.toPoint()), button, held, modifiers);
+            QApplication::sendEvent(target, &event);
+            QApplication::processEvents();
+        };
+        const auto click = [&](QWidget *target) {
+            check(target && target->isVisible() && target->isEnabled(), "combination control is unavailable");
+            const QPointF center = target->rect().center();
+            mouse(target, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            mouse(target, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        };
+        const auto railButton = [&](const QString &label) -> QPushButton * {
+            auto *rail = window.findChild<QWidget *>("swiftUIToolRailContainer");
+            check(rail, "upstream tool rail missing");
+            for (auto *button : rail->findChildren<QPushButton *>())
+                if (button->isVisible() && button->accessibleName().startsWith(label)) return button;
+            throw std::runtime_error("upstream tool rail button missing");
+        };
+        const auto checkTool = [&](const QString &label, const QString &name) {
+            check(window.sessionState().value("tool").toString() == name, "rail/session tool mismatch");
+            // Inspect the displayed selection, not the shell's hidden legacy actions.
+            check(!railButton(label)->styleSheet().contains("border: 1px solid transparent;"),
+                  "rail does not display the session's selected tool");
+        };
+        const auto tool = [&](const QString &label, const QString &name) {
+            click(railButton(label));
+            const QByteArray message = QString("rail click did not select %1").arg(name).toUtf8();
+            pump([&] { return window.sessionState().value("tool").toString() == name; }, message.constData());
+            checkTool(label, name);
+        };
+        const auto key = [&](QWidget *target, int code, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
+                             const QString &text = QString()) {
+            target->setFocus();
+            check(QApplication::focusWidget() == target, "combination key target did not acquire focus");
+            // The window overload delivers through Qt's platform-key path, including shortcut dispatch. Sending
+            // a QKeyEvent straight to a widget skips that stage. This helper links only QtGui's event support.
+            QTest::sendKeyEvent(QTest::Click, window.windowHandle(), static_cast<Qt::Key>(code), text, modifiers);
+        };
+        const auto at = [&](double x, double y) { return window.documentToCanvasPoint(QPointF(x, y)); };
+        const auto drag = [&](QPointF from, QPointF to, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+            canvas->setFocus();
+            mouse(canvas, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton, modifiers);
+            mouse(canvas, QEvent::MouseMove, (from + to) / 2, Qt::NoButton, Qt::LeftButton, modifiers);
+            mouse(canvas, QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton, modifiers);
+            mouse(canvas, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton, modifiers);
+            pump([&] { return !window.sessionState().value("busy").toBool(); }, "canvas drag did not finish its busy operation");
+        };
+        const auto pixels = [&] {
+            const QString output = temporary.filePath("result.png");
+            check(window.exportPNG(output), "combination export failed");
+            const QImage image(output);
+            check(!image.isNull() && image.size() == QSize(64, 64), "combination export dimensions changed");
+            return image.convertToFormat(QImage::Format_RGBA8888);
+        };
+        const auto unchangedOutside = [&](const QImage &before, const QImage &after, const QRect &inside) {
+            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                if (!inside.contains(x, y)) check(before.pixelColor(x, y) == after.pixelColor(x, y),
+                                                  "combination changed pixels outside its selection");
+        };
+        QImage fixture(64, 64, QImage::Format_RGBA8888);
+        fixture.fill(Qt::transparent);
+        for (int y = 16; y < 32; ++y) for (int x = 16; x < 32; ++x) fixture.setPixelColor(x, y, Qt::red);
+        const QString input = temporary.filePath("input.png");
+        check(fixture.save(input), "combination fixture save failed");
+        const auto reset = [&] {
+            check(window.importImage(input), "combination fixture import failed");
+            command({{"action", "setShowsTransformControls"}, {"enabled", false}});
+            command({{"action", "deselect"}});
+        };
+        const auto gradient = [&](QPointF from, QPointF to) {
+            tool("Gradient", "gradient");
+            drag(from, to);
+            check(window.sessionState().value("gradientLine").toArray().size() == 4,
+                  "gradient release did not leave an editable line");
+            key(canvas, Qt::Key_Return);
+            pump([&] { return window.sessionState().value("gradientLine").toArray().isEmpty()
+                              && !window.sessionState().value("busy").toBool(); }, "Return did not commit the pending gradient");
+        };
+
+        // Initial New Canvas participates in upstream history, including the empty-editor UI and immediate Redo.
+        command({{"action", "new"}, {"width", 64}, {"height", 64}, {"emptyLayer", true}});
+        const QImage newCanvas = pixels();
+        const auto initialLayer = window.sessionState().value("activeLayerID");
+        check(window.sessionState().value("canUndo").toBool()
+                  && window.sessionState().value("undoName").toString() == "New Canvas"
+                  && window.sessionState().value("modified").toBool(), "new canvas history missing");
+        key(canvas, Qt::Key_Z, Qt::ControlModifier);
+        check(window.sessionState().value("width").toInt() == 0
+                  && !window.sessionState().value("canUndo").toBool()
+                  && window.sessionState().value("canRedo").toBool()
+                  && !window.sessionState().value("modified").toBool(), "new canvas Undo did not restore empty editor");
+        pump([&] { auto *welcome = window.findChild<QWidget *>("welcome"); return welcome && welcome->isVisible(); },
+             "new canvas Undo did not display upstream welcome");
+        key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        check(window.sessionState().value("width").toInt() == 64
+                  && window.sessionState().value("activeLayerID") == initialLayer
+                  && !window.sessionState().value("canRedo").toBool()
+                  && window.sessionState().value("modified").toBool()
+                  && pixels() == newCanvas, "new canvas Redo did not restore layer, pixels and unsaved revision");
+        qInfo("combo: new canvas -> Undo to welcome -> Redo OK");
+
+        // Selection -> Gradient: draw the selection and gradient, then compare every outside pixel.
+        reset();
+        const QImage original = pixels();
+        tool("Marquee", "marquee"); drag(at(16, 16), at(32, 32));
+        check(window.sessionState().value("hasSelection").toBool(), "native marquee did not select");
+        gradient(at(16, 16), at(31, 31));
+        const QImage filled = pixels();
+        check(filled != original, "native gradient did not paint");
+        unchangedOutside(original, filled, QRect(16, 16, 16, 16));
+        key(canvas, Qt::Key_Z, Qt::ControlModifier);
+        check(pixels() == original, "native gradient Undo did not restore the exact pixels");
+        key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        check(pixels() == filled, "immediate native Redo did not restore the gradient");
+        key(canvas, Qt::Key_Z, Qt::ControlModifier);
+        check(pixels() == original, "native Undo after Redo did not restore the source pixels");
+        qInfo("combo: selection -> gradient -> Undo OK");
+
+        // Ctrl-drag inside a marquee moves its pixels, not just the selection outline.
+        tool("Marquee", "marquee"); drag(at(24, 24), at(40, 24), Qt::ControlModifier);
+        QImage moved = original;
+        for (int y = 16; y < 32; ++y) for (int x = 16; x < 48; ++x)
+            moved.setPixelColor(x, y, x < 32 ? QColor(Qt::transparent) : original.pixelColor(x - 16, y));
+        check(pixels() == moved, "native selected-pixel drag did not cut and move the expected pixels");
+        gradient(at(32, 16), at(47, 31));
+        unchangedOutside(moved, pixels(), QRect(32, 16, 16, 16));
+        key(canvas, Qt::Key_Z, Qt::ControlModifier); check(pixels() == moved, "gradient Undo lost moved pixels");
+        key(canvas, Qt::Key_Z, Qt::ControlModifier); check(pixels() == original, "pixel move Undo lost source pixels");
+        qInfo("combo: selected pixel move -> gradient -> two Undo steps OK");
+
+        // Show Controls -> real corner press/drag/release -> Gradient. Release must finish an ordinary transform.
+        reset(); tool("Move", "move");
+        command({{"action", "setShowsTransformControls"}, {"enabled", true}});
+        check(!window.sessionState().value("transforming").toBool(), "Show Controls armed an edit");
+        drag(at(64, 64), at(48, 48));
+        check(!window.sessionState().value("transforming").toBool(), "released handle drag left a transform open");
+        check(pixels() != original, "native transform handle drag did not change pixels");
+        gradient(at(4, 4), at(40, 40));
+        key(canvas, Qt::Key_Z, Qt::ControlModifier); key(canvas, Qt::Key_Z, Qt::ControlModifier);
+        check(pixels() == original, "transform/gradient Undo did not restore source pixels");
+        qInfo("combo: transform handle release -> gradient -> Undo OK");
+
+        // A pending gradient is committed by the next tool click before its stroke starts.
+        reset(); tool("Marquee", "marquee"); drag(at(16, 16), at(32, 32));
+        tool("Gradient", "gradient"); drag(at(16, 16), at(31, 31));
+        check(window.sessionState().value("gradientLine").toArray().size() == 4, "pending gradient missing before tool switch");
+        tool("Brush", "brush");
+        pump([&] { return window.sessionState().value("gradientLine").toArray().isEmpty()
+                          && window.sessionState().value("canUndo").toBool(); });
+        const QImage committedGradient = pixels();
+        check(committedGradient != original, "tool switch discarded the pending gradient");
+        drag(at(24, 24), at(26, 24));
+        unchangedOutside(original, pixels(), QRect(16, 16, 16, 16));
+        key(canvas, Qt::Key_Z, Qt::ControlModifier);
+        check(pixels() == committedGradient, "brush Undo did not retain the previously committed gradient");
+        key(canvas, Qt::Key_Z, Qt::ControlModifier);
+        check(pixels() == original, "pending-gradient Undo did not restore the source pixels");
+        qInfo("combo: pending gradient -> brush -> two Undo steps OK");
+
+        // Type owns typing and local Undo while focused; a tool click finishes it. Gradient Undo restores live text.
+        reset(); tool("Marquee", "marquee"); drag(at(0, 0), at(32, 64));
+        tool("Type", "type"); drag(at(4, 4), at(4, 4));
+        auto *editor = window.findChild<QPlainTextEdit *>("canvas.textEditor");
+        check(editor && editor->isVisible(), "native text click did not show the inline editor");
+        key(editor, Qt::Key_H, Qt::NoModifier, "H"); key(editor, Qt::Key_I, Qt::NoModifier, "i");
+        check(editor->toPlainText() == "Hi" && window.sessionState().value("tool").toString() == "type",
+              "typing triggered a canvas tool shortcut");
+        key(editor, Qt::Key_Z, Qt::ControlModifier);
+        check(editor->toPlainText() != "Hi", "focused text Undo did not edit the text");
+        key(editor, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        check(editor->toPlainText() == "Hi", "focused text Redo did not restore typing");
+        tool("Gradient", "gradient");
+        pump([&] { return !editor->isVisible() && window.sessionState().value("textDraft").toObject().isEmpty(); },
+             "tool switch did not finish the native inline text editor");
+        check(window.sessionState().value("layers").toArray().size() == 2, "tool switch did not commit text");
+        const QImage liveText = pixels();
+        gradient(at(4, 4), at(48, 48));
+        unchangedOutside(liveText, pixels(), QRect(0, 0, 32, 64));
+        key(canvas, Qt::Key_Z, Qt::ControlModifier);
+        tool("Move", "move");
+        mouse(canvas, QEvent::MouseButtonDblClick, at(8, 12), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        mouse(canvas, QEvent::MouseButtonRelease, at(8, 12), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        pump([&] { return editor->isVisible(); }, "gradient Undo did not reopen the live-text editor");
+        check(editor->toPlainText() == "Hi" && window.sessionState().value("layers").toArray().size() == 2,
+              "gradient Undo did not restore editable text");
+        qInfo("combo: text focus/local Undo -> gradient -> live-text Undo OK");
+
+        // G during an active brush drag is refused, silently; after release the same shortcut works.
+        tool("Brush", "brush");
+        mouse(canvas, QEvent::MouseButtonPress, at(24, 24), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        check(window.sessionState().value("busy").toBool(), "native brush press did not start a stroke");
+        check(!window.sendCommand({{"action", "selectTool"}, {"kind", "gradient"}}),
+              "bridge accepted a tool switch during a native stroke");
+        checkTool("Brush", "brush");
+        check(window.statusBar()->currentMessage().isEmpty(), "bridge refusal displayed a status-bar error");
+        key(canvas, Qt::Key_G, Qt::NoModifier, "g"); checkTool("Brush", "brush");
+        check(window.sessionState().value("gradientLine").toArray().isEmpty(), "refused switch started a gradient");
+        check(window.statusBar()->currentMessage().isEmpty(), "refused shortcut displayed a status-bar error");
+        mouse(canvas, QEvent::MouseButtonRelease, at(24, 24), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        pump([&] { return !window.sessionState().value("busy").toBool()
+                          && window.sessionState().value("canUndo").toBool(); });
+        key(canvas, Qt::Key_G, Qt::NoModifier, "g");
+        pump([&] { return window.sessionState().value("tool").toString() == "gradient"; });
+        checkTool("Gradient", "gradient");
+        qInfo("combo: refused shortcut during stroke -> release -> recovery OK");
+
+        // Exercise the application input filter through the handle it actually widens, rather than reading a flag.
+        QPointingDevice finger("smoke touchscreen", 101, QInputDevice::DeviceType::TouchScreen,
+                               QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position, 10, 0);
+        QPointingDevice pen("smoke pen", 102, QInputDevice::DeviceType::Stylus,
+                            QPointingDevice::PointerType::Pen,
+                            QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1, 1);
+        const auto touch = [&](QWidget *receiver) {
+            const QPointF position(20, 20);
+            QTouchEvent event(QEvent::TouchBegin, &finger, Qt::NoModifier,
+                              {QEventPoint(1, QEventPoint::State::Pressed, position, receiver->mapToGlobal(position.toPoint()))});
+            QApplication::sendEvent(receiver->window()->windowHandle(), &event);
+            QTouchEvent end(QEvent::TouchEnd, &finger, Qt::NoModifier,
+                            {QEventPoint(1, QEventPoint::State::Released, position, receiver->mapToGlobal(position.toPoint()))});
+            QApplication::sendEvent(receiver->window()->windowHandle(), &end);
+        };
+        const auto tablet = [&](QWidget *receiver) {
+            const QPointF position(20, 20);
+            QTabletEvent event(QEvent::TabletPress, &pen, position, receiver->mapToGlobal(position.toPoint()),
+                               0.5, 0, 0, 0, 0, 0, Qt::NoModifier, Qt::LeftButton, Qt::LeftButton);
+            QApplication::sendEvent(receiver, &event);
+            QTabletEvent end(QEvent::TabletRelease, &pen, position, receiver->mapToGlobal(position.toPoint()),
+                             0, 0, 0, 0, 0, 0, Qt::NoModifier, Qt::LeftButton, Qt::NoButton);
+            QApplication::sendEvent(receiver, &end);
+        };
+        const auto prepareHandles = [&] {
+            reset(); tool("Move", "move");
+            command({{"action", "setShowsTransformControls"}, {"enabled", true}});
+            command({{"action", "setTransformAutoSelect"}, {"enabled", false}});
+        };
+        const auto grabNearCorner = [&](Qt::MouseEventSource source, bool shouldGrab,
+                                        const QPointingDevice *device = QPointingDevice::primaryPointingDevice()) {
+            const auto before = window.sessionState().value("layers").toArray().first().toObject().value("transform");
+            const QPointF start = at(0, 0) + QPointF(-22, 0);
+            const auto send = [&](QEvent::Type type, QPointF position, Qt::MouseButton button, Qt::MouseButtons held) {
+                QMouseEvent event(type, position, position, canvas->mapToGlobal(position.toPoint()), button, held,
+                                  Qt::NoModifier, source, device);
+                QApplication::sendEvent(canvas, &event); QApplication::processEvents();
+            };
+            send(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+            check(window.sessionState().value("transforming").toBool(), "input-device press did not start a transform");
+            // Move past the document-edge snap distance as well as the drag threshold.
+            send(QEvent::MouseMove, start + QPointF(24, 24), Qt::NoButton, Qt::LeftButton);
+            send(QEvent::MouseButtonRelease, start + QPointF(24, 24), Qt::LeftButton, Qt::NoButton);
+            check(!window.sessionState().value("transforming").toBool(), "input-device handle release left an edit open");
+            const auto after = window.sessionState().value("layers").toArray().first().toObject().value("transform");
+            check(after != before, "input-device drag did not change geometry");
+            // Move can drag the active layer from outside its bounds. A handle grab resizes it; a body drag only moves.
+            check((after.toObject().value("size") != before.toObject().value("size")) == shouldGrab,
+                  "touch/mouse/pen input chose the wrong transform hit region");
+            key(canvas, Qt::Key_Z, Qt::ControlModifier);
+            check(window.sessionState().value("layers").toArray().first().toObject().value("transform") == before,
+                  "input-device drag Undo did not restore its geometry");
+        };
+        for (auto source : {Qt::MouseEventSynthesizedByQt, Qt::MouseEventSynthesizedBySystem, Qt::MouseEventSynthesizedByApplication}) {
+            prepareHandles(); touch(&window); grabNearCorner(source, true);
+            qInfo("touch: finger -> synthesized mouse source %d keeps large targets OK", int(source));
+            prepareHandles(); touch(&window); tablet(&window); grabNearCorner(source, false);
+            prepareHandles(); touch(&window); grabNearCorner(source, false, &pen);
+            qInfo("touch: pen -> synthesized mouse source %d restores normal targets OK", int(source));
+        }
+        prepareHandles(); touch(&window); grabNearCorner(Qt::MouseEventNotSynthesized, false);
+        qInfo("touch: real mouse restores normal targets OK");
+        prepareHandles();
+        {
+            SessionWindow second;
+            second.resize(1200, 900); second.show(); QApplication::processEvents();
+            touch(&second);
+        }
+        QApplication::setActiveWindow(&window); QApplication::processEvents();
+        grabNearCorner(Qt::MouseEventSynthesizedByQt, true);
+        qInfo("touch: second-window touch survives window destruction OK");
+        // Finish with ordinary hit regions for the next test process or a later QApplication.
+        grabNearCorner(Qt::MouseEventNotSynthesized, false);
+        qInfo("Qt touch input smoke OK (synthetic device events; physical-device verification remains separate)");
+
+        // Upstream CameraRawSlider's sizeThatFits must reach its lowered Qt slider, including after layout.
+        reset();
+        const QImage beforeRaw = pixels();
+        command({{"action", "openFilter"}, {"kind", "Camera Raw Filter"}});
+        const auto rawPanel = [&]() -> QDialog * {
+            for (auto *top : QApplication::topLevelWidgets())
+                if (auto *dialog = qobject_cast<QDialog *>(top); dialog &&
+                    dialog->objectName() == QLatin1String("floatingPanel.FilterSheet") && dialog->isVisible()) return dialog;
+            return nullptr;
+        };
+        const auto temperatureSlider = [&]() -> QWidget * {
+            if (auto *panel = rawPanel())
+                for (auto *widget : panel->findChildren<QSlider *>())
+                    for (auto *owner = static_cast<QWidget *>(widget); owner && owner != panel; owner = owner->parentWidget())
+                        if (owner->accessibleName() == QLatin1String("Shifts the picture from blue to yellow.") ||
+                            owner->toolTip() == QLatin1String("Shifts the picture from blue to yellow.")) return widget;
+            return nullptr;
+        };
+        pump([&] { return temperatureSlider() != nullptr; }, "Camera Raw temperature slider missing from Qt panel");
+        auto *temperature = temperatureSlider();
+        check(temperature->height() == 22 && temperature->width() > 0, "Camera Raw custom size did not reach Qt widget");
+        auto *panel = rawPanel();
+        panel->resize(panel->width() + 80, panel->height() + 30);
+        QApplication::processEvents();
+        temperature = temperatureSlider();
+        check(temperature && temperature->height() == 22 && temperature->width() > 0,
+              "Camera Raw custom height changed during Qt panel layout");
+        command({{"action", "filterCancel"}});
+        command({{"action", "closeFloatingPanel"}, {"kind", "FilterSheet"}});
+        pump([&] { return !window.sessionState().value("busy").toBool(); }, "Camera Raw cancellation left the editor busy");
+        check(pixels() == beforeRaw, "Camera Raw sizing or cancellation changed document pixels");
+        qInfo("Qt Camera Raw custom sizing smoke OK (22-point native slider, panel relayout, cancel pixels)");
+        // Upstream's new transparency control must reach both the preview and committed layer through Qt.
+        QImage colorFixture = fixture;
+        for (int y = 16; y < 32; ++y) for (int x = 24; x < 32; ++x) colorFixture.setPixelColor(x, y, Qt::green);
+        const QString colorPath = temporary.filePath("blur-colors.png");
+        check(colorFixture.save(colorPath) && window.importImage(colorPath), "blur colors fixture import failed");
+        const QImage beforeBlur = pixels();
+        const auto beforeBlurTransform = window.sessionState().value("layers").toArray().first().toObject().value("transform");
+        command({{"action", "openFilter"}, {"kind", "Gaussian Blur"}});
+        const auto blurDialog = [&]() -> QDialog * {
+            for (auto *top : QApplication::topLevelWidgets())
+                if (auto *dialog = qobject_cast<QDialog *>(top); dialog && dialog->isVisible()
+                    && dialog->objectName() == QLatin1String("floatingPanel.FilterSheet")) return dialog;
+            return nullptr;
+        };
+        const auto transparency = [&]() -> QCheckBox * {
+            if (auto *dialog = blurDialog()) for (auto *box : dialog->findChildren<QCheckBox *>())
+                if (box->text() == QLatin1String("Preserve Transparency")) return box;
+            return nullptr;
+        };
+        pump([&] { return transparency() != nullptr; }, "native blur transparency control missing");
+        transparency()->click(); QApplication::processEvents();
+        const auto blurOK = [&]() -> QPushButton * {
+            if (auto *dialog = blurDialog()) for (auto *button : dialog->findChildren<QPushButton *>())
+                if (button->text() == QLatin1String("OK")) return button;
+            return nullptr;
+        };
+        pump([&] { return blurOK() && blurOK()->isEnabled(); }, "native blur OK remained disabled");
+        blurOK()->click();
+        pump([&] { return !window.sessionState().value("busy").toBool(); }, "native blur commit did not finish");
+        const QImage afterBlur = pixels();
+        check(afterBlur != beforeBlur, "transparency-preserving blur did not mix colors");
+        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+            check(afterBlur.pixelColor(x, y).alpha() == beforeBlur.pixelColor(x, y).alpha(), "native blur changed the original alpha");
+        check(window.sessionState().value("layers").toArray().first().toObject().value("transform") == beforeBlurTransform,
+              "native transparency-preserving blur grew or moved the layer");
+        QApplication::setActiveWindow(&window); QApplication::processEvents();
+        key(canvas, Qt::Key_Z, Qt::ControlModifier); check(pixels() == beforeBlur, "native blur Undo lost the source");
+        key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier); check(pixels() == afterBlur, "native blur Redo lost the committed result");
+        qInfo("Qt blur transparency OK (native toggle, alpha/geometry preservation, color mixing, Undo/Redo)");
+
+        for (const QString mode : {QStringLiteral("Smudge"), QStringLiteral("Liquify")}) {
+            check(window.importImage(colorPath), "native warp fixture import failed");
+            tool("Smear", "blur");
+            QAbstractButton *modeButton = nullptr;
+            for (auto *button : window.findChildren<QAbstractButton *>())
+                if (button->isVisible() && button->text() == mode) { modeButton = button; break; }
+            check(modeButton, "native warp mode control missing");
+            modeButton->click(); QApplication::processEvents();
+            pump([&] { return window.sessionState().value("blurMode").toString() == mode; }, "native warp mode did not reach upstream");
+            command({{"action", "setBrushSettings"}, {"parameters", QJsonObject{{"diameter", 31.5}, {"hardness", 0.5}, {"opacity", 0.7}}}});
+            const QImage beforeWarp = pixels();
+            mouse(canvas, QEvent::MouseButtonPress, at(18, 18), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            for (const QPointF point : {QPointF(40, 20), QPointF(25, 40), QPointF(12, 15)})
+                mouse(canvas, QEvent::MouseMove, at(point.x(), point.y()), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            mouse(canvas, QEvent::MouseButtonRelease, at(12, 15), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            pump([&] { return window.sessionState().value("undoName").toString() == mode; }, "native warp release did not commit queued dabs");
+            const QImage afterWarp = pixels();
+            check(afterWarp != beforeWarp, "native warp did not change pixels");
+            key(canvas, Qt::Key_Z, Qt::ControlModifier); check(pixels() == beforeWarp, "native warp Undo did not restore pixels");
+            key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier); check(pixels() == afterWarp, "native warp Redo did not restore pixels");
+        }
+        qInfo("Qt queued warp strokes OK (native Smudge/Liquify mode controls, pointer turns, release, Undo/Redo)");
+        qInfo("Qt tool combination smoke OK (native pointer/key journeys)");
+        return 0;
+    } catch (const std::exception &e) {
+        qCritical("Qt tool combination smoke failed: %s", e.what());
+        return 1;
+    }
+}
+
 extern "C" int compositor_host_color_range_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     try {
         const auto check = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
         QTemporaryDir temporary;
@@ -254,6 +679,7 @@ struct FakeStorage final : IStorageLocator {
 
 extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     systemclipboard::install();   // This entry bypasses host_run's desktop pasteboard setup.
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     try {
@@ -589,6 +1015,7 @@ static int countPainted(const QImage &image) {
 // and the painted stroke renders with the chosen color/size.
 extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     try {
         QTemporaryDir temporary;
@@ -654,6 +1081,7 @@ extern "C" int compositor_host_brush_smoke(int argc, char **argv) {
 // setOpacity/addGroup/masks through the C ABI.
 extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     try {
         QTemporaryDir temporary;
@@ -890,6 +1318,7 @@ extern "C" int compositor_host_layers_smoke(int argc, char **argv) {
 // Open/Save. A small canvas keeps compositing cheap while assets retain full size.
 extern "C" int compositor_host_package_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     try {
         QTemporaryDir temporary;
         require(temporary.isValid(), "temporary directory failed");
@@ -1003,10 +1432,77 @@ extern "C" int32_t compositor_session_command(uint64_t, const uint8_t *, size_t)
 
 extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     try {
         QTemporaryDir temporary;
         SessionWindow window;
-        window.resize(1200, 800); window.show(); QApplication::processEvents();
+        window.resize(1200, 800); window.show(); QApplication::setActiveWindow(&window); QApplication::processEvents();
+        verifyRawControls([&](const QString &path) {
+            QTimer inspector;
+            inspector.setInterval(20);
+            QElapsedTimer elapsed; elapsed.start();
+            QString failure;
+            int phase = 0, initialNoise = -1;
+            bool finished = false;
+            QObject::connect(&inspector, &QTimer::timeout, &window, [&] {
+                QDialog *dialog = nullptr;
+                for (auto *top : QApplication::topLevelWidgets())
+                    if (auto *candidate = qobject_cast<QDialog *>(top); candidate && candidate->isVisible()
+                        && candidate->objectName() == QLatin1String("swiftUISheet.RawDevelopSheet")) dialog = candidate;
+                const auto fail = [&](const QString &message) {
+                    failure = message; finished = true; inspector.stop();
+                    if (dialog) dialog->reject();
+                };
+                if (elapsed.elapsed() > 8000) {
+                    qWarning("RAW sheet timeout phase=%d visible=%d", phase, dialog != nullptr);
+                    if (dialog) for (QWidget *control : dialog->findChildren<QWidget *>()) {
+                        QString label;
+                        if (auto *button = qobject_cast<QAbstractButton *>(control)) label = button->text();
+                        if (auto *text = qobject_cast<QLabel *>(control)) label = text->text();
+                        if (!label.isEmpty() || !control->toolTip().isEmpty() || qobject_cast<QSlider *>(control))
+                            qWarning("RAW control %s text=%s enabled=%d tooltip=%s", control->metaObject()->className(), qPrintable(label), control->isEnabled(), qPrintable(control->toolTip()));
+                    }
+                    fail("RAW control sheet did not complete"); return;
+                }
+                if (!dialog) return;
+                QCheckBox *lens = nullptr, *highlight = nullptr;
+                QSlider *noise = nullptr;
+                QPushButton *reset = nullptr, *cancel = nullptr;
+                for (auto *control : dialog->findChildren<QCheckBox *>()) {
+                    if (control->text() == QLatin1String("Lens Correction")) lens = control;
+                    if (control->text() == QLatin1String("Highlight Recovery")) highlight = control;
+                }
+                for (auto *slider : dialog->findChildren<QSlider *>())
+                    for (QWidget *owner = slider; owner && owner != dialog; owner = owner->parentWidget())
+                        if (owner->toolTip().contains("Smooths grain")) { noise = slider; break; }
+                for (auto *button : dialog->findChildren<QPushButton *>()) {
+                    if (button->text() == QLatin1String("Reset")) reset = button;
+                    if (button->text() == QLatin1String("Cancel")) cancel = button;
+                }
+                if (!lens || !highlight || !noise || !reset || !cancel) return;
+                if (lens->isEnabled() || !lens->toolTip().contains("unavailable")) { fail("RAW lens capability/tooltip was dishonest"); return; }
+                if (!noise->isEnabled() || !highlight->isEnabled()) { fail("RAW supported controls were disabled"); return; }
+                if (phase == 0) {
+                    initialNoise = noise->value();
+                    noise->setValue((noise->minimum() + noise->maximum()) / 2);
+                    highlight->click(); phase = 1;
+                } else if (phase == 1 && reset->isEnabled()) {
+                    reset->click(); phase = 2;
+                } else if (phase == 2 && !reset->isEnabled()) {
+                    if (noise->value() != initialNoise || highlight->isChecked()) { fail("RAW Reset did not restore decoder defaults"); return; }
+                    finished = true; inspector.stop(); cancel->click();
+                }
+            });
+            inspector.start();
+            const bool imported = window.sendCommand({{"action", "importFiles"}, {"paths", QJsonArray{path}}});
+            while (!finished && elapsed.elapsed() < 9000) QApplication::processEvents(QEventLoop::AllEvents, 10);
+            inspector.stop();
+            require(finished && failure.isEmpty(), failure.isEmpty() ? "RAW sheet controls unavailable" : qPrintable(failure));
+            // With no document, the bridge reports nothing imported when the user cancels this sheet.
+            require(!imported && window.sessionState().value("layers").toArray().isEmpty(), "RAW sheet Cancel imported a layer");
+            QApplication::setActiveWindow(&window);
+            qInfo("Qt RAW develop sheet OK (supported controls, disabled lens explanation, Reset, Cancel)");
+        });
         const QString imagePath = temporary.filePath("pattern.png");
         QImage image(64, 32, QImage::Format_RGBA8888);
         for (int y = 0; y < 32; ++y) for (int x = 0; x < 64; ++x)
@@ -1038,7 +1534,177 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
             window.flushPendingDrag();
             QApplication::processEvents();
         };
-        // The actual SwiftUI layer thumbnail's Shift-click must invalidate the
+        // A mixed native import uses the new upstream folder expansion, including natural name order and filtering.
+        {
+            const QString folderPath = temporary.filePath("Images");
+            require(QDir().mkpath(folderPath + "/More") && QDir().mkpath(folderPath + "/Project.comp"), "folder import fixture failed");
+            require(image.save(folderPath + "/10 Ten.png") && image.save(folderPath + "/2 Two.png")
+                    && image.save(folderPath + "/.Hidden.png") && image.save(folderPath + "/More/Nested.png"), "folder images failed");
+            QFile notes(folderPath + "/Notes.txt"); require(notes.open(QIODevice::WriteOnly), "folder notes failed"); notes.write("notes"); notes.close();
+            ImageImportDialog importDialog("Images (*.png)", &window, [&] { return QStringList{imagePath}; }, [&] { return folderPath; });
+            QTimer::singleShot(0, &importDialog, [&] {
+                auto *confirm = importDialog.findChild<QPushButton *>("import.confirm");
+                require(confirm && !confirm->isEnabled(), "empty import list was enabled");
+                importDialog.findChild<QPushButton *>("import.addImages")->click();
+                importDialog.findChild<QPushButton *>("import.addFolder")->click();
+                importDialog.findChild<QPushButton *>("import.addFolder")->click();
+                require(importDialog.selectedPaths() == QStringList{imagePath, folderPath}, "mixed import selection order or duplicate handling failed");
+                auto *sources = importDialog.findChild<QListWidget *>("import.sources");
+                sources->item(1)->setSelected(true);
+                importDialog.findChild<QPushButton *>("import.remove")->click();
+                require(importDialog.selectedPaths() == QStringList{imagePath}, "import selection removal failed");
+                importDialog.findChild<QPushButton *>("import.addFolder")->click();
+                confirm->click();
+            });
+            require(importDialog.exec() == QDialog::Accepted, "mixed import dialog did not confirm");
+            QJsonArray importPaths; for (const QString &path : importDialog.selectedPaths()) importPaths.append(path);
+            command({{"action", "importFiles"}, {"paths", importPaths}});
+            const QJsonArray importedLayers = window.sessionState().value("layers").toArray();
+            require(importedLayers.size() == 3 && importedLayers.at(0).toObject().value("name").toString() == "pattern"
+                    && importedLayers.at(1).toObject().value("name").toString() == "2 Two"
+                    && importedLayers.at(2).toObject().value("name").toString() == "10 Ten", "native folder import lost ordering or included unwanted files");
+            qInfo("Qt folder import OK (mixed file/folder chooser, duplicate/removal handling, natural order, hidden/nested filtering)");
+        }
+        QApplication::setActiveWindow(&window);
+
+        // The upstream coordinator reveals a newly selected layer. Manual scrolling is viewport state and
+        // survives subsequent layer updates, including drawing the full document widget inside its viewport.
+        const auto layersScroll = [&]() -> QScrollArea * {
+            for (auto *area : window.findChildren<QScrollArea *>())
+                if (area->isVisible() && area->property("appKitScroll").toBool()
+                    && area->property("appKitScrollNode").toString().startsWith("LayersPanel|")) return area;
+            return nullptr;
+        };
+        const auto waitForScroll = [&](const std::function<bool()> &ready, const char *message) {
+            QElapsedTimer elapsed; elapsed.start();
+            while (!ready() && elapsed.elapsed() < 5000) QApplication::processEvents(QEventLoop::AllEvents, 10);
+            require(ready(), message);
+        };
+        fresh();
+        auto *layersDock = window.findChild<QDockWidget *>("dock.layers");
+        require(layersDock && layersDock->minimumWidth() == 222 && layersDock->maximumWidth() == 352,
+                "native Layers panel is still fixed instead of respecting upstream resize bounds");
+        const QByteArray resizePixels = frame();
+        const QString resizeUndo = window.sessionState().value("undoName").toString();
+        const int originalPanelWidth = layersDock->width();
+        for (const int width : {222, 352, originalPanelWidth}) {
+            window.resizeDocks({layersDock}, {width}, Qt::Horizontal);
+            waitForScroll([&] {
+                return layersDock->width() == width && compositor_session_layers_panel_width(window.sessionHandle(), 0) == width;
+            }, "native Layers panel did not resize its upstream body");
+            auto *container = window.findChild<QWidget *>("swiftUILayersContainer");
+            require(container && container->isVisible(), "resized Layers panel missing");
+            for (auto *control : container->findChildren<QWidget *>()) {
+                if (!control->isVisible() || (!qobject_cast<QAbstractButton *>(control)
+                    && !qobject_cast<QComboBox *>(control) && !qobject_cast<QLineEdit *>(control))) continue;
+                const QRect bounds(control->mapTo(container, QPoint()), control->size());
+                require(bounds.left() >= 0 && bounds.right() < container->width(), "resized Layers control overflowed its panel");
+            }
+            require(frame() == resizePixels && window.sessionState().value("undoName").toString() == resizeUndo,
+                    "Layers panel resize edited pixels or history");
+        }
+        window.resizeDocks({layersDock}, {252}, Qt::Horizontal);
+        waitForScroll([&] { return layersDock->width() == 252 && compositor_session_layers_panel_width(window.sessionHandle(), 0) == 252; },
+                      "Layers splitter test could not establish its starting width");
+        const int separatorWidth = window.style()->pixelMetric(QStyle::PM_DockWidgetSeparatorExtent);
+        const QPoint splitter(layersDock->geometry().left() - qMax(1, separatorWidth / 2), layersDock->geometry().center().y());
+        const auto splitterMouse = [&](QEvent::Type type, QPoint position, Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent event(type, QPointF(position), QPointF(window.mapToGlobal(position)), button, buttons, Qt::NoModifier);
+            QApplication::sendEvent(window.windowHandle(), &event);
+            QApplication::processEvents();
+        };
+        splitterMouse(QEvent::MouseMove, splitter, Qt::NoButton, Qt::NoButton);
+        splitterMouse(QEvent::MouseButtonPress, splitter, Qt::LeftButton, Qt::LeftButton);
+        splitterMouse(QEvent::MouseMove, splitter - QPoint(40, 0), Qt::NoButton, Qt::LeftButton);
+        splitterMouse(QEvent::MouseButtonRelease, splitter - QPoint(40, 0), Qt::LeftButton, Qt::NoButton);
+        waitForScroll([&] {
+            return layersDock->width() > 252 && compositor_session_layers_panel_width(window.sessionHandle(), 0) == layersDock->width();
+        }, "pointer drag did not resize the native Layers splitter");
+        require(frame() == resizePixels && window.sessionState().value("undoName").toString() == resizeUndo,
+                "Layers splitter drag edited pixels or history");
+        window.resizeDocks({layersDock}, {originalPanelWidth}, Qt::Horizontal);
+        waitForScroll([&] { return compositor_session_layers_panel_width(window.sessionHandle(), 0) == originalPanelWidth; },
+                      "Layers splitter test did not restore its original width");
+        qInfo("Qt Layers panel resizing OK (222/352-point bounds, pointer splitter drag, contained controls, upstream body, no document edit)");
+        waitForScroll([&] {
+            auto *area = layersScroll();
+            return area && area->widget() && area->widget()->height() >= area->viewport()->height();
+        }, "short native layer table did not fill its viewport");
+        const QString shortBottomLayer = window.sessionState().value("layers").toArray().first().toObject().value("id").toString();
+        for (int i = 0; i < 24; ++i) command({{"action", "addLayer"}});
+        waitForScroll([&] { auto *area = layersScroll(); return area && area->verticalScrollBar()->maximum() > 100; },
+                      "native layer list did not overflow its viewport");
+        command({{"action", "selectLayer"}, {"layerID", shortBottomLayer}});
+        waitForScroll([&] {
+            auto *area = layersScroll();
+            return area && area->verticalScrollBar()->value() >= area->verticalScrollBar()->maximum() - 2;
+        }, "newly selected bottom layer was not revealed");
+        auto *area = layersScroll();
+        const QByteArray beforeScroll = frame();
+        const QString beforeScrollUndo = window.sessionState().value("undoName").toString();
+        area->verticalScrollBar()->setValue(area->verticalScrollBar()->maximum() / 3);
+        const int manualScroll = area->verticalScrollBar()->value();
+        QApplication::processEvents();
+        require(frame() == beforeScroll && window.sessionState().value("undoName").toString() == beforeScrollUndo,
+                "manual layer scrolling edited the document");
+        command({{"action", "setVisible"}, {"layerID", shortBottomLayer}, {"enabled", false}});
+        waitForScroll([&] { auto *current = layersScroll(); return current && current->verticalScrollBar()->value() == manualScroll; },
+                      "layer update reset manual scrolling");
+        qInfo("Qt native layer scrolling OK (selection reveal, viewport drawing, manual-scroll preservation, no document edit)");
+
+        command({{"action", "selectTool"}, {"kind", "brush"}});
+        const auto layerTable = [&]() -> QWidget * {
+            for (auto *candidate : window.findChildren<QWidget *>())
+                if (candidate->isVisible() && candidate->property("appKitView").toBool()
+                    && candidate->property("appKitNode").toString().startsWith("LayersPanel|")) return candidate;
+            return nullptr;
+        };
+        const auto tableKey = [&](int code, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+            auto *table = layerTable(); require(table, "native layer keyboard table missing");
+            const QString node = table->property("appKitNode").toString();
+            table->setFocus(Qt::OtherFocusReason);
+            QApplication::processEvents();
+            // A pending panel replacement restores this node's focus on the next event-loop turn.
+            waitForScroll([&] {
+                return QApplication::focusWidget() && QApplication::focusWidget()->property("appKitNode").toString() == node;
+            }, "native layer keyboard table did not acquire focus");
+            QTest::sendKeyEvent(QTest::Click, window.windowHandle(), static_cast<Qt::Key>(code), QString(), modifiers);
+            QApplication::processEvents();
+        };
+        const QString keyboardUndo = window.sessionState().value("undoName").toString();
+        tableKey(Qt::Key_Up);
+        const QString keyboardLayer = window.sessionState().value("activeLayerID").toString();
+        require(!keyboardLayer.isEmpty() && keyboardLayer != shortBottomLayer, "native Up arrow did not select the previous layer");
+        tableKey(Qt::Key_Down);
+        require(window.sessionState().value("activeLayerID").toString() == shortBottomLayer, "native Down arrow did not restore the selected layer");
+        tableKey(Qt::Key_Up, Qt::ShiftModifier);
+        require(window.sessionState().value("mergeTitle").toString() == "Merge Layers", "native Shift-Up did not extend layer selection");
+        tableKey(Qt::Key_Down, Qt::ShiftModifier);
+        require(!window.sessionState().value("canMergeLayers").toBool()
+                && window.sessionState().value("activeLayerID").toString() == shortBottomLayer,
+                "native Shift-Down did not contract layer selection");
+        require(window.sessionState().value("undoName").toString() == keyboardUndo, "native layer keyboard selection created an Undo step");
+        // The scrolling fixture hid this layer. Upstream intentionally refuses transforms of hidden layers.
+        command({{"action", "setVisible"}, {"layerID", shortBottomLayer}, {"enabled", true}});
+        command({{"action", "selectTool"}, {"kind", "move"}});
+        const QJsonObject beforeNudge = window.sessionState().value("layers").toArray().first().toObject();
+        tableKey(Qt::Key_Right);
+        const QJsonObject afterNudge = window.sessionState().value("layers").toArray().first().toObject();
+        QJsonObject expectedTransform = beforeNudge.value("transform").toObject();
+        const QJsonValue nudgeOrigin = expectedTransform.value("origin");
+        if (nudgeOrigin.isArray()) {
+            QJsonArray moved = nudgeOrigin.toArray(); moved[0] = moved[0].toDouble() + 1;
+            expectedTransform.insert("origin", moved);
+        } else {
+            QJsonObject moved = nudgeOrigin.toObject(); moved.insert("x", moved.value("x").toDouble() + 1);
+            expectedTransform.insert("origin", moved);
+        }
+        require(window.sessionState().value("activeLayerID").toString() == shortBottomLayer
+                && afterNudge.value("transform").toObject() == expectedTransform,
+                "native Move-tool arrow did not preserve upstream layer nudge behavior");
+        qInfo("Qt native layer keyboard OK (Up/Down selection, Shift extension/contraction, no Undo step, Move-tool nudge)");
+
+        // The upstream AppKit layer thumbnail's Shift-click must invalidate the
         // cached frame even though it keeps the same mask image object.
         for (bool group : {false, true}) {
             fresh();
@@ -1046,13 +1712,18 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
             command({{"action", "addHideMask"}});
             const auto hidden = frame();
             require(static_cast<uint8_t>(pixel(hidden, 32, 16)[3]) == 0, "hide mask did not hide pixels");
-            const QString id = window.sessionState().value("activeLayerID").toString();
-            auto *thumb = window.findChild<QWidget *>("layerMaskThumb:" + id);
-            require(thumb, "SwiftUI mask thumbnail missing");
-            const QPointF pos = thumb->rect().center();
-            QMouseEvent down(QEvent::MouseButtonPress, pos, thumb->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
-            QMouseEvent up(QEvent::MouseButtonRelease, pos, thumb->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
-            QApplication::sendEvent(thumb, &down); QApplication::sendEvent(thumb, &up);
+            QWidget *table = nullptr;
+            for (auto *candidate : window.findChildren<QWidget *>()) {
+                if (candidate->isVisible() && candidate->property("appKitView").toBool()
+                    && candidate->property("appKitNode").toString().startsWith("LayersPanel|")) { table = candidate; break; }
+            }
+            require(table, "upstream AppKit layers table missing");
+            // The active root is the first row. Tip's thumbnail slot ends at x=78; masks have a 30-point slot
+            // after a 13-point linked gap on raster layers or a 5-point gap on folders. Row controls center at y=26.
+            const QPointF pos(group ? 98 : 106, 26);
+            QMouseEvent down(QEvent::MouseButtonPress, pos, table->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+            QMouseEvent up(QEvent::MouseButtonRelease, pos, table->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+            QApplication::sendEvent(table, &down); QApplication::sendEvent(table, &up);
             QApplication::processEvents();
             const auto revealed = frame();
             require(static_cast<uint8_t>(pixel(revealed, 32, 16)[3]) == 255, "Shift-click left stale mask coverage");
@@ -1315,6 +1986,7 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
 // and completion must target the captured document, even after a tab switch.
 extern "C" int compositor_host_save_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     try {
         QTemporaryDir temporary;
         SessionWindow window;
@@ -1446,12 +2118,14 @@ extern "C" int compositor_host_save_smoke(int argc, char **argv) {
 
 extern "C" int compositor_host_text_smoke(int argc, char **argv, int (*probe)(void)) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     return probe ? probe() : 1;
 }
 
 /// Focused Move / Free Transform journey: idle controls, drag history, explicit Apply/Cancel, and draft saves.
 extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
+    installCompositorUIFont(app);
     try {
         const auto require = [](bool ok, const char *message) {
             if (!ok) throw std::runtime_error(message);

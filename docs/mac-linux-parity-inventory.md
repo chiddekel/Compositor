@@ -1,7 +1,12 @@
 # Compositor — macOS vs GNU/Linux, element by element
 
-Baseline: upstream **1.3.1** (merged `ce8cba6`), branch `GNU_Linux`. The Linux app runs upstream's own Swift
+Historical baseline: upstream **1.3.1** (merged `ce8cba6`), branch `GNU_Linux`. The Linux app runs upstream's own Swift
 (`Compositor/{Document,IO,Rendering,UI}`, unmodified) on Apple-API compat modules, inside a Qt shell.
+
+This inventory records that earlier checkpoint. Its feature statuses, test counts and UI claims have not been
+fully re-audited against current upstream `3081719`. See [TODOS.md](../TODOS.md) for open compatibility work
+and [the test baseline](upstream-test-baseline.md) for current run evidence. Running upstream code and passing
+its tests does not establish every native UI behavior; the statuses below preserve the original assessment.
 
 Legend — **✅ same** upstream's code runs and its upstream tests pass on Linux · **🟡 differs** works, but not
 identically (reason given) · **❌ missing** not available on Linux yet · **n/a** macOS-only by nature.

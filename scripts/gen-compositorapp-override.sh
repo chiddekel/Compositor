@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates Sources/Overrides/CompositorApp.swift from upstream's Compositor/CompositorApp.swift. The only changes
-# include the Color Range menu from pinned upstream 1.3.4 and these mechanical adaptations: `#selector(Type.method(_:))` becomes `Selector(("method:"))` (Linux Swift has no Objective-C
+# include a Color Range menu fallback for older sources that lack it, and these mechanical adaptations:
+# `#selector(Type.method(_:))` becomes `Selector(("method:"))` (Linux Swift has no Objective-C
 # runtime, so `#selector` cannot compile), and `@main` goes (the Linux entry point is CompositorHostBootstrap; the
 # shell reads the app's `.commands` to build its menu bar). Run after every upstream merge.
 set -euo pipefail

@@ -182,6 +182,9 @@ modules:
       - type: archive
         url: https://www.libraw.org/data/LibRaw-0.22.2.tar.gz
         sha256: de86b035655accff8d4010f1a221fdf50d353cb7b1422ba26f14a0db92612cfa
+      # Initialize the OpenMP wavelet allocation count before Noise Reduction uses it.
+      - type: patch
+        path: linux/patches/libraw-0.22.2-wavelet-size.patch
 
   - name: opencv
     buildsystem: cmake-ninja

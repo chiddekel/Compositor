@@ -16,6 +16,10 @@
 #   QT_QPA_PLATFORM=offscreen ./build/compositor --help 2>/dev/null; echo "exit=$?"
 
 cmake_minimum_required(VERSION 3.16)
+if(NOT DEFINED CMAKE_C_COMPILER)
+    find_program(COMPOSITOR_CLANG clang HINTS /usr/lib/sdk/swift6/bin REQUIRED)
+    set(CMAKE_C_COMPILER "${COMPOSITOR_CLANG}" CACHE FILEPATH "C compiler supporting upstream Blocks")
+endif()
 project(CompositorCoreShim LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
@@ -150,7 +154,7 @@ target_include_directories(CompositorCoreAbi INTERFACE ${CMAKE_SOURCE_DIR}/inclu
 add_library(CompositorKernels STATIC
     linux/kernels/CheckedAdjustPixels.c
     linux/kernels/CheckedBrushPixels.c
-    linux/kernels/CheckedContentFill.c
+    linux/kernels/CheckedPatchPixels.c
     linux/kernels/CheckedHealPixels.c
     linux/kernels/CheckedLensPixels.c
     Compositor/Rendering/LevelsPixels.c
@@ -160,7 +164,13 @@ target_include_directories(CompositorKernels PUBLIC ${CMAKE_SOURCE_DIR}/Composit
 target_compile_definitions(CompositorKernels PUBLIC COMPOSITOR_PORTABLE)
 # libm is part of glibc bundled in the Freedesktop runtime, not a separately
 # installed host library, so this is not a host-system dependency.
-target_link_libraries(CompositorKernels PUBLIC m)
+find_path(COMPOSITOR_DISPATCH_INCLUDE dispatch/dispatch.h HINTS /usr/lib/sdk/swift6/lib/swift /usr/local/swift/usr/lib/swift REQUIRED)
+find_library(COMPOSITOR_DISPATCH_LIBRARY dispatch HINTS /usr/lib/sdk/swift6/lib/swift/linux /usr/local/swift/usr/lib/swift/linux REQUIRED)
+find_library(COMPOSITOR_BLOCKS_LIBRARY BlocksRuntime HINTS /usr/lib/sdk/swift6/lib/swift/linux /usr/local/swift/usr/lib/swift/linux REQUIRED)
+set_target_properties(CompositorKernels PROPERTIES AUTOMOC OFF)
+target_compile_options(CompositorKernels PRIVATE "$<$<COMPILE_LANGUAGE:C>:-fblocks>")
+target_include_directories(CompositorKernels PRIVATE "${COMPOSITOR_DISPATCH_INCLUDE}" "${COMPOSITOR_DISPATCH_INCLUDE}/Block")
+target_link_libraries(CompositorKernels PUBLIC m "${COMPOSITOR_DISPATCH_LIBRARY}" "${COMPOSITOR_BLOCKS_LIBRARY}")
 
 # ── Thin C++ wrapper over the C ABI. ───────────────────────────────────
 add_library(CompositorCoreShim STATIC shim/CompositorCoreShim.cpp)
@@ -231,7 +241,9 @@ add_test(NAME CompositorCore.OpenCVBridge COMMAND test_opencv_bridge)
 if(Qt6_FOUND)
     find_package(Qt6 COMPONENTS Gui QUIET)
     add_library(CompositorQtImageIO SHARED host/QtImageIO.cpp)
-    target_link_libraries(CompositorQtImageIO PRIVATE Qt6::Gui)
+    find_package(ZLIB REQUIRED)
+    find_package(TIFF 4.5 REQUIRED)
+    target_link_libraries(CompositorQtImageIO PRIVATE Qt6::Gui ZLIB::ZLIB TIFF::TIFF)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(LIBHEIF QUIET IMPORTED_TARGET libheif)
@@ -256,6 +268,22 @@ if(Qt6_FOUND)
     add_executable(test_png_codec tests/test_png_codec.cpp)
     target_link_libraries(test_png_codec PRIVATE Qt6::Gui)
     add_test(NAME CompositorCore.PngCodec COMMAND test_png_codec)
+
+    # Native text and lowered controls must preserve system font traits.
+    add_executable(test_font_traits tests/test_font_traits.cpp)
+    target_link_libraries(test_font_traits PRIVATE Qt6::Gui)
+    add_test(NAME CompositorCore.FontTraits COMMAND test_font_traits)
+    set_tests_properties(CompositorCore.FontTraits PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    # Exercise the actual ImageIO callbacks, including source-profile conversion and export tags.
+    add_executable(test_imageio_color tests/test_imageio_color.cpp)
+    target_link_libraries(test_imageio_color PRIVATE Qt6::Gui CompositorQtImageIO TIFF::TIFF)
+    if(LIBHEIF_FOUND)
+        target_link_libraries(test_imageio_color PRIVATE PkgConfig::LIBHEIF)
+        target_compile_definitions(test_imageio_color PRIVATE COMPOSITOR_TEST_LIBHEIF=1)
+    endif()
+    add_test(NAME CompositorCore.ImageIOColor COMMAND test_imageio_color)
+    set_tests_properties(CompositorCore.ImageIOColor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # SessionWindow file operations test source remains available for the Swift
     # composition root. Do not register its C++ main as CTest: Foundation-backed
@@ -292,7 +320,7 @@ if(Qt6_FOUND)
     # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc).
     add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/InterchangeJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp host/QtImageIO.cpp host/FlatpakUpdateService.cpp host/SwiftUIQtRenderer.cpp)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
-    target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets Qt6::DBus Qt6::Svg)
+    target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets Qt6::DBus Qt6::Svg PRIVATE ZLIB::ZLIB TIFF::TIFF)
     if(COMPOSITOR_ENABLE_SKIA_GPU AND DEFINED ENV{FLATPAK_ID})
         target_compile_definitions(CompositorHostRun PRIVATE COMPOSITOR_SKIA_BRIDGE=1)
         target_link_libraries(CompositorHostRun PUBLIC CompositorSkiaBridge)
@@ -313,3 +341,11 @@ add_test(NAME CompositorCore.Abi COMMAND test_composite_over)
 add_executable(test_kernels tests/test_kernels.cpp)
 target_link_libraries(test_kernels PRIVATE CompositorKernels)
 add_test(NAME CompositorCore.Kernels COMMAND test_kernels)
+
+# Exercise the unchanged PatchMatch kernel through checked entries and injected allocator failures.
+add_executable(test_patch_pixels tests/test_patch_pixels.cpp tests/PatchAllocationFailure.c)
+set_target_properties(test_patch_pixels PROPERTIES AUTOMOC OFF)
+target_compile_options(test_patch_pixels PRIVATE "$<$<COMPILE_LANGUAGE:C>:-fblocks>")
+target_include_directories(test_patch_pixels PRIVATE "${COMPOSITOR_DISPATCH_INCLUDE}" "${COMPOSITOR_DISPATCH_INCLUDE}/Block")
+target_link_libraries(test_patch_pixels PRIVATE CompositorKernels)
+add_test(NAME CompositorCore.PatchPixels COMMAND test_patch_pixels)

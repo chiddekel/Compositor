@@ -8,12 +8,17 @@
 
 #ifndef COMPOSITOR_HOST_RUN_H
 #define COMPOSITOR_HOST_RUN_H
+#include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 int compositor_host_run(int argc, char **argv);
+double compositor_session_layers_panel_width(uint64_t handle, double width);
+int32_t compositor_host_measure_swiftui(const uint8_t *json, size_t count, double width, double height,
+                                      double *measured_width, double *measured_height);
 int compositor_host_dialog_smoke(int argc, char **argv);
 int compositor_host_package_smoke(int argc, char **argv);
 int compositor_host_save_smoke(int argc, char **argv);
@@ -25,6 +30,7 @@ int compositor_host_io_smoke(int argc, char **argv);
 int compositor_host_layers_smoke(int argc, char **argv);
 int compositor_host_brush_smoke(int argc, char **argv);
 int compositor_host_transform_smoke(int argc, char **argv);
+int compositor_host_combo_smoke(int argc, char **argv);
 
 #ifdef __cplusplus
 }

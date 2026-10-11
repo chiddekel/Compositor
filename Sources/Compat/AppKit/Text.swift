@@ -14,17 +14,31 @@ open class NSFont: @unchecked Sendable {
     }
     public let fontName: String
     public let pointSize: CGFloat
+    /// Traits of the system font factories, retained for native text and SwiftUI lowering.
+    public let _systemWeightName: String?
+    public let _isMonospaced: Bool
+    public let _usesMonospacedDigits: Bool
+    var _backendName: String { fontName + (_usesMonospacedDigits ? "+monospacedDigit" : "") }
     /// Nil when no installed font answers to `name`, as in AppKit (a document naming a font this machine lacks).
     public init?(name: String, size: CGFloat) {
         guard !name.isEmpty, InstalledFonts.contains(name) else { return nil }
         fontName = name; pointSize = size
+        _systemWeightName = nil; _isMonospaced = false; _usesMonospacedDigits = false
     }
-    private init(system size: CGFloat) { fontName = "System"; pointSize = size }
-    private init(systemNamed name: String, size: CGFloat) { fontName = name; pointSize = size }
-    /// The system's monospaced face ("Monospace" to the Qt text engine: the desktop's fixed-pitch font), bold from
-    /// semibold up.
+    private init(system size: CGFloat, weight: Weight = .regular, monospaced: Bool = false, digits: Bool = false) {
+        let weights: [(Weight, String)] = [(.ultraLight, "ultraLight"), (.thin, "thin"), (.light, "light"),
+            (.regular, "regular"), (.medium, "medium"), (.semibold, "semibold"), (.bold, "bold"),
+            (.heavy, "heavy"), (.black, "black")]
+        let token = weight.rawValue.isFinite
+            ? weights.min { abs($0.0.rawValue - weight.rawValue) < abs($1.0.rawValue - weight.rawValue) }!.1 : "regular"
+        let family = monospaced ? "Monospace" : "System"
+        fontName = family + (token == "regular" ? "" : "-" + token)
+        pointSize = size
+        _systemWeightName = token; _isMonospaced = monospaced; _usesMonospacedDigits = digits
+    }
+    /// The desktop's fixed-pitch face, retaining the requested weight.
     public static func monospacedSystemFont(ofSize size: CGFloat, weight: Weight) -> NSFont {
-        NSFont(systemNamed: weight.rawValue >= Weight.semibold.rawValue ? "Monospace-Bold" : "Monospace", size: size)
+        NSFont(system: size, weight: weight, monospaced: true)
     }
     /// AppKit's vertical metrics: from the installed face through the Qt text engine; without it, typical proportions
     /// (0.8 em above the baseline, 0.2 below).
@@ -46,8 +60,8 @@ open class NSFont: @unchecked Sendable {
         return set
     }
     public static func systemFont(ofSize size: CGFloat) -> NSFont { NSFont(system: size) }
-    public static func systemFont(ofSize size: CGFloat, weight: Weight) -> NSFont { NSFont(system: size) }
-    public static func monospacedDigitSystemFont(ofSize size: CGFloat, weight: Weight = .regular) -> NSFont { NSFont(system: size) }
+    public static func systemFont(ofSize size: CGFloat, weight: Weight) -> NSFont { NSFont(system: size, weight: weight) }
+    public static func monospacedDigitSystemFont(ofSize size: CGFloat, weight: Weight = .regular) -> NSFont { NSFont(system: size, weight: weight, digits: true) }
 }
 
 public enum NSTextAlignment: Int, Sendable { case left, right, center, justified, natural }

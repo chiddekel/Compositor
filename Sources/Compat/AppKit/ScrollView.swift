@@ -18,11 +18,26 @@ public enum NSBorderType: Int, Sendable { case noBorder, lineBorder, bezelBorder
     public var drawsBackground = true
     open var documentView: NSView? {
         didSet {
+            _pendingVisibleRect = nil
             oldValue?.removeFromSuperview()
             if let documentView { addSubview(documentView) }
         }
     }
     open override var isFlipped: Bool { documentView?.isFlipped ?? false }
+    /// A reveal requested before a host supplied a viewport waits for a meaningful visible rectangle.
+    public private(set) var _pendingVisibleRect: CGRect?
+    @discardableResult func reveal(_ target: CGRect) -> Bool {
+        guard frame.width > 0, frame.height > 0 else { _pendingVisibleRect = target; return false }
+        let visible = bounds
+        var origin = visible.origin
+        if target.minY < visible.minY { origin.y = target.minY }
+        else if target.maxY > visible.maxY { origin.y = target.maxY - visible.height }
+        if target.minX < visible.minX { origin.x = target.minX }
+        else if target.maxX > visible.maxX { origin.x = target.maxX - visible.width }
+        guard origin != visible.origin else { return false }
+        scroll(to: origin)
+        return true
+    }
 
     /// Moves the visible area's origin to `point` (document coordinates), as `NSClipView.scroll(to:)` does.
     open func scroll(to point: CGPoint) {
@@ -49,6 +64,10 @@ public enum NSBorderType: Int, Sendable { case noBorder, lineBorder, bezelBorder
         bounds = CGRect(origin: constrainedOrigin(bounds.origin), size: size)
         // The document (a table tiling itself to the clip's width) lays out again for the new size.
         documentView?.needsLayout = true
+        if size.width > 0, size.height > 0, let pending = _pendingVisibleRect {
+            _pendingVisibleRect = nil
+            reveal(pending)
+        }
     }
 }
 
@@ -103,13 +122,7 @@ extension NSView {
     /// AppKit's; false when there is no clip view or nothing to scroll.
     @discardableResult public func scrollToVisible(_ rect: CGRect) -> Bool {
         guard let clip = superview as? NSClipView else { return false }
-        let visible = clip.bounds
         let target = CGRect(x: rect.minX + frame.minX, y: rect.minY + frame.minY, width: rect.width, height: rect.height)
-        var origin = visible.origin
-        if target.minY < visible.minY { origin.y = target.minY } else if target.maxY > visible.maxY { origin.y = target.maxY - visible.height }
-        if target.minX < visible.minX { origin.x = target.minX } else if target.maxX > visible.maxX { origin.x = target.maxX - visible.width }
-        guard origin != visible.origin else { return false }
-        clip.scroll(to: origin)
-        return true
+        return clip.reveal(target)
     }
 }

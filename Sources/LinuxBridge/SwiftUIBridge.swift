@@ -6,9 +6,33 @@ import Foundation
 import Observation
 import SwiftUI
 
+/// A positive width updates the native dock; zero reads its saved, clamped width. Geometry is UI state, not an edit.
+@_cdecl("compositor_session_layers_panel_width")
+nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ width: Double) -> Double {
+    onMain {
+        guard let entry = Sessions.entries[handle] else { return 0 }
+        let previous = entry.layersPanelWidth
+        let value = updateLayersPanelWidth(width, entry: entry)
+        if value != previous, pendingTree?.handle == handle, pendingTree?.panel == "LayersPanel" { pendingTree = nil }
+        return value
+    }
+}
+
+@MainActor func updateLayersPanelWidth(_ width: Double, entry: Entry) -> Double {
+    if width.isFinite, width > 0 {
+        let value = min(LayersPanel.widths.upperBound, max(LayersPanel.widths.lowerBound, width))
+        if entry.layersPanelWidth != value {
+            entry.layersPanelWidth = value
+            UserDefaults.standard.set(value, forKey: "layersPanelWidth")
+            DirtyPanels.mark(.init(entry: ObjectIdentifier(entry), panel: "LayersPanel"))
+        }
+    }
+    return entry.layersPanelWidth
+}
+
 /// Resolves the named panel against `entry`'s session into a wire-ready tree, and refreshes `entry`'s action-handler
 /// registry for it so a later Qt-side interaction can dispatch back to the right closure by node id.
-@MainActor private func resolvePanel(_ panel: String, entry: Entry) -> RenderNodeWire? {
+@MainActor func resolvePanel(_ panel: String, entry: Entry) -> RenderNodeWire? {
     let scope = "\(ObjectIdentifier(entry).hashValue)|\(panel)"
     // .onAppear / .onChange actions run after a resolve and usually change the @State it was built from (a field
     // seeding its text on appear); SwiftUI would render again, so resolve again until the tree settles.
@@ -81,7 +105,7 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
     case "ColorRangeSheet": resolved = ViewResolver.resolve(ColorRangeSheet(session: session))
     case "HueSaturationSheet": resolved = ViewResolver.resolve(HueSaturationSheet(session: session))
     case "FilterSheet": resolved = ViewResolver.resolve(FilterSheet(session: session))
-    case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session))
+    case "LayersPanel": resolved = ViewResolver.resolve(LayersPanel(session: session, width: CGFloat(entry.layersPanelWidth)))
     case "ColorPickerSheet":
         guard let picker = session.colorPicker else { return nil }
         resolved = ViewResolver.resolve(ColorPickerSheet(state: picker) { [weak session] commit in

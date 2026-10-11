@@ -16,7 +16,8 @@ if ! git -C "$ROOT" rev-parse --verify "$REF^{commit}" >/dev/null 2>&1; then
 fi
 
 set --
-for root in Compositor CompositorTests; do
+# Upstream's trees, kept byte for byte: the app and its tests, its UI tests and its Xcode project.
+for root in Compositor CompositorTests CompositorUITests Compositor.xcodeproj; do
   while IFS= read -r path; do
     [ -n "$path" ] && set -- "$@" "$path"
   done <<EOF
@@ -25,29 +26,54 @@ $(git -C "$ROOT" ls-files --others --exclude-standard -- "$root")
 EOF
 done
 
-if [ "$#" -eq 0 ]; then
-  python3 "$ROOT/scripts/gen-smudge-liquify-override.py" --check
-  python3 "$ROOT/scripts/gen-text-format-11.py" --check
-  python3 "$ROOT/scripts/gen-color-range.py" --check
-  bash "$ROOT/scripts/gen-compositorapp-override.sh" --check
-  python3 "$ROOT/scripts/gen-project-validation.py" --check
-  python3 "$ROOT/scripts/gen-preview-renderer.py" --check
-  python3 "$ROOT/scripts/gen-objc-overrides.py" --check
-  python3 "$ROOT/scripts/gen-patched-overrides.py" --check
-  python3 "$ROOT/scripts/gen-linux-test-mirrors.py" --check
-  # Vulkan shader headers match their .comp sources (effects recolor, brush coverage, composite).
-  if command -v glslangValidator >/dev/null 2>&1; then python3 "$ROOT/scripts/build-brush-shader.py" --check
-  else echo "note: glslangValidator not found; Vulkan shader headers NOT checked" >&2; fi
-  # Hand-kept overrides have taken every upstream change in the ledger range; the ledger matches git.
-  python3 "$ROOT/scripts/upstream-override-drift.py" --check
-  python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.6-1.4.8-ledger.md --from 11d8d7a --to 22c7b8d
-  python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.9-ledger.md --from 22c7b8d --to b4bfdea
-  python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-after-1.4.9-ledger.md
-  echo "UPSTREAM CLEAN: protected trees match $REF"
-  exit 0
+failures=0
+if [ "$#" -ne 0 ]; then
+  echo "UPSTREAM DRIFT: protected trees differ from $REF" >&2
+  printf '%s\n' "$@" | sort -u >&2
+  echo "Move Linux-only changes behind Sources/Compat, Sources/Overrides, Sources/UpstreamCore/LinuxSupport, or host adapters." >&2
+  failures=$((failures + 1))
 fi
 
-echo "UPSTREAM DRIFT: protected trees differ from $REF" >&2
-printf '%s\n' "$@" | sort -u >&2
-echo "Move Linux-only changes behind Sources/Compat, Sources/Overrides, Sources/UpstreamCore/LinuxSupport, or host adapters." >&2
-exit 1
+# Run every independent check even after a failure, retaining each command's diagnostics and exit status.
+check() {
+  label=$1
+  shift
+  if "$@"; then
+    echo "PASS: $label"
+  else
+    status=$?
+    echo "FAIL: $label (exit $status)" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+check "checked adjustment kernel" python3 "$ROOT/scripts/gen-checked-adjust-kernel.py" --check
+check "Smudge/Liquify generator" python3 "$ROOT/scripts/gen-smudge-liquify-override.py" --check
+check "text format generator" python3 "$ROOT/scripts/gen-text-format-11.py" --check
+check "Color Range generator" python3 "$ROOT/scripts/gen-color-range.py" --check
+check "app generator" bash "$ROOT/scripts/gen-compositorapp-override.sh" --check
+check "project validation generator" python3 "$ROOT/scripts/gen-project-validation.py" --check
+check "preview renderer generator" python3 "$ROOT/scripts/gen-preview-renderer.py" --check
+check "Objective-C generator" python3 "$ROOT/scripts/gen-objc-overrides.py" --check
+check "patched overrides generator" python3 "$ROOT/scripts/gen-patched-overrides.py" --check
+check "test mirrors generator" python3 "$ROOT/scripts/gen-linux-test-mirrors.py" --check
+# Vulkan shader headers match their .comp sources (effects recolor, brush coverage, composite).
+# REQUIRE_SHADER_CHECK=1 (CI) makes a missing glslangValidator a failure rather than a note.
+if command -v glslangValidator >/dev/null 2>&1; then
+  check "Vulkan shader headers" python3 "$ROOT/scripts/build-brush-shader.py" --check
+elif [ "${REQUIRE_SHADER_CHECK:-0}" = 1 ]; then
+  echo "FAIL: Vulkan shader headers (glslangValidator not found)" >&2
+  failures=$((failures + 1))
+else
+  echo "note: glslangValidator not found; Vulkan shader headers NOT checked" >&2
+fi
+check "override drift" python3 "$ROOT/scripts/upstream-override-drift.py" --check
+check "1.4.6–1.4.8 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.6-1.4.8-ledger.md --from 11d8d7a --to 22c7b8d
+check "1.4.9 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.9-ledger.md --from 22c7b8d --to b4bfdea
+check "post-1.4.9 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-after-1.4.9-ledger.md --include-kernels
+
+if [ "$failures" -ne 0 ]; then
+  echo "UPSTREAM CHECK FAILED: $failures checks failed" >&2
+  exit 1
+fi
+echo "UPSTREAM CLEAN: protected trees match $REF"

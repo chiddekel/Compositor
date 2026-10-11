@@ -369,7 +369,10 @@ final class UpstreamEditor {
         // bridge applies it first, in order, as the Mac's next event would find it.
         // Re-choosing the current tool is no switch (upstream selectTool resolves only when the tool changes).
         let reselectsTool = command.action == "selectTool" && (command.kind ?? command.name) == s.tool.rawValue
-        if s.gradientEdit != nil, !reselectsTool, !Self.keepsPendingGradient.contains(command.action) { await s.commitGradient() }
+        if s.gradientEdit != nil, !reselectsTool, !Self.keepsPendingGradient.contains(command.action) {
+            let result = await commitPendingGradient()
+            guard result == 0 else { return result }
+        }
         switch command.action {
         case "new":
             guard let width = command.width, let height = command.height, (1...30_000).contains(width), (1...30_000).contains(height)
@@ -598,7 +601,9 @@ final class UpstreamEditor {
             guard let point = point(command) else { return fail(-1, "invalid point") }
             s.moveGradient(start: command.kind == "start" ? point : nil, end: command.kind == "start" ? nil : point)
         case "gradientEndDrag": s.endGradientDrag()
-        case "gradientCommit": await s.commitGradient()
+        case "gradientCommit":
+            let result = await commitPendingGradient()
+            guard result == 0 else { return result }
         case "gradientCancel": s.cancelGradient()
         case "shapeBegin":
             guard let point = point(command) else { return fail(-1, "invalid point") }
@@ -1081,6 +1086,40 @@ final class UpstreamEditor {
 
     private func fail(_ code: Int32, _ message: String) -> Int32 { error = message; return code }
 
+    private func commitPendingGradient() async -> Int32 {
+        let s = session
+        guard let pending = s.gradientEdit else { return 0 }
+        guard !s.isProjectBusy else { return fail(-5, "The project is busy; the pending gradient has not been applied") }
+        if pending.hasLine {
+            guard let current = s.document?.layers.first(where: { $0.id == pending.raster.layer.id }),
+                  current.asset?.image === pending.raster.layer.asset?.image,
+                  current.transform == pending.raster.layer.transform,
+                  current.mask?.asset.image === pending.raster.layer.mask?.asset.image else {
+                return fail(-5, "The gradient target changed while it was being applied")
+            }
+        }
+        // Upstream reports thrown errors through brushError, and silently discards a commit whose target changed.
+        // Await the operation to completion: a timeout would leave a late write running after reporting failure.
+        let previousError = s.brushError
+        let revision = s.history.currentRevision
+        s.brushError = nil
+        await s.commitGradient()
+        if let message = s.brushError { return fail(-5, message) }
+        s.brushError = previousError
+        guard s.gradientEdit == nil else {
+            return fail(-5, s.gradientEdit === pending ? "The pending gradient has not been applied" : "The gradient changed while it was being applied")
+        }
+        if pending.hasLine {
+            let layer = s.document?.layers.first { $0.id == pending.raster.layer.id }
+            let before = pending.raster.isMask ? pending.raster.layer.mask?.asset.image : pending.raster.layer.asset?.image
+            let after = pending.raster.isMask ? layer?.mask?.asset.image : layer?.asset?.image
+            guard let after, after !== before, s.history.currentRevision != revision else {
+                return fail(-5, "The gradient target changed while it was being applied")
+            }
+        }
+        return 0
+    }
+
     /// Commands that leave a pending gradient pending, as their Mac counterparts do: the gradient's own drag and
     /// options, the palette and color picker it previews live, and shell chrome that does not touch the document.
     private static let keepsPendingGradient: Set<String> = [
@@ -1168,6 +1207,7 @@ final class UpstreamEditor {
         let p = command.parameters ?? [:]
         var settings = current
         settings.radius = p["radius"] ?? settings.radius
+        settings.preserveTransparency = (p["preserveTransparency"] ?? (settings.preserveTransparency ? 1 : 0)) != 0
         settings.distance = p["distance"] ?? settings.distance
         settings.angle = p["angle"] ?? settings.angle
         settings.amount = p["amount"] ?? settings.amount

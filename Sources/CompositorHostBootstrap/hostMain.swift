@@ -23,10 +23,16 @@ import ImageIO
 import Foundation
 import FoundationCompat
 import HostRun
+import SwiftUI
 
 @main
 struct HostBootstrap {
+    private struct HostingNativeProbe: @preconcurrency NSViewRepresentable {
+        func makeNSView(context: Context) -> NSView { NSView() }
+        func updateNSView(_ view: NSView, context: Context) {}
+    }
     static func main() {
+        HostingMeasurementBackend.install(compositor_host_measure_swiftui)
         if CommandLine.arguments.contains("--text-backend-smoke") {
             let result = compositor_host_text_smoke(CommandLine.argc, CommandLine.unsafeArgv) {
                 MainActor.assumeIsolated { HostBootstrap.runTextBackendProbe() }
@@ -110,6 +116,11 @@ struct HostBootstrap {
             print("CompositorHostBootstrap: Qt transform smoke OK")
             return
         }
+        if CommandLine.arguments.contains("--combo-smoke") {
+            let result = compositor_host_combo_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt tool combination smoke returned \(result)") }
+            return
+        }
         if CommandLine.arguments.contains("--session-smoke") {
             runSessionSmoke()
             print("CompositorHostBootstrap: session journey OK (create/new/paint/render/undo/redo/close)")
@@ -126,12 +137,167 @@ struct HostBootstrap {
             if !condition { throw NSError(domain: "TextBackendSmoke", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
         }
         do {
+            let label = NSHostingView(rootView: Text("Measured label"))
+            let labelSize = label.fittingSize
+            try check(label.intrinsicContentSize == labelSize, "default hosting options did not expose ideal metrics")
+            label.sizingOptions = []
+            try check(label.intrinsicContentSize == CGSize(width: -1, height: -1) && label.fittingSize == labelSize,
+                      "empty hosting options changed explicit fitting bounds")
+            label.sizingOptions = .intrinsicContentSize
+            let autoLayoutParent = NSView(frame: CGRect(x: 0, y: 0, width: 600, height: 100))
+            label.translatesAutoresizingMaskIntoConstraints = false
+            autoLayoutParent.addSubview(label)
+            let hostingConstraints = [label.leadingAnchor.constraint(equalTo: autoLayoutParent.leadingAnchor),
+                                      label.topAnchor.constraint(equalTo: autoLayoutParent.topAnchor)]
+            NSLayoutConstraint.activate(hostingConstraints)
+            defer { NSLayoutConstraint.deactivate(hostingConstraints) }
+            autoLayoutParent.layoutSubtreeIfNeeded()
+            try check(label.frame.size == labelSize, "Auto Layout did not consume renderer-backed intrinsic metrics")
+            label.rootView = Text("A longer measured label")
+            try check(autoLayoutParent.needsLayout, "text root update did not invalidate the parent layout")
+            autoLayoutParent.layoutSubtreeIfNeeded()
+            try check(label.frame.size == label.fittingSize && label.frame.width > labelSize.width,
+                      "Auto Layout retained stale renderer-backed text bounds")
+            label.rootView = Text("Measured label")
+            let dimensionBounds = [label.widthAnchor.constraint(greaterThanOrEqualToConstant: labelSize.width + 20),
+                                   label.widthAnchor.constraint(lessThanOrEqualToConstant: labelSize.width + 40)]
+            NSLayoutConstraint.activate(dimensionBounds)
+            autoLayoutParent.layoutSubtreeIfNeeded()
+            let boundedSize = label.frame.size
+            NSLayoutConstraint.deactivate(dimensionBounds)
+            try check(boundedSize == CGSize(width: labelSize.width + 20, height: labelSize.height),
+                      "required dimension bounds did not constrain renderer-backed hosting metrics")
+            let limited = NSHostingView(rootView: Text("Hosting limits").frame(minWidth: 40, maxWidth: 180))
+            limited.translatesAutoresizingMaskIntoConstraints = false
+            autoLayoutParent.addSubview(limited)
+            let limitedPlacement = [limited.leadingAnchor.constraint(equalTo: autoLayoutParent.leadingAnchor),
+                                    limited.topAnchor.constraint(equalTo: autoLayoutParent.topAnchor)]
+            NSLayoutConstraint.activate(limitedPlacement)
+            defer { NSLayoutConstraint.deactivate(limitedPlacement + limited.constraints.filter {
+                $0.identifier?.hasPrefix("compositor.hosting.") == true
+            }) }
+            autoLayoutParent.layoutSubtreeIfNeeded()
+            try check(limited.constraints.first { $0.identifier == "compositor.hosting.min.width" }?.constant == 40
+                      && limited.constraints.first { $0.identifier == "compositor.hosting.max.width" }?.constant == 180,
+                      "hosting options did not generate renderer-backed limits")
+            limited.rootView = Text("Updated hosting limits").frame(minWidth: 100, maxWidth: 220)
+            autoLayoutParent.layoutSubtreeIfNeeded()
+            try check(limited.constraints.first { $0.identifier == "compositor.hosting.min.width" }?.constant == 100
+                      && limited.constraints.first { $0.identifier == "compositor.hosting.max.width" }?.constant == 220
+                      && limited.frame.width >= 100 && limited.frame.width <= 220,
+                      "hosting-generated limits did not follow a text root update")
+            let windowContent = NSHostingView(rootView: Text("Window hosting")
+                .frame(minWidth: 40, maxWidth: 180, minHeight: 24, maxHeight: 60))
+            let contentWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 100, height: 40),
+                                         styleMask: [], backing: .buffered, defer: false)
+            contentWindow.contentView = windowContent
+            try check(contentWindow.contentMinSize == CGSize(width: 40, height: 24)
+                      && contentWindow.contentMaxSize == CGSize(width: 180, height: 60),
+                      "window content bounds did not use renderer-backed metrics")
+            contentWindow.setContentSize(CGSize(width: 400, height: 200))
+            try check(contentWindow.frame.size == CGSize(width: 180, height: 60)
+                      && windowContent.frame.size == contentWindow.frame.size,
+                      "window content sizing ignored hosting bounds")
+            windowContent.sizingOptions = []
+            contentWindow.setContentSize(CGSize(width: 400, height: 200))
+            try check(contentWindow.frame.size == CGSize(width: 400, height: 200),
+                      "explicit window sizing stayed capped after clearing hosting options")
+            contentWindow.contentView = nil
+            try check(windowContent.window == nil, "replaced hosting root retained its window")
+            try check(labelSize.width > 20 && labelSize.width < 300 && labelSize.height > 0 && labelSize.height < 40,
+                      "hosting text retained placeholder bounds")
+            let padded = NSHostingView(rootView: Text("Measured label").padding(12))
+            try check(padded.fittingSize == CGSize(width: labelSize.width + 24, height: labelSize.height + 24),
+                      "renderer measurement counted padding twice")
+            let large = NSHostingView(rootView: Text("Measured label").font(.system(size: 28)))
+            let inherited = NSHostingView(rootView: VStack(spacing: 0) { Text("Measured label") }.font(.system(size: 28)))
+            try check(large.fittingSize.width > labelSize.width && large.fittingSize.height > labelSize.height,
+                      "hosting measurement lost the font modifier")
+            try check(inherited.fittingSize == large.fittingSize, "hosting measurement lost the inherited font")
+            let wrapped = NSHostingView(rootView: Text("Measured label wraps across several lines")
+                .multilineTextAlignment(.leading).frame(width: 80))
+            try check(wrapped.fittingSize.width == 80 && wrapped.fittingSize.height > labelSize.height,
+                      "hosting text ignored its constrained wrapping width")
+            let oneLine = NSHostingView(rootView: Text("Measured label wraps across several lines")
+                .multilineTextAlignment(.leading).lineLimit(1).frame(width: 80))
+            try check(oneLine.fittingSize.height < wrapped.fittingSize.height, "hosting measurement ignored the line limit")
+            var actions = 0
+            let button = NSHostingView(rootView: Button("Measured label") { actions += 1 })
+            try check(button.fittingSize.width > labelSize.width && button.fittingSize.height > labelSize.height,
+                      "hosting button lost its control chrome")
+            try check(actions == 0, "hosting measurement dispatched an action")
+            let controls: [(String, AnyView)] = [
+                ("toggle", AnyView(Toggle("Measured label", isOn: .constant(true)))),
+                ("field", AnyView(TextField("Field", text: .constant("Value")))),
+                ("slider", AnyView(Slider(value: .constant(0.5)))),
+                ("picker", AnyView(Picker("Choice", selection: Binding.constant(0)) {
+                    Text("First").tag(0)
+                    Text("Second").tag(1)
+                })),
+                ("symbol", AnyView(Image(systemName: "checkmark")))
+            ]
+            for (name, view) in controls {
+                let size = NSHostingView(rootView: view).fittingSize
+                try check(size.width > 0 && size.height > 0 && size != CGSize(width: 320, height: 240),
+                          "hosting \(name) retained placeholder bounds")
+            }
+            let unsupported = NSHostingView(rootView: Image("CompositorMissingImage").padding(12))
+            try check(unsupported.fittingSize == CGSize(width: 320, height: 240),
+                      "unsupported content collapsed to its padding")
+            let row = NSHostingView(rootView: HStack(spacing: 8) {
+                Text("Measured label")
+                HostingNativeProbe().frame(width: 80, height: 20)
+            })
+            let rowSize = row.fittingSize
+            row.frame = CGRect(origin: .zero, size: rowSize)
+            try check(rowSize.width == labelSize.width + 88 && row.subviews.last?.frame.minX == labelSize.width + 8,
+                      "native placement did not reserve the measured text width")
+            HostingMeasurementBackend.install(nil)
+            let unavailable = label.fittingSize
+            HostingMeasurementBackend.install(compositor_host_measure_swiftui)
+            try check(unavailable == CGSize(width: 320, height: 240), "headless hosting lost its unknown-size fallback")
+            print("Qt hosting measurement smoke OK (text, generated/window limits, Auto Layout updates, inherited font, wrapping, controls, unknown fallback)")
             let names = NSFontManager.shared.availableFonts
             guard let sansName = ["DejaVu Sans", "Liberation Sans", "Noto Sans"].first(where: { names.contains($0) }),
                   let monoName = ["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"].first(where: { names.contains($0) }),
                   let sans = NSFont(name: sansName, size: 32), let mono = NSFont(name: monoName, size: 32) else {
                 throw NSError(domain: "TextBackendSmoke", code: 2, userInfo: [NSLocalizedDescriptionKey: "Required installed sans/mono test fonts missing: \(names.prefix(20))"])
             }
+            guard let postScriptFace = NSFont(name: "Inter-SemiBold", size: 32),
+                  let fullNameFace = NSFont(name: "Inter SemiBold", size: 32) else {
+                throw NSError(domain: "TextBackendSmoke", code: 7, userInfo: [NSLocalizedDescriptionKey: "Required named-font alias fixture missing"])
+            }
+            func namedText(_ font: NSFont) -> NSAttributedString {
+                NSAttributedString(string: "iiii WWWW", attributes: [.font: font, .foregroundColor: NSColor.black])
+            }
+            guard let postScriptGlyphs = TextBackend.render(namedText(postScriptFace), maxWidth: 0, alignment: 0, boxWidth: 0),
+                  let fullNameGlyphs = TextBackend.render(namedText(fullNameFace), maxWidth: 0, alignment: 0, boxWidth: 0),
+                  let aliasBounds = TextBackend.layout(namedText(postScriptFace), maxWidth: 0),
+                  let fullNameBounds = TextBackend.layout(namedText(fullNameFace), maxWidth: 0) else {
+                throw NSError(domain: "TextBackendSmoke", code: 8)
+            }
+            try check(postScriptGlyphs.portableImage.bytes == fullNameGlyphs.portableImage.bytes
+                      && postScriptGlyphs.width == fullNameGlyphs.width && postScriptGlyphs.height == fullNameGlyphs.height,
+                      "PostScript/full names selected different glyph faces")
+            try check(aliasBounds.width == fullNameBounds.width && aliasBounds.height == fullNameBounds.height,
+                      "PostScript/full names measured different faces")
+            print("Qt named-font glyph smoke OK (bundled Inter PostScript/full names select identical semibold pixels and bounds)")
+            // The system factories carry their traits through the same attributed layout/render callbacks.
+            func weightedText(_ weight: NSFont.Weight) -> NSAttributedString {
+                NSAttributedString(string: "Weighted WWW iii", attributes: [.font: NSFont.systemFont(ofSize: 32, weight: weight),
+                                                                            .foregroundColor: NSColor.black])
+            }
+            guard let regularGlyphs = TextBackend.render(weightedText(.regular), maxWidth: 0, alignment: 0, boxWidth: 0),
+                  let semiboldGlyphs = TextBackend.render(weightedText(.semibold), maxWidth: 0, alignment: 0, boxWidth: 0),
+                  let semiboldBounds = TextBackend.layout(weightedText(.semibold), maxWidth: 0) else {
+                throw NSError(domain: "TextBackendSmoke", code: 6, userInfo: [NSLocalizedDescriptionKey: "Native weighted glyph engine unavailable"])
+            }
+            try check(regularGlyphs.portableImage.bytes != semiboldGlyphs.portableImage.bytes, "system weight did not change glyph pixels")
+            try check(semiboldGlyphs.width == Int(ceil(semiboldBounds.width)) && semiboldGlyphs.height == Int(ceil(semiboldBounds.height)),
+                      "weighted measurement and glyph dimensions disagree")
+            let nativeBounds = weightedText(.semibold).boundingRect(with: CGSize(width: 100_000, height: 100_000))
+            try check(abs(nativeBounds.width - semiboldBounds.width) < 0.01, "weighted AppKit measurement bypassed native font traits")
+            print("Qt system-font glyph smoke OK (regular/semibold pixels, attributed and AppKit bounds)")
             let paragraph = NSMutableParagraphStyle()
             paragraph.minimumLineHeight = 44; paragraph.maximumLineHeight = 44
             let text = NSMutableAttributedString(string: "iiiiiiii WWWW\nA😀é", attributes: [.font: sans, .foregroundColor: NSColor.black, .paragraphStyle: paragraph])

@@ -48,12 +48,11 @@ extension NSWindow {
         frame = CGRect(origin: point, size: frame.size)
     }
     public func setContentSize(_ size: CGSize) {
-        frame = CGRect(origin: frame.origin, size: size)
-        // Match AppKit: the content view fills the content rect. Without this, UpstreamCanvas resize
-        // and convert(_:from:) can disagree on height and offset flipped hit tests.
-        if let contentView, contentView.frame.size != size {
-            contentView.frame = CGRect(origin: .zero, size: size)
-        }
+        contentView?.updateConstraints()
+        let minimum = contentMinSize, maximum = contentMaxSize
+        let bounded = CGSize(width: min(max(size.width, minimum.width), maximum.width),
+                             height: min(max(size.height, minimum.height), maximum.height))
+        frame = CGRect(origin: frame.origin, size: bounded)
     }
     /// Centers the window on its screen, a little above the middle as AppKit puts it.
     public func center() {

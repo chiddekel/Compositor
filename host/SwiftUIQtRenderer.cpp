@@ -21,6 +21,7 @@
 
 #include "SwiftUIQtRenderer.h"
 #include "LucideIcons.h"
+#include "QtTextFont.h"
 #include <QPointer>
 #include <QStyleOption>
 #include <QAbstractItemView>
@@ -56,6 +57,9 @@
 #include <QGraphicsOpacityEffect>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QResizeEvent>
+#include <QShowEvent>
 #include <QIcon>
 #include <QPainterPath>
 #include <QProgressBar>
@@ -63,6 +67,9 @@
 #include <QStackedLayout>
 #include <QVariant>
 #include <QRegion>
+#include <limits>
+#include <memory>
+#include <cmath>
 
 extern "C" {
 int64_t compositor_session_render_tree(uint64_t handle, const char *panel, uint8_t *output, size_t capacity);
@@ -1477,6 +1484,10 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
             // Compat font tokens: "<base>[+weight:<w>][+bold][+monospacedDigit][+design:<d>]", base a text style or
             // "system:<size>". Set with setFont, so it reaches every child that has no font of its own (SwiftUI's
             // environment font).
+            if (auto named = nativeFontForToken(strings.value("name").toString(), widget->font())) {
+                widget->setFont(*named);
+                continue;
+            }
             const QStringList parts = strings.value("name").toString().split(QLatin1Char('+'));
             QFont font = widget->font();
             static const QHash<QString, std::pair<int, QFont::Weight>> styles{
@@ -1484,10 +1495,6 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 {"title3", {15, QFont::Normal}}, {"headline", {13, QFont::Bold}}, {"subheadline", {11, QFont::Normal}},
                 {"body", {13, QFont::Normal}}, {"callout", {12, QFont::Normal}}, {"footnote", {10, QFont::Normal}},
                 {"caption", {10, QFont::Normal}}, {"caption2", {10, QFont::Normal}}};
-            static const QHash<QString, QFont::Weight> weights{
-                {"ultraLight", QFont::ExtraLight}, {"thin", QFont::Thin}, {"light", QFont::Light}, {"regular", QFont::Normal},
-                {"medium", QFont::Medium}, {"semibold", QFont::DemiBold}, {"bold", QFont::Bold}, {"heavy", QFont::ExtraBold},
-                {"black", QFont::Black}};
             const QString base = parts.value(0);
             if (base.startsWith(QLatin1String("system:"))) {
                 font.setPixelSize(qMax(1, qRound(base.mid(7).toDouble())));
@@ -1497,11 +1504,11 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 font.setWeight(it->second);
             }
             for (const QString &part : parts.mid(1)) {
-                if (part.startsWith(QLatin1String("weight:"))) font.setWeight(weights.value(part.mid(7), QFont::Normal));
+                if (part.startsWith(QLatin1String("weight:"))) font.setWeight(fontWeightForName(part.mid(7)));
                 else if (part == QLatin1String("bold")) font.setWeight(QFont::Bold);
                 else if (part == QLatin1String("monospacedDigit")) font.setFeature(QFont::Tag("tnum"), 1);
-                else if (part == QLatin1String("design:monospaced")) font.setFamilies({QStringLiteral("DejaVu Sans Mono"), QStringLiteral("monospace")});
-                else if (part.startsWith(QLatin1String("family:"))) font.setFamilies({part.mid(7)});   // Font.custom(_:size:)
+                else if (part == QLatin1String("design:monospaced")) font.setFamilies(QFontDatabase::systemFont(QFontDatabase::FixedFont).families());
+                else if (part.startsWith(QLatin1String("family:"))) font = fontFor(part.mid(7).toUtf8().constData(), font.pixelSize() > 0 ? font.pixelSize() : font.pointSizeF());   // Font.custom(_:size:)
             }
             widget->setFont(font);
         } else if (kind == "rotationEffect") {
@@ -2071,6 +2078,25 @@ private:
 /// (QScrollArea's own hint is capped at a few dozen characters, so the Spacer took half the row.)
 class SwiftUIScrollArea : public QScrollArea {
 public:
+    SwiftUIScrollArea() {
+        for (QScrollBar *bar : {horizontalScrollBar(), verticalScrollBar()}) {
+            QObject::connect(bar, &QScrollBar::rangeChanged, this, [this] { scheduleGeometry(); });
+            QObject::connect(bar, &QScrollBar::valueChanged, this, [this] {
+                if (m_applyingOffset) return;
+                m_pendingOffset = false;
+                reportGeometry();
+            });
+        }
+    }
+    void bindAppKit(uint64_t handle, const QString &panel, const QJsonObject &node) {
+        m_handle = handle; m_panel = panel; m_nodeID = node.value("id").toString();
+        const QJsonObject doubles = node.value("doubleParams").toObject();
+        m_pendingOffset = doubles.contains("scrollX") && doubles.contains("scrollY");
+        m_desiredOffset = QPoint(qRound(doubles.value("scrollX").toDouble()), qRound(doubles.value("scrollY").toDouble()));
+        setProperty("appKitScroll", true);
+        setProperty("appKitScrollNode", panel + QLatin1Char('|') + m_nodeID);
+        scheduleGeometry();
+    }
     QSize sizeHint() const override {
         QSize hint = QScrollArea::sizeHint();
         if (horizontalOnly && widget())
@@ -2078,6 +2104,46 @@ public:
         return hint;
     }
     bool horizontalOnly = false;
+protected:
+    void resizeEvent(QResizeEvent *event) override { QScrollArea::resizeEvent(event); scheduleGeometry(); }
+    void showEvent(QShowEvent *event) override { QScrollArea::showEvent(event); scheduleGeometry(); }
+private:
+    void scheduleGeometry() {
+        if (!m_handle || m_geometryQueued) return;
+        m_geometryQueued = true;
+        QTimer::singleShot(0, this, [this] {
+            m_geometryQueued = false;
+            if (!isVisible() || !widget()) return;
+            if (m_pendingOffset) {
+                m_applyingOffset = true;
+                horizontalScrollBar()->setValue(m_desiredOffset.x());
+                verticalScrollBar()->setValue(m_desiredOffset.y());
+                m_applyingOffset = false;
+                m_pendingOffset = false;
+            }
+            reportGeometry();
+        });
+    }
+    void reportGeometry() {
+        if (!m_handle || !isVisible() || !widget() || viewport()->width() <= 0 || viewport()->height() <= 0) return;
+        const QByteArray payload = QJsonDocument(QJsonObject{{"width", viewport()->width()}, {"height", viewport()->height()},
+            {"documentWidth", widget()->width()}, {"documentHeight", widget()->height()},
+            {"x", horizontalScrollBar()->value()}, {"y", verticalScrollBar()->value()}}).toJson(QJsonDocument::Compact);
+        if (payload == m_lastGeometry) return;
+        const QByteArray panel = m_panel.toUtf8(), node = m_nodeID.toUtf8();
+        // Viewport synchronization paints the current widgets; it does not dispatch a document action or rebuild
+        // the panel under a scrollbar drag. A pending AppKit reveal can independently invalidate its tree.
+        if (compositor_session_dispatch_swiftui_action(m_handle, panel.constData(), node.constData(), "scrollGeometry",
+            reinterpret_cast<const uint8_t *>(payload.constData()), payload.size()) != 0) return;
+        m_lastGeometry = payload;
+        widget()->update();
+        for (QWidget *child : widget()->findChildren<QWidget *>()) child->update();
+    }
+    uint64_t m_handle = 0;
+    QString m_panel, m_nodeID;
+    QPoint m_desiredOffset;
+    QByteArray m_lastGeometry;
+    bool m_pendingOffset = false, m_applyingOffset = false, m_geometryQueued = false;
 };
 
 /// `VStack`/`HStack` share everything but the layout's orientation.
@@ -2887,7 +2953,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 combo->addItem(items[i].text);
                 if (!items[i].family.isEmpty()) {
                     QFont face = combo->font();
-                    face.setFamilies({items[i].family});
+                    face = fontFor(items[i].family.toUtf8().constData(), face.pixelSize() > 0 ? face.pixelSize() : face.pointSizeF());
                     combo->setItemData(combo->count() - 1, face, Qt::FontRole);
                 }
                 tags << items[i].tag;
@@ -3153,6 +3219,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 scrollArea->setWidget(content);
             }
         }
+        if (bools.value("appKitScroll").toBool()) scrollArea->bindAppKit(handle, panel, node);
         widget = scrollArea;
     } else if (kind == "Spacer") {
         auto *spacer = new QWidget;
@@ -3185,8 +3252,14 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         auto *appKit = new SwiftUIAppKitWidget(handle, panel, id);
         const QJsonObject doubles = node.value("doubleParams").toObject();
         if (doubles.contains("height")) {
-            appKit->setFixedHeight(qMax(1, qRound(doubles.value("height").toDouble())));
-            appKit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            const int height = qMax(1, qRound(doubles.value("height").toDouble()));
+            if (bools.value("tableDocument").toBool()) {
+                appKit->setMinimumHeight(height);
+                appKit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            } else {
+                appKit->setFixedHeight(height);
+                appKit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            }
         }
         if (doubles.contains("width")) appKit->setMinimumWidth(qRound(doubles.value("width").toDouble()));
         // Views over it (a field being edited), where the node puts them; a field takes the keys with its text selected.
@@ -3250,6 +3323,13 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         return nullptr;
     }
 
+    if (widget && node.value("doubleParams").toObject().contains("nativeMinWidth")) {
+        const double minimum = node.value("doubleParams").toObject().value("nativeMinWidth").toDouble();
+        if (std::isfinite(minimum) && minimum >= 0) {
+            widget->setMinimumWidth(qRound(qBound(1.0, minimum, double(QWIDGETSIZE_MAX))));
+            widget->setSizePolicy(QSizePolicy::Expanding, widget->sizePolicy().verticalPolicy());
+        }
+    }
     applyModifiers(widget, node.value("modifiers").toArray());
 
     if (widget) {
@@ -3331,6 +3411,63 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
 }
 
 } // namespace
+
+extern "C" int32_t compositor_host_measure_swiftui(const uint8_t *json, size_t count, double width, double height,
+                                                   double *measuredWidth, double *measuredHeight) {
+    Q_UNUSED(height);
+    if (!qobject_cast<QApplication *>(QCoreApplication::instance()) || !json || !measuredWidth || !measuredHeight
+        || count > static_cast<size_t>(std::numeric_limits<int>::max())) return 0;
+    QJsonObject node = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char *>(json), static_cast<int>(count))).object();
+    static const QStringList leaves{"Text", "Button", "Toggle", "TextField", "Slider", "Picker", "Label", "Image"};
+    if (!leaves.contains(node.value("kind").toString())) return 0;
+    // Measure with the actual widget builder, without event/lifecycle modifiers or opaque native content.
+    // Unknown descendants keep the whole response unknown rather than silently shrinking a control's label.
+    std::function<bool(QJsonObject &, bool)> sanitize = [&](QJsonObject &value, bool root) {
+        const QString kind = value.value("kind").toString();
+        if (!leaves.contains(kind) && kind != "HStack" && kind != "VStack" && kind != "Group" && kind != "_ViewList") return false;
+        if (kind == "Image" && !value.value("stringParams").toObject().value("source").toString().startsWith("system:")) return false;
+        value["handlerKeys"] = QJsonArray{};
+        QJsonObject bools = value.value("boolParams").toObject();
+        bools.remove("focused"); value["boolParams"] = bools;
+        QJsonArray modifiers;
+        static const QStringList styles{"font", "controlSize", "buttonStyle", "buttonBorderShape", "toggleStyle",
+            "pickerStyle", "textFieldStyle", "multilineTextAlignment", "lineLimit", "foregroundStyle", "keyboardShortcut"};
+        for (const auto &entry : value.value("modifiers").toArray()) {
+            const QString name = entry.toObject().value("kind").toString();
+            if (styles.contains(name) || (!root && (name == "frame" || name == "padding"))) modifiers.append(entry);
+        }
+        value["modifiers"] = modifiers;
+        QJsonArray children;
+        for (const auto &entry : value.value("children").toArray()) {
+            QJsonObject child = entry.toObject();
+            if (!sanitize(child, false)) return false;
+            children.append(child);
+        }
+        value["children"] = children;
+        return true;
+    };
+    if (!sanitize(node, true)) return 0;
+    std::unique_ptr<QWidget> widget(buildNode(0, {}, node));
+    if (!widget) return 0;
+    widget->ensurePolished();
+    QSize hint = widget->sizeHint().expandedTo(widget->minimumSize()).boundedTo(widget->maximumSize());
+    if (auto *label = qobject_cast<QLabel *>(widget.get()); label && label->pixmap().isNull()) {
+        const bool wraps = label->wordWrap();
+        label->setWordWrap(false);
+        label->setText(node.value("stringParams").toObject().value("text").toString());
+        hint = label->sizeHint();
+        label->setWordWrap(wraps);
+        if (std::isfinite(width) && width >= 0 && width < hint.width()) {
+            const int offered = qMax(1, static_cast<int>(std::ceil(width)));
+            hint.setWidth(static_cast<int>(std::ceil(width)));
+            if (wraps) hint.setHeight(label->heightForWidth(offered));
+        }
+        hint = hint.boundedTo(label->maximumSize());
+    }
+    if (!hint.isValid()) return 0;
+    *measuredWidth = hint.width(); *measuredHeight = hint.height();
+    return 1;
+}
 
 bool swiftUIDragGestureActive(uint64_t sessionHandle) {
     return DragTracker::shared().isActive() && DragTracker::shared().handle() == sessionHandle;

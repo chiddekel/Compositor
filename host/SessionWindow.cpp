@@ -5,6 +5,7 @@
 // codecs (IO milestone: file-map "IO / codec mapping" tier).
 
 #include "SessionWindow.h"
+#include "compositor_host_run.h"
 #include "PerfTrace.h"
 #include "ProjectPackageLimits.h"
 
@@ -95,6 +96,9 @@ static bool needsUpstreamImporter(const QString &path);
 #include <QFrame>
 #include <QToolButton>
 #include <QMenu>
+#include <QInputDevice>
+#include <QPointingDevice>
+#include <functional>
 #include <QCursor>
 #include <QPixmap>
 #include <QWheelEvent>
@@ -133,6 +137,7 @@ int64_t compositor_app_menus(uint8_t *output, size_t capacity);
 int32_t compositor_app_menu_perform(const char *path);
 int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
 int64_t compositor_popup_menu_items(uint8_t *output, size_t capacity);
+void compositor_set_touch_targets(int32_t on);
 void compositor_register_event_pump(int32_t (*pump)(void));
 int32_t compositor_host_pump_events(void);
 void compositor_popup_menu_choose(int32_t index);
@@ -752,6 +757,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     // Central canvas widget:
     m_canvasWidget = new SessionCanvasWidget(this);
     m_canvasWidget->setObjectName("editorCanvas");
+    m_canvasWidget->installEventFilter(this);
     // canvasPaintEvent fills every pixel (the surround first): nothing behind it needs painting.
     m_canvasWidget->setAttribute(Qt::WA_OpaquePaintEvent, true);
     // ContentView's canvas column: the ruler corner and the top ruler over the left ruler and the canvas (rulers only
@@ -892,13 +898,18 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     emptyTitle->setFixedHeight(0);
     emptyTitle->hide();
     dock->setTitleBarWidget(emptyTitle);
-    dock->setFixedWidth(ParityMetrics::LayersPanelDefaultWidth);
+    dock->setMinimumWidth(ParityMetrics::LayersPanelMinWidth);
+    dock->setMaximumWidth(ParityMetrics::LayersPanelMaxWidth);
+    const int savedLayersWidth = qRound(compositor_session_layers_panel_width(m_sessionHandle, 0));
+    dock->resize(savedLayersWidth, dock->height());
+    dock->installEventFilter(this);
 
     m_layersStack = new QStackedWidget(dock);
     m_layersStack->setObjectName("layersStack");
 
     auto *panel = new QWidget(m_layersStack);
     m_legacyLayersPanel = panel;
+    panel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
@@ -1076,6 +1087,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     dock->setWidget(m_layersStack);
     addDockWidget(Qt::RightDockWidgetArea, dock);
+    resizeDocks({dock}, {savedLayersWidth}, Qt::Horizontal);
 
     // Floating "Adjustments" palette: one row per adjustment, opens its sheet.
     {
@@ -1294,6 +1306,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     // (previews, Task {} in button actions) runs here, and whatever it changed shows.
     // AppKit tracking loops (NSWindow.nextEvent) wait on Qt's event loop.
     compositor_register_event_pump(compositor_host_pump_events);
+    installTouchTargets();
     m_mainPumpTimer = new QTimer(this);
     m_mainPumpTimer->setInterval(16);
     connect(m_mainPumpTimer, &QTimer::timeout, this, [this] {
@@ -1765,6 +1778,18 @@ SessionWindow::~SessionWindow() {
 }
 
 bool SessionWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_layersDock && event->type() == QEvent::Resize && !m_layersResizeQueued) {
+        m_layersResizeQueued = true;
+        QTimer::singleShot(0, this, [this] {
+            m_layersResizeQueued = false;
+            updateLayersPanel();
+        });
+    }
+    if ((watched == m_canvasWidget || watched == m_textEditor) && event->type() == QEvent::ShortcutOverride) {
+        // Canvas changes debounce the menu refresh. Validate before Qt matches a key equivalent, as AppKit does
+        // on use, so an immediate Undo/Redo cannot be swallowed by the previous edit's disabled action.
+        syncAppMenus();
+    }
     if (watched == m_textEditor && event->type() == QEvent::KeyPress) {
         auto *key = static_cast<QKeyEvent *>(event);
         const bool apply = (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) && (key->modifiers() & Qt::ControlModifier);
@@ -4059,7 +4084,12 @@ bool SessionWindow::sendCommand(const QJsonObject &command) {
         reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
     --m_commandDepth;
     endBusy();
-    if (result != 0) statusBar()->showMessage(sessionState().value("error").toString(tr("Could not apply the operation.")), 5000);
+    if (result != 0) {
+        // Upstream's guarded actions leave the UI unchanged. Retain the reason for diagnostics; its own alerts
+        // still present paint/import errors through showSessionAlert instead of adding status-bar error text.
+        qWarning().noquote() << "Compositor command refused:" << command.value("action").toString()
+                            << sessionState().value("error").toString();
+    }
     if (result == 0 && command.value("action").toString().startsWith("text")) {
         syncToolFromSession();
         syncTextEditor();
@@ -6087,6 +6117,10 @@ void SessionWindow::applyDarkTheme() {
             border-right: none;
             border-bottom: none;
         }
+        QDockWidget > QWidget#layersStack {
+            /* The main-window separator supplies the seam; panel widths describe the content area. */
+            border: none;
+        }
         QTreeView {
             background-color: #1a1a1c;
             alternate-background-color: #202023;
@@ -6237,6 +6271,47 @@ void SessionWindow::applyDarkTheme() {
         qApp->setStyleSheet(styled);
     }
     setStyleSheet(styled);
+}
+
+namespace {
+/// Track the active input device once for the application. Synthesized mouse events from a finger keep touch mode;
+/// a real mouse or pen press restores the normal hit regions. Visible control geometry stays upstream's.
+class TouchTargetFilter : public QObject {
+public:
+    TouchTargetFilter() : QObject(qApp) { compositor_set_touch_targets(0); }
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        const QEvent::Type type = event->type();
+        if (type != QEvent::TouchBegin && type != QEvent::MouseButtonPress && type != QEvent::TabletPress) return false;
+        const auto *pointer = static_cast<QPointerEvent *>(event);
+        if (!pointer->device()) return false;
+        const bool touch = pointer->device()->type() == QInputDevice::DeviceType::TouchScreen;
+        const auto pointerType = pointer->pointingDevice()->pointerType();
+        const bool pen = pointerType == QPointingDevice::PointerType::Pen
+            || pointerType == QPointingDevice::PointerType::Eraser;
+        // A synthetic mouse event can follow either touch or tablet input. Keep the physical event's mode when
+        // the mouse device carries no touchscreen or pen identity; this also handles operating-system synthesis.
+        if (type == QEvent::MouseButtonPress && !touch && !pen
+            && static_cast<QMouseEvent *>(event)->source() != Qt::MouseEventNotSynthesized) return false;
+        if (touch != m_large) {
+            m_large = touch;
+            compositor_set_touch_targets(touch ? 1 : 0);
+        }
+        return false;
+    }
+private:
+    bool m_large = false;
+};
+} // namespace
+
+void SessionWindow::installTouchTargets() {
+    // Application-owned, with no window callback: closing a window cannot leave a dangling capture, and additional
+    // windows do not install competing filters. QPointer also permits a later QApplication in a native test process.
+    static QPointer<TouchTargetFilter> filter;
+    if (!filter) {
+        filter = new TouchTargetFilter;
+        qApp->installEventFilter(filter);
+    }
 }
 
 /// ProjectTabButton (ProjectTabs.swift), drawn: a 28-high capsule — white 12% fill and 22% line when active, 3.5% and
@@ -7569,6 +7644,9 @@ void SessionWindow::updateLayersPanel() {
     PERF_SCOPE("updateLayersPanel");
     if (filterSliderIsDown()) return;
     if (m_sessionHandle == 0 || !m_layersDock || !m_layersStack) return;
+    const int available = m_swiftUILayersContainer->width();
+    if (available >= ParityMetrics::LayersPanelMinWidth && available <= ParityMetrics::LayersPanelMaxWidth)
+        compositor_session_layers_panel_width(m_sessionHandle, available);
     QWidget *rendered = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("LayersPanel"), m_swiftUICurrentLayersPanel);
     if (rendered && rendered == m_swiftUICurrentLayersPanel) {
             // Unchanged tree: the panel on screen already shows it (repainted, not rebuilt).
@@ -7579,6 +7657,10 @@ void SessionWindow::updateLayersPanel() {
             m_swiftUICurrentLayersPanel = nullptr;
         }
         m_swiftUICurrentLayersPanel = rendered;
+        // The dock supplies the width; a previous fixed SwiftUI frame must not prevent the next splitter resize.
+        rendered->setMinimumWidth(0);
+        rendered->setMaximumWidth(QWIDGETSIZE_MAX);
+        rendered->setSizePolicy(QSizePolicy::Ignored, rendered->sizePolicy().verticalPolicy());
         m_swiftUILayersContainer->layout()->addWidget(rendered);
         rendered->show();
         m_layersStack->setCurrentWidget(m_swiftUILayersContainer);

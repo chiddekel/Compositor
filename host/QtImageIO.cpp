@@ -12,6 +12,7 @@
 #include <QPainter>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QColorSpace>
 #include <QRawFont>
 #include <QGuiApplication>
 #include <QString>
@@ -28,6 +29,9 @@
 #include <cstdint>
 #include <vector>
 #include <memory>
+#include <zlib.h>
+#include <tiffio.h>
+#include <limits>
 
 // HEIF/HEIC/AVIF go through libheif directly: the Qt plugin for them is not dependable (it swaps the dimensions of a
 // 64x32 image on a round trip). libheif is optional; without it those formats are simply not handled here.
@@ -56,7 +60,288 @@ bool isHeifContainer(const uint8_t *d, size_t n) {
     return false;
 }
 
+// Color management follows upstream's Core Image import into 8-bit sRGB. Convert in a 16-bit intermediate before
+// reducing to document pixels; untagged images use the existing sRGB assumption. Exports carry an sRGB profile.
+QImage toSRGB(QImage image) {
+    const QColorSpace space = image.colorSpace();
+    if (!space.isValid() || space == QColorSpace(QColorSpace::SRgb)) return image;
+    const bool gray = image.format() == QImage::Format_Grayscale8 || image.format() == QImage::Format_Grayscale16;
+    // Convert color model and pixel format together. Converting gray-profile pixels to RGB first would leave the
+    // source profile describing the wrong format and prevent Qt from applying the gray transfer curve.
+    QImage wide = image.convertedToColorSpace(QColorSpace(QColorSpace::SRgb),
+        image.hasAlphaChannel() ? QImage::Format_RGBA64 : QImage::Format_RGBX64);
+    if (!wide.isNull() && gray) wide = wide.convertToFormat(QImage::Format_Grayscale16);
+    return wide;
+}
+
+QImage grayAlphaToSRGB(const QImage &image, const QColorSpace &space) {
+    const QImage source = image.convertToFormat(QImage::Format_RGBA64);
+    QImage gray(image.size(), QImage::Format_Grayscale16);
+    if (source.isNull() || gray.isNull()) return {};
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *rgba = reinterpret_cast<const QRgba64 *>(source.constScanLine(y));
+        auto *row = reinterpret_cast<uint16_t *>(gray.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) row[x] = rgba[x].red();
+    }
+    gray.setColorSpace(space);
+    QImage converted = gray.convertedToColorSpace(QColorSpace(QColorSpace::SRgb), QImage::Format_RGBA64);
+    if (converted.isNull()) return {};
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *original = reinterpret_cast<const QRgba64 *>(source.constScanLine(y));
+        auto *row = reinterpret_cast<QRgba64 *>(converted.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) row[x].setAlpha(original[x].alpha());
+    }
+    converted.setDotsPerMeterX(image.dotsPerMeterX());
+    converted.setDotsPerMeterY(image.dotsPerMeterY());
+    return converted;
+}
+
+// Qt's grayscale TIFF path loses alpha and the gray profile. Decode those samples before color conversion;
+// libtiff handles byte order, compression, planar storage and tiles without an intermediate RGBA8 reduction.
+QImage decodeGrayAlphaTIFF(const uint8_t *data, size_t length, bool &handled, int &orientation) {
+    struct Reader { const uint8_t *data; size_t size, offset; } reader{data, length, 0};
+    auto options = std::unique_ptr<TIFFOpenOptions, decltype(&TIFFOpenOptionsFree)>(TIFFOpenOptionsAlloc(), TIFFOpenOptionsFree);
+    if (!options) return {};
+    constexpr tmsize_t bufferLimit = 256 * 1024 * 1024;
+    TIFFOpenOptionsSetMaxSingleMemAlloc(options.get(), bufferLimit);
+#if TIFFLIB_VERSION >= 20240911
+    TIFFOpenOptionsSetMaxCumulatedMemAlloc(options.get(), bufferLimit);
+#endif
+    const auto quiet = [](TIFF *, void *, const char *, const char *, va_list) -> int { return 1; };
+    TIFFOpenOptionsSetErrorHandlerExtR(options.get(), quiet, nullptr);
+    TIFFOpenOptionsSetWarningHandlerExtR(options.get(), quiet, nullptr);
+    TIFF *raw = TIFFClientOpenExt("Compositor image", "r", &reader,
+        [](thandle_t handle, void *out, tmsize_t count) -> tmsize_t {
+            auto &r = *static_cast<Reader *>(handle);
+            if (count < 0) return 0;
+            const size_t n = std::min(static_cast<size_t>(count), r.size - r.offset);
+            memcpy(out, r.data + r.offset, n); r.offset += n;
+            return static_cast<tmsize_t>(n);
+        },
+        [](thandle_t, void *, tmsize_t) -> tmsize_t { return 0; },
+        [](thandle_t handle, toff_t value, int origin) -> toff_t {
+            auto &r = *static_cast<Reader *>(handle);
+            uint64_t target = value;
+            if (origin != SEEK_SET) {
+                const uint64_t base = origin == SEEK_CUR ? r.offset : origin == SEEK_END ? r.size : UINT64_MAX;
+                if (base == UINT64_MAX) return toff_t(-1);
+                if (value > INT64_MAX) {
+                    const uint64_t magnitude = uint64_t(0) - value;
+                    if (magnitude > base) return toff_t(-1);
+                    target = base - magnitude;
+                } else {
+                    if (value > UINT64_MAX - base) return toff_t(-1);
+                    target = base + value;
+                }
+            }
+            if (target > r.size) return toff_t(-1);
+            r.offset = static_cast<size_t>(target);
+            return target;
+        },
+        [](thandle_t) -> int { return 0; },
+        [](thandle_t handle) -> toff_t { return static_cast<Reader *>(handle)->size; },
+        [](thandle_t, void **, toff_t *) -> int { return 0; },
+        [](thandle_t, void *, toff_t) {}, options.get());
+    auto tif = std::unique_ptr<TIFF, decltype(&TIFFClose)>(raw, TIFFClose);
+    if (!tif) return {};
+    uint16_t samples = 0, photo = 0, extras = 0, *extraTypes = nullptr;
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_SAMPLESPERPIXEL, &samples);
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_PHOTOMETRIC, &photo);
+    if (samples != 2 || (photo != PHOTOMETRIC_MINISBLACK && photo != PHOTOMETRIC_MINISWHITE) ||
+        !TIFFGetField(tif.get(), TIFFTAG_EXTRASAMPLES, &extras, &extraTypes) || extras != 1 ||
+        !extraTypes || (extraTypes[0] != EXTRASAMPLE_UNASSALPHA && extraTypes[0] != EXTRASAMPLE_ASSOCALPHA)) return {};
+    handled = true;
+    uint32_t width = 0, height = 0;
+    uint16_t bits = 0, planar = 0, sampleFormat = 0, orient = 1;
+    TIFFGetField(tif.get(), TIFFTAG_IMAGEWIDTH, &width); TIFFGetField(tif.get(), TIFFTAG_IMAGELENGTH, &height);
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_BITSPERSAMPLE, &bits);
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_PLANARCONFIG, &planar);
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_SAMPLEFORMAT, &sampleFormat);
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_ORIENTATION, &orient);
+    if (!width || !height || width > uint32_t(INT_MAX) || height > uint32_t(INT_MAX) ||
+        (bits != 8 && bits != 16) || sampleFormat != SAMPLEFORMAT_UINT ||
+        (planar != PLANARCONFIG_CONTIG && planar != PLANARCONFIG_SEPARATE)) return {};
+    // Keep the Qt reader's configured admission limit (its old TIFF path used four bytes per pixel).
+    const int limit = QImageReader::allocationLimit();
+    if (limit > 0 && uint64_t(width) * height > uint64_t(limit) * 1024 * 1024 / 4) return {};
+    QImage image(int(width), int(height), QImage::Format_RGBA64);
+    if (image.isNull()) return {};
+    const bool separate = planar == PLANARCONFIG_SEPARATE, associated = extraTypes[0] == EXTRASAMPLE_ASSOCALPHA;
+    const uint32_t maximum = bits == 8 ? 255 : 65535;
+    const auto unpack = [&](const uint8_t *grayData, const uint8_t *alphaData, uint32_t x, uint32_t y,
+                            uint32_t count, size_t first) {
+        auto *out = reinterpret_cast<QRgba64 *>(image.scanLine(int(y)));
+        const auto sample = [&](const uint8_t *p, size_t i) -> uint32_t {
+            if (bits == 8) return p[i];
+            uint16_t value; memcpy(&value, p + i * 2, 2); return value;
+        };
+        for (uint32_t i = 0; i < count; ++i) {
+            const size_t index = first + i;
+            uint32_t g = sample(grayData, index * (separate ? 1 : 2));
+            const uint32_t a = sample(alphaData, separate ? index : index * 2 + 1);
+            if (associated) g = a ? std::min(maximum, (g * maximum + a / 2) / a) : 0;
+            if (photo == PHOTOMETRIC_MINISWHITE) g = maximum - g;
+            const auto gray = uint16_t((g * 65535 + maximum / 2) / maximum);
+            const auto alpha = uint16_t((a * 65535 + maximum / 2) / maximum);
+            out[x + i] = QRgba64::fromRgba64(gray, gray, gray, alpha);
+        }
+    };
+    const bool tiled = TIFFIsTiled(tif.get());
+    uint32_t blockWidth = width, blockHeight = 0;
+    if (tiled) {
+        TIFFGetField(tif.get(), TIFFTAG_TILEWIDTH, &blockWidth); TIFFGetField(tif.get(), TIFFTAG_TILELENGTH, &blockHeight);
+    } else TIFFGetFieldDefaulted(tif.get(), TIFFTAG_ROWSPERSTRIP, &blockHeight);
+    const uint64_t rowBytes = tiled ? TIFFTileRowSize64(tif.get()) : TIFFScanlineSize64(tif.get());
+    const uint64_t blockBytes = tiled ? TIFFTileSize64(tif.get()) : TIFFStripSize64(tif.get());
+    if (!blockWidth || !blockHeight || !blockBytes || blockBytes > uint64_t(bufferLimit) ||
+        rowBytes < uint64_t(blockWidth) * (separate ? 1 : 2) * (bits / 8)) return {};
+    std::vector<uint8_t> gray, alpha;
+    try {
+        gray.resize(blockBytes);
+        if (separate) alpha.resize(blockBytes);
+    } catch (const std::bad_alloc &) { return {}; }
+    for (uint32_t y = 0; y < height;) {
+        const uint32_t rows = std::min(blockHeight, height - y);
+        for (uint32_t x = 0; x < width;) {
+            const uint32_t columns = std::min(blockWidth, width - x);
+            const auto read = [&](std::vector<uint8_t> &buffer, uint16_t plane) -> tmsize_t {
+                return tiled ? TIFFReadEncodedTile(tif.get(), TIFFComputeTile(tif.get(), x, y, 0, plane), buffer.data(), tmsize_t(blockBytes))
+                             : TIFFReadEncodedStrip(tif.get(), TIFFComputeStrip(tif.get(), y, plane), buffer.data(), tmsize_t(blockBytes));
+            };
+            if (!rowBytes || rows > blockBytes / rowBytes) return {};
+            const uint64_t needed = rowBytes * rows;
+            if (read(gray, 0) < tmsize_t(needed) || (separate && read(alpha, 1) < tmsize_t(needed))) return {};
+            for (uint32_t row = 0; row < rows; ++row) {
+                const auto *g = gray.data() + rowBytes * row;
+                const auto *a = separate ? alpha.data() + rowBytes * row : g;
+                unpack(g, a, x, y + row, columns, 0);
+            }
+            x += columns;
+        }
+        y += rows;
+    }
+    uint32_t profileSize = 0; void *profile = nullptr;
+    if (TIFFGetField(tif.get(), TIFFTAG_ICCPROFILE, &profileSize, &profile)) {
+        if (!profile || !profileSize || profileSize > 4 * 1024 * 1024) return {};
+        const QColorSpace space = QColorSpace::fromIccProfile(QByteArray(static_cast<const char *>(profile), profileSize));
+        if (!space.isValid()) return {};
+        if (space.colorModel() == QColorSpace::ColorModel::Gray) image = grayAlphaToSRGB(image, space);
+        else if (space.colorModel() == QColorSpace::ColorModel::Rgb) { image.setColorSpace(space); image = toSRGB(image); }
+        else return {};
+    } else image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+    if (image.isNull()) return {};
+    float xResolution = 0, yResolution = 0; uint16_t unit = RESUNIT_NONE;
+    TIFFGetField(tif.get(), TIFFTAG_XRESOLUTION, &xResolution); TIFFGetField(tif.get(), TIFFTAG_YRESOLUTION, &yResolution);
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_RESOLUTIONUNIT, &unit);
+    const double factor = unit == RESUNIT_INCH ? 1 / 0.0254 : unit == RESUNIT_CENTIMETER ? 100 : 0;
+    if (factor && xResolution > 0 && xResolution * factor < INT_MAX) image.setDotsPerMeterX(int(std::lround(xResolution * factor)));
+    if (factor && yResolution > 0 && yResolution * factor < INT_MAX) image.setDotsPerMeterY(int(std::lround(yResolution * factor)));
+    orientation = orient >= 1 && orient <= 8 ? orient : 1;
+    return image;
+}
+
+// Qt expands grayscale PNGs with alpha to RGB, then rejects their gray ICC profile as incompatible with
+// that pixel format. Recover only that profile; keep the original alpha outside the gray conversion.
+QImage grayPNGToSRGB(QImage image, const uint8_t *data, size_t length) {
+    if (image.colorSpace().isValid() || !image.hasAlphaChannel() || length < 33 ||
+        memcmp(data, "\x89PNG\r\n\x1a\n", 8) || memcmp(data + 12, "IHDR", 4) ||
+        (data[25] != 0 && data[25] != 4)) return image;
+    const auto read32 = [](const uint8_t *p) -> uint32_t {
+        return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    };
+    constexpr size_t profileLimit = 4 * 1024 * 1024;
+    for (size_t offset = 8; length - offset >= 12;) {
+        const uint32_t size = read32(data + offset);
+        if (size > length - offset - 12) return image;
+        const uint8_t *type = data + offset + 4, *payload = type + 4;
+        if (!memcmp(type, "iCCP", 4)) {
+            if (size > profileLimit || crc32(0, type, size + 4) != read32(payload + size)) return image;
+            const auto *separator = static_cast<const uint8_t *>(memchr(payload, 0, size));
+            if (!separator || separator == payload || separator - payload > 79 ||
+                size - size_t(separator - payload) < 3 || separator[1] != 0)
+                return image;
+            QByteArray profile(static_cast<qsizetype>(profileLimit), Qt::Uninitialized);
+            uLongf outputSize = profileLimit;
+            if (uncompress(reinterpret_cast<Bytef *>(profile.data()), &outputSize, separator + 2,
+                           static_cast<uLong>(payload + size - separator - 2)) != Z_OK) return image;
+            profile.resize(static_cast<qsizetype>(outputSize));
+            const QColorSpace space = QColorSpace::fromIccProfile(profile);
+            if (!space.isValid() || space.colorModel() != QColorSpace::ColorModel::Gray) return image;
+            return grayAlphaToSRGB(image, space);
+        }
+        if (!memcmp(type, "IDAT", 4) || !memcmp(type, "IEND", 4)) break;
+        offset += size_t(size) + 12;
+    }
+    return image;
+}
+
 #if defined(COMPOSITOR_HAS_LIBHEIF)
+// The color space a HEIF image declares: an embedded ICC profile, else its CICP (nclx) primaries and transfer; none
+// declared is sRGB.
+QColorSpace heifColorSpace(const heif_image_handle *handle) {
+    const heif_color_profile_type type = heif_image_handle_get_color_profile_type(handle);
+    if (type == heif_color_profile_type_prof || type == heif_color_profile_type_rICC) {
+        const size_t size = heif_image_handle_get_raw_color_profile_size(handle);
+        if (size > 4 * 1024 * 1024) return {};   // do not allocate an unbounded embedded profile
+        QByteArray icc(static_cast<qsizetype>(size), Qt::Uninitialized);
+        if (!icc.isEmpty() && heif_image_handle_get_raw_color_profile(handle, icc.data()).code == heif_error_Ok) {
+            const QColorSpace space = QColorSpace::fromIccProfile(icc);
+            if (space.isValid()) return space;
+        }
+    }
+    heif_color_profile_nclx *nclx = nullptr;
+    QColorSpace space(QColorSpace::SRgb);
+    if (heif_image_handle_get_nclx_color_profile(handle, &nclx).code == heif_error_Ok && nclx) {
+        auto transfer = QColorSpace::TransferFunction::Custom;
+        float gamma = 0;
+        bool bt709 = false;
+        switch (nclx->transfer_characteristics) {
+            case heif_transfer_characteristic_unspecified:
+            case heif_transfer_characteristic_IEC_61966_2_1: transfer = QColorSpace::TransferFunction::SRgb; break;
+            case heif_transfer_characteristic_linear: transfer = QColorSpace::TransferFunction::Linear; break;
+            case heif_transfer_characteristic_ITU_R_BT_470_6_System_M: transfer = QColorSpace::TransferFunction::Gamma; gamma = 2.2f; break;
+            case heif_transfer_characteristic_ITU_R_BT_470_6_System_B_G: transfer = QColorSpace::TransferFunction::Gamma; gamma = 2.8f; break;
+            case heif_transfer_characteristic_ITU_R_BT_709_5:
+            case heif_transfer_characteristic_ITU_R_BT_601_6: bt709 = true; break;
+            case heif_transfer_characteristic_ITU_R_BT_2020_2_10bit:
+            case heif_transfer_characteristic_ITU_R_BT_2020_2_12bit: transfer = QColorSpace::TransferFunction::Bt2020; break;
+            case heif_transfer_characteristic_ITU_R_BT_2100_0_PQ: transfer = QColorSpace::TransferFunction::St2084; break;
+            case heif_transfer_characteristic_ITU_R_BT_2100_0_HLG: transfer = QColorSpace::TransferFunction::Hlg; break;
+            default: break;   // an unsupported declared curve must not be silently treated as sRGB
+        }
+        if (transfer != QColorSpace::TransferFunction::Custom || bt709) {
+            const auto initialTransfer = bt709 ? QColorSpace::TransferFunction::Linear : transfer;
+            if (nclx->color_primaries == heif_color_primaries_unspecified) {
+                space = QColorSpace(QColorSpace::Primaries::SRgb, initialTransfer, gamma);
+            } else {
+                space = QColorSpace(QPointF(nclx->color_primary_white_x, nclx->color_primary_white_y),
+                    QPointF(nclx->color_primary_red_x, nclx->color_primary_red_y),
+                    QPointF(nclx->color_primary_green_x, nclx->color_primary_green_y),
+                    QPointF(nclx->color_primary_blue_x, nclx->color_primary_blue_y), initialTransfer, gamma);
+            }
+            if (bt709) {
+                QList<uint16_t> curve;
+                curve.reserve(65536);
+                uint16_t previous = 0;
+                for (int i = 0; i <= 65535; ++i) {
+                    const double v = i / 65535.0;
+                    const double linear = v < 0.081 ? v / 4.5 : std::pow((v + 0.099) / 1.099, 1.0 / 0.45);
+                    // The rounded BT.709 constants produce a tiny downward step at 0.081. Qt rejects a
+                    // nonmonotonic table, leaving the initial linear curve in place. Flatten that step
+                    // (less than one 8-bit level) so the declared transfer is actually applied.
+                    previous = std::max(previous, static_cast<uint16_t>(std::clamp(std::lround(linear * 65535), 0L, 65535L)));
+                    curve.append(previous);
+                }
+                space.setTransferFunction(curve);
+            }
+        } else {
+            space = {};
+        }
+        heif_nclx_color_profile_free(nclx);
+    }
+    return space;
+}
+
 int32_t decodeHeif(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height, int32_t *channels,
                    int32_t *orientation, char *uti, size_t utiCapacity) {
     heif_context *ctx = heif_context_alloc();
@@ -67,10 +352,35 @@ int32_t decodeHeif(const uint8_t *data, size_t length, uint8_t **out, int32_t *w
         heif_context_get_primary_image_handle(ctx, &handle).code == heif_error_Ok) {
         heif_decoding_options *opts = heif_decoding_options_alloc();
         // libheif applies the file's rotation/mirroring itself, so the pixels come back upright.
-        if (heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGBA, opts).code == heif_error_Ok) {
+        const auto chroma = Q_BYTE_ORDER == Q_LITTLE_ENDIAN ? heif_chroma_interleaved_RRGGBBAA_LE : heif_chroma_interleaved_RRGGBBAA_BE;
+        if (heif_decode_image(handle, &img, heif_colorspace_RGB, chroma, opts).code == heif_error_Ok) {
             int stride = 0;
-            const uint8_t *src = heif_image_get_plane_readonly(img, heif_channel_interleaved, &stride);
+            const uint8_t *raw = heif_image_get_plane_readonly(img, heif_channel_interleaved, &stride);
             const int w = heif_image_get_width(img, heif_channel_interleaved), h = heif_image_get_height(img, heif_channel_interleaved);
+            const int bits = heif_image_get_bits_per_pixel_range(img, heif_channel_interleaved);
+            // libheif stores 10/12-bit channels in 16-bit words without scaling them to 0...65535. Keep their source
+            // precision through color conversion rather than reducing to RGBA8 before applying the profile.
+            QImage decoded = raw && w > 0 && h > 0 && bits > 0 && bits <= 16
+                ? QImage(w, h, QImage::Format_RGBA64) : QImage();
+            if (!decoded.isNull()) {
+                const uint32_t maximum = (uint32_t(1) << bits) - 1;
+                for (int y = 0; y < h; ++y) {
+                    const auto *source = reinterpret_cast<const uint16_t *>(raw + static_cast<size_t>(y) * stride);
+                    auto *target = reinterpret_cast<uint16_t *>(decoded.scanLine(y));
+                    for (int x = 0; x < w; ++x) for (int c = 0; c < 4; ++c)
+                        target[x * 4 + c] = static_cast<uint16_t>((uint32_t(source[x * 4 + c]) * 65535 + maximum / 2) / maximum);
+                }
+            }
+            if (!decoded.isNull()) {
+                const QColorSpace space = heifColorSpace(handle);
+                if (!space.isValid()) decoded = {};
+                else {
+                    decoded.setColorSpace(space);
+                    decoded = toSRGB(decoded).convertToFormat(QImage::Format_RGBA8888);
+                }
+            }
+            const uint8_t *src = decoded.isNull() ? nullptr : decoded.constBits();
+            stride = decoded.isNull() ? 0 : static_cast<int>(decoded.bytesPerLine());
             auto *pixels = static_cast<uint8_t *>(malloc(static_cast<size_t>(w) * h * 4));
             if (src && pixels && w > 0 && h > 0) {
                 for (int y = 0; y < h; ++y) {
@@ -126,6 +436,15 @@ int32_t encodeHeif(const uint8_t *pixels, int32_t width, int32_t height, int32_t
                 for (int c = 0; c < 3; ++c) q[c] = a == 0 ? 0 : static_cast<uint8_t>(std::min(255, (p[c] * 255 + a / 2) / a));
                 q[3] = static_cast<uint8_t>(a);
             }
+        // Tagged sRGB (CICP 1/13: BT.709 primaries, the sRGB curve), what the document's pixels are.
+        if (heif_color_profile_nclx *nclx = heif_nclx_color_profile_alloc()) {
+            nclx->color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+            nclx->transfer_characteristics = heif_transfer_characteristic_IEC_61966_2_1;
+            nclx->matrix_coefficients = heif_matrix_coefficients_ITU_R_BT_601_6;
+            nclx->full_range_flag = 1;
+            heif_image_set_nclx_color_profile(img, nclx);
+            heif_nclx_color_profile_free(nclx);
+        }
         if (quality >= 0) heif_encoder_set_lossy_quality(encoder, static_cast<int>(quality * 100 + 0.5));
         else heif_encoder_set_lossless(encoder, 1);
         heif_encoding_options *opts = heif_encoding_options_alloc();
@@ -221,7 +540,14 @@ int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *
     const char *type = utiForFormat(reader.format());
     if (!type) return -2;
     const auto transform = reader.transformation();
-    QImage image = reader.read();
+    bool nativeTIFF = false;
+    int nativeOrientation = 1;
+    QImage image;
+    if (!strcmp(type, "public.tiff")) image = decodeGrayAlphaTIFF(data, length, nativeTIFF, nativeOrientation);
+    if (!nativeTIFF) image = reader.read();
+    if (image.isNull()) return -3;
+    image = grayPNGToSRGB(image, data, length);
+    image = toSRGB(image);
     if (image.isNull()) return -3;
 
     // Gray only when the file itself is gray; an RGB file whose pixels happen to be neutral stays colour.
@@ -238,7 +564,7 @@ int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *
     if (height) *height = converted.height();
     if (channels) *channels = ch;
     if (dpi) *dpi = image.dotsPerMeterX() > 0 ? image.dotsPerMeterX() * 0.0254 : 0.0;
-    if (orientation) *orientation = exifOrientation(transform);
+    if (orientation) *orientation = nativeTIFF ? nativeOrientation : exifOrientation(transform);
     if (uti && utiCapacity) { strncpy(uti, type, utiCapacity - 1); uti[utiCapacity - 1] = 0; }
     return 0;
 }
@@ -260,6 +586,7 @@ int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_
     } else {
         return -1;
     }
+    if (channels == 4) image.setColorSpace(QColorSpace(QColorSpace::SRgb));   // the document is sRGB: say so in the file
     if (dpi > 0) {
         const int dpm = static_cast<int>(dpi / 0.0254 + 0.5);
         image.setDotsPerMeterX(dpm);
@@ -279,6 +606,7 @@ int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_
         p.drawImage(0, 0, image);
         p.end();
         image = flat;
+        image.setColorSpace(QColorSpace(QColorSpace::SRgb));
     }
     if (!writer.write(image)) return -2;
     auto *copy = static_cast<uint8_t *>(malloc(static_cast<size_t>(bytes.size())));

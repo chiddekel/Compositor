@@ -81,7 +81,7 @@ public enum TextBackend {
         guard let coversFn else { return nil }
         let codes = scalars.map(\.value)
         var out = [UInt8](repeating: 0, count: codes.count)
-        guard coversFn(font.fontName, codes, Int32(codes.count), &out) == 1 else { return nil }
+        guard coversFn(font._backendName, codes, Int32(codes.count), &out) == 1 else { return nil }
         return out.map { $0 != 0 }
     }
 
@@ -89,7 +89,7 @@ public enum TextBackend {
     static func metrics(_ font: NSFont) -> (ascender: CGFloat, descender: CGFloat, leading: CGFloat)? {
         guard let metricsFn else { return nil }
         var ascent = 0.0, descent = 0.0, leading = 0.0
-        guard metricsFn(font.fontName, Double(font.pointSize), &ascent, &descent, &leading) == 1 else { return nil }
+        guard metricsFn(font._backendName, Double(font.pointSize), &ascent, &descent, &leading) == 1 else { return nil }
         return (CGFloat(ascent), CGFloat(descent), CGFloat(leading))
     }
 
@@ -118,7 +118,7 @@ public enum TextBackend {
         string.enumerateAttributes(in: NSRange(location: 0, length: string.length)) { attributes, range, _ in
             let face = attributes[.font] as? NSFont ?? font
             let ink = attributes[.foregroundColor] as? NSColor ?? color
-            runs.append(["location": range.location, "length": range.length, "font": face.fontName,
+            runs.append(["location": range.location, "length": range.length, "font": face._backendName,
                          "size": Double(face.pointSize), "color": [Double(ink.redComponent), Double(ink.greenComponent),
                              Double(ink.blueComponent), Double(ink.alphaComponent)]])
         }
@@ -136,7 +136,7 @@ public enum TextBackend {
             return layout(string.string, font: font, tracking: tracking, lineHeight: leading, maxWidth: maxWidth)
         }
         var width = 0.0, height = 0.0, baseline = 0.0
-        let status = string.string.withCString { text in font.fontName.withCString { name in json.withCString { runs in
+        let status = string.string.withCString { text in font._backendName.withCString { name in json.withCString { runs in
             functions.layout(text, name, Double(font.pointSize), Double(tracking), Double(leading), Double(maxWidth),
                              runs, &width, &height, &baseline)
         } } }
@@ -159,7 +159,7 @@ public enum TextBackend {
         }
         var pixels: UnsafeMutablePointer<UInt8>?
         var width: Int32 = 0, height: Int32 = 0
-        let status = string.string.withCString { text in font.fontName.withCString { name in json.withCString { runs in
+        let status = string.string.withCString { text in font._backendName.withCString { name in json.withCString { runs in
             functions.render(text, name, Double(font.pointSize), Double(tracking), Double(leading), Double(maxWidth), alignment,
                              Double(boxWidth), Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent),
                              Double(color.alphaComponent), runs, &pixels, &width, &height)
@@ -180,7 +180,7 @@ public enum TextBackend {
         _ = autoloaded
         guard let layoutFn else { return nil }
         var w = 0.0, h = 0.0, baseline = 0.0
-        let status = text.withCString { t in font.fontName.withCString { f in
+        let status = text.withCString { t in font._backendName.withCString { f in
             layoutFn(t, f, Double(font.pointSize), Double(tracking), Double(lineHeight), Double(maxWidth), &w, &h, &baseline)
         } }
         return status == 0 ? Layout(width: CGFloat(w), height: CGFloat(h), baseline: CGFloat(baseline)) : nil
@@ -215,7 +215,7 @@ public enum TextBackend {
         }
         var pixels: UnsafeMutablePointer<UInt8>?
         var w: Int32 = 0, h: Int32 = 0
-        let status = text.withCString { t in font.fontName.withCString { f in
+        let status = text.withCString { t in font._backendName.withCString { f in
             flat.withUnsafeBufferPointer { r in
                 renderRunsFn(t, f, Double(font.pointSize), Double(tracking), Double(lineHeight), Double(maxWidth), alignment,
                              Double(boxWidth), Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent),
@@ -239,7 +239,7 @@ public enum TextBackend {
         guard let renderFn else { return nil }
         var pixels: UnsafeMutablePointer<UInt8>?
         var w: Int32 = 0, h: Int32 = 0
-        let status = text.withCString { t in font.fontName.withCString { f in
+        let status = text.withCString { t in font._backendName.withCString { f in
             renderFn(t, f, Double(font.pointSize), Double(tracking), Double(lineHeight), Double(maxWidth), alignment,
                      Double(boxWidth), Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent),
                      Double(color.alphaComponent), &pixels, &w, &h)

@@ -6,6 +6,7 @@
 
 #include "interfaces/IPlatformServices.h"
 #include "ColorPickerDialog.h"
+#include "ImageImportDialog.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -109,7 +110,8 @@ public:
         return QFileDialog::getOpenFileName(QApplication::activeWindow(), QObject::tr("Open Image"), QString(), imageFilter());
     }
     QStringList chooseImagesToImport() override {
-        return QFileDialog::getOpenFileNames(QApplication::activeWindow(), QObject::tr("Import Images"), QString(), imageFilter());
+        ImageImportDialog dialog(imageFilter(), QApplication::activeWindow());
+        return dialog.exec() == QDialog::Accepted ? dialog.selectedPaths() : QStringList();
     }
     QString chooseProjectToOpen() override {
         return QFileDialog::getExistingDirectory(QApplication::activeWindow(), QObject::tr("Open Project"));

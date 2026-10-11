@@ -22,8 +22,10 @@ jobs:
         run: |
           git remote add upstream https://github.com/robbietilton/Compositor.git
           git fetch upstream main
+      - name: Vulkan shader compiler (the gate checks the bundled SPIR-V against the .comp sources)
+        run: sudo apt-get update && sudo apt-get install -y glslang-tools
       - name: Protected trees must match upstream/main
-        run: UPSTREAM_REF=upstream/main bash scripts/check-upstream-clean.sh
+        run: REQUIRE_SHADER_CHECK=1 UPSTREAM_REF=upstream/main bash scripts/check-upstream-clean.sh
 
   upstream-symbol-audit:
     runs-on: ubuntu-latest

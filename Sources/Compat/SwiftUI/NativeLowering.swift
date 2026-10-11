@@ -48,8 +48,18 @@ import Observation
         }
         guard let entry else { return RenderNode(kind: "_Empty") }
         source._updateNativeView(entry.view, state: entry.state)
+        let preferred = source._sizeThatFits(.unspecified, view: entry.view, state: entry.state)
+        if let preferred, entry.view.bounds.width <= 0 || entry.view.bounds.height <= 0 { entry.view.setFrameSize(preferred) }
         _ = revision.value
-        return lower(entry.view, path: path + "/native")
+        var node = lower(entry.view, path: path + "/native")
+        if let minimum = source._sizeThatFits(.init(width: 0, height: nil), view: entry.view, state: entry.state) {
+            node.doubleParams["nativeMinWidth"] = Double(minimum.width)
+        }
+        if let preferred {
+            node.modifiers.append(.frame(width: nil, height: preferred.height, minWidth: nil, minHeight: nil,
+                                         maxWidth: nil, maxHeight: nil, alignment: "center"))
+        }
+        return node
     }
 
     /// Forgets the views made under `scope` (a panel closed for good).
@@ -275,13 +285,67 @@ import Observation
         return node
     }
 
+    private final class ScrollGeometry {
+        weak var scroll: NSScrollView?
+        var documentSize: CGSize?
+        init(_ scroll: NSScrollView) { self.scroll = scroll }
+    }
+    private static var scrollGeometry: [ObjectIdentifier: ScrollGeometry] = [:]
+
     private static func scrollNode(_ scroll: NSScrollView, path: String) -> RenderNode {
+        scrollGeometry = scrollGeometry.filter { $0.value.scroll != nil }
+        let key = ObjectIdentifier(scroll)
+        let geometry = scrollGeometry[key] ?? ScrollGeometry(scroll)
+        scrollGeometry[key] = geometry
+        // A hosting document can temporarily fall back while its upstream container asks for fitting bounds.
+        // Its rendered dimensions remain authoritative until Qt supplies new ones.
+        if let document = scroll.documentView, document is any _AnyHostingView, let size = geometry.documentSize {
+            if document.frame.size != size { document.setFrameSize(size) }
+        }
         var node = RenderNode(kind: "ScrollView")
+        node.boolParams["appKitScroll"] = true
         // The axes it scrolls along: a scroller, or elasticity allowed, says so (a scroller-less view still scrolls).
         let horizontal = scroll.hasHorizontalScroller || scroll.horizontalScrollElasticity == .allowed
         node.boolParams["horizontal"] = horizontal
         node.boolParams["vertical"] = !(horizontal && !scroll.hasVerticalScroller && scroll.verticalScrollElasticity == .none)
         if let document = scroll.documentView { node.children = [lower(document, path: path + ".0")] }
+        if scroll.contentView.frame.width > 0, scroll.contentView.frame.height > 0, let document = scroll.documentView {
+            node.doubleParams["scrollX"] = max(0, scroll.contentView.bounds.minX - document.frame.minX)
+            node.doubleParams["scrollY"] = max(0, document.isFlipped
+                ? scroll.contentView.bounds.minY - document.frame.minY
+                : document.frame.maxY - scroll.contentView.bounds.maxY)
+        }
+        node.handlers["scrollGeometry"] = { payload in
+            guard let values = payload as? [String: Any], let document = scroll.documentView else { return }
+            func number(_ name: String) -> CGFloat? {
+                let value = (values[name] as? Double) ?? (values[name] as? Int).map(Double.init)
+                guard let value, value.isFinite, value >= 0 else { return nil }
+                return value
+            }
+            guard let width = number("width"), let height = number("height"), width > 0, height > 0,
+                  let x = number("x"), let y = number("y") else { return }
+            let pending = scroll.contentView._pendingVisibleRect
+            scroll.setFrameSize(CGSize(width: width, height: height))
+            scroll.layoutSubtreeIfNeeded()
+            if let documentWidth = number("documentWidth"), let documentHeight = number("documentHeight") {
+                let size = CGSize(width: documentWidth, height: documentHeight)
+                geometry.documentSize = size
+                if document.frame.size != size { document.setFrameSize(size) }
+            }
+            if let pending {
+                document.scrollToVisible(pending.offsetBy(dx: -document.frame.minX, dy: -document.frame.minY))
+            } else {
+                scroll.contentView.scroll(to: CGPoint(x: document.frame.minX + x,
+                    y: document.isFlipped ? document.frame.minY + y : document.frame.maxY - height - y))
+            }
+            document.needsLayout = true
+            document.layoutSubtreeIfNeeded()
+            if pending != nil {
+                let actualY = document.isFlipped ? scroll.contentView.bounds.minY - document.frame.minY
+                    : document.frame.maxY - scroll.contentView.bounds.maxY
+                if abs(actualY - y) > 0.5 { revision.bump() }
+            }
+        }
         if !scroll.hasVerticalScroller && !scroll.hasHorizontalScroller { node.modifiers.append(.scrollIndicators("never")) }
         return node
     }
@@ -293,6 +357,7 @@ import Observation
     /// text field being edited in it is a real text field over it (`children`, placed by their `frame*` parameters).
     private static func appKitNode(_ view: NSView, path: String) -> RenderNode {
         var node = RenderNode(kind: "_AppKit")
+        node.boolParams["tableDocument"] = view is NSTableView
         let ideal = idealSize(view)
         if ideal.width > 0 { node.doubleParams["width"] = Double(ideal.width) }
         if ideal.height > 0 { node.doubleParams["height"] = Double(ideal.height) }
@@ -324,13 +389,8 @@ import Observation
         return view.fittingSize
     }
 
-    /// Gives `view` the size the host drew it at, and lays it out (a table in a scroll view: the scroll view shows all
-    /// of it, the host scrolls).
+    /// Gives the document its drawing size without replacing the enclosing scroll viewport's geometry.
     static func place(_ view: NSView, size: CGSize) {
-        if let clip = view.superview as? NSClipView, let scroll = clip.superview as? NSScrollView {
-            if scroll.frame.size != size { scroll.frame.size = size }
-            scroll.layoutSubtreeIfNeeded()
-        }
         if view is NSTableView {
             if view.frame.width != size.width { view.frame.size.width = size.width }
         } else if view.frame.size != size {
@@ -437,7 +497,12 @@ import Observation
     }
 
     private static func fontToken(_ font: NSFont) -> String {
-        "system:\(Double(font.pointSize))"
+        if font._systemWeightName == nil { return "native:\(Double(font.pointSize)):\(font.fontName)" }
+        var token = "system:\(Double(font.pointSize))"
+        if let weight = font._systemWeightName { token += "+weight:\(weight)" }
+        if font._isMonospaced { token += "+design:monospaced" }
+        if font._usesMonospacedDigits { token += "+monospacedDigit" }
+        return token
     }
 }
 

@@ -5,7 +5,8 @@ import CoreGraphics
 // multiplier on dimensions), layout guides and stack views. A view lays out its own subviews and guides from the
 // active constraints that involve them, by propagation: a constraint whose one side is known fixes the other, and
 // any two of an item's minimum, maximum, center and size fix the rest. That covers constraint sets that are not
-// circular, which is what row and control layouts are; inequalities and priorities below required are ignored.
+// circular, which is what row and control layouts are. Required dimension inequalities bound an otherwise
+// unsized item's intrinsic/current size; positional inequalities and priorities below required are ignored.
 // An item a constraint leaves unsized takes its intrinsic size, then its current frame.
 
 /// Something constraints can position: a view or a layout guide.
@@ -45,6 +46,12 @@ public final class NSLayoutDimension: NSLayoutAnchor<NSLayoutDimension> {
     }
     public func constraint(equalTo anchor: NSLayoutDimension, multiplier m: CGFloat, constant c: CGFloat = 0) -> NSLayoutConstraint {
         NSLayoutConstraint(first: self, relation: .equal, second: anchor, multiplier: m, constant: c)
+    }
+    public func constraint(greaterThanOrEqualTo anchor: NSLayoutDimension, multiplier m: CGFloat, constant c: CGFloat = 0) -> NSLayoutConstraint {
+        NSLayoutConstraint(first: self, relation: .greaterThanOrEqual, second: anchor, multiplier: m, constant: c)
+    }
+    public func constraint(lessThanOrEqualTo anchor: NSLayoutDimension, multiplier m: CGFloat, constant c: CGFloat = 0) -> NSLayoutConstraint {
+        NSLayoutConstraint(first: self, relation: .lessThanOrEqual, second: anchor, multiplier: m, constant: c)
     }
 }
 
@@ -309,6 +316,35 @@ extension NSLayoutConstraint {
         }
     }
 
+    private func boundedDimension(_ preferred: CGFloat, item: NSLayoutItem, axis: Int,
+                                  constraints: [NSLayoutConstraint]) -> CGFloat {
+        var lower: CGFloat = 0, upper: CGFloat = .infinity
+        func matches(_ anchor: NSLayoutConstraint.AnyAnchor) -> Bool {
+            let position = slot(anchor.attribute)
+            return anchor.item === item && position == (axis, 3)
+        }
+        for constraint in constraints where constraint.priority == .required && constraint.relation != .equal {
+            let bound: CGFloat
+            let isLower: Bool
+            if matches(constraint.firstAttribute) {
+                if let second = constraint.secondAttribute {
+                    guard let known = value(second) else { continue }
+                    bound = known * constraint.multiplier + constraint.constant
+                } else { bound = constraint.constant }
+                isLower = constraint.relation == .greaterThanOrEqual
+            } else if let second = constraint.secondAttribute, matches(second), constraint.multiplier > 0 {
+                guard let known = value(constraint.firstAttribute) else { continue }
+                bound = (known - constraint.constant) / constraint.multiplier
+                isLower = constraint.relation == .lessThanOrEqual
+            } else { continue }
+            guard bound.isFinite else { continue }
+            if isLower { lower = max(lower, bound) } else { upper = min(upper, bound) }
+        }
+        // An infeasible interval cannot supply a size; retain the intrinsic response, as with conflicting equalities.
+        guard lower <= upper else { return preferred }
+        return min(max(preferred, lower), upper)
+    }
+
     mutating func solve(_ constraints: [NSLayoutConstraint]) {
         for c in constraints {
             for anchor in [c.firstAttribute, c.secondAttribute].compactMap({ $0 }) {
@@ -319,13 +355,37 @@ extension NSLayoutConstraint {
         }
         propagate(constraints)
         // Unsized items take their intrinsic size, then their current one; then whatever that lets the constraints fix.
+        var preferred: [ObjectIdentifier: (width: CGFloat?, height: CGFloat?)] = [:]
         for key in Array(items.keys) {
             var entry = items[key]!
             let current = entry.item.layoutFrame
             let intrinsic = (entry.item as? NSView)?.intrinsicContentSize ?? NSSize(width: -1, height: -1)
-            if entry.x.size == nil { entry.x.size = intrinsic.width >= 0 ? intrinsic.width : current.width }
-            if entry.y.size == nil { entry.y.size = intrinsic.height >= 0 ? intrinsic.height : current.height }
+            let width = entry.x.size == nil ? (intrinsic.width >= 0 ? intrinsic.width : current.width) : nil
+            let height = entry.y.size == nil ? (intrinsic.height >= 0 ? intrinsic.height : current.height) : nil
+            preferred[key] = (width, height)
+            if let width { entry.x.size = width }
+            if let height { entry.y.size = height }
             items[key] = entry
+        }
+        // Set every intrinsic dimension before evaluating sibling bounds, then settle dependent dimensions.
+        // Required equalities already determined other sizes; inequalities cannot displace those equations.
+        for _ in 0..<32 {
+            var changed = false
+            for (key, size) in preferred {
+                guard var entry = items[key] else { continue }
+                if let width = size.width {
+                    let bounded = boundedDimension(width, item: entry.item, axis: 0, constraints: constraints)
+                    changed = changed || entry.x.size != bounded
+                    entry.x.size = bounded
+                }
+                if let height = size.height {
+                    let bounded = boundedDimension(height, item: entry.item, axis: 1, constraints: constraints)
+                    changed = changed || entry.y.size != bounded
+                    entry.y.size = bounded
+                }
+                items[key] = entry
+            }
+            if !changed { break }
         }
         propagate(constraints)
         // Back from top-down y to the container's own coordinates.

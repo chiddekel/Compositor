@@ -321,6 +321,10 @@ public enum ViewResolver {
                 return [lowered]
             }
             let children = primitive._childViews.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
+            // A modifier on Group applies to every sibling, preserving the surrounding stack's layout.
+            if primitive is ModifiedContent, children.count > 1 {
+                return children.map { primitive._makeNode(children: [$0]) }
+            }
             return [primitive._makeNode(children: children)]
         }
         let path = path + "/" + String(describing: Swift.type(of: view))

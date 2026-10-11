@@ -40,7 +40,7 @@ constexpr int StatusBarZoomWidth = 62;
 
 // 5. Layers Panel (Right)
 constexpr int LayersPanelDefaultWidth = 252;
-constexpr int LayersPanelMinWidth = 202;
+constexpr int LayersPanelMinWidth = 222;
 constexpr int LayersPanelMaxWidth = 352;
 constexpr int PanelResizeHitTarget = 8;
 constexpr int LayerBaseRowHeight = 52;

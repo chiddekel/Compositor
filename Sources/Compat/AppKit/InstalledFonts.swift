@@ -17,7 +17,7 @@ enum InstalledFonts {
     }
 
     private static let coreFamilies: [String] = [
-        "system", ".appleSystemUIFont", "helvetica", "helveticaneue", "arial", "arialmt", "times", "timesnewroman",
+        "system", "monospace", ".appleSystemUIFont", "helvetica", "helveticaneue", "arial", "arialmt", "times", "timesnewroman",
         "timesnewromanpsmt", "courier", "couriernew", "menlo", "monaco", "geneva", "lucidagrande", "sfpro", "sfprotext",
         "sfprodisplay", "sfmono", "avenir", "avenirnext", "georgia", "verdana", "trebuchetms", "tahoma", "futura",
     ].map { $0.lowercased() }
@@ -25,7 +25,9 @@ enum InstalledFonts {
     private static let names: Set<String> = {
         var found = Set<String>()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let roots = ["/usr/share/fonts", "/usr/local/share/fonts", "/app/share/fonts", "/run/host/fonts",
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("../share/compositor/fonts").standardizedFileURL.path
+        let checkout = FileManager.default.currentDirectoryPath + "/third_party/fonts/inter"
+        let roots = [bundled, checkout, "/usr/share/fonts", "/usr/local/share/fonts", "/app/share/fonts", "/run/host/fonts",
                      "/run/host/user-fonts", "/run/host/local-fonts", "\(home)/.local/share/fonts", "\(home)/.fonts"]
         for root in roots {
             guard let walker = FileManager.default.enumerator(atPath: root) else { continue }

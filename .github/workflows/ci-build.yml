@@ -1,15 +1,8 @@
 name: upstream-sync build
 
-# The real "does upstream still compile and pass unmodified" drill. Needs the Flatpak
-# org.kde.Sdk sandbox (matches the exact environment this port is developed/verified in —
-# see docs/upstream-shim-worklist.md and memory linux-port-swift-sandbox-verify) and the
-# swift6 SDK extension. Runs without the Skia/OpenCV bridge libraries (building those from
-# source hits external git-mirror rate limits — see docs/retiring-compositorcore.md), so
-# the handful of Skia-only tests are skipped here; everything else — the upstream
-# Document/IO/Rendering compile itself, and the non-Skia compat/override tests — is not.
-#
-# Manual + weekly rather than per-push: the Flatpak SDK + extension install alone takes
-# several minutes, on top of the Swift build itself.
+# Merge upstream, verify source integrity, build the pinned manifest dependencies, then run the full compiled
+# suite and native combinations with real Skia/ImageIO backends, without per-test skips.
+# Manual + weekly because a cold native dependency build takes substantially longer than a cached contract run.
 on:
   workflow_dispatch: {}
   schedule:
@@ -18,44 +11,46 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder glslang-tools
 
       - name: Merge latest upstream/main
         run: |
           git remote add upstream https://github.com/robbietilton/Compositor.git
           git fetch upstream main
           git -c user.email=ci@localhost -c user.name=ci merge --no-edit upstream/main
-          bash scripts/check-upstream-clean.sh
+          REQUIRE_SHADER_CHECK=1 bash scripts/check-upstream-clean.sh
 
-      # Read after the merge, not hardcoded: the SDK major/minor must match whatever the manifest declares (the
-      # binary links against that SDK's Qt), and pinning a version here instead of the manifest's own value is
-      # exactly the bug that broke scripts/run-compositor.sh the same way (Qt_6.11 not found against an
-      # installed-but-wrong 6.10 SDK) — don't reintroduce it here.
-      - name: Read required KDE SDK version from the manifest
-        id: sdk
+      - name: Install the merged manifest's SDK and extension dependencies
         run: |
-          version=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.compositor.Client.yaml | head -n1)
-          if [ -z "$version" ]; then echo "::error::couldn't read runtime-version from the manifest"; exit 1; fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --assumeyes --install-deps-from=flathub --install-deps-only \
+            build-ci-sdk com.compositor.Client.yaml
 
-      - name: Install Flatpak + KDE SDK
-        run: |
-          sudo apt-get update && sudo apt-get install -y flatpak
-          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y --noninteractive flathub org.kde.Sdk//${{ steps.sdk.outputs.version }}
-          sudo flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.swift6//25.08 || \
-          sudo flatpak install -y --noninteractive flathub org.freedesktop.Sdk.Extension.swift6
+      - name: Cache pinned native dependencies
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: contract-native-${{ hashFiles('com.compositor.Client.yaml') }}
 
-      - name: swift build --build-tests (upstream Document/IO/Rendering unmodified)
+      - name: Build dependency modules inside the merged manifest's SDK
         run: |
-          flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//${{ steps.sdk.outputs.version }} -c \
-            'cd "$1" && PATH=/usr/lib/sdk/swift6/bin:$PATH swift build --build-tests' sh "$PWD"
+          flatpak-builder --user --force-clean --disable-rofiles-fuse --jobs=2 --stop-at=compositor \
+            build-ci-sdk com.compositor.Client.yaml
 
-      - name: swift test (non-Skia suites — no COMPOSITOR_SKIA_BRIDGE in CI)
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: contract-swiftpm-${{ hashFiles('com.compositor.Client.yaml', 'Package.swift', 'Package.resolved') }}
+
+      - name: Full compiled test suite and native Qt tool combinations
         run: |
-          flatpak run --command=sh --devel --filesystem="$PWD" org.kde.Sdk//${{ steps.sdk.outputs.version }} -c \
-            'cd "$1" && PATH=/usr/lib/sdk/swift6/bin:$PATH swift test --skip everyLayerEditRoundTripsWithSelection --skip historyBlockedDuringImportsAndDialogs' sh "$PWD"
+          flatpak-builder --run --filesystem="$PWD" build-ci-sdk com.compositor.Client.yaml \
+            bash "$PWD/scripts/linux-contract-tests.sh"

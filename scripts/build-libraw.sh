@@ -17,6 +17,8 @@ echo "$SHA256  LibRaw-$VERSION.tar.gz" | sha256sum -c -
 rm -rf "LibRaw-$VERSION"
 tar -xzf "LibRaw-$VERSION.tar.gz"
 cd "LibRaw-$VERSION"
+# The 0.22.2 OpenMP wavelet path allocates with an uninitialized pixel count.
+patch -p1 < "$ROOT/linux/patches/libraw-0.22.2-wavelet-size.patch"
 # With RawSpeed built (scripts/build-rawspeed.sh), LibRaw uses it for the formats it supports (USE_RAWSPEED3).
 RAWSPEED="$ROOT/build/rawspeed/install"
 RAWSPEED_FLAGS=""

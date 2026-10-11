@@ -12,7 +12,7 @@
 extern "C" {
 #include "AdjustPixels.h"
 #include "BrushPixels.h"
-#include "ContentFill.h"
+#include "PatchPixels.h"
 #include "HealPixels.h"
 #include "LensPixels.h"
 #include "LevelsPixels.h"
