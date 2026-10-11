@@ -399,8 +399,12 @@ int32_t decodeHeif(const uint8_t *data, size_t length, uint8_t **out, int32_t *w
                 if (height) *height = h;
                 if (channels) *channels = 4;
                 if (orientation) *orientation = 1;
+                // Typed by major brand as CGImageSourceGetType does: AV1 is AVIF, the generic MIAF brands (cameras'
+                // .hif/.heif) are public.heif, HEVC brands are public.heic.
                 const bool avif = length >= 12 && (memcmp(data + 8, "avif", 4) == 0 || memcmp(data + 8, "avis", 4) == 0);
-                if (uti && utiCapacity) { strncpy(uti, avif ? "public.avif" : "public.heic", utiCapacity - 1); uti[utiCapacity - 1] = 0; }
+                const bool heif = length >= 12 && (memcmp(data + 8, "mif1", 4) == 0 || memcmp(data + 8, "msf1", 4) == 0);
+                const char *type = avif ? "public.avif" : heif ? "public.heif" : "public.heic";
+                if (uti && utiCapacity) { strncpy(uti, type, utiCapacity - 1); uti[utiCapacity - 1] = 0; }
                 rc = 0;
             } else {
                 free(pixels);

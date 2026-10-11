@@ -108,7 +108,11 @@ public enum ImageCodecRegistry {
         if b.count >= 6, String(bytes: b[0...2], encoding: .ascii) == "GIF" { return info("com.compuserve.gif") }
         if b.count >= 2, b[0] == 0x42, b[1] == 0x4D { return info("com.microsoft.bmp") }
         if b.count >= 12, String(bytes: b[0...3], encoding: .ascii) == "RIFF", String(bytes: b[8...11], encoding: .ascii) == "WEBP" { return info("org.webmproject.webp") }
-        if b.count >= 12, String(bytes: b[4...11], encoding: .ascii)?.hasPrefix("ftypheic") == true { return info("public.heic") }
+        if b.count >= 12, String(bytes: b[4...7], encoding: .ascii) == "ftyp", let brand = String(bytes: b[8...11], encoding: .ascii) {
+            // HEVC brands are public.heic; the generic MIAF brands cameras write (.hif/.heif) are public.heif.
+            if ["heic", "heix", "hevc", "hevx", "heim", "heis"].contains(brand) { return info("public.heic") }
+            if ["mif1", "msf1"].contains(brand) { return info("public.heif") }
+        }
         return nil
     }
 }

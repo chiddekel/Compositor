@@ -89,7 +89,7 @@ Exec=$ROOT/scripts/run-compositor.sh %F
 Icon=com.compositor.Client
 Terminal=false
 Categories=Graphics;Photography;2DGraphics;RasterGraphics;
-MimeType=application/x-compositor-project;image/png;image/jpeg;image/tiff;image/webp;
+MimeType=application/x-compositor-project;image/png;image/jpeg;image/heic;image/heif;image/tiff;image/webp;
 Keywords=photo;editor;image;layers;compositing;
 EOF
 

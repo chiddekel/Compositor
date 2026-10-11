@@ -16,8 +16,10 @@ public struct UTType: Hashable, Sendable {
         "public.svg-image": Info(ext: ["svg"], mime: "image/svg+xml", parents: ["public.image"]),
         "public.jpeg": Info(ext: ["jpg", "jpeg"], mime: "image/jpeg", parents: ["public.image"]),
         "public.tiff": Info(ext: ["tiff", "tif"], mime: "image/tiff", parents: ["public.image"]),
-        "public.heic": Info(ext: ["heic"], mime: "image/heic", parents: ["public.image"]),
-        "public.heif": Info(ext: ["heif"], mime: "image/heif", parents: ["public.image"]),
+        // As on macOS: HEIC and HEIF are siblings under public.heif-standard; cameras (Canon, Sony, Fuji) write .hif.
+        "public.heif-standard": Info(ext: [], mime: nil, parents: ["public.image"]),
+        "public.heic": Info(ext: ["heic"], mime: "image/heic", parents: ["public.heif-standard"]),
+        "public.heif": Info(ext: ["heif", "hif"], mime: "image/heif", parents: ["public.heif-standard"]),
         "com.compuserve.gif": Info(ext: ["gif"], mime: "image/gif", parents: ["public.image"]),
         "com.microsoft.bmp": Info(ext: ["bmp"], mime: "image/bmp", parents: ["public.image"]),
         "org.webmproject.webp": Info(ext: ["webp"], mime: "image/webp", parents: ["public.image"]),

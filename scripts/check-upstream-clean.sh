@@ -70,7 +70,8 @@ fi
 check "override drift" python3 "$ROOT/scripts/upstream-override-drift.py" --check
 check "1.4.6–1.4.8 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.6-1.4.8-ledger.md --from 11d8d7a --to 22c7b8d
 check "1.4.9 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.9-ledger.md --from 22c7b8d --to b4bfdea
-check "post-1.4.9 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-after-1.4.9-ledger.md --include-kernels
+check "post-1.4.9 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-after-1.4.9-ledger.md --from b4bfdea --to 39d1257 --include-kernels
+check "1.4.10 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.4.10-ledger.md --include-kernels
 
 if [ "$failures" -ne 0 ]; then
   echo "UPSTREAM CHECK FAILED: $failures checks failed" >&2

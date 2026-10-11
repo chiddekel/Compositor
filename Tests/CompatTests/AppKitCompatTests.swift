@@ -78,6 +78,18 @@ final class AppKitCompatTests: XCTestCase {
         XCTAssertEqual(UTType(filenameExtension: "comp", conformingTo: .package), project)
     }
 
+    /// Camera HEIF (.hif/.heif) is public.heif, a sibling of public.heic under public.heif-standard, as on macOS.
+    func testCameraHEIFExtensionsArePublicHEIF() throws {
+        XCTAssertEqual(UTType(filenameExtension: "hif"), .heif)
+        XCTAssertEqual(UTType(filenameExtension: "HEIF"), .heif)
+        XCTAssertEqual(UTType(filenameExtension: "heic"), .heic)
+        let standard = try XCTUnwrap(UTType("public.heif-standard"))
+        XCTAssertTrue(UTType.heif.conforms(to: standard) && UTType.heic.conforms(to: standard))
+        XCTAssertTrue(UTType.heif.conforms(to: .image) && UTType.heic.conforms(to: .image))
+        XCTAssertFalse(UTType.heif.conforms(to: .heic))
+        XCTAssertFalse(UTType.heic.conforms(to: .heif))
+    }
+
     func testItemProviderResolvesConformingRepresentations() {
         let provider = NSItemProvider(representations: ["public.png": Data([7])])
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier("public.image"))

@@ -13,6 +13,20 @@ final class ImageIOCompatTests: XCTestCase {
         (x * 10 % 256, y * 12 % 256, (x + y) * 5 % 256, (x + y) % 5 != 0 ? 255 : 128)
     }
 
+    /// HEIF containers are typed by major brand like CGImageSourceGetType: HEVC brands are HEIC, the generic MIAF
+    /// brands cameras write are HEIF, and AVIF is not claimed as either.
+    func testSniffTypesHEIFContainersByMajorBrand() {
+        func box(_ brand: String) -> Data { Data([0, 0, 0, 24]) + Data("ftyp\(brand)".utf8) + Data(count: 12) }
+        for brand in ["heic", "heix", "hevc", "hevx"] {
+            XCTAssertEqual(ImageCodecRegistry.sniff(box(brand))?.typeIdentifier, "public.heic", brand)
+        }
+        for brand in ["mif1", "msf1"] {
+            XCTAssertEqual(ImageCodecRegistry.sniff(box(brand))?.typeIdentifier, "public.heif", brand)
+        }
+        XCTAssertNil(ImageCodecRegistry.sniff(box("avif")))
+        XCTAssertNil(ImageCodecRegistry.sniff(box("isom")))
+    }
+
     func testDecodesAnExternallyCompressedPNGWithEveryRowFilter() throws {
         let source = try XCTUnwrap(CGImageSourceCreateWithData(Self.reference as CFData, nil))
         XCTAssertEqual(CGImageSourceGetType(source) as String?, "public.png")
