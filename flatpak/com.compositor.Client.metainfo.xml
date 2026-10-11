@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.10-linux-alpha.1" date="2026-10-11" type="development">
+      <description><p>Catches up with Compositor 1.4.10: HEIF photos from Canon, Sony and Fuji cameras (.hif, .heif) import like HEIC; new app icon.</p></description>
+    </release>
     <release version="1.4.5-linux-alpha.10" date="2026-10-05" type="development">
       <description><p>Flatpak Save As: allow Documents/Downloads for .comp directory packages; remap portal/tmpfs paths to a durable save location.</p></description>
     </release>

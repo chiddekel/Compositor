@@ -1,10 +1,10 @@
-Compositor 1.4.5-linux-alpha.10 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.10-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
-Flatpak Save / Save As for tip 1.4.5 Linux catch-up:
+Catches up with Compositor 1.4.10:
 
-- Grant **Documents** and **Downloads** (plus localized user-dirs) so `.comp` directory packages can be written from the sandbox.
-- Portal/tmpfs save paths remap to a durable Documents (or app-data) location automatically.
-- Otherwise matches 1.4.5-linux-alpha.9 (Save As install fixes).
+- HEIF photos from Canon, Sony and Fuji cameras (`.hif`, `.heif`) import like HEIC, from the Open panel, drag and drop or a folder.
+- New app icon: a page of color peeling back to transparency.
+- Otherwise matches 1.4.5-linux-alpha.10 plus the upstream 1.4.6–1.4.10 features ported since.
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.
