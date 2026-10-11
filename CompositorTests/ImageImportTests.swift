@@ -214,4 +214,20 @@ struct ImageImportTests {
         #expect(session.document == nil)
         #expect(session.importError?.contains("has no images to import") == true)
     }
+
+    /// HEIF files from cameras (Canon, Sony and Fuji save .hif or .heif) are typed public.heif, not public.heic: the
+    /// import panel offers them and they come in like any HEIC.
+    @Test(arguments: ["hif", "heif"])
+    func cameraHEIFFilesImport(ext: String) async throws {
+        let type = try #require(UTType(filenameExtension: ext))
+        #expect(UTType.importableImages.contains { type.conforms(to: $0) }, "\(ext) is offered by the import panel")
+        let heic = try fixture(.heic)
+        let url = heic.deletingPathExtension().appendingPathExtension(ext)
+        try FileManager.default.moveItem(at: heic, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        #expect(session.importError == nil, "\(session.importError ?? "")")
+        #expect(session.document?.layers.count == 1 && session.document?.width == 64)
+    }
 }
