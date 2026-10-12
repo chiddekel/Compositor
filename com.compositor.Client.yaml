@@ -186,6 +186,62 @@ modules:
       - type: patch
         path: linux/patches/libraw-0.22.2-wavelet-size.patch
 
+  # EXR import and export (compat ImageIO through host/QtImageIO.cpp, as Apple's ImageIO reads and writes it):
+  # OpenEXR with its Imath and libdeflate, static, as scripts/build-openexr.sh builds them for the dev loop.
+  - name: libdeflate
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DLIBDEFLATE_BUILD_SHARED_LIB=OFF
+      - -DLIBDEFLATE_BUILD_GZIP=OFF
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
+        sha256: bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
+
+  - name: imath
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DBUILD_TESTING=OFF
+      - -DPYTHON=OFF
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/AcademySoftwareFoundation/Imath/archive/refs/tags/v3.2.3.tar.gz
+        sha256: e10c12b3f21f45bf08e09d4215d9c7691368d747beebd840de0b6fefed2df9f8
+
+  - name: openexr
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DBUILD_TESTING=OFF
+      - -DOPENEXR_BUILD_TOOLS=OFF
+      - -DOPENEXR_BUILD_EXAMPLES=OFF
+      - -DOPENEXR_INSTALL_EXAMPLES=OFF
+      - -DOPENEXR_INSTALL_TOOLS=OFF
+      - -DOPENEXR_BUILD_PYTHON=OFF
+      - -DOPENEXR_INSTALL_DOCS=OFF
+      - -DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF
+      - -DOPENEXR_FORCE_INTERNAL_IMATH=OFF
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/AcademySoftwareFoundation/openexr/archive/refs/tags/v3.5.1.tar.gz
+        sha256: 61559d6d0657f228f8dd5e3165ed6b74437b95e81849ad41c6d3493c0c144c1d
+
   - name: opencv
     buildsystem: cmake-ninja
     builddir: true   # OpenCV refuses in-source builds

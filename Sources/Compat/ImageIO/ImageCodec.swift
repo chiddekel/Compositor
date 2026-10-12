@@ -77,7 +77,10 @@ public enum ImageCodecRegistry {
             guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_imageio_functions") else { continue }
             var decode: CompositorImageDecodeFn?, encode: CompositorImageEncodeFn?
             if unsafeBitCast(sym, to: Functions.self)(&decode, &encode) == 1, let decode, let encode {
-                host = CCallbackCodec(decode: decode, encode: encode)
+                typealias DeepFunction = @convention(c) (UnsafeMutablePointer<CompositorImageDecodeFn?>?) -> Int32
+                var deep: CompositorImageDecodeFn?
+                if let deepSym = dlsym(handle, "compositor_qt_imageio_deep_decode") { _ = unsafeBitCast(deepSym, to: DeepFunction.self)(&deep) }
+                host = CCallbackCodec(decode: decode, encode: encode, deepDecode: deep)
                 return true
             }
         }
@@ -103,6 +106,10 @@ public enum ImageCodecRegistry {
         let b = [UInt8](d.prefix(12))
         func info(_ uti: String) -> ImageInfo { ImageInfo(typeIdentifier: uti, width: 0, height: 0) }
         if b.count >= 8, b[0...7] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] { return info("public.png") }
+        if b.count >= 4, b[0...3] == [0x76, 0x2F, 0x31, 0x01] { return info("com.ilm.openexr-image") }
+        if b.count >= 6, String(bytes: b[0...5], encoding: .ascii).map({ $0 == "#?RADI" || $0 == "#?RGBE" }) == true {
+            return info("public.radiance")
+        }
         if b.count >= 3, b[0] == 0xFF, b[1] == 0xD8, b[2] == 0xFF { return info("public.jpeg") }
         if b.count >= 4, b[0...3] == [0x49, 0x49, 0x2A, 0x00] || b[0...3] == [0x4D, 0x4D, 0x00, 0x2A] { return info("public.tiff") }
         if b.count >= 6, String(bytes: b[0...2], encoding: .ascii) == "GIF" { return info("com.compuserve.gif") }
@@ -120,7 +127,8 @@ public enum ImageCodecRegistry {
 // MARK: - C registration (the Qt host installs its codecs here)
 
 /// Decode: returns 0 on success and hands back a malloc'd premultiplied-RGBA buffer (freed by the callee's caller
-/// with `free`). `channels` is 4 for colour or 1 for a gray plane. `uti` receives a NUL-terminated identifier.
+/// with `free`). `channels` gives the layout, as bytes a pixel: 1 gray plane, 4 RGBA 8-bit, 8 RGBA 16-bit unsigned
+/// (native-endian), 16 RGBA 32-bit float (linear light: EXR, Radiance HDR). `uti` receives a NUL-terminated identifier.
 public typealias CompositorImageDecodeFn = @convention(c) (
     UnsafePointer<UInt8>?, Int, UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int32>?,
     UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Int32>?,
@@ -132,7 +140,11 @@ public typealias CompositorImageEncodeFn = @convention(c) (
 
 final class CCallbackCodec: ImageCodecBackend {
     let decodeFn: CompositorImageDecodeFn, encodeFn: CompositorImageEncodeFn
-    init(decode: @escaping CompositorImageDecodeFn, encode: @escaping CompositorImageEncodeFn) { decodeFn = decode; encodeFn = encode }
+    /// The host's deep decode (16-bit and linear-float layouts), when it has one: used instead of the 8-bit decode so
+    /// a file keeps its depth, as with Apple's ImageIO.
+    var deepDecodeFn: CompositorImageDecodeFn?
+    init(decode: @escaping CompositorImageDecodeFn, encode: @escaping CompositorImageEncodeFn,
+         deepDecode: CompositorImageDecodeFn? = nil) { decodeFn = decode; encodeFn = encode; deepDecodeFn = deepDecode }
 
     private func run(_ data: Data) -> (pixels: [UInt8], w: Int, h: Int, channels: Int, dpi: Double, orientation: Int32, uti: String)? {
         var out: UnsafeMutablePointer<UInt8>?
@@ -140,9 +152,9 @@ final class CCallbackCodec: ImageCodecBackend {
         var dpi: Double = 0
         var uti = [CChar](repeating: 0, count: 96)
         let rc = data.withUnsafeBytes { raw in
-            decodeFn(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &out, &w, &h, &channels, &dpi, &orientation, &uti, uti.count)
+            (deepDecodeFn ?? decodeFn)(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &out, &w, &h, &channels, &dpi, &orientation, &uti, uti.count)
         }
-        guard rc == 0, let out, w > 0, h > 0, channels == 1 || channels == 4 else { return nil }
+        guard rc == 0, let out, w > 0, h > 0, [1, 4, 8, 16].contains(channels) else { return nil }
         defer { free(out) }
         let count = Int(w) * Int(h) * Int(channels)
         return (Array(UnsafeBufferPointer(start: out, count: count)), Int(w), Int(h), Int(channels), dpi, orientation, String(cString: uti))
@@ -150,13 +162,14 @@ final class CCallbackCodec: ImageCodecBackend {
 
     func identify(_ data: Data) -> ImageInfo? {
         guard let r = run(data) else { return nil }
-        return ImageInfo(typeIdentifier: r.uti, width: r.w, height: r.h, bitDepth: 8, dpi: r.dpi > 0 ? r.dpi : nil,
-                         orientation: r.orientation, hasAlpha: r.channels == 4)
+        return ImageInfo(typeIdentifier: r.uti, width: r.w, height: r.h, bitDepth: r.channels == 8 ? 16 : r.channels == 16 ? 32 : 8,
+                         dpi: r.dpi > 0 ? r.dpi : nil, orientation: r.orientation, hasAlpha: r.channels != 1)
     }
     func decode(_ data: Data) -> CGImage? {
         guard let r = run(data) else { return nil }
-        let kind: PortableImage.Kind = r.channels == 4 ? .rgba : .mask
-        return CGImage(PortableImage(width: r.w, height: r.h, kind: kind, bytesPerRow: r.w * r.channels, bytes: r.pixels))
+        let kind: PortableImage.Kind = r.channels == 1 ? .mask : .rgba
+        let depth: PortableImage.Depth = r.channels == 8 ? .uint16 : r.channels == 16 ? .float32 : .uint8
+        return CGImage(PortableImage(width: r.w, height: r.h, kind: kind, depth: depth, bytesPerRow: r.w * r.channels, bytes: r.pixels))
     }
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?) -> Data? {
         encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi, orientation: 1)
@@ -164,8 +177,28 @@ final class CCallbackCodec: ImageCodecBackend {
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data? {
         var out: UnsafeMutablePointer<UInt8>?
         var length = 0
-        let channels: Int32 = image.isGrayPlane ? 1 : 4
-        let rc = image.portableImage.bytes.withUnsafeBufferPointer { px in
+        // The layout the file wants, as Apple's ImageIO writes it: EXR linear-light floats (converted from any depth),
+        // PNG / TIFF at 16 bits from a 16-bit or half-float image (half clipped to 0...1), anything else at 8 bits.
+        let native = image.nativeImage
+        let channels: Int32
+        let pixels: [UInt8]
+        if typeIdentifier == "com.ilm.openexr-image", !image.isGrayPlane {
+            let linear = native.premultipliedLinear()
+            channels = 16
+            pixels = linear.withUnsafeBytes { Array($0) }
+        } else if ["public.png", "public.tiff"].contains(typeIdentifier), !image.isGrayPlane, native.depth != .uint8 {
+            channels = 8
+            if native.depth == .uint16, native.bytesPerRow == native.width * 8 {
+                pixels = native.bytes
+            } else {
+                let values = native.premultipliedSRGB().map { UInt16(max(0, min(65535, ($0.isFinite ? $0 : 0) * 65535 + 0.5))) }
+                pixels = values.withUnsafeBytes { Array($0) }
+            }
+        } else {
+            channels = image.isGrayPlane ? 1 : 4
+            pixels = image.portableImage.bytes
+        }
+        let rc = pixels.withUnsafeBufferPointer { px in
             typeIdentifier.withCString { uti in
                 encodeFn(px.baseAddress, Int32(image.width), Int32(image.height), channels, uti, quality ?? -1, dpi ?? 0, orientation, &out, &length)
             }
@@ -177,6 +210,12 @@ final class CCallbackCodec: ImageCodecBackend {
 }
 
 /// Called by the Qt host at startup with its QImageReader/QImageWriter-backed callbacks.
+/// Called by the Qt host after `compositor_imageio_register` with its deep decode (16-bit and float layouts).
+@_cdecl("compositor_imageio_register_deep")
+public func compositor_imageio_register_deep(_ decode: CompositorImageDecodeFn?) {
+    (ImageCodecRegistry.host as? CCallbackCodec)?.deepDecodeFn = decode
+}
+
 @_cdecl("compositor_imageio_register")
 public func compositor_imageio_register(_ decode: CompositorImageDecodeFn?, _ encode: CompositorImageEncodeFn?) {
     guard let decode, let encode else { ImageCodecRegistry.host = nil; return }

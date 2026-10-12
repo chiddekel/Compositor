@@ -90,13 +90,18 @@ struct Raster {
 enum Gamma {
     static func toLinear(_ v: Float) -> Float { v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
     static func toSRGB(_ v: Float) -> Float { v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1 / 2.4) - 0.055 }
-    /// Applies `f` to the colour channels of every (unpremultiplied) pixel and re-premultiplies.
+    /// Applies `f` to the colour channels of every (unpremultiplied) pixel and re-premultiplies. As in Core Image's
+    /// extended spaces, values past 0...1 are not clipped: the curve is mirrored for negatives and carried on past
+    /// white (an HDR layer's highlights survive a linear working space).
     static func map(_ r: inout Raster, _ f: (Float) -> Float) {
         var i = 0
         while i < r.data.count {
             let a = r.data[i + 3]
             if a > 0 {
-                for c in 0..<3 { r.data[i + c] = f(min(1, max(0, r.data[i + c] / a))) * a }
+                for c in 0..<3 {
+                    let v = r.data[i + c] / a
+                    r.data[i + c] = (v < 0 ? -f(-v) : f(v)) * a
+                }
             }
             i += 4
         }

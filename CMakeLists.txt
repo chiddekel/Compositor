@@ -158,6 +158,7 @@ add_library(CompositorKernels STATIC
     linux/kernels/CheckedHealPixels.c
     linux/kernels/CheckedLensPixels.c
     Compositor/Rendering/LevelsPixels.c
+    Compositor/Rendering/DeepPixels.c
     linux/kernels/CheckedNoisePixels.c
     linux/kernels/CheckedWandPixels.c)
 target_include_directories(CompositorKernels PUBLIC ${CMAKE_SOURCE_DIR}/Compositor/Rendering)
@@ -250,6 +251,19 @@ if(Qt6_FOUND)
         if(LIBHEIF_FOUND)
             target_link_libraries(CompositorQtImageIO PRIVATE PkgConfig::LIBHEIF)
         endif()
+    endif()
+    # EXR through OpenEXR (scripts/build-openexr.sh into build/openexr/install, or the Flatpak's /app), static.
+    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/build/openexr/install" /app)
+    # OpenEXRCore links zstd through pkg-config's imported target, which its config file expects to exist.
+    if(PkgConfig_FOUND)
+        pkg_check_modules(libzstd QUIET IMPORTED_TARGET libzstd)
+    endif()
+    if(TARGET PkgConfig::libzstd)
+        find_package(OpenEXR 3.5 CONFIG QUIET)
+    endif()
+    if(OpenEXR_FOUND)
+        target_link_libraries(CompositorQtImageIO PRIVATE OpenEXR::OpenEXR)
+        target_compile_definitions(CompositorQtImageIO PRIVATE COMPOSITOR_HAS_OPENEXR=1)
     endif()
 endif()
 

@@ -927,6 +927,24 @@ struct CompCanvas {};
 struct CompPath {};
 #endif
 
+#if defined(COMPOSITOR_HAS_SKIA)
+// The bridge's pixel format codes (SkiaBridge.h): 0 RGBA8 premultiplied, 1 gray 8-bit, 2 RGBA 16-bit unsigned
+// premultiplied, 3 RGBA half float premultiplied (unclamped, an HDR layer's light past white), 4 RGBA 32-bit float
+// premultiplied (source images only). No color spaces are
+// attached: pixels move between formats as values, as Core Graphics moves them within one working space.
+static SkImageInfo comp_format_info(size_t width, size_t height, int format) {
+    const int w = static_cast<int>(width), h = static_cast<int>(height);
+    switch (format) {
+        case 1: return SkImageInfo::Make(w, h, kGray_8_SkColorType, kOpaque_SkAlphaType);
+        case 2: return SkImageInfo::Make(w, h, kR16G16B16A16_unorm_SkColorType, kPremul_SkAlphaType);
+        case 3: return SkImageInfo::Make(w, h, kRGBA_F16_SkColorType, kPremul_SkAlphaType);
+        case 4: return SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType);
+        default: return SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    }
+}
+static size_t comp_format_bytes(int format) { return format == 1 ? 1 : (format == 2 || format == 3) ? 8 : format == 4 ? 16 : 4; }
+#endif
+
 CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t height, size_t stride) {
     return compositor_canvas_create_ex(pixels, width, height, stride, 0);
 }
@@ -934,10 +952,8 @@ CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t heigh
 CompCanvas *compositor_canvas_create_ex(uint8_t *pixels, size_t width, size_t height, size_t stride, int format) {
     if (!pixels || width == 0 || height == 0) return nullptr;
 #if defined(COMPOSITOR_HAS_SKIA)
-    const bool gray = format == 1;
-    if (stride == 0) stride = width * (gray ? 1 : 4);
-    SkImageInfo info = gray ? SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height), kGray_8_SkColorType, kOpaque_SkAlphaType)
-                            : SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    if (stride == 0) stride = width * comp_format_bytes(format);
+    SkImageInfo info = comp_format_info(width, height, format);
     sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, pixels, stride);
     if (!surface) return nullptr;
     SkCanvas* canvas = surface->getCanvas();
@@ -1224,11 +1240,9 @@ void compositor_canvas_draw_image_rect(CompCanvas *canvas, const uint8_t *src_pi
 void compositor_canvas_draw_image_rect_ex(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, int src_format, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality) {
 #if defined(COMPOSITOR_HAS_SKIA)
     if (!canvas || !canvas->canvas || !src_pixels || src_w == 0 || src_h == 0) return;
-    const bool srcGray = src_format == 1;
-    if (src_stride == 0) src_stride = src_w * (srcGray ? 1 : 4);
+    if (src_stride == 0) src_stride = src_w * comp_format_bytes(src_format);
 
-    SkImageInfo srcInfo = srcGray ? SkImageInfo::Make(static_cast<int>(src_w), static_cast<int>(src_h), kGray_8_SkColorType, kOpaque_SkAlphaType)
-                                  : SkImageInfo::Make(static_cast<int>(src_w), static_cast<int>(src_h), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    SkImageInfo srcInfo = comp_format_info(src_w, src_h, src_format);
     SkPixmap srcPixmap(srcInfo, src_pixels, src_stride);
     sk_sp<SkImage> img = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
     if (!img) return;

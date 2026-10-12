@@ -9,7 +9,16 @@ import Foundation
 public final class CGContext: @unchecked Sendable {
     /// Backing pixel layout. Contexts made with Apple's `CGContext(data:...)` initialiser follow the colour space:
     /// a gray space gives a one-byte-per-pixel plane (what upstream's masks and C kernels expect).
-    public enum PixelFormat: Sendable { case rgba, gray }
+    /// `rgba16` and `rgbaHalf` are Apple's 64-bit RGBA bitmaps (16 bits a component, unsigned or half floats), for
+    /// 16-bit and HDR layers.
+    public enum PixelFormat: Sendable {
+        case rgba, gray, rgba16, rgbaHalf
+        var bytesPerPixel: Int { switch self { case .gray: 1; case .rgba: 4; case .rgba16, .rgbaHalf: 8 } }
+        /// The Skia bridge's code for the layout (SkiaBridge.h).
+        var bridgeCode: Int32 { switch self { case .rgba: 0; case .gray: 1; case .rgba16: 2; case .rgbaHalf: 3 } }
+        var depth: PortableImage.Depth { switch self { case .rgba16: .uint16; case .rgbaHalf: .half; default: .uint8 } }
+        var isDeep: Bool { self == .rgba16 || self == .rgbaHalf }
+    }
 
     public let width: Int
     public let height: Int
@@ -57,10 +66,24 @@ public final class CGContext: @unchecked Sendable {
 
     /// Matches Apple's bitmap-context layout flag; used when copying pixels byte-for-byte from a CGImage.
     public var bitmapInfo: CGBitmapInfo {
-        CGBitmapInfo(rawValue: (format == .gray ? CGImageAlphaInfo.none : CGImageAlphaInfo.premultipliedLast).rawValue)
+        CGBitmapInfo(rawValue: (format == .gray ? CGImageAlphaInfo.none : CGImageAlphaInfo.premultipliedLast).rawValue
+            | (format.isDeep ? CGBitmapInfo.byteOrder16Little.rawValue : 0)
+            | (format == .rgbaHalf ? CGBitmapInfo.floatComponents.rawValue : 0))
+    }
+    public var bitsPerComponent: Int { format.isDeep ? 16 : 8 }
+    public var bitsPerPixel: Int { format.bytesPerPixel * 8 }
+    /// The colour space of the backing bitmap: sRGB (extended sRGB for half floats), gray for a gray plane.
+    public var colorSpace: CGColorSpace? {
+        format == .gray ? .deviceGraySpace : format == .rgbaHalf ? .extendedSRGBSpace : .srgbSpace
     }
 
     public var buffer: PixelBuffer {
+        if format.isDeep {
+            let native = Array(UnsafeBufferPointer(start: pixelData, count: pixelCount))
+            let eight = PortableImage(width: width, height: height, kind: .rgba, depth: format.depth, bytesPerRow: bytesPerRow,
+                                      bytes: native).eightBit
+            return PixelBuffer(width: width, height: height, bytes: eight.bytes)
+        }
         if format == .gray {
             // Legacy RGBA view of a gray plane (opaque, r = g = b).
             var expanded = [UInt8](repeating: 255, count: width * height * 4)
@@ -84,7 +107,7 @@ public final class CGContext: @unchecked Sendable {
         self.height = height
         self.format = format
         self.isYUp = yUp
-        self.bytesPerRow = width * (format == .gray ? 1 : 4)
+        self.bytesPerRow = width * format.bytesPerPixel
         self.pixelCount = bytesPerRow * height
         // calloc: large blocks come straight from the kernel already zeroed, so a new context (upstream makes one per
         // halving, render and export — hundreds of MB for big layers) costs nothing until it is drawn into. The
@@ -113,9 +136,12 @@ public final class CGContext: @unchecked Sendable {
                              bytesPerRow: Int,
                              space: CGColorSpace,
                              bitmapInfo: UInt32) {
-        guard width > 0, height > 0, bitsPerComponent == 8 else { return nil }
-        let format: PixelFormat = space.model == .monochrome ? .gray : .rgba
+        guard width > 0, height > 0, bitsPerComponent == 8 || (bitsPerComponent == 16 && space.model != .monochrome) else { return nil }
+        let format: PixelFormat = space.model == .monochrome ? .gray
+            : bitsPerComponent == 16 ? (CGBitmapInfo(rawValue: bitmapInfo).contains(.floatComponents) ? .rgbaHalf : .rgba16) : .rgba
         self.init(width: width, height: height, format: format, yUp: true)
+        // 16-bit pixels are drawn by the canvas backend only (no pure-Swift fallback at that depth).
+        if format.isDeep, canvas == nil { return nil }
         if let srcData = data {
             self.externalData = srcData
             self.externalBytesPerRow = bytesPerRow
@@ -298,9 +324,6 @@ public final class CGContext: @unchecked Sendable {
     public func beginTransparencyLayer(in rect: CGRect, auxiliaryInfo: [AnyHashable: Any]? = nil) { beginTransparencyLayer(auxiliaryInfo: auxiliaryInfo) }
     public func convertToDeviceSpace(_ point: CGPoint) -> CGPoint { point.applying(state.ctm) }
     public func convertToUserSpace(_ point: CGPoint) -> CGPoint { point.applying(state.ctm.inverted()) }
-
-    /// The colour space of the backing bitmap (sRGB, premultiplied RGBA).
-    public var colorSpace: CGColorSpace? { .srgbSpace }
 
     public func drawPath(using mode: CGPathDrawingMode) {
         let path = currentPath
@@ -629,11 +652,11 @@ public final class CGContext: @unchecked Sendable {
             guard let cropped = image.cropping(to: source) else { return }
             let placed = CGRect(x: rect.minX + source.minX / sx, y: rect.minY + source.minY / sy,
                                 width: source.width / sx, height: source.height / sy)
-            canvas.draw(image: cropped.portableImage, isGray: cropped.isGrayPlane, in: placed, opacity: Float(opacity),
+            canvas.draw(image: cropped.nativeImage.drawable, isGray: cropped.isGrayPlane, in: placed, opacity: Float(opacity),
                         blendMode: state.blendMode.rawValue, quality: mapQuality(state.interpolationQuality))
             return
         }
-        canvas.draw(image: image.portableImage, isGray: image.isGrayPlane, in: rect, opacity: Float(opacity),
+        canvas.draw(image: image.nativeImage.drawable, isGray: image.isGrayPlane, in: rect, opacity: Float(opacity),
                     blendMode: state.blendMode.rawValue, quality: mapQuality(state.interpolationQuality))
     }
 
@@ -657,12 +680,13 @@ public final class CGContext: @unchecked Sendable {
 
     public func makeImage() -> CGImage? {
         syncToExternalData()
-        if format == .gray {
+        if format == .gray || format.isDeep {
             let plane = Array<UInt8>(unsafeUninitializedCapacity: pixelCount) { buf, initializedCount in
                 memcpy(buf.baseAddress!, pixelData, pixelCount)
                 initializedCount = pixelCount
             }
-            return CGImage(PortableImage(width: width, height: height, kind: .mask, bytesPerRow: width, bytes: plane))
+            return CGImage(PortableImage(width: width, height: height, kind: format == .gray ? .mask : .rgba, depth: format.depth,
+                                         bytesPerRow: bytesPerRow, bytes: plane))
         }
         return CGImage(buffer)
     }

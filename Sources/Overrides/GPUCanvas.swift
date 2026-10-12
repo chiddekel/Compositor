@@ -43,8 +43,9 @@ final class CAMetalLayer {
 
     private init() {
         space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        // Match tip: sRGB working space, no intermediate cache — same color feel as Mac Metal CIContext.
-        context = CIContext(options: [.workingColorSpace: space as Any, .cacheIntermediates: false])
+        // As tip: extended sRGB working space (sRGB blending, an HDR layer's light past white carried through), no
+        // intermediate cache.
+        context = CIContext(options: [.workingColorSpace: DeepLayer.hdrSpace, .cacheIntermediates: false])
         device = MTLDevice()
         queue = MTLCommandQueue()
     }
@@ -366,7 +367,28 @@ nonisolated enum GPUBlend {
 nonisolated enum GPUAdjustment {
     /// `image` adjusted, laid out in frame pixels: `scale` frame pixels per document pixel, and `mapping` from document
     /// pixels to the frame (for Grain, whose pattern belongs to the document).
-    static func apply(_ adjustment: LayerAdjustment, to image: CIImage, scale: CGFloat, mapping: CGAffineTransform) -> CIImage? {
+    /// `hdr`: the document has an HDR layer, so what's below may be brighter than white. Exposure then works on its full
+    /// range, and the tonal adjustments see each highlight divided down to within white and multiply their result back,
+    /// as `LayerAdjustment.applySixteenBit` does for a merge or export.
+    static func apply(_ adjustment: LayerAdjustment, to image: CIImage, scale: CGFloat, mapping: CGAffineTransform,
+                      hdr: Bool = false) -> CIImage? {
+        if hdr, adjustment.kind == .exposure { return exposure(adjustment.exposure, to: image) }
+        if hdr, [.levels, .hsv, .curves, .blackWhite, .colorBalance, .gradientMap, .invert].contains(adjustment.kind) {
+            // Worked on in straight colors at full coverage, so the blend filters' compositing leaves them alone; the
+            // coverage goes back at the end.
+            let extent = image.extent
+            let straight = image.unpremultiplyingAlpha().settingAlphaOne(in: extent)
+            // Each pixel's brightest channel, at least 1: dividing by it fits a highlight within white with its hue.
+            let brightest = straight.applyingFilter("CIMaximumComponent").applyingFilter("CIColorClamp", parameters: [
+                "inputMinComponents": CIVector(x: 1, y: 1, z: 1, w: 1), "inputMaxComponents": CIVector(x: 65504, y: 65504, z: 65504, w: 1)])
+            let within = straight.applyingFilter("CIDivideBlendMode", parameters: [kCIInputBackgroundImageKey: straight,
+                                                                                   kCIInputImageKey: brightest])
+            guard let changed = apply(adjustment, to: within, scale: scale, mapping: mapping) else { return nil }
+            return changed.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: brightest])
+                .applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
+                                                                     kCIInputMaskImageKey: image])
+                .cropped(to: extent)
+        }
         switch adjustment.kind {
         case .levels:
             guard !adjustment.levels.isIdentity else { return image }
@@ -404,6 +426,24 @@ nonisolated enum GPUAdjustment {
         case .grain:
             return GPUNoise.addGrain(to: image, grain: adjustment.grain, scale: scale, mapping: mapping)
         }
+    }
+
+    /// Exposure over the full range, past white: as `ExposureSettings.table` (to linear light, scaled, offset, raised to
+    /// 1/gamma, and back), read from a curve reaching 16 times white, finely enough to be smooth.
+    private static func exposure(_ settings: ExposureSettings, to image: CIImage) -> CIImage {
+        let settings = settings.normalized
+        let size = 8192, top = 16.0, scale = pow(2, settings.exposure)
+        func linear(_ encoded: Double) -> Double { encoded <= 0.04045 ? encoded / 12.92 : pow((encoded + 0.055) / 1.055, 2.4) }
+        func encoded(_ linear: Double) -> Double { linear <= 0.0031308 ? linear * 12.92 : 1.055 * pow(linear, 1 / 2.4) - 0.055 }
+        let curve = (0..<size).flatMap { index -> [Float] in
+            let value = Float(encoded(pow(max(0, linear(Double(index) / Double(size - 1) * top) * scale + settings.offset), 1 / settings.gamma)))
+            return [value, value, value]
+        }
+        return image.applyingFilter("CIColorCurves", parameters: [
+            "inputCurvesData": curve.withUnsafeBufferPointer { Data(buffer: $0) },
+            "inputCurvesDomain": CIVector(x: 0, y: top),
+            "inputColorSpace": DeepLayer.hdrSpace,
+        ])
     }
 
     // MARK: Color lookups

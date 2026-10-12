@@ -302,6 +302,7 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
         switch start {
         case .jpeg: request("exportJPEG")
         case .pdf: request("exportPDF")
+        case .exr: request("exportAs:exr")
         case .png, nil: request("exportPNG")
         }
     }

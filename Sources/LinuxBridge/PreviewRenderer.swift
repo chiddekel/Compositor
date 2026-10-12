@@ -4,15 +4,18 @@ import Foundation
 import CoreGraphics
 
 extension ImageExporter {
-    func renderPreview(_ snapshot: ProjectSnapshot, scale: CGFloat) throws -> ExportRaster {
+    func renderPreview(_ snapshot: ProjectSnapshot, scale: CGFloat, sixteenBit: Bool = false, hdr: Bool = false) throws -> ExportRaster {
         let width = snapshot.manifest.width, height = snapshot.manifest.height
         guard (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height),
               width * height <= DocumentLimits.maxSurfacePixels else { throw ExportError.tooLarge }
         return try autoreleasepool {
-            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+            let hdr = hdr && sixteenBit
+            guard let space = hdr ? DeepLayer.hdrSpace : CGColorSpace(name: CGColorSpace.sRGB),
                   let context = CGContext(data: nil, width: width, height: height,
-                                          bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                                          bitsPerComponent: sixteenBit ? 16 : 8, bytesPerRow: width * (sixteenBit ? 8 : 4), space: space,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                              | (sixteenBit ? CGBitmapInfo.byteOrder16Little.rawValue : 0)
+                                              | (hdr ? CGBitmapInfo.floatComponents.rawValue : 0)) else {
                 throw ExportError.render
             }
             context.clear(CGRect(x: 0, y: 0, width: width, height: height))
@@ -25,7 +28,8 @@ extension ImageExporter {
             }
             try LiveMaskGraph.validate(snapshot.manifest.layers)
             let live = LiveMaskRenderer(bounds: CGRect(x: 0, y: 0, width: width, height: height), source: { records[$0]?.maskSourceID }) { id, target in
-                guard let layer = records[id], let image = snapshot.images[id]?.image else { return }
+                guard let layer = records[id], let asset = snapshot.images[id] else { return }
+                let image = sixteenBit ? (try? DeepLayer.flattened(asset)) ?? asset.image : asset.image
                 let opacity = layer.effectiveOpacity(in: records)
                 let mask = snapshot.mask(for: layer).flatMap { $0.clipImage(placement: $0.placement, over: layer.transform, width: image.width, height: image.height) }
                 let effects = LayerEffectsRenderer.cached(image, mask: mask, effects: layer.effects)
@@ -44,6 +48,8 @@ extension ImageExporter {
                 if SeparableBlend.needsSurface(mode), SeparableBlend.draw(mode, in: target, body: { drawLayer(.normal, $0) }) { return }
                 drawLayer(mode, target)
             }
+            live.sixteenBit = sixteenBit
+            live.hdr = hdr
             live.adjustmentScale = scale
             live.adjustment = { records[$0]?.adjustment }
             live.adjustmentOpacity = { records[$0]?.effectiveOpacity(in: records) ?? 1 }

@@ -2612,6 +2612,7 @@ void SessionWindow::exportAsWithUpstream(const QString &startFormat) {
     QString ext = QStringLiteral(".png");
     if (format == QLatin1String("JPEG")) { filter = tr("JPEG image (*.jpg *.jpeg)"); ext = QStringLiteral(".jpg"); }
     else if (format == QLatin1String("PDF")) { filter = tr("PDF document (*.pdf)"); ext = QStringLiteral(".pdf"); }
+    else if (format == QLatin1String("EXR")) { filter = tr("OpenEXR image (*.exr)"); ext = QStringLiteral(".exr"); }
     const QString path = QFileDialog::getSaveFileName(this, tr("Export %1").arg(format.isEmpty() ? QStringLiteral("PNG") : format),
         QDir::home().filePath(base + ext), filter);
     if (path.isEmpty()) {
@@ -2892,9 +2893,12 @@ void SessionWindow::createMenus() {
     m_actCopyMerged->setObjectName("edit.copyMerged");
 
     m_actPaste = edit->addAction(tr("Paste"), QKeySequence::Paste, this, [this] {
+        // On the New canvas screen an image on the clipboard makes the document (upstream's pasteImageAsNewCanvas).
+        const bool hadDocument = sessionState().value("width").toInt() > 0;
         if (cmd(m_sessionHandle, R"({"version":1,"action":"paste"})") == 0) {
             refreshImage();
             refreshLayers();
+            if (!hadDocument) refreshTabTitle();
         }
     });
     m_actPaste->setObjectName("edit.paste");
@@ -5110,16 +5114,19 @@ void SessionWindow::dragEnterEvent(QDragEnterEvent *event) {
 }
 
 void SessionWindow::dropEvent(QDropEvent *event) {
-    if (event->mimeData()->hasUrls()) {
-        for (const QUrl &url : event->mimeData()->urls()) {
+    if (importDroppedMime(event->mimeData())) event->acceptProposedAction();
+    else event->ignore();
+}
+
+bool SessionWindow::importDroppedMime(const QMimeData *mime) {
+    if (!mime) return false;
+    if (mime->hasUrls()) {
+        for (const QUrl &url : mime->urls()) {
             // ImageFileDrop.importProviders: dropped files come in as layers (an empty tab takes the first's size).
-            if (url.isLocalFile() && importWithUpstream({url.toLocalFile()}, false)) {
-                event->acceptProposedAction();
-                return;
-            }
+            if (url.isLocalFile() && importWithUpstream({url.toLocalFile()}, false)) return true;
         }
-    } else if (event->mimeData()->hasImage()) {
-        QImage img = qvariant_cast<QImage>(event->mimeData()->imageData());
+    } else if (mime->hasImage()) {
+        QImage img = qvariant_cast<QImage>(mime->imageData());
         if (!img.isNull()) {
             QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
             std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
@@ -5137,12 +5144,11 @@ void SessionWindow::dropEvent(QDropEvent *event) {
                                                reinterpret_cast<const uint8_t*>(name.data()), name.size(), 0) == 0) {
                 refreshImage();
                 refreshLayers();
-                event->acceptProposedAction();
-                return;
+                return true;
             }
         }
     }
-    event->ignore();
+    return false;
 }
 
 // IO milestone: Export flattened canvas as PNG using Qt's QImageWriter
@@ -6322,7 +6328,20 @@ public:
     using QTabBar::QTabBar;
     /// Whether tab `index` has unsaved changes (a 5-pt dot before its title, 5 from it).
     std::function<bool(int)> isModified;
+    /// Files or an image dropped on the bar: on tab `index`, or -1 anywhere else on it (ProjectTabs' bar-wide drop).
+    std::function<bool(int, const QMimeData *)> dropped;
 protected:
+    bool takes(const QMimeData *mime) const { return dropped && mime && (mime->hasUrls() || mime->hasImage()); }
+    void dragEnterEvent(QDragEnterEvent *event) override {
+        if (takes(event->mimeData())) event->acceptProposedAction(); else QTabBar::dragEnterEvent(event);
+    }
+    void dragMoveEvent(QDragMoveEvent *event) override {
+        if (takes(event->mimeData())) event->acceptProposedAction(); else QTabBar::dragMoveEvent(event);
+    }
+    void dropEvent(QDropEvent *event) override {
+        if (takes(event->mimeData()) && dropped(tabAt(event->position().toPoint()), event->mimeData())) event->acceptProposedAction();
+        else event->ignore();
+    }
     static QFont titleFont(const QFont &base, bool active) {
         QFont font = base;
         font.setPixelSize(12);
@@ -6444,6 +6463,18 @@ void SessionWindow::setupHeaderBar() {
     static_cast<ProjectTabBar *>(m_documentTabBar)->isModified = [this](int index) {
         return index >= 0 && index < static_cast<int>(m_documents.size()) && isDocumentModified(m_documents[index].handle);
     };
+    // As upstream's ProjectTabs: a drop on a tab goes into that project, anywhere else on the bar into a new one.
+    static_cast<ProjectTabBar *>(m_documentTabBar)->dropped = [this](int index, const QMimeData *mime) {
+        if (index >= 0 && index < static_cast<int>(m_documents.size())) {
+            if (index != m_documentTabBar->currentIndex()) m_documentTabBar->setCurrentIndex(index);
+        } else {
+            newCanvasTab();
+        }
+        const bool ok = importDroppedMime(mime);
+        refreshTabTitle();
+        return ok;
+    };
+    m_documentTabBar->setAcceptDrops(true);
     m_documentTabBar->setObjectName("header.documentTabs");
     m_documentTabBar->setDrawBase(false);
     m_documentTabBar->setExpanding(false);

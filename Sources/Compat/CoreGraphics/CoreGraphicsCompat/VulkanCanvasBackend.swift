@@ -107,7 +107,7 @@ final class VulkanGPUCanvasBackend: CanvasBackend, @unchecked Sendable {
     func draw(image: PortableImage, isGray: Bool, in rect: CGRect, opacity: Float, blendMode: Int32, quality: Int32) {
         // Full-buffer opaque composite: prefer the active Vulkan CompRenderer trampoline
         // (upload → GPU blend → readback) for Normal and the colour modes (Soft Light, Multiply, …).
-        if !isGray, format == .rgba, opacity >= 0.999,
+        if !isGray, format == .rgba, image.depth == .uint8, opacity >= 0.999,
            Int(rect.minX.rounded()) == 0, Int(rect.minY.rounded()) == 0,
            Int(rect.width.rounded()) == width, Int(rect.height.rounded()) == height,
            image.width == width, image.height == height, bytesPerRow == width * 4,

@@ -7,20 +7,32 @@
 //
 // Tip 1.4.2+ Liquify keeps pixels sharp by warping source offsets against an untouched original (not resampling
 // the working pixels each dab). Smudge lays down carried color at strength and then carries what it just left.
+//
+// As tip's textures (rgba8Unorm / rgba16Unorm / rgba16Float), the working copy is the context's own format: 8 bits, a
+// 16-bit layer's 16 bits (`DeepLayer`), or an HDR layer's half floats. Values are worked on in the format's own steps
+// (255, 65535) and rounded and clipped to them; half floats are kept as they come, nothing rounded or clipped at white.
 
 import Foundation
 import CoreGraphics
 import CoreImage
 
 @MainActor final class MetalWarp {
+    /// Tip's compute pipelines; WarpStroke only asks whether there are any. The dab kernels here always run.
+    static let pipelines: [String: Any]? = [:]
+
+    private enum Format { case byte, short, half }
     let width: Int
     let height: Int
-    private let pixels: UnsafeMutablePointer<UInt8>
+    private let pixels: UnsafeMutableRawPointer
     private let bytesPerRow: Int
+    private let format: Format
+    /// Bytes per channel, and the levels a channel has (0: half floats, kept as they come).
+    private let channelBytes: Int
+    private let steps: Float
     private var carried: [Float] = []
     private var carriedSide = 0
     /// Untouched layer at stroke start (RGBA bytes, width×height).
-    private var original: UnsafeMutablePointer<UInt8>?
+    private var original: UnsafeMutableRawPointer?
     /// Per-pixel source offset (dx, dy) from the untouched layer, in pixels.
     /// calloc so untouched pages stay lazy — Swift Array zero-fill of Full HD stalled first Liquify feedback.
     private var offsets: UnsafeMutablePointer<Float>?
@@ -36,8 +48,36 @@ import CoreImage
         width = context.width
         height = context.height
         bytesPerRow = context.bytesPerRow
-        pixels = data.bindMemory(to: UInt8.self, capacity: bytesPerRow * height)
+        pixels = data
+        if context.bitsPerComponent == 16 {
+            format = context.bitmapInfo.contains(.floatComponents) ? .half : .short
+            channelBytes = 2
+            steps = format == .half ? 0 : 65535
+        } else {
+            format = .byte
+            channelBytes = 1
+            steps = 255
+        }
     }
+
+    private func load(_ base: UnsafeMutableRawPointer, _ offset: Int) -> Float {
+        switch format {
+        case .byte: return Float(base.load(fromByteOffset: offset, as: UInt8.self))
+        case .short: return Float(base.loadUnaligned(fromByteOffset: offset, as: UInt16.self))
+        case .half: return Float(base.loadUnaligned(fromByteOffset: offset, as: Float16.self))
+        }
+    }
+
+    private func store(_ base: UnsafeMutableRawPointer, _ offset: Int, _ value: Float) {
+        switch format {
+        case .byte: base.storeBytes(of: UInt8(max(0, min(255, value.rounded()))), toByteOffset: offset, as: UInt8.self)
+        case .short: base.storeBytes(of: UInt16(max(0, min(65535, value.rounded()))), toByteOffset: offset, as: UInt16.self)
+        case .half: base.storeBytes(of: Float16(value), toByteOffset: offset, as: Float16.self)
+        }
+    }
+
+    /// Byte offset of pixel (x, y), channel `k`, in the working copy.
+    private func at(_ x: Int, _ y: Int, _ k: Int = 0) -> Int { y * bytesPerRow + (x * 4 + k) * channelBytes }
 
     deinit {
         original?.deallocate()
@@ -45,10 +85,11 @@ import CoreImage
     }
 
     var image: CIImage? {
-        guard let ctx = try? BrushRaster.context(width: width, height: height, mask: false),
+        guard let ctx = try? (format == .byte ? BrushRaster.context(width: width, height: height, mask: false)
+                                             : DeepLayer.context(width: width, height: height, hdr: format == .half)),
               let dest = ctx.data else { return nil }
         for y in 0..<height {
-            memcpy(dest + y * ctx.bytesPerRow, pixels + y * bytesPerRow, width * 4)
+            memcpy(dest + y * ctx.bytesPerRow, pixels + y * bytesPerRow, width * 4 * channelBytes)
         }
         guard let cg = ctx.makeImage() else { return nil }
         // As tip's texture-backed image: the top row at y = 0 (the GPU canvas builds its frame with y counting down).
@@ -58,7 +99,7 @@ import CoreImage
     func read(into context: CGContext) {
         guard let dest = context.data, context.width == width, context.height == height else { return }
         for y in 0..<height {
-            memcpy(dest + y * context.bytesPerRow, pixels + y * bytesPerRow, min(width * 4, context.bytesPerRow))
+            memcpy(dest + y * context.bytesPerRow, pixels + y * bytesPerRow, min(width * 4 * channelBytes, context.bytesPerRow))
         }
     }
 
@@ -71,19 +112,10 @@ import CoreImage
         return t * t * (3 - 2 * t)
     }
 
-    private func sample(_ x: Int, _ y: Int) -> SIMD4<Float> {
-        guard x >= 0, y >= 0, x < width, y < height else { return .zero }
-        let i = y * bytesPerRow + x * 4
-        return SIMD4(Float(pixels[i]), Float(pixels[i + 1]), Float(pixels[i + 2]), Float(pixels[i + 3]))
-    }
-
     private func write(_ x: Int, _ y: Int, _ c: SIMD4<Float>) {
         guard x >= 0, y >= 0, x < width, y < height else { return }
-        let i = y * bytesPerRow + x * 4
-        pixels[i] = UInt8(max(0, min(255, c.x.rounded())))
-        pixels[i + 1] = UInt8(max(0, min(255, c.y.rounded())))
-        pixels[i + 2] = UInt8(max(0, min(255, c.z.rounded())))
-        pixels[i + 3] = UInt8(max(0, min(255, c.w.rounded())))
+        let i = at(x, y)
+        for k in 0..<4 { store(pixels, i + k * channelBytes, c[k]) }
     }
 
     private func sampleOriginal(_ x: Float, _ y: Float) -> SIMD4<Float> {
@@ -93,12 +125,14 @@ import CoreImage
         let ix = min(width - 2, Int(sx)), iy = min(height - 2, Int(sy))
         guard ix >= 0, iy >= 0 else { return .zero }
         let fx = sx - Float(ix), fy = sy - Float(iy)
-        func at(_ x: Int, _ y: Int) -> SIMD4<Float> {
-            let i = (y * width + x) * 4
-            return SIMD4(Float(original[i]), Float(original[i + 1]), Float(original[i + 2]), Float(original[i + 3]))
+        let rowBytes = width * 4 * channelBytes
+        func pixel(_ x: Int, _ y: Int) -> SIMD4<Float> {
+            let i = y * rowBytes + x * 4 * channelBytes
+            return SIMD4(load(original, i), load(original, i + channelBytes), load(original, i + 2 * channelBytes),
+                         load(original, i + 3 * channelBytes))
         }
-        let top = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * fx
-        let bottom = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * fx
+        let top = pixel(ix, iy) + (pixel(ix + 1, iy) - pixel(ix, iy)) * fx
+        let bottom = pixel(ix, iy + 1) + (pixel(ix + 1, iy + 1) - pixel(ix, iy + 1)) * fx
         return top + (bottom - top) * fy
     }
 
@@ -113,11 +147,8 @@ import CoreImage
                 let px = cx + gx - radius, py = cy + gy - radius
                 let o = (gy * side + gx) * 4
                 if px >= 0, py >= 0, px < width, py < height {
-                    let i = py * bytesPerRow + px * 4
-                    carried[o] = Float(pixels[i])
-                    carried[o + 1] = Float(pixels[i + 1])
-                    carried[o + 2] = Float(pixels[i + 2])
-                    carried[o + 3] = Float(pixels[i + 3])
+                    let i = at(px, py)
+                    for k in 0..<4 { carried[o + k] = load(pixels, i + k * channelBytes) }
                 } else {
                     carried[o] = 0; carried[o + 1] = 0; carried[o + 2] = 0; carried[o + 3] = 0
                 }
@@ -151,13 +182,13 @@ import CoreImage
                 guard px >= 0, px < width else { continue }
                 let w = falloff[ox * ox + oy * oy]
                 guard w > 0 else { continue }
-                let i = py * bytesPerRow + px * 4
+                let i = at(px, py)
                 let o = (gy * side + gx) * 4
                 let blend = w * keep
                 for k in 0..<4 {
-                    let under = Float(pixels[i + k])
+                    let under = load(pixels, i + k * channelBytes)
                     let painted = under + (carried[o + k] - under) * blend
-                    pixels[i + k] = UInt8(max(0, min(255, painted.rounded())))
+                    store(pixels, i + k * channelBytes, painted)
                     carried[o + k] = painted
                 }
             }
@@ -175,10 +206,10 @@ import CoreImage
         let cw = x1 - x0 + 1, ch = y1 - y0 + 1
 
         if original == nil {
-            let rgbaCount = width * height * 4
-            let copy = UnsafeMutablePointer<UInt8>.allocate(capacity: rgbaCount)
+            let rowBytes = width * 4 * channelBytes
+            let copy = UnsafeMutableRawPointer.allocate(byteCount: rowBytes * height, alignment: 8)
             for y in 0..<height {
-                memcpy(copy + y * width * 4, pixels + y * bytesPerRow, width * 4)
+                memcpy(copy + y * rowBytes, pixels + y * bytesPerRow, rowBytes)
             }
             original = copy
             // calloc: untouched offset pages stay lazy until a dab writes them (Full HD Array zero-fill was ~50–100 ms).

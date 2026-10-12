@@ -48,7 +48,8 @@ enum LinuxProjectValidation {
             guard ids.insert(layer.id).inserted, layer.transform.isValid,
                   !layer.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   layer.name.utf8.count <= 16_384,
-                  layer.imageFile == nil || layer.imageFile == "\(layer.id.uuidString).png" else { throw ProjectError.invalid }
+                  layer.imageFile == nil || layer.imageFile == "\(layer.id.uuidString).png"
+                    || (manifest.version >= 13 && layer.imageFile == "\(layer.id.uuidString).exr") else { throw ProjectError.invalid }
         }
         if let id = manifest.activeLayerID, !ids.contains(id) { throw ProjectError.invalid }
         try validateGuides(manifest)

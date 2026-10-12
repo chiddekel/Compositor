@@ -92,6 +92,22 @@ public struct NSStringDrawingOptions: OptionSet, Sendable {
 }
 
 extension NSAttributedString {
+    /// AppKit's NSStringDrawing on attributed text: the size of one unwrapped line set.
+    public func size() -> CGSize { boundingRect(with: CGSize(width: 1e6, height: 1e6)).size }
+
+    /// Draws the text with its own attributes, its first line's top-left at `point` (as `NSString.draw(at:)`).
+    @MainActor public func draw(at point: CGPoint) {
+        guard NSGraphicsContext.current?.cgContext != nil else { return }
+        if length > 0, let color = attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor {
+            NSGraphicsContext.current?.cgContext.setFillColor(color.cgColor)
+        }
+        let storage = NSTextStorage(attributedString: self)
+        let layout = NSLayoutManager()
+        layout.addTextContainer(NSTextContainer(size: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)))
+        storage.addLayoutManager(layout)
+        layout.drawGlyphs(forGlyphRange: NSRange(location: 0, length: length), at: point)
+    }
+
     /// Measures the same attributed text used by the native glyph renderer.
     public func boundingRect(with size: CGSize, options: NSStringDrawingOptions = []) -> CGRect {
         let attrs = length > 0 ? attributes(at: 0, effectiveRange: nil) : [:]

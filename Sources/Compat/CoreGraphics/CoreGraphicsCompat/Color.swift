@@ -31,6 +31,10 @@ public final class CGColorSpace: @unchecked Sendable, Equatable {
 
     /// The colour spaces this compat knows, as shared instances (all pixel storage here is 8-bit sRGB-like).
     public static let srgbSpace = CGColorSpace(name: sRGB, model: .rgb)
+    /// sRGB with components past 0...1 (an HDR layer's half floats: white is 1, highlights above).
+    public static let extendedSRGBSpace = CGColorSpace(name: extendedSRGB, model: .rgb)
+    /// Linear-light sRGB primaries, components past 0...1 (EXR and Radiance HDR pixels).
+    public static let extendedLinearSRGBSpace = CGColorSpace(name: extendedLinearSRGB, model: .rgb)
     public static let deviceRGBSpace = CGColorSpace(name: "kCGColorSpaceDeviceRGB", model: .rgb)
     public static let deviceGraySpace = CGColorSpace(name: "kCGColorSpaceDeviceGray", model: .monochrome)
 

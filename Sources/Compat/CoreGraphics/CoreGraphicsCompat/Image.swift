@@ -143,14 +143,27 @@ public final class CGImage: @unchecked Sendable {
     private var regionCache: [(rect: CGRect, image: PortableImage)] = []
     /// Filter-backed images can supply just the source pixels visible through a drawing context's clip.
     public var supportsRegionRendering: Bool { regionRenderer != nil }
-    /// The raster behind this image. Images built over a direct data provider resolve it on first use.
-    public var portableImage: PortableImage {
+    /// The raster behind this image, at its own depth (8 bits, 16 bits or half floats a channel). Images built over a
+    /// direct data provider resolve it on first use.
+    public var nativeImage: PortableImage {
         imageLock.lock(); defer { imageLock.unlock() }
         if let resolved { return resolved }
         let image = deferred!()
         resolved = image; deferred = nil
         regionCache.removeAll()
         return image
+    }
+    private var eightBitView: PortableImage?
+    /// The raster at 8 bits a channel, as the compat's 8-bit paths take it: `nativeImage` itself for an 8-bit image, a
+    /// rounded copy (kept) for a 16-bit or half-float one.
+    public var portableImage: PortableImage {
+        let native = nativeImage
+        guard native.depth != .uint8 else { return native }
+        imageLock.lock(); defer { imageLock.unlock() }
+        if let eightBitView { return eightBitView }
+        let view = native.eightBit
+        eightBitView = view
+        return view
     }
 
     public var bytes: [UInt8] { portableImage.bytes }
@@ -163,11 +176,17 @@ public final class CGImage: @unchecked Sendable {
         self.width = portableImage.width
         self.height = portableImage.height
         self.bytesPerRow = portableImage.bytesPerRow
-        self.bitsPerComponent = 8
-        self.bitsPerPixel = portableImage.kind == .rgba ? 32 : 8
-        self.space = portableImage.kind == .rgba ? .srgbSpace : .deviceGraySpace
+        let depth = portableImage.depth
+        self.bitsPerComponent = depth == .uint8 ? 8 : depth == .float32 ? 32 : 16
+        self.bitsPerPixel = portableImage.kind == .rgba ? bitsPerComponent * 4 : 8
+        self.space = portableImage.kind == .mask ? .deviceGraySpace
+            : depth == .half ? .extendedSRGBSpace : depth == .float32 ? .extendedLinearSRGBSpace : .srgbSpace
         self.alphaInfo = portableImage.kind == .rgba ? .premultipliedLast : .none
-        self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue)
+        // As Apple's deep bitmaps: little-endian 16- or 32-bit components, floats for half and 32-bit.
+        self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue
+            | (depth == .uint16 || depth == .half ? CGBitmapInfo.byteOrder16Little.rawValue : 0)
+            | (depth == .float32 ? CGBitmapInfo.byteOrder32Little.rawValue : 0)
+            | (depth == .half || depth == .float32 ? CGBitmapInfo.floatComponents.rawValue : 0))
         self.resolved = portableImage
     }
 
@@ -215,19 +234,23 @@ public final class CGImage: @unchecked Sendable {
         self.bitmapInfo = bitmapInfo
 
         let kind: PortableImage.Kind = (space.model == .monochrome || bitsPerPixel == 8) ? .mask : .rgba
+        // 16 bits a component: unsigned, or half floats with `.floatComponents` (Apple's 64-bit RGBA layouts).
+        let depth: PortableImage.Depth = kind != .rgba ? .uint8
+            : bitsPerComponent == 32 && bitmapInfo.contains(.floatComponents) ? .float32
+            : bitsPerComponent == 16 ? (bitmapInfo.contains(.floatComponents) ? .half : .uint16) : .uint8
         let expectedBytes = height * bytesPerRow
         self.deferred = {
             var pixelBytes = provider.bytes
             if pixelBytes.count < expectedBytes {
                 pixelBytes.append(contentsOf: repeatElement(0, count: expectedBytes - pixelBytes.count))
             }
-            return PortableImage(width: width, height: height, kind: kind, bytesPerRow: bytesPerRow, bytes: pixelBytes)
+            return PortableImage(width: width, height: height, kind: kind, depth: depth, bytesPerRow: bytesPerRow, bytes: pixelBytes)
         }
     }
 
     public func cropping(to rect: CGRect) -> CGImage? {
         if regionRenderer != nil { return regionImage(in: rect).map(CGImage.init) }
-        guard let cropped = portableImage.cropping(to: rect) else { return nil }
+        guard let cropped = nativeImage.cropping(to: rect) else { return nil }
         return CGImage(cropped)
     }
 
@@ -279,7 +302,8 @@ public final class CGImage: @unchecked Sendable {
                              bytesPerRow: w * channels, bytes: bytes)
     }
 
+    /// The image's own bytes, at its own depth (as Apple's data provider).
     public var dataProvider: CGDataProvider? {
-        CGDataProvider(data: portableImage.bytes as [UInt8])
+        CGDataProvider(data: nativeImage.bytes as [UInt8])
     }
 }

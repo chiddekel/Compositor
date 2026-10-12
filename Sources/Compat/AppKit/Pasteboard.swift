@@ -24,7 +24,11 @@ public final class NSPasteboard: @unchecked Sendable {
     public struct ReadingOptionKey: Hashable, RawRepresentable, Sendable {
         public let rawValue: String
         public init(rawValue: String) { self.rawValue = rawValue }
+        /// With NSURL: only `file:` URLs come back.
+        public static let urlReadingFileURLsOnly = ReadingOptionKey(rawValue: "NSPasteboardURLReadingFileURLsOnlyKey")
     }
+    /// Every URL the clipboard holds, one per line (a file manager's copy of several files); `fileURL` is the first.
+    static let fileURLList = PasteboardType(rawValue: "com.compositor.file-url-list")
 
     public protocol Backend: AnyObject {
         func write(_ items: [PasteboardType: Data])
@@ -97,6 +101,22 @@ public final class NSPasteboard: @unchecked Sendable {
         let held = Set(types ?? [])
         if classes.contains(where: { $0 is NSImage.Type }) { return held.contains(.png) || held.contains(.tiff) }
         return !held.isEmpty
+    }
+    /// AppKit's object reading, for the class upstream asks for: NSURL (every copied URL, `file:` ones only with
+    /// `.urlReadingFileURLsOnly`). Nil when nothing readable is held.
+    public func readObjects(forClasses classes: [AnyClass], options: [ReadingOptionKey: Any]? = nil) -> [Any]? {
+        var objects: [Any] = []
+        if classes.contains(where: { $0 == NSURL.self }) {
+            let list = data(forType: Self.fileURLList) ?? data(forType: .fileURL)
+            let fileOnly = (options?[.urlReadingFileURLsOnly] as? Bool) ?? false
+            let lines = list.map { String(decoding: $0, as: UTF8.self) }?
+                .split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) } ?? []
+            for line in lines where !line.isEmpty && !line.hasPrefix("#") {   // text/uri-list comments start with '#'
+                guard let url = URL(string: line), !fileOnly || url.isFileURL else { continue }
+                objects.append(url)
+            }
+        }
+        return objects.isEmpty ? nil : objects
     }
     public func string(forType type: PasteboardType) -> String? {
         guard let d = data(forType: type) else { return nil }

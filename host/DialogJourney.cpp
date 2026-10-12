@@ -1950,7 +1950,9 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(textFile.open(QIODevice::ReadOnly), "format-11 native manifest missing");
         textManifest = QJsonDocument::fromJson(textFile.readAll()).object(); textFile.close();
         const auto savedText = textManifest.value("layers").toArray().last().toObject().value("text").toObject();
-        require(textManifest.value("version").toInt() == 11 && savedText.value("fontRuns").toArray() == chosenRuns,
+        // The format new saves write (upstream's ProjectManifest.current: 11 with font runs, 12 with 16-bit layers
+        // (d9cdb81), 13 with HDR layers (7f239dc)); upstream's own tests compare against it the same way.
+        require(textManifest.value("version").toInt() == 13 && savedText.value("fontRuns").toArray() == chosenRuns,
                 "format-11 save lost chosen font runs");
         require(savedText.value("colorRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "format-11 save lost overlapping color runs");

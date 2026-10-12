@@ -42,6 +42,20 @@
 #endif
 #endif
 
+// OpenEXR (static; scripts/build-openexr.sh or the Flatpak module) for EXR, as Apple's ImageIO reads and writes it.
+#if defined(COMPOSITOR_HAS_OPENEXR)
+#include <ImfRgbaFile.h>
+#include <ImfIO.h>
+#include <ImfHeader.h>
+#include <ImfCompression.h>
+#include <ImathBox.h>
+#include <half.h>
+#endif
+
+// Pixel layouts on the codec C ABI (`channels`): 1 gray 8-bit, 4 RGBA 8-bit, 8 RGBA 16-bit unsigned, 16 RGBA 32-bit
+// float. All color layouts are premultiplied; 16-bit is native-endian; float is linear light (EXR, Radiance HDR).
+constexpr int32_t kLayoutGray8 = 1, kLayoutRGBA8 = 4, kLayoutRGBA16 = 8, kLayoutRGBAFloat = 16;
+
 extern "C" {
 typedef int32_t (*CompositorImageDecodeFn)(const uint8_t *, size_t, uint8_t **, int32_t *, int32_t *, int32_t *, double *,
                                            int32_t *, char *, size_t);
@@ -49,6 +63,8 @@ typedef int32_t (*CompositorImageEncodeFn)(const uint8_t *, int32_t, int32_t, in
                                            int32_t, uint8_t **, size_t *);
 // Provided by the Swift core; weak so C++-only builds (no Swift) still link.
 void compositor_imageio_register(CompositorImageDecodeFn, CompositorImageEncodeFn) __attribute__((weak));
+// The deep decode (16-bit and float layouts), registered beside the 8-bit one.
+void compositor_imageio_register_deep(CompositorImageDecodeFn) __attribute__((weak));
 }
 
 namespace {
@@ -491,6 +507,7 @@ const char *utiForFormat(const QByteArray &format) {
     if (f == "bmp") return "com.microsoft.bmp";
     if (f == "gif") return "com.compuserve.gif";
     if (f == "heic" || f == "heif") return "public.heic";
+    if (f == "hdr") return "public.radiance";
     return nullptr;
 }
 
@@ -530,9 +547,159 @@ QImageIOHandler::Transformations transformationForExif(int o) {
     }
 }
 
-int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
-                    int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity) {
+void writeUti(char *uti, size_t capacity, const char *type) {
+    if (uti && capacity) { strncpy(uti, type, capacity - 1); uti[capacity - 1] = 0; }
+}
+
+#if defined(COMPOSITOR_HAS_OPENEXR)
+bool isEXR(const uint8_t *d, size_t n) { return n >= 4 && d[0] == 0x76 && d[1] == 0x2f && d[2] == 0x31 && d[3] == 0x01; }
+
+// An EXR read from memory.
+class MemoryIStream : public Imf::IStream {
+public:
+    MemoryIStream(const uint8_t *data, size_t length) : Imf::IStream("memory"), data_(data), length_(length) {}
+    bool read(char c[], int n) override {
+        if (n < 0 || position_ + uint64_t(n) > length_) throw std::runtime_error("EXR read past the end");
+        memcpy(c, data_ + position_, size_t(n));
+        position_ += uint64_t(n);
+        return position_ < length_;
+    }
+    uint64_t tellg() override { return position_; }
+    void seekg(uint64_t pos) override { position_ = pos; }
+private:
+    const uint8_t *data_;
+    size_t length_;
+    uint64_t position_ = 0;
+};
+
+// An EXR written to memory.
+class MemoryOStream : public Imf::OStream {
+public:
+    MemoryOStream() : Imf::OStream("memory") {}
+    void write(const char c[], int n) override {
+        if (position_ + uint64_t(n) > bytes.size()) bytes.resize(size_t(position_ + uint64_t(n)));
+        memcpy(bytes.data() + position_, c, size_t(n));
+        position_ += uint64_t(n);
+    }
+    uint64_t tellp() override { return position_; }
+    void seekp(uint64_t pos) override { position_ = pos; }
+    std::vector<uint8_t> bytes;
+private:
+    uint64_t position_ = 0;
+};
+
+// EXR -> RGBA 32-bit float, premultiplied linear light (EXR's own convention), the data window's pixels.
+int32_t decodeEXR(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height, int32_t *channels,
+                  double *dpi, int32_t *orientation, char *uti, size_t utiCapacity) {
+    try {
+        MemoryIStream stream(data, length);
+        Imf::RgbaInputFile file(stream);
+        const Imath::Box2i window = file.dataWindow();
+        const int w = window.max.x - window.min.x + 1, h = window.max.y - window.min.y + 1;
+        if (w <= 0 || h <= 0 || int64_t(w) * h > 1'000'000'000) return -3;
+        std::vector<Imf::Rgba> rgba(size_t(w) * h);
+        file.setFrameBuffer(rgba.data() - window.min.x - size_t(window.min.y) * w, 1, size_t(w));
+        file.readPixels(window.min.y, window.max.y);
+        const bool alpha = file.channels() & Imf::WRITE_A;
+        auto *pixels = static_cast<float *>(malloc(size_t(w) * h * 16));
+        if (!pixels) return -4;
+        for (size_t i = 0; i < rgba.size(); ++i) {
+            const float a = alpha ? float(rgba[i].a) : 1.0f;
+            const float values[4] = {float(rgba[i].r), float(rgba[i].g), float(rgba[i].b), a};
+            for (int c = 0; c < 4; ++c) pixels[i * 4 + c] = std::isfinite(values[c]) ? values[c] : 0.0f;
+        }
+        *out = reinterpret_cast<uint8_t *>(pixels);
+        if (width) *width = w;
+        if (height) *height = h;
+        if (channels) *channels = kLayoutRGBAFloat;
+        if (dpi) *dpi = 0;
+        if (orientation) *orientation = 1;
+        writeUti(uti, utiCapacity, "com.ilm.openexr-image");
+        return 0;
+    } catch (const std::exception &) {
+        return -3;
+    }
+}
+
+// RGBA 32-bit float, premultiplied linear light -> a half-float RGBA EXR, ZIP compressed (as Apple's ImageIO writes).
+int32_t encodeEXR(const float *pixels, int32_t width, int32_t height, double dpi, uint8_t **out, size_t *outLength) {
+    try {
+        Imf::Header header(width, height);
+        header.compression() = Imf::ZIP_COMPRESSION;
+        (void)dpi;
+        std::vector<Imf::Rgba> rgba(size_t(width) * height);
+        for (size_t i = 0; i < rgba.size(); ++i)
+            rgba[i] = Imf::Rgba(half(pixels[i * 4]), half(pixels[i * 4 + 1]), half(pixels[i * 4 + 2]), half(pixels[i * 4 + 3]));
+        MemoryOStream stream;
+        {
+            Imf::RgbaOutputFile file(stream, header, Imf::WRITE_RGBA);
+            file.setFrameBuffer(rgba.data(), 1, size_t(width));
+            file.writePixels(height);
+        }
+        auto *copy = static_cast<uint8_t *>(malloc(stream.bytes.size()));
+        if (!copy) return -3;
+        memcpy(copy, stream.bytes.data(), stream.bytes.size());
+        *out = copy;
+        *outLength = stream.bytes.size();
+        return 0;
+    } catch (const std::exception &) {
+        return -2;
+    }
+}
+#endif
+
+// Qt's float formats (Radiance HDR, a float TIFF): kept as linear-light floats, premultiplied, nothing clipped.
+bool isFloatFormat(QImage::Format f) {
+    return f == QImage::Format_RGBA32FPx4 || f == QImage::Format_RGBA32FPx4_Premultiplied || f == QImage::Format_RGBX32FPx4
+        || f == QImage::Format_RGBA16FPx4 || f == QImage::Format_RGBA16FPx4_Premultiplied || f == QImage::Format_RGBX16FPx4;
+}
+// 16 bits a color channel in the file.
+bool isDeepFormat(QImage::Format f) {
+    return f == QImage::Format_RGBA64 || f == QImage::Format_RGBA64_Premultiplied || f == QImage::Format_RGBX64;
+}
+
+// Linear-light float RGBA (premultiplied) -> 8-bit sRGB premultiplied, clipped at white: an EXR for an 8-bit caller.
+uint8_t *eightBitFromLinear(const float *pixels, size_t count) {
+    auto *out = static_cast<uint8_t *>(malloc(count * 4));
+    if (!out) return nullptr;
+    for (size_t i = 0; i < count; ++i) {
+        const float a = std::clamp(pixels[i * 4 + 3], 0.0f, 1.0f);
+        for (int c = 0; c < 3; ++c) {
+            const float v = a > 0 ? std::clamp(pixels[i * 4 + c] / pixels[i * 4 + 3], 0.0f, 1.0f) : 0.0f;
+            const float encoded = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1 / 2.4f) - 0.055f;
+            out[i * 4 + c] = uint8_t(std::lround(encoded * a * 255));
+        }
+        out[i * 4 + 3] = uint8_t(std::lround(a * 255));
+    }
+    return out;
+}
+
+// `deep`: hand back 16-bit color files at 16 bits and float files as linear floats (the deep entry point, which
+// compat ImageIO uses as Apple's ImageIO keeps a file's depth); otherwise everything at 8 bits, as the codec ABI's
+// original decode callback always has.
+int32_t decodeAny(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
+                  int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity, bool deepAllowed) {
     if (!data || !length || !out) return -1;
+#if defined(COMPOSITOR_HAS_OPENEXR)
+    if (isEXR(data, length)) {
+        int32_t w = 0, h = 0, layout = 0;
+        uint8_t *floats = nullptr;
+        const int32_t rc = decodeEXR(data, length, &floats, &w, &h, &layout, dpi, orientation, uti, utiCapacity);
+        if (rc != 0) return rc;
+        if (!deepAllowed) {
+            uint8_t *eight = eightBitFromLinear(reinterpret_cast<const float *>(floats), size_t(w) * h);
+            free(floats);
+            if (!eight) return -4;
+            floats = eight;
+            layout = kLayoutRGBA8;
+        }
+        *out = floats;
+        if (width) *width = w;
+        if (height) *height = h;
+        if (channels) *channels = layout;
+        return 0;
+    }
+#endif
 #if defined(COMPOSITOR_HAS_LIBHEIF)
     if (isHeifContainer(data, length)) return decodeHeif(data, length, out, width, height, channels, orientation, uti, utiCapacity);
 #endif
@@ -550,15 +717,22 @@ int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *
     if (!strcmp(type, "public.tiff")) image = decodeGrayAlphaTIFF(data, length, nativeTIFF, nativeOrientation);
     if (!nativeTIFF) image = reader.read();
     if (image.isNull()) return -3;
-    image = grayPNGToSRGB(image, data, length);
-    image = toSRGB(image);
-    if (image.isNull()) return -3;
+    // As Apple's ImageIO: float files (Radiance HDR) come as linear-light floats, 16-bit color files at 16 bits.
+    const bool floating = deepAllowed && isFloatFormat(image.format());
+    const bool deep = deepAllowed && !floating && isDeepFormat(image.format());
+    if (!floating) {
+        image = grayPNGToSRGB(image, data, length);
+        image = toSRGB(image);
+        if (image.isNull()) return -3;
+    }
 
     // Gray only when the file itself is gray; an RGB file whose pixels happen to be neutral stays colour.
     const bool gray = image.format() == QImage::Format_Grayscale8 || image.format() == QImage::Format_Grayscale16;
     QImage converted = gray ? image.convertToFormat(QImage::Format_Grayscale8)
+                     : floating ? image.convertToFormat(QImage::Format_RGBA32FPx4_Premultiplied)
+                     : deep ? image.convertToFormat(QImage::Format_RGBA64_Premultiplied)
                             : image.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
-    const int ch = gray ? 1 : 4;
+    const int ch = gray ? kLayoutGray8 : floating ? kLayoutRGBAFloat : deep ? kLayoutRGBA16 : kLayoutRGBA8;
     const size_t bytesPerLine = static_cast<size_t>(converted.width()) * ch;
     auto *pixels = static_cast<uint8_t *>(malloc(bytesPerLine * converted.height()));
     if (!pixels) return -4;
@@ -573,6 +747,15 @@ int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *
     return 0;
 }
 
+int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
+                    int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity) {
+    return decodeAny(data, length, out, width, height, channels, dpi, orientation, uti, utiCapacity, false);
+}
+int32_t decodeImageDeep(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
+                        int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity) {
+    return decodeAny(data, length, out, width, height, channels, dpi, orientation, uti, utiCapacity, true);
+}
+
 int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_t channels, const char *uti,
                     double quality, double dpi, int32_t orientation, uint8_t **out, size_t *outLength) {
 #if defined(COMPOSITOR_HAS_LIBHEIF)
@@ -581,16 +764,25 @@ int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_
         return encodeHeif(pixels, width, height, channels, quality, out, outLength);
 #endif
     const char *format = formatForUti(uti);
+#if defined(COMPOSITOR_HAS_OPENEXR)
+    if (uti && !strcmp(uti, "com.ilm.openexr-image")) {
+        if (!pixels || width <= 0 || height <= 0 || channels != kLayoutRGBAFloat || !out || !outLength) return -1;
+        return encodeEXR(reinterpret_cast<const float *>(pixels), width, height, dpi, out, outLength);
+    }
+#endif
     if (!pixels || width <= 0 || height <= 0 || !format || !out || !outLength) return -1;
     QImage image;
-    if (channels == 1) {
+    if (channels == kLayoutGray8) {
         image = QImage(pixels, width, height, width, QImage::Format_Grayscale8).copy();
-    } else if (channels == 4) {
+    } else if (channels == kLayoutRGBA8) {
         image = QImage(pixels, width, height, width * 4, QImage::Format_RGBA8888_Premultiplied).copy();
+    } else if (channels == kLayoutRGBA16) {
+        // A 16-bit PNG / TIFF, as Apple's ImageIO writes a 16-bit image.
+        image = QImage(pixels, width, height, width * 8, QImage::Format_RGBA64_Premultiplied).copy();
     } else {
         return -1;
     }
-    if (channels == 4) image.setColorSpace(QColorSpace(QColorSpace::SRgb));   // the document is sRGB: say so in the file
+    if (channels != kLayoutGray8) image.setColorSpace(QColorSpace(QColorSpace::SRgb));   // the document is sRGB: say so in the file
     if (dpi > 0) {
         const int dpm = static_cast<int>(dpi / 0.0254 + 0.5);
         image.setDotsPerMeterX(dpm);
@@ -900,6 +1092,14 @@ extern "C" int compositor_qt_imageio_install(void) {
     if (compositor_text_register) compositor_text_register(textLayout, textRender);
     if (!compositor_imageio_register) return 0;
     compositor_imageio_register(decodeImage, encodeImage);
+    if (compositor_imageio_register_deep) compositor_imageio_register_deep(decodeImageDeep);
+    return 1;
+}
+
+// The deep decode for loaders that dlopen this library (16-bit layout 8, linear float layout 16 besides 1 and 4).
+extern "C" int compositor_qt_imageio_deep_decode(CompositorImageDecodeFn *decode) {
+    if (!decode) return 0;
+    *decode = decodeImageDeep;
     return 1;
 }
 

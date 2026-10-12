@@ -118,18 +118,27 @@ public struct MaskBuffer {
 /// document model and pixel-math layers hold.
 public struct PortableImage: Equatable {
     public enum Kind: Equatable { case rgba, mask }
+    /// Bits a color channel holds (RGBA only): 8, 16 (native-endian unsigned, 0...65535), half floats (16-bit IEEE,
+    /// unclamped — an HDR layer's light brighter than white, sRGB-encoded) or 32-bit floats (linear light, as EXR and
+    /// Radiance HDR files hold it). Masks are always 8-bit.
+    public enum Depth: Equatable, Sendable { case uint8, uint16, half, float32 }
     public let width: Int
     public let height: Int
     public let kind: Kind
+    public let depth: Depth
     public let bytesPerRow: Int
     public let bytes: [UInt8]
 
-    public var bytesPerPixel: Int { kind == .rgba ? 4 : 1 }
+    public var bytesPerPixel: Int {
+        guard kind == .rgba else { return 1 }
+        switch depth { case .uint8: return 4; case .uint16, .half: return 8; case .float32: return 16 }
+    }
 
     public init(_ buffer: PixelBuffer) {
         self.width = buffer.width
         self.height = buffer.height
         self.kind = .rgba
+        self.depth = .uint8
         self.bytesPerRow = buffer.bytesPerRow
         self.bytes = buffer.bytes
     }
@@ -137,6 +146,7 @@ public struct PortableImage: Equatable {
         self.width = buffer.width
         self.height = buffer.height
         self.kind = .mask
+        self.depth = .uint8
         self.bytesPerRow = buffer.bytesPerRow
         self.bytes = buffer.bytes
     }
@@ -162,12 +172,89 @@ public struct PortableImage: Equatable {
             }
             initialized = rowLength * ch
         }
-        return PortableImage(width: cw, height: ch, kind: kind,
+        return PortableImage(width: cw, height: ch, kind: kind, depth: depth,
                              bytesPerRow: cw * bytesPerPixel, bytes: out)
     }
 
-    public init(width: Int, height: Int, kind: Kind, bytesPerRow: Int, bytes: [UInt8]) {
+    public init(width: Int, height: Int, kind: Kind, depth: Depth = .uint8, bytesPerRow: Int, bytes: [UInt8]) {
         self.width = width; self.height = height; self.kind = kind
+        self.depth = kind == .mask ? .uint8 : depth
         self.bytesPerRow = bytesPerRow; self.bytes = bytes
+    }
+
+    /// Channel `i` (0...width*4-1) of row `y`, as a float: 0...1 for 8 and 16 bits, as stored for floats.
+    @inline(__always)
+    private func component(_ raw: UnsafeRawBufferPointer, row y: Int, _ i: Int) -> Float {
+        let base = y * bytesPerRow
+        switch depth {
+        case .uint8: return Float(raw[base + i]) / 255
+        case .uint16: return Float(raw.loadUnaligned(fromByteOffset: base + i * 2, as: UInt16.self)) / 65535
+        case .half: return Float(raw.loadUnaligned(fromByteOffset: base + i * 2, as: Float16.self))
+        case .float32: return raw.loadUnaligned(fromByteOffset: base + i * 4, as: Float.self)
+        }
+    }
+
+    /// The same pixels at 8 bits a channel (premultiplied sRGB RGBA, tightly packed): 16-bit values rounded, half floats
+    /// clipped to 0...1, 32-bit floats (linear light) encoded to sRGB first. An 8-bit image comes back as it is.
+    public var eightBit: PortableImage {
+        guard kind == .rgba, depth != .uint8 else { return self }
+        let linear = premultipliedSRGB()
+        var out = [UInt8](repeating: 0, count: width * height * 4)
+        for i in 0..<out.count { let v = linear[i]; out[i] = UInt8(max(0, min(255, (v.isFinite ? v : 0) * 255 + 0.5))) }
+        return PortableImage(width: width, height: height, kind: .rgba, bytesPerRow: width * 4, bytes: out)
+    }
+
+    /// A 32-bit-float (linear light) image re-encoded as sRGB half floats (extended past white), the space every compat
+    /// context draws in; any other image as it is.
+    public var drawable: PortableImage {
+        guard kind == .rgba, depth == .float32 else { return self }
+        let halves = premultipliedSRGB().map { Float16($0.isFinite ? $0 : 0) }
+        return PortableImage(width: width, height: height, kind: .rgba, depth: .half, bytesPerRow: width * 8,
+                             bytes: halves.withUnsafeBytes { Array($0) })
+    }
+
+    /// Premultiplied RGBA as floats in sRGB encoding (extended past 0...1 for half floats; 32-bit floats, being linear,
+    /// encoded), tightly packed.
+    public func premultipliedSRGB() -> [Float] {
+        var out = [Float](repeating: 0, count: width * height * 4)
+        bytes.withUnsafeBytes { raw in
+            for y in 0..<height {
+                for x in 0..<width {
+                    let o = (y * width + x) * 4
+                    for c in 0..<4 { out[o + c] = component(raw, row: y, x * 4 + c) }
+                    if depth == .float32 { PortableImage.recode(&out, at: o, toLinear: false) }
+                }
+            }
+        }
+        return out
+    }
+
+    /// Premultiplied RGBA as linear-light floats (sRGB-encoded depths decoded, extended past 0...1 keeping sign; 32-bit
+    /// floats as they are), tightly packed — what an EXR holds.
+    public func premultipliedLinear() -> [Float] {
+        var out = [Float](repeating: 0, count: width * height * 4)
+        bytes.withUnsafeBytes { raw in
+            for y in 0..<height {
+                for x in 0..<width {
+                    let o = (y * width + x) * 4
+                    for c in 0..<4 { out[o + c] = component(raw, row: y, x * 4 + c) }
+                    if depth != .float32 { PortableImage.recode(&out, at: o, toLinear: true) }
+                }
+            }
+        }
+        return out
+    }
+
+    /// Re-encodes the premultiplied pixel at `o` between sRGB and linear light (unpremultiplied for the curve, which is
+    /// mirrored for negative values, as extended sRGB is).
+    private static func recode(_ px: inout [Float], at o: Int, toLinear: Bool) {
+        let a = px[o + 3]
+        guard a > 0 else { px[o] = 0; px[o + 1] = 0; px[o + 2] = 0; return }
+        for c in 0..<3 {
+            let v = px[o + c] / a, m = abs(v)
+            let r: Float = toLinear ? (m <= 0.04045 ? m / 12.92 : pow((m + 0.055) / 1.055, 2.4))
+                                    : (m <= 0.0031308 ? m * 12.92 : 1.055 * pow(m, 1 / 2.4) - 0.055)
+            px[o + c] = (v < 0 ? -r : r) * a
+        }
     }
 }

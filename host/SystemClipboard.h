@@ -28,6 +28,7 @@ inline QString mimeFor(const QString &type) {
     if (type == QLatin1String("public.jpeg")) return QStringLiteral("image/jpeg");
     if (type == QLatin1String("public.utf8-plain-text")) return QStringLiteral("text/plain");
     if (type == QLatin1String("public.file-url")) return QStringLiteral("text/uri-list");
+    if (type == QLatin1String("com.compositor.file-url-list")) return QStringLiteral("text/uri-list");   // every URL
     return QStringLiteral("application/x-uti-") + type;   // this app's own types (a copied layer's id)
 }
 

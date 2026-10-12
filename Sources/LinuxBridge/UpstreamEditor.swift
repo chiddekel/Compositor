@@ -690,7 +690,10 @@ final class UpstreamEditor {
         case "copyMerged": s.copyMergedSelection()
         case "cut":
             await Self.cutThroughSelectedLayers(s)
-        case "paste": s.paste()
+        case "paste":
+            // As upstream's Edit › Paste: on the New canvas screen an image on the clipboard (or image files copied in
+            // the file manager) makes the canvas; otherwise the copied pixels go in.
+            if s.canPasteImageAsNewCanvas { await s.pasteImageAsNewCanvas() } else { s.paste() }
         case "duplicateLayer": s.duplicateActiveLayer()
         case "layerViaCopy": s.layerViaCopy()
         case "toggleClippingMask":
@@ -843,17 +846,24 @@ final class UpstreamEditor {
             guard let snapshot = s.projectSnapshot() else { return fail(-2, "no document") }
             do {
                 let raster = try await ImageExporter.shared.render(snapshot)
+                // As upstream ProjectController.exportAs: a 16-bit PNG with a 16-bit layer, an EXR with an HDR layer.
+                let deepRaster = snapshot.images.values.contains { $0.deep != nil }
+                    ? try await ImageExporter.shared.render(snapshot, sixteenBit: true) : nil
+                let hdrRaster = snapshot.images.values.contains { $0.isHDR }
+                    ? try await ImageExporter.shared.render(snapshot, sixteenBit: true, hdr: true) : nil
                 let start: ExportFormat = {
                     switch command.kind?.lowercased() {
                     case "jpeg": return .jpeg
                     case "pdf": return .pdf
                     case "png": return .png
+                    case "exr": return .exr
                     default: return lastExportFormat
                     }
                 }()
                 let chosen: (data: Data, format: ExportFormat)? = await withCheckedContinuation { continuation in
                     sizeAnswer = { continuation.resume(returning: $0 as? (data: Data, format: ExportFormat)) }
-                    exportAsSheet = ExportAsSheet(raster: raster, session: s, format: start) { [weak self] in
+                    exportAsSheet = ExportAsSheet(raster: raster, deepRaster: deepRaster, hdrRaster: hdrRaster, session: s,
+                                                  format: start) { [weak self] in
                         self?.finishExportAsSheet($0)
                     }
                 }

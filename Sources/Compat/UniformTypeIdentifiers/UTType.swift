@@ -21,6 +21,9 @@ public struct UTType: Hashable, Sendable {
         "public.heic": Info(ext: ["heic"], mime: "image/heic", parents: ["public.heif-standard"]),
         "public.heif": Info(ext: ["heif", "hif"], mime: "image/heif", parents: ["public.heif-standard"]),
         "com.compuserve.gif": Info(ext: ["gif"], mime: "image/gif", parents: ["public.image"]),
+        // HDR images, as macOS types them: OpenEXR and Radiance RGBE.
+        "com.ilm.openexr-image": Info(ext: ["exr"], mime: "image/x-exr", parents: ["public.image"]),
+        "public.radiance": Info(ext: ["hdr", "pic"], mime: "image/vnd.radiance", parents: ["public.image"]),
         "com.microsoft.bmp": Info(ext: ["bmp"], mime: "image/bmp", parents: ["public.image"]),
         "org.webmproject.webp": Info(ext: ["webp"], mime: "image/webp", parents: ["public.image"]),
         "com.adobe.pdf": Info(ext: ["pdf"], mime: "application/pdf", parents: ["public.data", "public.content"]),

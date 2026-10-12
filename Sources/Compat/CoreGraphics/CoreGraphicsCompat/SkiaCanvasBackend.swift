@@ -11,7 +11,7 @@ struct SkiaCanvasFactory: CanvasBackendFactory {
                     format: CGContext.PixelFormat) -> CanvasBackend? {
         let raw: OpaquePointer?
         if let create = SkiaContextABI.createEx {
-            raw = create(pixels, width, height, bytesPerRow, format == .gray ? 1 : 0)
+            raw = create(pixels, width, height, bytesPerRow, format.bridgeCode)
         } else if format == .rgba, let create = CompCanvasBridge.shared.createCanvas {
             raw = create(pixels, width, height, bytesPerRow)
         } else {
@@ -90,9 +90,11 @@ final class SkiaCanvasBackend: CanvasBackend, @unchecked Sendable {
     func draw(image: PortableImage, isGray: Bool, in rect: CGRect, opacity: Float, blendMode: Int32, quality: Int32) {
         image.bytes.withUnsafeBufferPointer { ptr in
             if let drawEx = SkiaContextABI.drawImageEx {
-                drawEx(raw, ptr.baseAddress!, image.width, image.height, image.bytesPerRow, isGray ? 1 : 0,
+                // The bridge's pixel format codes: 0 RGBA8, 1 gray, 2 RGBA 16-bit, 3 RGBA half float, 4 RGBA float.
+                let code: Int32 = isGray ? 1 : { switch image.depth { case .uint8: 0; case .uint16: 2; case .half: 3; case .float32: 4 } }()
+                drawEx(raw, ptr.baseAddress!, image.width, image.height, image.bytesPerRow, code,
                        Float(rect.minX), Float(rect.minY), Float(rect.width), Float(rect.height), opacity, blendMode, quality)
-            } else if !isGray {
+            } else if !isGray, image.depth == .uint8 {
                 bridge.drawImageRect?(raw, ptr.baseAddress!, image.width, image.height, image.bytesPerRow,
                                       Float(rect.minX), Float(rect.minY), Float(rect.width), Float(rect.height),
                                       opacity, blendMode, quality)

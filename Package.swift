@@ -33,6 +33,14 @@ let opencvHasDNN: Bool = opencvPrefix.map { prefix in
 } ?? false
 // The pinned LibRaw (scripts/build-libraw.sh / the manifest's `libraw` module: static, OpenMP) — camera RAW decoding for
 // the host (host/RawDecoder.cpp compiles its decoder only when the header is there).
+// OpenEXR (scripts/build-openexr.sh, or the Flatpak's openexr module): EXR import and export in host/QtImageIO.cpp,
+// static, with its Imath and libdeflate.
+let openexrPrefix: String? = ["\(packageRoot)/build/openexr/install", "/app"].first {
+    FileManager.default.fileExists(atPath: "\($0)/include/OpenEXR/ImfRgbaFile.h") && FileManager.default.fileExists(atPath: "\($0)/lib/libOpenEXR-3_5.a")
+}
+let openexrLibraries: [String] = openexrPrefix.map { prefix in
+    ["libOpenEXR-3_5.a", "libOpenEXRCore-3_5.a", "libIex-3_5.a", "libIlmThread-3_5.a", "libImath-3_2.a", "libdeflate.a"].map { "\(prefix)/lib/\($0)" }
+} ?? []
 let librawPrefix: String? = ["\(packageRoot)/build/libraw/install", "/app"].first {
     FileManager.default.fileExists(atPath: "\($0)/include/libraw/libraw.h") && FileManager.default.fileExists(atPath: "\($0)/lib/libraw_r.a")
 }
@@ -232,6 +240,8 @@ let package = Package(
                      "Rendering/BrushPixels.h",
                      "Rendering/PatchPixels.c",
                      "Rendering/PatchPixels.h",
+                     "Rendering/DeepPixels.c",
+                     "Rendering/DeepPixels.h",
                      "Rendering/DitherPixels.c",
                      "Rendering/DitherPixels.h",
                      "Rendering/HealPixels.c",
@@ -279,7 +289,7 @@ let package = Package(
         // Upstream's own test suite, unmodified (Swift Testing), run against the module above.
         .testTarget(
             name: "CompositorUpstreamTests",
-            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal"],
+            dependencies: ["Compositor", "CompositorKernels", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal"],
             path: "CompositorTests",
             // Upstream tests that cannot run on Linux yet (Objective-C selectors and swizzling in the test itself, the
             // real layer table, the app's own window): listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
@@ -288,7 +298,10 @@ let package = Package(
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
                 .enableUpcomingFeature("InferSendableFromCaptures"),
+                // As in the Mac test target: the bridging header's C kernels, and Core Image through AppKit.
                 .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat",
+                              "-Xfrontend", "-import-module", "-Xfrontend", "CompositorKernels",
+                              "-Xfrontend", "-import-module", "-Xfrontend", "CoreImage",
                               "-Xfrontend", "-import-module", "-Xfrontend", "Metal"]),
             ],
             // The test-only _Testing_AppHost overlay is reached by name (dlsym from compat AppKit's lazy test-host
@@ -341,13 +354,15 @@ let package = Package(
                     "-I/usr/include/QtDBus",
                     "-I/usr/include/QtSvg",
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB", "-DQT_DBUS_LIB",
-                ] + (librawPrefix.map { ["-I\($0)/include"] } ?? []) + (rawspeedLibraries.isEmpty ? [] : ["-DLIBRAW_WITH_RAWSPEED3"])),
+                ] + (librawPrefix.map { ["-I\($0)/include"] } ?? []) + (rawspeedLibraries.isEmpty ? [] : ["-DLIBRAW_WITH_RAWSPEED3"])
+                  + (openexrPrefix.map { ["-I\($0)/include", "-I\($0)/include/OpenEXR", "-I\($0)/include/Imath", "-DCOMPOSITOR_HAS_OPENEXR=1"] } ?? [])),
             ],
             // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
             // the link follows the same condition; RawDecoder.cpp likewise with LibRaw (static, plus OpenMP's runtime).
             linkerSettings: (FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : [])
                 + [.linkedLibrary("z"), .linkedLibrary("tiff")]
                 + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"] + rawspeedLibraries), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
+                + (openexrLibraries.isEmpty ? [] : [.unsafeFlags(openexrLibraries), .linkedLibrary("zstd")])
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",

@@ -38,6 +38,7 @@
 #include "NativeTextHistory.h"
 
 class QTreeView;
+class QMimeData;
 class QStandardItemModel;
 class QStandardItem;
 class QSlider;
@@ -253,6 +254,8 @@ protected:
     void tabletEvent(QTabletEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    /// Files (first readable one) or an image dropped on the window or the tab bar, imported into the current tab.
+    bool importDroppedMime(const QMimeData *mime);
     void closeEvent(QCloseEvent *event) override;
 public:
     void restoreWindowPlacement();

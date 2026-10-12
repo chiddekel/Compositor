@@ -37,12 +37,12 @@ cache = '''
     private var pendingSegment: Segment?
 '''
 optimized = source.replace(anchor, anchor + cache)
-init_end = '''        gpu = useGPU ? MetalWarp(pixels: context) : nil
+init_end = '''        pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
         cpuImage = context.makeImage()
     }
 '''
 assert optimized.count(init_end) == 1, 'Upstream WarpStroke init trailer changed'
-init_fill = '''        gpu = useGPU ? MetalWarp(pixels: context) : nil
+init_fill = '''        pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
         // Defer full-canvas makeImage: building it on press delayed Liquify first-feedback past 150 ms.
         // Live preview uses snapshot(in:); commit still goes through image when needed.
         cpuImage = nil
@@ -249,37 +249,10 @@ append_chunked = '''    /// Continues the stroke to `point`, dabbing along the w
 assert optimized.count(append_anchor) == 1, 'Upstream append body changed'
 optimized = optimized.replace(append_anchor, append_chunked)
 
-finish_old = '''    func finishWarp() {
-        guard let warp = warpStroke else { return }
-        warpStroke = nil
-        brushRevision += 1
-        guard !warp.points.isEmpty, let result = warp.image,
-              let current = document?.layers.first(where: { $0.id == warp.layer.id }),
-              current.asset?.image === warp.layer.asset?.image, current.transform == warp.layer.transform else { return }
-        do {
-            var settings = brushSettings
-            // A hard tip a little wider than the brush covers everything the stroke moved.
-            settings.diameter = warp.diameter + 4
-            settings.hardness = 1
-            settings.opacity = 1
-            let stroke = try makeRasterEdit(for: current, settings: settings)
-            stroke.clone = (result, CGRect(x: 0, y: 0, width: result.width, height: result.height), false)
-            stroke.replacesWithClone = true
-            stroke.editName = warp.mode.rawValue
-            // The tip is solid and a little wider than the brush, so a point every twentieth of its width covers what
-            // every dab did: a big brush on a big canvas lays thousands of dabs, and replaying each one stalled the release.
-            let spacing = max(1, warp.diameter * 0.05)
-            var kept: CGPoint?
-            for (index, point) in warp.points.enumerated() {
-                if let kept, index < warp.points.count - 1, hypot(point.x - kept.x, point.y - kept.y) < spacing { continue }
-                try stroke.append(point)
-                kept = point
-            }
-            try stroke.flush()
-            if !stroke.patches.isEmpty { try commitPaintSnapshot(stroke) }
-        } catch { brushError = error.localizedDescription }
-    }
-'''
+# finishWarp is taken from tip itself (its body changes with upstream; only the flush is inserted).
+_finish_start = source.index('    func finishWarp() {\n')
+finish_old = source[_finish_start:source.index('\n    }\n', _finish_start) + len('\n    }\n')]
+assert '        warpStroke = nil\n' in finish_old, 'Upstream finishWarp no longer clears warpStroke'
 finish_new = finish_old.replace('        warpStroke = nil\n',
     '        warp.flushPending()\n        warpStroke = nil\n', 1)
 assert optimized.count(finish_old) == 1, 'Upstream finishWarp changed'

@@ -52,6 +52,8 @@ public struct CIFormat: Hashable, Sendable {
     let rawValue: Int
     public static let RGBA8 = CIFormat(rawValue: 0), BGRA8 = CIFormat(rawValue: 1), L8 = CIFormat(rawValue: 2)
     public static let RGBAf = CIFormat(rawValue: 3), A8 = CIFormat(rawValue: 4)
+    /// Internal: 32-bit floats kept in an encoded (non-linear) space, for `CIContext.render(_:toBitmap:...)`.
+    static let RGBAfEncoded = CIFormat(rawValue: 1003)
     /// Half-float working format on Apple; treated as float here.
     public static let RGBAh = CIFormat(rawValue: 5)
     /// 16-bit unsigned per channel (RAW dither path).
@@ -86,6 +88,8 @@ private indirect enum Node {
     case crop(Node, CGRect)
     case clamp(Node)
     case unpremultiply(Node)
+    /// CIMaximumComponent: each pixel's brightest color component in all three (gray), alpha kept.
+    case maxComponent(Node)
     case alphaOne(Node, CGRect)
     case gaussian(Node, Double)
     case bloom(Node, Double, Double)          // radius, intensity
@@ -125,7 +129,7 @@ private indirect enum Node {
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
         case .blendMask(let n, let bg, _, _): return n.extent.union(bg.extent)
-        case .curves(let n, _, _), .nearest(let n), .unpremultiply(let n): return n.extent
+        case .curves(let n, _, _), .nearest(let n), .unpremultiply(let n), .maxComponent(let n): return n.extent
         case .alphaOne(let n, let rect): return n.extent.union(rect)
         case .over(let top, let bottom): return top.extent.union(bottom.extent)
         case .separable(let s, let b, _): return s.extent.union(b.extent)
@@ -214,6 +218,13 @@ private indirect enum Node {
                 let p = inner.clamped(sx, sy), o = out.index(x, y)
                 out.data[o] = p.0; out.data[o + 1] = p.1; out.data[o + 2] = p.2; out.data[o + 3] = p.3
             } }
+            return out
+        case .maxComponent(let n):
+            var out = n.eval(region, env)
+            for i in stride(from: 0, to: out.data.count, by: 4) {
+                let m = max(out.data[i], out.data[i + 1], out.data[i + 2])
+                out.data[i] = m; out.data[i + 1] = m; out.data[i + 2] = m
+            }
             return out
         case .unpremultiply(let n):
             var out = n.eval(region, env)
@@ -312,7 +323,8 @@ private indirect enum Node {
             while i < out.data.count {
                 let alpha = out.data[i + 3]
                 if alpha > 0 {
-                    for c in 0..<3 { out.data[i + c] = lookup(min(1, max(0, out.data[i + c] / alpha)), c) * alpha }
+                    // The lookup holds its ends past the curve's domain (0...1 usually; wider for HDR exposure curves).
+                    for c in 0..<3 { out.data[i + c] = lookup(out.data[i + c] / alpha, c) * alpha }
                 }
                 i += 4
             }
@@ -375,6 +387,22 @@ public final class CIImage: @unchecked Sendable {
 
     public convenience init(cgImage: CGImage) {
         let w = cgImage.width, h = cgImage.height
+        // A 16-bit, half-float or 32-bit-float image keeps its precision (and an HDR one its light past white): its
+        // values come in as sRGB-encoded floats like every other source, 32-bit floats (linear light) encoded first.
+        let native = cgImage.nativeImage
+        if native.kind == .rgba, native.depth != .uint8 {
+            var deep = Raster(rect: CGRect(x: 0, y: 0, width: w, height: h), uninitialized: true)
+            let values = native.premultipliedSRGB()
+            deep.data.withUnsafeMutableBufferPointer { dst in
+                values.withUnsafeBufferPointer { src in
+                    for y in 0..<h {   // CGImage rows run top-down; CI rows run bottom-up.
+                        memcpy(dst.baseAddress! + (h - 1 - y) * w * 4, src.baseAddress! + y * w * 4, w * 4 * MemoryLayout<Float>.size)
+                    }
+                }
+            }
+            self.init(node: .source(deep, deep.rect))
+            return
+        }
         var raster = Raster(rect: CGRect(x: 0, y: 0, width: w, height: h), uninitialized: true)
         let bytes = cgImage.portableImage.bytes, stride = cgImage.bytesPerRow
         let gray = cgImage.isGrayPlane
@@ -466,8 +494,10 @@ public final class CIImage: @unchecked Sendable {
     }
 
     public func applyingFilter(_ name: String, parameters: [String: Any] = [:]) -> CIImage {
+        // The receiver is the filter's input image unless the parameters name one themselves (as on the Mac, where
+        // `straight.applyingFilter("CIDivideBlendMode", [kCIInputImageKey: brightest, ...])` divides by `brightest`).
         var params = parameters
-        params[kCIInputImageKey] = self
+        if params[kCIInputImageKey] == nil { params[kCIInputImageKey] = self }
         return CIFilter(name: name, parameters: params)?.outputImage ?? self
     }
     public func applyingFilter(_ name: String) -> CIImage { applyingFilter(name, parameters: [:]) }
@@ -491,7 +521,8 @@ public class CIFilter {
         "CIEdgePreserveUpsampleFilter", "CIExclusionBlendMode", "CIGaussianBlur", "CIHardLightBlendMode",
         "CIHardMixBlendMode", "CIHueBlendMode", "CILanczosScaleTransform", "CILightenBlendMode",
         "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CILinearGradient", "CILinearLightBlendMode",
-        "CILuminosityBlendMode", "CIMotionBlur", "CIMultiplyBlendMode", "CIOverlayBlendMode",
+        "CILuminosityBlendMode", "CIMaximumComponent", "CIMotionBlur", "CIMultiplyBlendMode", "CIMultiplyCompositing",
+        "CIOverlayBlendMode",
         "CIPerspectiveTransform", "CIPerspectiveTransformWithExtent", "CIPinLightBlendMode", "CIRadialGradient",
         "CISaturationBlendMode", "CIScreenBlendMode", "CISoftLightBlendMode", "CISubtractBlendMode",
         "CIVividLightBlendMode"]
@@ -544,6 +575,12 @@ public class CIFilter {
             let rows = [vector("inputRVector", [1, 0, 0, 0]), vector("inputGVector", [0, 1, 0, 0]),
                         vector("inputBVector", [0, 0, 1, 0]), vector("inputAVector", [0, 0, 0, 1])]
             return CIImage(node: .matrix(input.node, rows, vector("inputBiasVector", [0, 0, 0, 0])))
+        case "CIMaximumComponent":
+            return CIImage(node: .maxComponent(input.node))
+        case "CIMultiplyCompositing":
+            // Porter-Duff multiply: S·B + S·(1 − αB) + B·(1 − αS), premultiplied — the multiply blend's own formula.
+            guard let bg = image(kCIInputBackgroundImageKey) else { return nil }
+            return CIImage(node: .separable(input.node, bg.node, "CIMultiplyBlendMode"))
         case "CIColorClamp":
             return CIImage(node: .colorClamp(input.node, vector("inputMinComponents", [0, 0, 0, 0]), vector("inputMaxComponents", [1, 1, 1, 1])))
         case "CIColorCube":
@@ -628,6 +665,7 @@ public final class CIContext: @unchecked Sendable {
 
     public func createCGImage(_ image: CIImage, from rect: CGRect, format: CIFormat = .RGBA8, colorSpace: CGColorSpace? = nil) -> CGImage? {
         let region = rect.integral
+        if [.RGBA16, .RGBAh, .RGBAf].contains(format) { return deepCGImage(image, from: region, format: format, colorSpace: colorSpace) }
         if image.node.isRegionalFilter, region.width * region.height > 256 * 256,
            region.width >= 1, region.height >= 1, region.width * region.height <= 200_000_000 {
             return CGImage(width: Int(region.width), height: Int(region.height), isGray: format == .L8 || format == .A8) { tile in
@@ -719,8 +757,53 @@ public final class CIContext: @unchecked Sendable {
         return CGImage(PortableImage(width: w, height: h, kind: .rgba, bytesPerRow: w * 4, bytes: out))
     }
 
+    /// A 16-bit (`RGBA16`), half-float (`RGBAh`) or 32-bit-float (`RGBAf`) image, as Core Image renders them: 16-bit
+    /// values clipped to 0...1; floats kept past white, half floats sRGB-encoded (in an extended sRGB space), 32-bit
+    /// floats linear light.
+    private func deepCGImage(_ image: CIImage, from region: CGRect, format: CIFormat, colorSpace: CGColorSpace?) -> CGImage? {
+        guard let r = raster(image, region) else { return nil }
+        let w = r.width, h = r.height
+        var topDown = [Float](repeating: 0, count: w * h * 4)
+        r.data.withUnsafeBufferPointer { src in
+            topDown.withUnsafeMutableBufferPointer { dst in
+                for y in 0..<h { memcpy(dst.baseAddress! + y * w * 4, src.baseAddress! + (h - 1 - y) * w * 4, w * 4 * MemoryLayout<Float>.size) }
+            }
+        }
+        let bytes: [UInt8], depth: PortableImage.Depth, rowBytes: Int
+        switch format {
+        case .RGBA16:
+            let values = topDown.map { UInt16(max(0, min(65535, ($0.isFinite ? $0 : 0) * 65535 + 0.5))) }
+            bytes = values.withUnsafeBytes { Array($0) }; depth = .uint16; rowBytes = w * 8
+        case .RGBAh:
+            let values = topDown.map { Float16($0.isFinite ? $0 : 0) }
+            bytes = values.withUnsafeBytes { Array($0) }; depth = .half; rowBytes = w * 8
+        case .RGBAfEncoded:   // render(toBitmap:) only: 32-bit floats left sRGB-encoded
+            bytes = topDown.withUnsafeBytes { Array($0) }; depth = .float32; rowBytes = w * 16
+        default:
+            var linear = Raster(rect: CGRect(x: 0, y: 0, width: w, height: h))
+            linear.data = topDown
+            Gamma.map(&linear, Gamma.toLinear)
+            bytes = linear.data.withUnsafeBytes { Array($0) }; depth = .float32; rowBytes = w * 16
+        }
+        return CGImage(PortableImage(width: w, height: h, kind: .rgba, depth: depth, bytesPerRow: rowBytes, bytes: bytes))
+    }
+
     public func render(_ image: CIImage, toBitmap bitmap: UnsafeMutableRawPointer, rowBytes: Int, bounds: CGRect,
                        format: CIFormat, colorSpace: CGColorSpace?) {
+        // Half and 32-bit floats, in the requested space: linear light only for a linear one (32-bit floats in an
+        // extended sRGB space stay encoded, as Core Image writes them).
+        if format == .RGBAh || format == .RGBAf {
+            let linear = colorSpace.map { $0.name.contains("Linear") } ?? (format == .RGBAf)
+            guard let cg = deepCGImage(image, from: bounds.integral, format: format == .RGBAf && !linear ? .RGBAfEncoded : format,
+                                       colorSpace: colorSpace) else { return }
+            let native = cg.nativeImage
+            native.bytes.withUnsafeBufferPointer { src in
+                for y in 0..<cg.height {
+                    memcpy(bitmap + y * rowBytes, src.baseAddress! + y * native.bytesPerRow, min(rowBytes, native.bytesPerRow))
+                }
+            }
+            return
+        }
         // RGBA16 (premultiplied, top row first), straight from the float graph: RawImporter.dithered quantizes
         // these 16-bit samples itself, so rounding them to 8 bits here first would throw the dither's input away.
         if format == .RGBA16 {
@@ -737,8 +820,7 @@ public final class CIContext: @unchecked Sendable {
             }
             return
         }
-        let cgFormat: CIFormat = (format == .RGBAh || format == .RGBAf) ? .RGBA8 : format
-        guard let cg = createCGImage(image, from: bounds, format: cgFormat, colorSpace: colorSpace) else { return }
+        guard let cg = createCGImage(image, from: bounds, format: format, colorSpace: colorSpace) else { return }
         let bpp = cg.isGrayPlane ? 1 : 4
         let bytes = cg.portableImage.bytes
         bytes.withUnsafeBufferPointer { src in
