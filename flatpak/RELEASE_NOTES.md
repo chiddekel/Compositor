@@ -1,10 +1,10 @@
-Compositor 1.4.10-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.10-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
-Catches up with Compositor 1.4.10:
+RAW Lens Correction now works on Linux:
 
-- HEIF photos from Canon, Sony and Fuji cameras (`.hif`, `.heif`) import like HEIC, from the Open panel, drag and drop or a folder.
-- New app icon: a page of color peeling back to transparency.
-- Otherwise matches 1.4.5-linux-alpha.10 plus the upstream 1.4.6–1.4.10 features ported since.
+- The Develop sheet's **Lens Correction** removes distortion and vignetting using the profile stored in the file: DNG (OpcodeList3), Sony ARW, Fujifilm RAF, OM System / Olympus ORF and Panasonic RW2.
+- It is on by default where the file has a profile and disabled where it has none, as on the Mac. The draft preview and the import show the same correction.
+- Otherwise matches 1.4.10-linux-alpha.1 (camera HEIF import, new app icon).
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.

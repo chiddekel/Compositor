@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.10-linux-alpha.2" date="2026-10-12" type="development">
+      <description><p>RAW Lens Correction: distortion and vignetting taken out from the profile in the file (DNG, Sony, Fujifilm, OM System/Olympus, Panasonic), on by default where a file has one, as on the Mac.</p></description>
+    </release>
     <release version="1.4.10-linux-alpha.1" date="2026-10-11" type="development">
       <description><p>Catches up with Compositor 1.4.10: HEIF photos from Canon, Sony and Fuji cameras (.hif, .heif) import like HEIC; new app icon.</p></description>
     </release>
