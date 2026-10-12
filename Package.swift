@@ -332,7 +332,7 @@ let package = Package(
             name: "HostRun",
             dependencies: [],
             path: "host",
-            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "InterchangeJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "QtImageIO.cpp", "RawDecoder.cpp", "FlatpakUpdateService.cpp", "SwiftUIQtRenderer.cpp", "moc_SessionWindow.cpp", "moc_FlatpakUpdateService.cpp"],
+            sources: ["host_run.cpp", "SessionWindow.cpp", "DialogJourney.cpp", "InterchangeJourney.cpp", "SessionDialogs.cpp", "SizeDialog.cpp", "FilterDialog.cpp", "AdjustDialog.cpp", "ImageExporters.cpp", "TabletHandler.cpp", "QtImageIO.cpp", "RawDecoder.cpp", "RawLensJourney.cpp", "FlatpakUpdateService.cpp", "SwiftUIQtRenderer.cpp", "moc_SessionWindow.cpp", "moc_FlatpakUpdateService.cpp"],
             cxxSettings: [
                 .unsafeFlags([
                     "-I/usr/include/QtWidgets",

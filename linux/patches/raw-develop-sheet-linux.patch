@@ -5,7 +5,7 @@
                          .disabled(!settings.supportsLensCorrection)
                          .help(settings.supportsLensCorrection ? "Removes the lens's distortion and vignetting"
 -                                                              : "This file has no lens profile")
-+                                                              : "Lens correction is unavailable on Linux")
++                                                              : "This file has no lens profile, so lens correction is unavailable on Linux")
                      Toggle("Highlight Recovery", isOn: $settings.highlightRecovery)
                          .disabled(!settings.supportsHighlightRecovery)
                          .help(settings.supportsHighlightRecovery ? "Brings back detail in bright areas the camera partly clipped"

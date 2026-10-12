@@ -12,6 +12,7 @@
 #if __has_include(<libraw/libraw.h>)
 #include <libraw/libraw.h>
 #include "PerfTrace.h"
+#include "RawLensProfile.h"
 #include <QImage>
 #include <algorithm>
 #include <cmath>
@@ -28,7 +29,86 @@ namespace {
 struct Raw : LibRaw {
     bool fujiRotated() { return libraw_internal_data.internal_output_params.fuji_width != 0; }
     bool phaseOneCompressed() { return is_phaseone_compressed() != 0; }
+    // After changing the developed pixels: the histogram auto-brightening reads, rebuilt as convert_to_rgb fills it.
+    void rebuildHistogram() {
+        auto *histogram = libraw_internal_data.output_data.histogram;
+        if (!histogram || !imgdata.image) return;
+        std::memset(histogram, 0, sizeof(int) * LIBRAW_HISTOGRAM_SIZE * 4);
+        const size_t count = size_t(imgdata.sizes.width) * imgdata.sizes.height;
+        const int colors = std::min<int>(imgdata.idata.colors, 4);
+        for (size_t i = 0; i < count; ++i)
+            for (int c = 0; c < colors; ++c) histogram[c][imgdata.image[i][c] >> 3]++;
+    }
 };
+
+// Reads `len` values of TIFF `type` at the stream's position, in the file's byte order (`order`: 'II' or 'MM').
+static std::vector<double> readTagValues(void *stream, int type, int len, unsigned order) {
+    static const int sizes[] = {0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8};
+    std::vector<double> values;
+    if (type < 1 || type > 12 || len <= 0 || len > 4096) return values;
+    const size_t size = size_t(sizes[type]) * len;
+    std::vector<uint8_t> bytes(size);
+    auto *in = static_cast<LibRaw_abstract_datastream *>(stream);
+    if (!in || in->read(bytes.data(), 1, size) != int(size)) return values;
+    const bool little = order == 0x4949;
+    const auto word = [&](const uint8_t *p, int n) {
+        uint64_t v = 0;
+        for (int i = 0; i < n; ++i) v |= uint64_t(p[little ? i : n - 1 - i]) << (8 * i);
+        return v;
+    };
+    for (int i = 0; i < len; ++i) {
+        const uint8_t *p = bytes.data() + size_t(sizes[type]) * i;
+        switch (type) {
+            case 1: case 2: case 7: values.push_back(p[0]); break;
+            case 6: values.push_back(int8_t(p[0])); break;
+            case 3: values.push_back(uint16_t(word(p, 2))); break;
+            case 8: values.push_back(int16_t(word(p, 2))); break;
+            case 4: values.push_back(uint32_t(word(p, 4))); break;
+            case 9: values.push_back(int32_t(word(p, 4))); break;
+            case 5: { const double d = uint32_t(word(p + 4, 4)); values.push_back(d ? uint32_t(word(p, 4)) / d : 0); break; }
+            case 10: { const double d = int32_t(word(p + 4, 4)); values.push_back(d ? int32_t(word(p, 4)) / d : 0); break; }
+            case 11: { const uint32_t b = uint32_t(word(p, 4)); float f; std::memcpy(&f, &b, 4); values.push_back(f); break; }
+            case 12: { const uint64_t b = word(p, 8); double f; std::memcpy(&f, &b, 8); values.push_back(f); break; }
+        }
+    }
+    return values;
+}
+
+// LibRaw hands every TIFF / maker-note tag it walks to these; the lens-profile ones are kept (RawLensProfile.h).
+static void collectLensTag(void *context, int tag, int type, int len, unsigned order, void *stream, INT64) {
+    auto *tags = static_cast<rawlens::Tags *>(context);
+    const int id = tag & 0xffff, space = (tag >> 16) & 0xf;
+    if (space == 0) {   // a plain TIFF IFD (ARW SubIFD, RAF FujiIFD)
+        switch (id) {
+            case 0x7037: tags->sonyDistortion = readTagValues(stream, type, len, order); break;
+            case 0x7035: tags->sonyChromatic = readTagValues(stream, type, len, order); break;
+            case 0x7032: tags->sonyVignetting = readTagValues(stream, type, len, order); break;
+            case 0xf00b: tags->fujiDistortion = readTagValues(stream, type, len, order); break;
+            case 0xf00f: tags->fujiChromatic = readTagValues(stream, type, len, order); break;
+            case 0xf010: tags->fujiVignetting = readTagValues(stream, type, len, order); break;
+        }
+    } else if (space == 3 && id == 0x0119 && len == 32) {   // Panasonic RW2 IFD0: DistortionInfo, 16 x int16
+        const std::vector<double> bytes = readTagValues(stream, 7, 32, order);
+        if (bytes.size() == 32) {
+            tags->panasonicDistortion.resize(16);
+            for (int i = 0; i < 16; ++i) {
+                const unsigned lo = unsigned(bytes[2 * i]), hi = unsigned(bytes[2 * i + 1]);
+                tags->panasonicDistortion[i] = int16_t(order == 0x4949 ? (hi << 8 | lo) : (lo << 8 | hi));
+            }
+        }
+    }
+}
+
+static void collectLensMakernote(void *context, int tag, int type, int len, unsigned order, void *stream, INT64) {
+    auto *tags = static_cast<rawlens::Tags *>(context);
+    const int id = tag & 0xffff, parent = (tag >> 16) & 0xffff;
+    if (parent == 0x2040 && id == 0x150a) tags->olympusDistortion = readTagValues(stream, type, len, order);
+    else if (parent == 0x2040 && id == 0x150c) tags->olympusChromatic = readTagValues(stream, type, len, order);
+    else if (parent == 0 && id == 0x104d) {   // Fujifilm CropMode
+        const std::vector<double> mode = readTagValues(stream, type, len, order);
+        if (!mode.empty()) tags->fujiCropMode = int(mode[0]);
+    }
+}
 
 struct RawHandle {
     Raw raw;
@@ -43,10 +123,14 @@ struct RawHandle {
     float asShotTint = 0;
     float defaultNoiseReduction = 0;
     int defaultHighlightMode = 0;
+    // The lens profile the file carries (empty when it has none); applied when lens correction is on.
+    rawlens::Tags lensTags;
+    rawlens::Profile lens;
     // Draft previews: the file decoded once at half size, in linear camera RGB with unit white balance, averaged down
     // to the preview size. Every slider change re-applies the pipeline to this small buffer (see developPreview).
     std::vector<float> preview;   // w * h * 3, 0...1
     int previewWidth = 0, previewHeight = 0;
+    std::vector<float> correctedPreview;   // `preview` with the lens profile applied, made on first use
 };
 
 // dcraw's gamma_curve (LibRaw uses the same): a power law with a linear toe, `pwr` = 1/gamma, `ts` = toe slope.
@@ -92,6 +176,8 @@ CompositorRaw *compositor_raw_open(const char *path, int32_t *width, int32_t *he
     if (!path) return nullptr;
     PERF_SCOPE("raw.open+unpack");
     auto handle = std::make_unique<RawHandle>();
+    handle->raw.set_exifparser_handler(collectLensTag, &handle->lensTags);
+    handle->raw.set_makernotes_handler(collectLensMakernote, &handle->lensTags);
     // LibRaw picks its I/O by size: large files are streamed through its buffered big-file reader, not read whole.
     if (handle->raw.open_file(path) != LIBRAW_SUCCESS) return nullptr;
 #ifdef LIBRAW_WITH_RAWSPEED3
@@ -125,6 +211,15 @@ CompositorRaw *compositor_raw_open(const char *path, int32_t *width, int32_t *he
     const uint64_t count = uint64_t(noiseW) * noiseH;
     handle->capabilities = (noiseW >= 65 && noiseH >= 65 && count < 0x15540000ULL ? 1u : 0u)
                          | (d.idata.colors >= 3 && w >= 8 && h >= 8 ? 4u : 0u);
+    // Lens profile: DNG OpcodeList3 (kept by LibRaw for the selected raw IFD) or the maker's tags gathered above.
+    // SuperCCD's 45-degree sensor layout has no such profile.
+    if (const auto &opcodes = d.color.dng_levels.rawopcodes[2]; opcodes.data && opcodes.len > 0)
+        handle->lensTags.dngOpcodeList3.assign(static_cast<const uint8_t *>(opcodes.data),
+                                               static_cast<const uint8_t *>(opcodes.data) + opcodes.len);
+    if (!handle->raw.fujiRotated() && d.idata.colors >= 3) handle->lens = rawlens::buildProfile(handle->lensTags, w, h);
+    handle->raw.set_exifparser_handler(nullptr, nullptr);
+    handle->raw.set_makernotes_handler(nullptr, nullptr);
+    if (handle->lens.valid()) handle->capabilities |= 2u;
     if (width) *width = w;
     if (height) *height = h;
     // As-shot white balance: camera multipliers against the daylight (pre_mul) ones. Warm light (tungsten) makes the
@@ -242,6 +337,7 @@ static bool buildPreviewFromMosaic(RawHandle *handle, int targetW, int targetH) 
         }
     }
     handle->previewWidth = targetW; handle->previewHeight = targetH;
+    handle->correctedPreview.clear();
     return true;
 }
 
@@ -284,15 +380,26 @@ static bool buildPreview(RawHandle *handle, int targetW, int targetH) {
     }
     LibRaw::dcraw_clear_mem(image);
     handle->previewWidth = targetW; handle->previewHeight = targetH;
+    handle->correctedPreview.clear();
     return true;
 }
 
 // The develop pipeline on the cached preview: white balance, camera -> sRGB, exposure, auto-brightening and the tone
 // curve, as LibRaw's full develop applies them — milliseconds, whatever the file size.
 static int32_t developPreview(RawHandle *handle, float exposure, float temperature, float tint, float boost,
-                              int targetW, int targetH, uint8_t **pixels) {
+                              bool lensCorrection, int targetW, int targetH, uint8_t **pixels) {
     if (!buildPreview(handle, targetW, targetH)) return -2;
     PERF_SCOPE("raw.preview develop (per change)");
+    const std::vector<float> *source = &handle->preview;
+    if (lensCorrection && handle->lens.valid()) {
+        if (handle->correctedPreview.size() != handle->preview.size()) {
+            PERF_SCOPE("raw.preview lens correction (once per size)");
+            handle->correctedPreview = handle->preview;
+            rawlens::apply(handle->lens, handle->correctedPreview.data(), targetW, targetH, 3, 3, 4.0f,
+                           rawlens::Orientation{handle->sensorSizes.flip});
+        }
+        source = &handle->correctedPreview;
+    }
     const float warm = std::pow(std::max(1.0f, temperature) / handle->asShotTemperature, 0.6f);
     const float magenta = std::exp(-(tint - handle->asShotTint) / 300.0f);
     float mul[3] = {handle->asShotMul[0] * warm, handle->asShotMul[1] * magenta, handle->asShotMul[2] / warm};
@@ -302,7 +409,7 @@ static int32_t developPreview(RawHandle *handle, float exposure, float temperatu
     const size_t count = size_t(targetW) * targetH;
     std::vector<float> rgb(count * 3);
     for (size_t i = 0; i < count; ++i) {
-        const float *cam = &handle->preview[i * 3];
+        const float *cam = &(*source)[i * 3];
         const float r = std::min(1.0f, cam[0] * mul[0]), g = std::min(1.0f, cam[1] * mul[1]), b = std::min(1.0f, cam[2] * mul[2]);
         for (int c = 0; c < 3; ++c) {
             const float v = handle->sensorColor.rgb_cam[c][0] * r + handle->sensorColor.rgb_cam[c][1] * g + handle->sensorColor.rgb_cam[c][2] * b;
@@ -352,7 +459,7 @@ int32_t compositor_raw_capabilities(CompositorRaw *raw, uint32_t *flags, float *
     if (!handle || !flags || !noise || !lens || !highlight) return -1;
     *flags = handle->capabilities;
     *noise = handle->defaultNoiseReduction;
-    *lens = 0;  // No lens-profile engine is installed.
+    *lens = handle->lens.valid() ? 1 : 0;   // as Apple's: on by default where the file has a profile
     *highlight = handle->defaultHighlightMode > 2 ? 1 : 0;
     return 0;
 }
@@ -366,11 +473,11 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
     compositor_raw_capabilities(raw, &capabilities, &defaultNoise, &defaultLens, &defaultHighlight);
     const float noise = capabilities & 1u && std::isfinite(noiseReduction) ? std::clamp(noiseReduction, 0.0f, 1.0f) : defaultNoise;
     const bool recover = capabilities & 4u ? highlightRecovery != 0 : defaultHighlight != 0;
-    (void)lensCorrection;
+    const bool correctLens = capabilities & 2u ? lensCorrection != 0 : defaultLens != 0;
     if (draft && scale <= 0.5f && noise == defaultNoise && recover == (defaultHighlight != 0)) {   // preview: the cached small buffer, re-developed in milliseconds
         const int fullW = handle->nativeWidth, fullH = handle->nativeHeight;
         const int w = std::max(1, int(std::lround(fullW * scale))), h = std::max(1, int(std::lround(fullH * scale)));
-        const int32_t status = developPreview(handle, exposure, temperature, tint, boost, w, h, pixels);
+        const int32_t status = developPreview(handle, exposure, temperature, tint, boost, correctLens, w, h, pixels);
         if (status == 0) { *outWidth = w; *outHeight = h; }
         return status;
     }
@@ -405,6 +512,13 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
         PERF_SCOPE("raw.develop: dcraw_process");
         const int status = handle->raw.dcraw_process();
         if (status != LIBRAW_SUCCESS) { qWarning("RAW develop failed: %s", libraw_strerror(status)); return -2; }
+    }
+    if (correctLens && handle->lens.valid() && handle->raw.imgdata.image) {
+        // The developed pixels are linear, in sensor orientation (LibRaw orients them when it writes the output).
+        PERF_SCOPE("raw.develop: lens correction");
+        libraw_data_t &d = handle->raw.imgdata;
+        rawlens::apply(handle->lens, &d.image[0][0], d.sizes.width, d.sizes.height, 4, std::min<int>(d.idata.colors, 3), 65535.0f);
+        handle->raw.rebuildHistogram();
     }
     int error = 0;
     libraw_processed_image_t *image = nullptr;

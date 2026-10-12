@@ -23,9 +23,10 @@ done
 
 cmake -S . -B "$NATIVE_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
     -DCOMPOSITOR_SKIA_ROOT="$SKIA_ROOT" -DCOMPOSITOR_SKIA_LIB="$SKIA_LIB"
-cmake --build "$NATIVE_BUILD" --parallel 2 --target CompositorSkiaBridge CompositorQtImageIO test_skia_bridge test_imageio_color test_font_traits test_kernels test_patch_pixels
+cmake --build "$NATIVE_BUILD" --parallel 2 --target CompositorSkiaBridge CompositorQtImageIO test_skia_bridge test_imageio_color test_font_traits test_kernels test_patch_pixels test_raw_lens
 # Call the executable directly: CTest treats a missing Skia backend (77) as a skip, which is a failure here.
 "$NATIVE_BUILD/test_patch_pixels"
+"$NATIVE_BUILD/test_raw_lens"
 "$NATIVE_BUILD/test_kernels"
 "$NATIVE_BUILD/test_skia_bridge"
 
@@ -45,5 +46,6 @@ install -m644 Compositor/Resources/CameraRawTables.bin "$SWIFT_BIN/"
 swift test -c release --manifest-cache none --no-parallel "$@"
 XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --combo-smoke
 XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --preview-smoke
+"$SWIFT_BIN/CompositorHostBootstrap" --raw-lens-smoke
 
 "$SWIFT_BIN/CompositorHostBootstrap" --text-backend-smoke

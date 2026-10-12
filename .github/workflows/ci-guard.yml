@@ -32,6 +32,11 @@ jobs:
     needs: check-upstream-clean
     steps:
       - uses: actions/checkout@v4
+      # The audit archives upstream/main's Compositor tree: it needs the same upstream remote as the gate.
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/robbietilton/Compositor.git
+          git fetch upstream main
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'

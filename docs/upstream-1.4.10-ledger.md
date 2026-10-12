@@ -34,3 +34,26 @@ Code commits: **1** of 4 (rule: changes a Compositor Swift/C/header file). Docs/
 - **App icon** (`ce5ea67`): Linux reads `AppIcon.appiconset` directly at install/package time, so the new icon needs no copy.
 - **Version** (`eb1fda7`): `scripts/sync-version.sh` regenerates `host/AppVersion.h` (1.4.10, build 45).
 - **Update feed** (`a1bd74c`): Sparkle `appcast.xml`, Mac only; Linux updates through Flatpak.
+
+## RAW Lens Correction (closes the gap left by `248d4d4`)
+
+Upstream's Develop sheet removes "the lens's distortion and vignetting, from the profile in the file, where it has one".
+Linux used to report lens correction as unsupported for every file. `host/RawLensProfile.h` now reads the same
+in-file profiles Apple's RAW engine uses, collected while LibRaw parses the file (no new dependency):
+
+| Source | Where | Model |
+|---|---|---|
+| DNG | OpcodeList3 (`color.dng_levels.rawopcodes[2]`) | WarpRectilinear (radial + tangential, 1 or 3 planes) and FixVignetteRadial per the DNG spec, in list order, in sensor coordinates |
+| Sony ARW | SubIFD `0x7037/0x7035/0x7032` | distortion, lateral CA and vignetting splines |
+| Fujifilm RAF | FujiIFD `0xf00b/0xf00f/0xf010`, CropMode `0x104d` | distortion, lateral CA and vignetting splines |
+| OM System / Olympus | makernote ImageProcessing `0x150a/0x150c` | distortion and lateral CA polynomials |
+| Panasonic RW2 | IFD0 `0x0119` DistortionInfo | distortion polynomial |
+
+A file with a profile advertises lens correction and has it on by default, as `CIRAWFilter` does. The correction is
+applied to the linear developed pixels (after LibRaw's demosaic, before its output curve and orientation), and to the
+draft preview with the same geometry. The radial maker-note models are scaled to fill the frame. A file without a
+profile keeps the control disabled; the generated sheet's tooltip says so.
+
+Evidence: `tests/test_raw_lens.cpp` (parsing, validation, sensor-orientation geometry, each maker model) and
+`CompositorHostBootstrap --raw-lens-smoke` (generated DNGs through LibRaw: capabilities, full and draft develops,
+vignette and warp measured, a file without a profile untouched), both in `scripts/linux-contract-tests.sh`.

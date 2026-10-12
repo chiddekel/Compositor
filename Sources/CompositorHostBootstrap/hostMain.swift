@@ -60,6 +60,11 @@ struct HostBootstrap {
             guard result == 0 else { fail("Interchange returned \(result)") }
             return
         }
+        if CommandLine.arguments.contains("--raw-lens-smoke") {
+            let result = compositor_host_raw_lens_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("RAW lens smoke returned \(result)") }
+            return
+        }
         if CommandLine.arguments.contains("--preview-smoke") {
             let result = compositor_host_preview_smoke(CommandLine.argc, CommandLine.unsafeArgv)
             guard result == 0 else { fail("Qt preview smoke returned \(result)") }

@@ -349,3 +349,10 @@ target_compile_options(test_patch_pixels PRIVATE "$<$<COMPILE_LANGUAGE:C>:-fbloc
 target_include_directories(test_patch_pixels PRIVATE "${COMPOSITOR_DISPATCH_INCLUDE}" "${COMPOSITOR_DISPATCH_INCLUDE}/Block")
 target_link_libraries(test_patch_pixels PRIVATE CompositorKernels)
 add_test(NAME CompositorCore.PatchPixels COMMAND test_patch_pixels)
+
+# RAW lens correction from the file's own profile (DNG OpcodeList3, Sony, Fujifilm, OM System, Panasonic): header-only.
+add_executable(test_raw_lens tests/test_raw_lens.cpp)
+set_target_properties(test_raw_lens PROPERTIES AUTOMOC OFF)
+find_package(Threads REQUIRED)
+target_link_libraries(test_raw_lens PRIVATE Threads::Threads)
+add_test(NAME CompositorCore.RawLens COMMAND test_raw_lens)
