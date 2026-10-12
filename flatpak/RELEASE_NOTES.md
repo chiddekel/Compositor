@@ -1,10 +1,12 @@
-Compositor 1.4.10-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.4.10-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
 
-RAW Lens Correction now works on Linux:
+Catches up with Compositor's 16-bit and HDR work (after 1.4.10):
 
-- The Develop sheet's **Lens Correction** removes distortion and vignetting using the profile stored in the file: DNG (OpcodeList3), Sony ARW, Fujifilm RAF, OM System / Olympus ORF and Panasonic RW2.
-- It is on by default where the file has a profile and disabled where it has none, as on the Mac. The draft preview and the import show the same correction.
-- Otherwise matches 1.4.10-linux-alpha.1 (camera HEIF import, new app icon).
+- **16-bit layers**: 16-bit PNG and TIFF images keep their precision through Levels, Hue/Saturation, filters, Smudge, Liquify, Blur, transforms, merging, saving and 16-bit PNG export; convert any layer between 8 and 16 bits; 16-bit gradients and fills.
+- **HDR layers**: import OpenEXR and Radiance HDR keeping light brighter than white; adjustment layers bring highlights back into view; export as EXR.
+- Paste an image on the New canvas screen to make the canvas; drop files anywhere on the tab bar to open them in a new project.
+- Export As lists JPEG and PNG first, with PDF and EXR under More.
+- Otherwise matches 1.4.10-linux-alpha.2 (RAW Lens Correction, camera HEIF).
 
 - Install from the [Linux download page](https://chiddekel.github.io/Compositor/) or the attached `.flatpakref` file. The signed alpha repository supplies future updates.
 - Use **Compositor → Check for Updates… → Check and Update**, your software center, or `flatpak update com.compositor.Client`.

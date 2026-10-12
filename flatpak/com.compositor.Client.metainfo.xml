@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.4.10-linux-alpha.3" date="2026-10-12" type="development">
+      <description><p>16-bit and HDR layers: 16-bit images keep their precision through every edit, EXR and Radiance HDR import with light brighter than white, EXR export, 8/16-bit conversion, paste an image to make a new canvas, and drops anywhere on the tab bar open a new project.</p></description>
+    </release>
     <release version="1.4.10-linux-alpha.2" date="2026-10-12" type="development">
       <description><p>RAW Lens Correction: distortion and vignetting taken out from the profile in the file (DNG, Sony, Fujifilm, OM System/Olympus, Panasonic), on by default where a file has one, as on the Mac.</p></description>
     </release>
