@@ -859,11 +859,10 @@ final class EditorSession {
                     guard let settings = await developRaw(url) else { continue }
                     defer { if rawImporting { endRawDevelop() } }
                     // Seconds of work: off the main actor, or pressing Import freezes the window.
-                    guard let developed = await RawImporter.Queue.shared.develop(url, settings: settings, limit: nil)
+                    // A 16-bit layer: a RAW's latitude stays for later Levels, Curves and Camera Raw (`DeepLayer`).
+                    guard let developed = await RawImporter.Queue.shared.develop(url, settings: settings, limit: nil, sixteenBit: true)
                     else { throw ImageImportError.unreadable }
-                    let thumbnail = try PixelAdjust.thumbnail(of: developed)
-                    insert(ImportedImage(image: developed, thumbnail: thumbnail,
-                                         name: url.deletingPathExtension().lastPathComponent), centeredAt: point)
+                    insert(try DeepLayer.asset(developed, name: url.deletingPathExtension().lastPathComponent), centeredAt: point)
                 } else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .svg) == true {
                     let asset = try await ImageImporter.shared.decodeSVG(url, fitting: document?.size,
                                                                          remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)

@@ -2717,6 +2717,8 @@ extension CanvasView {
         session.effectsPreviews.prepare(layers: document.layers)
         let byID = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0) })
         let ids = document.renderLayers.map(\.id)
+        // With an HDR layer, what an adjustment works on may be brighter than white (`GPUAdjustment.apply`).
+        let hasHDR = document.layers.contains { $0.asset?.isHDR == true }
         // Clipping stacks, as `LiveMaskRenderer.prepareStacks` finds them.
         var stacks: [UUID: [UUID]] = [:], stacked = Set<UUID>()
         for (index, base) in ids.enumerated() where byID[base]?.maskSourceID == nil && byID[base]?.adjustment == nil {
@@ -3019,6 +3021,12 @@ extension CanvasView {
             let placed: CIImage?
             if let shaped = session.shapeTransformPreview(for: layer, transform: transform) {
                 placed = placement.place(shaped, transform: transform)
+            } else if let asset = layer.asset, session.hueSaturation?.previewImage(for: layer.id) == nil,
+                      session.levels?.previewImage(for: layer.id) == nil, session.filterEdit?.previewImage(for: layer.id) == nil,
+                      let hdr = DeepLayer.canvasImage(asset) {
+                // An HDR layer from its own pixels, so an adjustment over it can bring its highlights into view; the screen
+                // still shows anything brighter than white as white.
+                placed = placement.place(hdr, transform: transform)
             } else if let raster = layer.asset?.raster, session.hueSaturation?.previewImage(for: layer.id) == nil,
                       session.levels?.previewImage(for: layer.id) == nil, session.filterEdit?.previewImage(for: layer.id) == nil {
                 placed = placement.place(raster, transform: transform)
@@ -3035,7 +3043,8 @@ extension CanvasView {
         }
         // An adjustment re-colors what's under it, through its own mask and its folders' masks, at its opacity.
         func adjusted(_ below: CIImage, by layer: ImageLayer, adjustment: LayerAdjustment, folders: Bool) -> CIImage? {
-            guard var changed = GPUAdjustment.apply(adjustment, to: below, scale: placement.scale, mapping: placement.mapping)
+            guard var changed = GPUAdjustment.apply(adjustment, to: below, scale: placement.scale, mapping: placement.mapping,
+                                                    hdr: hasHDR)
             else { return nil }
             // In a blend mode, the adjusted colors blend with the ones under them at full coverage, and the original
             // coverage comes back after — as LiveMaskRenderer does, so soft edges aren't thickened.

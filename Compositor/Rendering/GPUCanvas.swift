@@ -52,7 +52,9 @@ import QuartzCore
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device
         self.queue = queue
-        context = CIContext(mtlCommandQueue: queue, options: [.workingColorSpace: space, .cacheIntermediates: false])
+        // Extended sRGB: the same blending as sRGB, with an HDR layer's light brighter than white carried through rather
+        // than clipped, so an adjustment over it (Exposure turned down) brings its highlights into view.
+        context = CIContext(mtlCommandQueue: queue, options: [.workingColorSpace: DeepLayer.hdrSpace, .cacheIntermediates: false])
         // Once the canvas stops redrawing, what its last frame didn't use goes; frames alone would never count past it.
         idle = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -107,7 +109,8 @@ import QuartzCore
                 made = upload(image, mask: mask)
             } else if let larger = texture(image, level: level - 1, mask: mask, transient: false, drawing: false) {
                 made = reduce(larger, from: Self.size(image.width, image.height, level: level - 1),
-                              to: Self.size(image.width, image.height, level: level), mask: mask)
+                              to: Self.size(image.width, image.height, level: level), mask: mask,
+                              hdr: !mask && DeepLayer.isHDR(image))
             } else { made = nil }
             guard let made else { return nil }
             textures[key] = Entry(source: image, image: made, used: frame, keep: keep)
@@ -240,9 +243,10 @@ import QuartzCore
         strokes = strokes.filter { $0.value.used >= frame - keepFrames }
     }
 
-    private func texture(width: Int, height: Int, mask: Bool) -> MTLTexture? {
+    /// `hdr`: half floats, for an HDR layer's pixels.
+    private func texture(width: Int, height: Int, mask: Bool, hdr: Bool = false) -> MTLTexture? {
         guard width > 0, height > 0, width <= 16_384, height <= 16_384 else { return nil }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: mask ? .r8Unorm : .rgba8Unorm,
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: mask ? .r8Unorm : hdr ? .rgba16Float : .rgba8Unorm,
                                                                   width: width, height: height, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite]
         descriptor.storageMode = .shared
@@ -250,13 +254,16 @@ import QuartzCore
     }
 
     private func wrap(_ texture: MTLTexture, mask: Bool) -> CIImage? {
-        CIImage(mtlTexture: texture, options: [.colorSpace: mask ? NSNull() : space])
+        CIImage(mtlTexture: texture, options: [.colorSpace: mask ? NSNull() : texture.pixelFormat == .rgba16Float ? DeepLayer.hdrSpace : space])
     }
 
     /// The image's own bytes, copied straight in: sRGB, premultiplied, top row first — or for a mask, its gray values.
     private func upload(_ image: CGImage, mask: Bool) -> CIImage? {
-        guard let texture = texture(width: image.width, height: image.height, mask: mask),
-              let pixels = try? (mask ? Self.grayCopy(image) : BrushRaster.copy(image)), let data = pixels.data else { return nil }
+        // An HDR layer's pixels go up as half floats, light brighter than white kept.
+        let hdr = !mask && DeepLayer.isHDR(image)
+        guard let texture = texture(width: image.width, height: image.height, mask: mask, hdr: hdr),
+              let pixels = try? (mask ? Self.grayCopy(image) : hdr ? DeepLayer.hdr(image) : BrushRaster.copy(image)),
+              let data = pixels.data else { return nil }
         texture.replace(region: MTLRegionMake2D(0, 0, image.width, image.height), mipmapLevel: 0,
                         withBytes: data, bytesPerRow: pixels.bytesPerRow)
         return wrap(texture, mask: mask)
@@ -297,16 +304,16 @@ import QuartzCore
     }
 
     /// `larger` (`from` in size) sharply reduced to `to`, kept as a texture of its own.
-    private func reduce(_ larger: CIImage, from: CGSize, to: CGSize, mask: Bool) -> CIImage? {
+    private func reduce(_ larger: CIImage, from: CGSize, to: CGSize, mask: Bool, hdr: Bool = false) -> CIImage? {
         let w = Int(to.width), h = Int(to.height)
         let sx = to.width / from.width, sy = to.height / from.height
         let reduced = larger.clampedToExtent()
             .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: sy, kCIInputAspectRatioKey: sx / sy])
             .cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let texture = texture(width: w, height: h, mask: mask), let buffer = queue.makeCommandBuffer() else { return nil }
+        guard let texture = texture(width: w, height: h, mask: mask, hdr: hdr), let buffer = queue.makeCommandBuffer() else { return nil }
         // A mask's values carry no color space; rendered in the working space, they're written as they are.
         context.render(reduced, to: texture, commandBuffer: buffer, bounds: CGRect(x: 0, y: 0, width: w, height: h),
-                       colorSpace: space)
+                       colorSpace: hdr ? DeepLayer.hdrSpace : space)
         buffer.commit()
         buffer.waitUntilCompleted()
         return wrap(texture, mask: mask)
@@ -503,7 +510,28 @@ nonisolated enum GPUBlend {
 nonisolated enum GPUAdjustment {
     /// `image` adjusted, laid out in frame pixels: `scale` frame pixels per document pixel, and `mapping` from document
     /// pixels to the frame (for Grain, whose pattern belongs to the document).
-    static func apply(_ adjustment: LayerAdjustment, to image: CIImage, scale: CGFloat, mapping: CGAffineTransform) -> CIImage? {
+    /// `hdr`: the document has an HDR layer, so what's below may be brighter than white. Exposure then works on its full
+    /// range, and the tonal adjustments see each highlight divided down to within white and multiply their result back,
+    /// as `LayerAdjustment.applySixteenBit` does for a merge or export.
+    static func apply(_ adjustment: LayerAdjustment, to image: CIImage, scale: CGFloat, mapping: CGAffineTransform,
+                      hdr: Bool = false) -> CIImage? {
+        if hdr, adjustment.kind == .exposure { return exposure(adjustment.exposure, to: image) }
+        if hdr, [.levels, .hsv, .curves, .blackWhite, .colorBalance, .gradientMap, .invert].contains(adjustment.kind) {
+            // Worked on in straight colors at full coverage, so the blend filters' compositing leaves them alone; the
+            // coverage goes back at the end.
+            let extent = image.extent
+            let straight = image.unpremultiplyingAlpha().settingAlphaOne(in: extent)
+            // Each pixel's brightest channel, at least 1: dividing by it fits a highlight within white with its hue.
+            let brightest = straight.applyingFilter("CIMaximumComponent").applyingFilter("CIColorClamp", parameters: [
+                "inputMinComponents": CIVector(x: 1, y: 1, z: 1, w: 1), "inputMaxComponents": CIVector(x: 65504, y: 65504, z: 65504, w: 1)])
+            let within = straight.applyingFilter("CIDivideBlendMode", parameters: [kCIInputBackgroundImageKey: straight,
+                                                                                   kCIInputImageKey: brightest])
+            guard let changed = apply(adjustment, to: within, scale: scale, mapping: mapping) else { return nil }
+            return changed.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: brightest])
+                .applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
+                                                                     kCIInputMaskImageKey: image])
+                .cropped(to: extent)
+        }
         switch adjustment.kind {
         case .levels:
             guard !adjustment.levels.isIdentity else { return image }
@@ -541,6 +569,24 @@ nonisolated enum GPUAdjustment {
         case .grain:
             return GPUNoise.addGrain(to: image, grain: adjustment.grain, scale: scale, mapping: mapping)
         }
+    }
+
+    /// Exposure over the full range, past white: as `ExposureSettings.table` (to linear light, scaled, offset, raised to
+    /// 1/gamma, and back), read from a curve reaching 16 times white, finely enough to be smooth.
+    private static func exposure(_ settings: ExposureSettings, to image: CIImage) -> CIImage {
+        let settings = settings.normalized
+        let size = 8192, top = 16.0, scale = pow(2, settings.exposure)
+        func linear(_ encoded: Double) -> Double { encoded <= 0.04045 ? encoded / 12.92 : pow((encoded + 0.055) / 1.055, 2.4) }
+        func encoded(_ linear: Double) -> Double { linear <= 0.0031308 ? linear * 12.92 : 1.055 * pow(linear, 1 / 2.4) - 0.055 }
+        let curve = (0..<size).flatMap { index -> [Float] in
+            let value = Float(encoded(pow(max(0, linear(Double(index) / Double(size - 1) * top) * scale + settings.offset), 1 / settings.gamma)))
+            return [value, value, value]
+        }
+        return image.applyingFilter("CIColorCurves", parameters: [
+            "inputCurvesData": curve.withUnsafeBufferPointer { Data(buffer: $0) },
+            "inputCurvesDomain": CIVector(x: 0, y: top),
+            "inputColorSpace": DeepLayer.hdrSpace,
+        ])
     }
 
     // MARK: Color lookups
