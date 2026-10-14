@@ -8,6 +8,7 @@ import Sparkle
 /// from that tree, so titles, order, separators, shortcuts and enabled states are upstream's, re-read as the session
 /// changes.
 @MainActor enum AppMenus {
+    static var nativeTextAction: NativeTextActionHandler?
     /// The app, over the shell's workspace (made once; `@NSApplicationDelegateAdaptor` hands it this delegate).
     static let delegate = CompositorApplicationDelegate(workspace: Workspace.shared)
     static func commands() -> (any View)? {
@@ -159,8 +160,82 @@ import Sparkle
             items = found?.items ?? []
         }
         guard let item = found, item.enabled, let action = item.action else { return false }
+        // The Qt text editor owns its selection, clipboard and local history. Its focused responder gets
+        // standard text commands before the document, including actions chosen from the command palette.
+        let textAction: String?
+        if item.title == "Undo" || item.title.hasPrefix("Undo ") { textAction = "undo" }
+        else if item.title == "Redo" || item.title.hasPrefix("Redo ") { textAction = "redo" }
+        else { textAction = ["Cut": "cut", "Copy": "copy", "Paste": "paste", "All": "selectAll"][item.title] }
+        if let textAction, let nativeTextAction,
+           textAction.withCString({ nativeTextAction($0) }) != 0 { return true }
         action()
         return true
+    }
+}
+
+public typealias NativeTextActionHandler = @convention(c) (UnsafePointer<CChar>?) -> Int32
+
+/// The native host answers standard text actions only when an editable/selectable text control has focus.
+@_cdecl("compositor_set_native_text_action_handler")
+nonisolated public func compositorSetNativeTextActionHandler(_ handler: NativeTextActionHandler?) {
+    onMain { AppMenus.nativeTextAction = handler }
+}
+
+/// The native palette hosts upstream's catalog and ranking rather than collecting the host's legacy actions.
+@MainActor enum NativeCommandPalette {
+    static var pending: (handle: UInt64, query: String, data: Data)?
+
+    static func catalog(_ handle: UInt64) -> (menu: NSMenu, entries: [CommandPaletteEntry])? {
+        guard let entry = Sessions.entries[handle] else { return nil }
+        if let tab = entry.workspaceTabID {
+            Workspace.shared.select(tab)
+            guard Workspace.shared.current.id == tab else { return nil }
+        }
+        let menu = AppMenuBar.shared.make()
+        let entries = CommandPaletteMenu.entries(in: menu, skipping: CommandPaletteController.skipped)
+            + CommandPaletteEntry.layerCommands(for: entry.editor.session)
+            + CommandPaletteEntry.tools(for: entry.editor.session)
+        return (menu, entries)
+    }
+}
+
+@_cdecl("compositor_command_palette_search")
+nonisolated public func compositorCommandPaletteSearch(_ handle: UInt64, _ query: UnsafePointer<CChar>?,
+                                                        _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard let query else { return -1 }
+    let value = String(cString: query)
+    return onMain {
+        guard Sessions.entries[handle] != nil else { return -6 }
+        if let output, let pending = NativeCommandPalette.pending, pending.handle == handle, pending.query == value {
+            NativeCommandPalette.pending = nil
+            guard capacity >= pending.data.count else { return -1 }
+            pending.data.copyBytes(to: output, count: pending.data.count)
+            return Int64(pending.data.count)
+        }
+        guard let catalog = NativeCommandPalette.catalog(handle) else { return -6 }
+        let rows = CommandPaletteSearch.rank(catalog.entries, query: value).map { entry -> [String: Any] in
+            var row: [String: Any] = ["id": entry.id, "title": entry.title, "enabled": entry.isEnabled, "checked": entry.isOn]
+            if let shortcut = entry.shortcut { row["shortcut"] = shortcut }
+            return row
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]) else { return -5 }
+        guard let output else { NativeCommandPalette.pending = (handle, value, data); return Int64(data.count) }
+        guard capacity >= data.count else { return -1 }
+        data.copyBytes(to: output, count: data.count)
+        return Int64(data.count)
+    }
+}
+
+@_cdecl("compositor_command_palette_perform")
+nonisolated public func compositorCommandPalettePerform(_ handle: UInt64, _ id: UnsafePointer<CChar>?) -> Int32 {
+    guard let id else { return -1 }
+    let value = String(cString: id)
+    return onMain {
+        guard let catalog = NativeCommandPalette.catalog(handle),
+              let entry = catalog.entries.first(where: { $0.id == value }), entry.isEnabled else { return -1 }
+        // Menu entries deliberately capture a weak root, as upstream does. Retain it through the dispatch.
+        withExtendedLifetime(catalog.menu) { entry.perform() }
+        return 0
     }
 }
 
@@ -303,6 +378,7 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
         case .jpeg: request("exportJPEG")
         case .pdf: request("exportPDF")
         case .exr: request("exportAs:exr")
+        case .tiff: request("exportAs:tiff")
         case .png, nil: request("exportPNG")
         }
     }
@@ -345,6 +421,16 @@ nonisolated public func compositorAppDidBecomeActive() {
     onMain { Foundation.NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil) }
 }
 
+@_cdecl("compositor_app_did_resign_active")
+nonisolated public func compositorAppDidResignActive() {
+    onMain { Foundation.NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: nil) }
+}
+
+@_cdecl("compositor_menu_did_end_tracking")
+nonisolated public func compositorMenuDidEndTracking() {
+    onMain { Foundation.NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil) }
+}
+
 extension ProjectWindowBridge {
     /// The Linux delegate's `projects` (ShellProjects) stands for the current tab's controller.
     @MainActor init(controller projects: ShellProjects) {
@@ -362,25 +448,57 @@ extension ProjectWindowView {
 /// Context and pop-up menus (`NSMenu.popUp`): the shell shows the menu at the pointer ("popUpMenu" request), reading its
 /// items here, and reports the choice back.
 @MainActor enum PopUpMenus {
-    struct Item: Encodable { let title: String; let enabled: Bool; let checked: Bool; let separator: Bool }
-    static var current: (menu: NSMenu, finish: (Int?) -> Void)?
+    struct Item: Encodable {
+        let id: Int
+        let title: String
+        let enabled: Bool
+        let checked: Bool
+        let separator: Bool
+        let children: [Item]?
+    }
+    struct Choice { let menu: NSMenu; let index: Int; let enabled: Bool }
+    struct Presentation {
+        let menu: NSMenu
+        let finish: (Int?) -> Void
+        var choices: [Int: Choice] = [:]
+    }
+    static var current: Presentation?
     static func install() {
         NSMenu.presenter = { menu, finish in
             current?.finish(nil)
-            current = (menu, finish)
+            current = Presentation(menu: menu, finish: finish)
             ShellProjects.pending.append("popUpMenu")
         }
     }
+    static func items() -> [Item] {
+        guard var presentation = current else { return [] }
+        presentation.choices.removeAll()
+        var nextID = 0
+        func describe(_ menu: NSMenu, enabled: Bool) -> [Item] {
+            menu.update()
+            return menu.items.enumerated().filter { !$0.element.isHidden }.map { index, item in
+                let id = nextID; nextID += 1
+                let active = enabled && item.isEnabled
+                let children = item.submenu.map { describe($0, enabled: active) }
+                if children == nil, !item.isSeparatorItem {
+                    presentation.choices[id] = Choice(menu: menu, index: index, enabled: active)
+                }
+                return Item(id: id, title: item.title, enabled: active, checked: item.state == .on,
+                            separator: item.isSeparatorItem, children: children)
+            }
+        }
+        let result = describe(presentation.menu, enabled: true)
+        current = presentation
+        return result
+    }
 }
 
-/// The items of the menu waiting to be shown, as JSON [{title, enabled, checked, separator}] (same buffer convention
+/// The recursive items of the waiting menu, including IDs for leaf dispatch (same buffer convention
 /// as the state call); empty when none is waiting.
 @_cdecl("compositor_popup_menu_items")
 nonisolated public func compositorPopUpMenuItems(_ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     onMain {
-        let items = PopUpMenus.current?.menu.items.filter { !$0.isHidden }.map {
-            PopUpMenus.Item(title: $0.title, enabled: $0.isEnabled, checked: $0.state == .on, separator: $0.isSeparatorItem)
-        } ?? []
+        let items = PopUpMenus.items()
         let data = (try? JSONEncoder().encode(items)) ?? Data("[]".utf8)
         guard let output else { return Int64(data.count) }
         guard capacity >= data.count else { return -1 }
@@ -389,14 +507,16 @@ nonisolated public func compositorPopUpMenuItems(_ output: UnsafeMutablePointer<
     }
 }
 
-/// The shown menu closed: `index` is the chosen item among the visible ones, or -1 when it was dismissed.
+/// The shown menu closed: `index` is the serialized leaf ID, or -1 when it was dismissed.
 @_cdecl("compositor_popup_menu_choose")
 nonisolated public func compositorPopUpMenuChoose(_ index: Int32) {
     onMain {
         guard let current = PopUpMenus.current else { return }
         PopUpMenus.current = nil
-        let visible = current.menu.items.enumerated().filter { !$0.element.isHidden }.map(\.offset)
-        current.finish(index >= 0 && Int(index) < visible.count ? visible[Int(index)] : nil)
+        if let choice = current.choices[Int(index)], choice.enabled {
+            choice.menu.performActionForItem(at: choice.index)
+        }
+        current.finish(nil)
     }
 }
 

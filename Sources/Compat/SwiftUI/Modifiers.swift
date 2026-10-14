@@ -263,6 +263,14 @@ extension View {
         let modifiers = key.isAction ? [] : modifiers
         return modified { $0.modifiers.append(.keyboardShortcut(key: String(key.character), modifiers: modifiers.rawValue)) }
     }
+    /// A whole shortcut, or nil for none (SwiftUI's `keyboardShortcut(_: KeyboardShortcut?)`).
+    public func keyboardShortcut(_ shortcut: KeyboardShortcut?) -> some View {
+        modified {
+            guard let shortcut else { return }
+            let modifiers = shortcut.key.isAction ? [] : shortcut.modifiers
+            $0.modifiers.append(.keyboardShortcut(key: String(shortcut.key.character), modifiers: modifiers.rawValue))
+        }
+    }
     public func onAppear(perform action: @escaping () -> Void = {}) -> some View {
         modified { $0.modifiers.append(.onAppear(action)) }
     }

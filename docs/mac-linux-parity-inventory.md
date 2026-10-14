@@ -4,7 +4,7 @@ Historical baseline: upstream **1.3.1** (merged `ce8cba6`), branch `GNU_Linux`. 
 (`Compositor/{Document,IO,Rendering,UI}`, unmodified) on Apple-API compat modules, inside a Qt shell.
 
 This inventory records that earlier checkpoint. Its feature statuses, test counts and UI claims have not been
-fully re-audited against current upstream `3081719`. See [TODOS.md](../TODOS.md) for open compatibility work
+fully re-audited against current upstream `e8c9e29`. See [the current comparison table](current-linux-compatibility-inventory.md#current-feature-comparison-with-upstream) and [TODOS.md](../TODOS.md) for open compatibility work
 and [the test baseline](upstream-test-baseline.md) for current run evidence. Running upstream code and passing
 its tests does not establish every native UI behavior; the statuses below preserve the original assessment.
 

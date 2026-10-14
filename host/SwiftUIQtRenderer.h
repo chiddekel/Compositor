@@ -37,3 +37,5 @@ bool swiftUIDragGestureActive(uint64_t sessionHandle);
 /// True while an AppKit tracking loop (a press in an `_AppKit` view) runs the event pump: the shell's periodic refresh
 /// waits, so no panel is rebuilt under the press.
 bool swiftUIAppKitTracking();
+/// Bounded geometry/focus diagnostics recorded by native tests or COMPOSITOR_TRACE_SCROLL_BUFFER.
+QString swiftUIScrollTrace();

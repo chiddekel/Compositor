@@ -5,6 +5,7 @@
 // projects, exports and tests round-trip. A backend that does not know a format returns nil.
 
 import Foundation
+import CompositorColorManagement
 import CompatSupport
 #if canImport(Glibc)
 import Glibc
@@ -21,6 +22,10 @@ public struct ImageInfo: Sendable {
     /// EXIF orientation 1...8.
     public var orientation: Int32 = 1
     public var hasAlpha = true
+    /// Apple's color model (`kCGImagePropertyColorModel`): "RGB", "Gray" or "CMYK".
+    public var colorModel = "RGB"
+    /// The embedded profile's description (`kCGImagePropertyProfileName`), when the file carries one.
+    public var profileName: String?
     public init(typeIdentifier: String, width: Int, height: Int, bitDepth: Int = 8, dpi: Double? = nil,
                 orientation: Int32 = 1, hasAlpha: Bool = true) {
         self.typeIdentifier = typeIdentifier; self.width = width; self.height = height; self.bitDepth = bitDepth
@@ -81,6 +86,13 @@ public enum ImageCodecRegistry {
                 var deep: CompositorImageDecodeFn?
                 if let deepSym = dlsym(handle, "compositor_qt_imageio_deep_decode") { _ = unsafeBitCast(deepSym, to: DeepFunction.self)(&deep) }
                 host = CCallbackCodec(decode: decode, encode: encode, deepDecode: deep)
+                typealias CMYKFunctions = @convention(c) (UnsafeMutablePointer<CompositorCMYKDecodeFn?>?,
+                                                          UnsafeMutablePointer<CompositorCMYKEncodeFn?>?) -> Int32
+                var cmykDecode: CompositorCMYKDecodeFn?, cmykEncode: CompositorCMYKEncodeFn?
+                if let cmykSym = dlsym(handle, "compositor_qt_imageio_cmyk_functions"),
+                   unsafeBitCast(cmykSym, to: CMYKFunctions.self)(&cmykDecode, &cmykEncode) == 1 {
+                    (host as? CCallbackCodec)?.cmykDecodeFn = cmykDecode; (host as? CCallbackCodec)?.cmykEncodeFn = cmykEncode
+                }
                 return true
             }
         }
@@ -137,12 +149,25 @@ public typealias CompositorImageDecodeFn = @convention(c) (
 public typealias CompositorImageEncodeFn = @convention(c) (
     UnsafePointer<UInt8>?, Int32, Int32, Int32, UnsafePointer<CChar>?, Double, Double, Int32,
     UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int>?) -> Int32
+/// CMYK decode: 0 for a CMYK JPEG or TIFF, with malloc'd inks (four a pixel, 0 none, 255 full) and its embedded ICC
+/// profile (malloc'd, or nil when it names none); nonzero for anything else.
+public typealias CompositorCMYKDecodeFn = @convention(c) (
+    UnsafePointer<UInt8>?, Int, UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int32>?,
+    UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int>?,
+    UnsafeMutablePointer<Double>?, UnsafeMutablePointer<CChar>?, Int) -> Int32
+/// CMYK encode: inks (four a pixel) and an ICC profile to embed, as a JPEG or LZW TIFF.
+public typealias CompositorCMYKEncodeFn = @convention(c) (
+    UnsafePointer<UInt8>?, Int32, Int32, UnsafePointer<UInt8>?, Int, UnsafePointer<CChar>?, Double, Double,
+    UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int>?) -> Int32
 
 final class CCallbackCodec: ImageCodecBackend {
     let decodeFn: CompositorImageDecodeFn, encodeFn: CompositorImageEncodeFn
     /// The host's deep decode (16-bit and linear-float layouts), when it has one: used instead of the 8-bit decode so
     /// a file keeps its depth, as with Apple's ImageIO.
     var deepDecodeFn: CompositorImageDecodeFn?
+    /// CMYK JPEG/TIFF, kept in inks as Apple's ImageIO keeps them.
+    var cmykDecodeFn: CompositorCMYKDecodeFn?
+    var cmykEncodeFn: CompositorCMYKEncodeFn?
     init(decode: @escaping CompositorImageDecodeFn, encode: @escaping CompositorImageEncodeFn,
          deepDecode: CompositorImageDecodeFn? = nil) { decodeFn = decode; encodeFn = encode; deepDecodeFn = deepDecode }
 
@@ -160,12 +185,42 @@ final class CCallbackCodec: ImageCodecBackend {
         return (Array(UnsafeBufferPointer(start: out, count: count)), Int(w), Int(h), Int(channels), dpi, orientation, String(cString: uti))
     }
 
+    /// The file's inks and profile, when it is a CMYK JPEG or TIFF.
+    private func runCMYK(_ data: Data) -> (inks: [UInt8], w: Int, h: Int, profile: Data?, dpi: Double, uti: String)? {
+        guard let cmykDecodeFn else { return nil }
+        var out: UnsafeMutablePointer<UInt8>?, icc: UnsafeMutablePointer<UInt8>?
+        var w: Int32 = 0, h: Int32 = 0, iccLength = 0
+        var dpi: Double = 0
+        var uti = [CChar](repeating: 0, count: 96)
+        let rc = data.withUnsafeBytes { raw in
+            cmykDecodeFn(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &out, &w, &h, &icc, &iccLength, &dpi, &uti, uti.count)
+        }
+        defer { free(out); free(icc) }
+        guard rc == 0, let out, w > 0, h > 0 else { return nil }
+        let profile = icc.map { Data(bytes: $0, count: iccLength) }
+        return (Array(UnsafeBufferPointer(start: out, count: Int(w) * Int(h) * 4)), Int(w), Int(h), profile, dpi, String(cString: uti))
+    }
+
     func identify(_ data: Data) -> ImageInfo? {
+        if let c = runCMYK(data) {
+            var info = ImageInfo(typeIdentifier: c.uti, width: c.w, height: c.h, dpi: c.dpi > 0 ? c.dpi : nil, hasAlpha: false)
+            info.colorModel = "CMYK"
+            info.profileName = c.profile.flatMap(ICCProfiles.description)
+            return info
+        }
         guard let r = run(data) else { return nil }
-        return ImageInfo(typeIdentifier: r.uti, width: r.w, height: r.h, bitDepth: r.channels == 8 ? 16 : r.channels == 16 ? 32 : 8,
-                         dpi: r.dpi > 0 ? r.dpi : nil, orientation: r.orientation, hasAlpha: r.channels != 1)
+        var info = ImageInfo(typeIdentifier: r.uti, width: r.w, height: r.h, bitDepth: r.channels == 8 ? 16 : r.channels == 16 ? 32 : 8,
+                             dpi: r.dpi > 0 ? r.dpi : nil, orientation: r.orientation, hasAlpha: r.channels != 1)
+        if r.channels == 1 { info.colorModel = "Gray" }
+        return info
     }
     func decode(_ data: Data) -> CGImage? {
+        // A CMYK file with its profile stays in inks (drawn through the profile); one naming no profile comes in as RGB.
+        if let c = runCMYK(data), let profile = c.profile, let space = CGColorSpace(iccData: profile), space.model == .cmyk {
+            return CGImage(width: c.w, height: c.h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: c.w * 4, space: space,
+                           bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue), provider: CGDataProvider(data: c.inks),
+                           intent: .defaultIntent)
+        }
         guard let r = run(data) else { return nil }
         let kind: PortableImage.Kind = r.channels == 1 ? .mask : .rgba
         let depth: PortableImage.Depth = r.channels == 8 ? .uint16 : r.channels == 16 ? .float32 : .uint8
@@ -177,6 +232,26 @@ final class CCallbackCodec: ImageCodecBackend {
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data? {
         var out: UnsafeMutablePointer<UInt8>?
         var length = 0
+        // A CMYK image goes out in its inks, its profile embedded (JPEG, or TIFF compressed with LZW).
+        if image.colorSpace?.model == .cmyk, ["public.jpeg", "public.tiff"].contains(typeIdentifier), let cmykEncodeFn,
+           let profile = image.colorSpace?.iccData, let provided = image.dataProvider?.data.map([UInt8].init),
+           provided.count >= image.bytesPerRow * (image.height - 1) + image.width * 4 {
+            var inks = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            for y in 0..<image.height {
+                for x in 0..<(image.width * 4) { inks[y * image.width * 4 + x] = provided[y * image.bytesPerRow + x] }
+            }
+            let rc = inks.withUnsafeBufferPointer { px in
+                profile.withUnsafeBytes { icc in
+                    typeIdentifier.withCString { uti in
+                        cmykEncodeFn(px.baseAddress, Int32(image.width), Int32(image.height), icc.bindMemory(to: UInt8.self).baseAddress,
+                                     icc.count, uti, quality ?? -1, dpi ?? 0, &out, &length)
+                    }
+                }
+            }
+            guard rc == 0, let out, length > 0 else { return nil }
+            defer { free(out) }
+            return Data(bytes: out, count: length)
+        }
         // The layout the file wants, as Apple's ImageIO writes it: EXR linear-light floats (converted from any depth),
         // PNG / TIFF at 16 bits from a 16-bit or half-float image (half clipped to 0...1), anything else at 8 bits.
         let native = image.nativeImage
@@ -210,6 +285,13 @@ final class CCallbackCodec: ImageCodecBackend {
 }
 
 /// Called by the Qt host at startup with its QImageReader/QImageWriter-backed callbacks.
+/// Called by the Qt host after `compositor_imageio_register` with its CMYK JPEG/TIFF decode and encode.
+@_cdecl("compositor_imageio_register_cmyk")
+public func compositor_imageio_register_cmyk(_ decode: CompositorCMYKDecodeFn?, _ encode: CompositorCMYKEncodeFn?) {
+    (ImageCodecRegistry.host as? CCallbackCodec)?.cmykDecodeFn = decode
+    (ImageCodecRegistry.host as? CCallbackCodec)?.cmykEncodeFn = encode
+}
+
 /// Called by the Qt host after `compositor_imageio_register` with its deep decode (16-bit and float layouts).
 @_cdecl("compositor_imageio_register_deep")
 public func compositor_imageio_register_deep(_ decode: CompositorImageDecodeFn?) {
@@ -220,4 +302,16 @@ public func compositor_imageio_register_deep(_ decode: CompositorImageDecodeFn?)
 public func compositor_imageio_register(_ decode: CompositorImageDecodeFn?, _ encode: CompositorImageEncodeFn?) {
     guard let decode, let encode else { ImageCodecRegistry.host = nil; return }
     ImageCodecRegistry.host = CCallbackCodec(decode: decode, encode: encode)
+}
+
+/// ICC profile facts for the properties ImageIO reports.
+enum ICCProfiles {
+    /// The profile's description (`kCGImagePropertyProfileName`), nil when it has none.
+    static func description(_ profile: Data) -> String? {
+        let length = profile.withUnsafeBytes { compositor_icc_description($0.bindMemory(to: UInt8.self).baseAddress, $0.count, nil, 0) }
+        guard length >= 0 else { return nil }
+        var text = [CChar](repeating: 0, count: Int(length) + 1)
+        _ = profile.withUnsafeBytes { compositor_icc_description($0.bindMemory(to: UInt8.self).baseAddress, $0.count, &text, text.count) }
+        return String(cString: text)
+    }
 }

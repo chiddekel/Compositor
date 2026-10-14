@@ -16,6 +16,8 @@ public struct UTType: Hashable, Sendable {
         "public.svg-image": Info(ext: ["svg"], mime: "image/svg+xml", parents: ["public.image"]),
         "public.jpeg": Info(ext: ["jpg", "jpeg"], mime: "image/jpeg", parents: ["public.image"]),
         "public.tiff": Info(ext: ["tiff", "tif"], mime: "image/tiff", parents: ["public.image"]),
+        // ICC colour profiles (Apple's ColorSync profile type), for upstream's CMYK Load Profile panels.
+        "com.apple.colorsync-profile": Info(ext: ["icc", "icm"], mime: "application/vnd.iccprofile", parents: ["public.data"]),
         // As on macOS: HEIC and HEIF are siblings under public.heif-standard; cameras (Canon, Sony, Fuji) write .hif.
         "public.heif-standard": Info(ext: [], mime: nil, parents: ["public.image"]),
         "public.heic": Info(ext: ["heic"], mime: "image/heic", parents: ["public.heif-standard"]),
@@ -26,6 +28,8 @@ public struct UTType: Hashable, Sendable {
         "public.radiance": Info(ext: ["hdr", "pic"], mime: "image/vnd.radiance", parents: ["public.image"]),
         "com.microsoft.bmp": Info(ext: ["bmp"], mime: "image/bmp", parents: ["public.image"]),
         "org.webmproject.webp": Info(ext: ["webp"], mime: "image/webp", parents: ["public.image"]),
+        "com.adobe.photoshop-image": Info(ext: ["psd"], mime: nil, parents: ["public.image"]),
+        "com.adobe.photoshop-large-image": Info(ext: ["psb"], mime: nil, parents: ["public.image"]),
         "com.adobe.pdf": Info(ext: ["pdf"], mime: "application/pdf", parents: ["public.data", "public.content"]),
         "public.json": Info(ext: ["json"], mime: "application/json", parents: ["public.data"]),
         "public.plain-text": Info(ext: ["txt"], mime: "text/plain", parents: ["public.data", "public.content"]),

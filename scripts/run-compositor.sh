@@ -162,6 +162,6 @@ flatpak run "${FLATPAK_ARGS[@]}" "$SDK_REF" -c "
     # A failed build must not fall through to running the previous binary (stale code passing for new).
     /usr/lib/sdk/swift6/bin/swift build -c $CONFIG --product CompositorHostBootstrap || exit 1
     # Upstream resources read through Bundle.main (the executable's directory on Linux).
-    install -m644 Compositor/Resources/CameraRawTables.bin .build/x86_64-unknown-linux-gnu/$CONFIG/
+    install -m644 Compositor/Resources/CameraRawTables.bin Compositor/Resources/CameraRawShadows.bin .build/x86_64-unknown-linux-gnu/$CONFIG/
     exec .build/x86_64-unknown-linux-gnu/$CONFIG/CompositorHostBootstrap "\$@"
 " bash "${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}"

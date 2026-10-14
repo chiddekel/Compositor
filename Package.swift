@@ -92,8 +92,9 @@ let package = Package(
                 .linkedLibrary("libprotobuf"), .linkedLibrary("zlib"), .linkedLibrary("dl"), .linkedLibrary("pthread"),
             ] : []),
         .target(name: "CompositorBrushBackend", path: "backends/brush",
-            exclude: ["shaders/continuous_brush.comp"],
-            sources: ["BrushCoverageCPU.cpp", "VulkanBrushCoverage.cpp"],
+            exclude: ["shaders/continuous_brush.comp", "shaders/warp_smudge.comp", "shaders/warp_liquify.comp",
+                "shaders/warp_smudge_packed.comp", "shaders/warp_liquify_packed.comp", "shaders/warp_formats.glsl", "shaders/warp_precision.glsl"],
+            sources: ["BrushCoverageCPU.cpp", "VulkanBrushCoverage.cpp", "VulkanSmudge.cpp"],
             publicHeadersPath: "include", linkerSettings: [.linkedLibrary("vulkan")]),
         // The portable C pixel kernels (file-map "Keep" tier), reused verbatim from
         // the macOS source tree. The same .c files are ALSO built by CMakeLists.txt
@@ -175,9 +176,15 @@ let package = Package(
         // Apple CoreGraphics API surface for Linux (CGContext/CGImage/CGPath/... over Skia, pure-Swift failsafe).
         // Named exactly like the Apple framework so upstream macOS sources compile with `import CoreGraphics`.
         // It must not depend on any document/domain type (see docs/upstream-shim-worklist.md).
+        // ICC colour management (CMYK colour spaces and contexts, ColorSync) over the runtime's LittleCMS 2.
+        .target(name: "CompositorColorManagement", path: "backends/colormanagement", publicHeadersPath: "include",
+                linkerSettings: [.linkedLibrary("lcms2")]),
+        // ColorSync's profile calls (CMYK profile names), over the same LittleCMS backend.
+        .target(name: "ColorSync", dependencies: ["CompositorColorManagement"], path: "Sources/Compat/ColorSync",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(
             name: "CoreGraphics",
-            dependencies: ["CompatSupport"],
+            dependencies: ["CompatSupport", "CompositorColorManagement"],
             path: "Sources/Compat/CoreGraphics",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])]
         ),
@@ -187,12 +194,13 @@ let package = Package(
         // Foundation gaps (FileWrapper, NSFileCoordinator, security-scoped URLs), UTType and the headless AppKit
         // surface upstream's model code touches. Each is one Apple framework (interface segregation).
         .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3"),
+        .systemLibrary(name: "CLibXML2", path: "Sources/CLibXML2", pkgConfig: "libxml-2.0"),
         .systemLibrary(name: "CLZMA", path: "Sources/CLZMA", pkgConfig: "liblzma"),
         .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers", "CSQLite", "CLZMA"], path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Accelerate", path: "Sources/Compat/Accelerate",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "ImageIO", dependencies: ["CoreGraphics", "Accelerate", "UniformTypeIdentifiers", "CompatSupport"],
+        .target(name: "ImageIO", dependencies: ["CoreGraphics", "Accelerate", "UniformTypeIdentifiers", "CompatSupport", "CompositorColorManagement"],
                 path: "Sources/Compat/ImageIO", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Vision", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport"], path: "Sources/Compat/Vision",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -204,8 +212,8 @@ let package = Package(
         // Metal type surface for Linux (CPU-backed MTLTexture/Device) so tip GPUCanvasTests compile.
         .target(name: "Metal", dependencies: ["CoreGraphics"], path: "Sources/Compat/Metal",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "CoreImageKernels", path: "backends/coreimage", sources: ["Gaussian.c", "GaussianFFT.c", "Motion.c"],
-                publicHeadersPath: "include", cSettings: [.unsafeFlags(["-ffp-contract=off"])]),
+        .target(name: "CoreImageKernels", path: "backends/coreimage", exclude: ["shaders/raster.comp", "shaders/raster_fused.comp", "shaders/raster_ops.glsl"], sources: ["Gaussian.c", "GaussianFFT.c", "Motion.c", "VulkanRaster.cpp"],
+                publicHeadersPath: "include", cSettings: [.unsafeFlags(["-ffp-contract=off"])], linkerSettings: [.linkedLibrary("vulkan")]),
         .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport", "CoreImageKernels"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // CoreText: single-line drawing over the Qt text engine (upstream's Dither ASCII glyphs).
@@ -215,7 +223,7 @@ let package = Package(
         .target(name: "CryptoKit", path: "Sources/Compat/CryptoKit"),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO", "CompatSupport"],
+        .target(name: "AppKit", dependencies: ["CoreGraphics", "FoundationCompat", "UniformTypeIdentifiers", "ImageIO", "CompatSupport", "CLibXML2"],
                 path: "Sources/Compat/AppKit", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "_Testing_AppKit", path: "Sources/Compat/TestingOverlays/_Testing_AppKit"),
         .target(name: "_Testing_CoreGraphics", path: "Sources/Compat/TestingOverlays/_Testing_CoreGraphics"),
@@ -232,7 +240,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal"] + ["CompositorKernels", "CompositorDitherKernel", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal", "ColorSync"] + ["CompositorKernels", "CompositorDitherKernel", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
@@ -293,7 +301,7 @@ let package = Package(
             path: "CompositorTests",
             // Upstream tests that cannot run on Linux yet (Objective-C selectors and swizzling in the test itself, the
             // real layer table, the app's own window): listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
-            exclude: ["LayerTests.swift"],
+            exclude: ["LayerTests.swift", "KeyboardShortcutTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
@@ -326,7 +334,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CompatTests",
-            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision", "SwiftUI"],
+            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "CLibXML2", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision", "SwiftUI"],
             path: "Tests/CompatTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift

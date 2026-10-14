@@ -61,12 +61,14 @@ public final class NSPasteboard: @unchecked Sendable {
     /// A new pasteboard of this process's own, as AppKit's `withUniqueName()` (never mirrored to the desktop).
     public static func withUniqueName() -> NSPasteboard { NSPasteboard(name: Name(rawValue: "unique-\(UUID().uuidString)")) }
     /// Lets go of a uniquely named pasteboard; its contents simply go when nothing holds it any more.
-    public func releaseGlobally() { items = [:] }
+    public func releaseGlobally() { items = [:]; draggedObjects = nil }
     public static func withName(_ name: Name) -> NSPasteboard {
         name == .drag ? drag : general
     }
 
     private var items: [PasteboardType: Data] = [:]
+    // Owned by this pasteboard; object addresses may be reused after a unique board is released.
+    var draggedObjects: [NSPasteboardItem]?
     private var localChangeCount = 0
     /// AppKit's: it moves whenever anyone — this app or another — changes the clipboard.
     public var changeCount: Int { localChangeCount + (mirror?.externalChangeCount ?? 0) }
@@ -75,6 +77,7 @@ public final class NSPasteboard: @unchecked Sendable {
 
     @discardableResult public func clearContents() -> Int {
         items = [:]
+        draggedObjects = nil
         localChangeCount += 1
         externalAtWrite = mirror?.externalChangeCount ?? 0
         return changeCount

@@ -1,4 +1,5 @@
 import Foundation
+import FoundationCompat
 import CoreGraphics
 import CoreImage
 import AppKit
@@ -11,17 +12,20 @@ import Testing
         // As tip's Metal device check: the renderer exists wherever a Vulkan device does. FORCE=1 turns it on
         // regardless, and COMPOSITOR_CPU_CANVAS=1 keeps it off.
         let environment = ProcessInfo.processInfo.environment
-        if environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1" {
+        if environment["COMPOSITOR_CPU_CANVAS"] == "1" || SQLiteUserDefaults.standard.bool(forKey: "CompositorCPUCanvas") {
+            #expect(GPUCanvasRenderer.shared == nil)
+        } else if environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1" {
             #expect(GPUCanvasRenderer.shared != nil)
         } else if environment["COMPOSITOR_CPU_CANVAS"] == "1" || environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "0" {
             #expect(GPUCanvasRenderer.shared == nil)
         } else {
-            #expect((GPUCanvasRenderer.shared != nil) == CanvasBackends.vulkanGPUAvailable)
+            let eligible = CIContext(options: [.hardwareCanvas: true]).gpuAvailable
+            #expect((GPUCanvasRenderer.shared != nil) == (CanvasBackends.vulkanGPUAvailable && eligible))
         }
     }
 
     @Test func metalWarpInitsWithWorkingContext() throws {
-        // Linux MetalWarp is CPU dab math; it must init even when the GPU canvas present path is off.
+        // Linux MetalWarp keeps CPU fallback; it must init even when the GPU canvas present path is off.
         let context = try BrushRaster.context(width: 32, height: 32, mask: false)
         let warp = MetalWarp(pixels: context)
         #expect(warp != nil)
@@ -39,8 +43,19 @@ import Testing
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
         defer { NSGraphicsContext.restoreGraphicsState() }
-        let frame = CIImage(color: CIColor(red: 1, green: 0, blue: 0, alpha: 1)).cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8))
+        let bounds = CGRect(x: 0, y: 0, width: 8, height: 8)
+        let frame = CIImage(color: CIColor(red: 1, green: 0, blue: 0, alpha: 1)).cropped(to: bounds)
+            .composited(over: CIImage.clear.cropped(to: bounds))
+        let submissions = renderer.context.gpuSubmissionCount
         renderer.present(frame, in: layer)
+        if ProcessInfo.processInfo.environment["REQUIRE_COREIMAGE_VULKAN"] == "1" {
+            if ProcessInfo.processInfo.environment["COMPOSITOR_COREIMAGE_BACKEND"] == "vulkan" {
+                #expect(renderer.context.gpuSubmissionCount > submissions)
+            } else {
+                #expect(renderer.context.gpuSubmissionCount == submissions)
+            }
+            #expect(renderer.context.gpuDeviceType == 1 || renderer.context.gpuDeviceType == 2)
+        }
         #expect(layer.lastPresented != nil)
         // Look parity: solid red must land in the CG context Qt/canvas read (same sRGB channel order as Mac).
         guard let data = context.data else { return }

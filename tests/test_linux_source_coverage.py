@@ -67,6 +67,14 @@ class SourceCoverageTests(unittest.TestCase):
         self.target('CompositorUpstreamTests')['sources'].append('LayerTests.swift')
         self.assertIn('CompositorTests/LayerTests.swift: expected one test implementation, found 2', self.findings())
 
+    def test_missing_shortcut_type_mirror_fails(self):
+        self.remove_source('LinuxOverrideTests', 'Tests/LinuxOverrideTests/KeyboardShortcutTests.swift')
+        self.assertIn('CompositorTests/KeyboardShortcutTests.swift: expected one test implementation, found 0', self.findings())
+
+    def test_compiling_shortcut_original_and_mirror_together_fails(self):
+        self.target('CompositorUpstreamTests')['sources'].append('KeyboardShortcutTests.swift')
+        self.assertIn('CompositorTests/KeyboardShortcutTests.swift: expected one test implementation, found 2', self.findings())
+
     def test_claiming_a_compiled_canvas_is_replaced_fails(self):
         self.parity['platform_substitutions']['Compositor/Rendering/EditorCanvas.swift'] = 'Qt replacement'
         self.assertIn('Compositor/Rendering/EditorCanvas.swift: expected one implementation, found 2', self.findings())

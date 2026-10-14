@@ -1395,8 +1395,9 @@ CompPath *compositor_path_op(const CompPath *a, const CompPath *b, int op, int e
     if (op < 0 || op > 3) return nullptr;
     std::optional<SkPath> result = Op(a->get_path(even_odd_a != 0), b->get_path(even_odd_b != 0), ops[op]);
     if (!result) return nullptr;
-    // The Swift side keeps no fill rule, so hand back a winding-filled path (XOR arrives even-odd).
+    // The Swift side keeps no fill rule. Canonicalize curved contours before AsWinding so interior holes survive.
     if (result->getFillType() != SkPathFillType::kWinding) {
+        if (auto simplified = Simplify(*result)) result = simplified;
         if (auto winding = AsWinding(*result)) result = winding;
     }
     CompPath *out = new (std::nothrow) CompPath();

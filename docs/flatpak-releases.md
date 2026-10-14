@@ -58,6 +58,40 @@ flatpak run com.compositor.Client --preferences-smoke
 
 ## Publishing another alpha
 
+Preview whether committed changes need a release:
+
+```sh
+python3 scripts/release-linux.py
+```
+
+After committing and reviewing the Linux changes, publish from a clean
+`GNU_Linux` checkout:
+
+```sh
+python3 scripts/release-linux.py --publish
+```
+
+The script refreshes remote tags, detects changed committed files since the
+highest reachable Linux version tag, and increments `linux-alpha.N` when needed.
+It updates only the Linux release JSON, AppStream entry, and release notes, runs
+the descriptor checks, commits those files, creates an annotated tag, and pushes
+the branch and tag atomically. An already prepared newer version is preserved.
+There is no time interval: a new release is due when the committed tree changes.
+Preview uses local tags and excludes uncommitted work. No Mac versions or tests
+are changed. Generated notes list commit subjects; edit and commit a prepared
+new version first when curated notes are needed.
+
+The tag triggers the existing build, test, signing, and Pages pipeline. Only after
+successful deployment does CI publish with GitHub's **Latest** label. GitHub does
+not allow Latest on a prerelease, so the published release has `prerelease=false`
+while its title, version, and Flatpak channel continue to identify it as alpha.
+If a push fails, retain the release commit and local tag and rerun `--publish`;
+the script retries that tag without incrementing again. If the tag is already
+pushed, inspect or rerun its workflow on GitHub instead. Existing tags are never
+moved. Authentication uses the existing `git` credentials and `gh auth login`.
+
+For manual publication:
+
 1. Update `flatpak/release.json`, the newest AppStream release in
    `flatpak/com.compositor.Client.metainfo.xml`, and `flatpak/RELEASE_NOTES.md`.
 2. Run `bash scripts/test-flatpak-updates.sh` and
@@ -68,7 +102,7 @@ flatpak run com.compositor.Client --preferences-smoke
 
 `.github/workflows/flatpak-release.yml` builds and signs the full manifest, runs
 native tests, installs the signed result and runs the app's session and preferences smoke tests.
-Only then does it stage release assets, deploy Pages, and publish the prerelease.
+Only then does it stage release assets, deploy Pages, and publish the Linux alpha as Latest.
 A failed deployment leaves the new release as a draft. A manual workflow rerun
 must use `GNU_Linux` with its matching release tag already present.
 

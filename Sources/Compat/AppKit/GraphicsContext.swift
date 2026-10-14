@@ -22,8 +22,10 @@ public final class NSGraphicsContext: @unchecked Sendable {
     }
 
     public static func restoreGraphicsState() {
-        current?.cgContext.restoreGState()
-        current = stack.popLast() ?? nil
+        guard let saved = stack.popLast() else { return }
+        // Restore the context whose state was saved, even if drawing assigned a different current context.
+        saved?.cgContext.restoreGState()
+        current = saved
     }
 
     public func saveGraphicsState() { Self.saveGraphicsState() }

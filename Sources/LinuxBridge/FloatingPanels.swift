@@ -10,6 +10,15 @@ enum FloatingPanels {
         let panel: String
         /// Window title, as upstream passes it to `FloatingPanel.show(title:)`.
         let title: String
+        let placement: String
+        let dockedWidth: Double?
+
+        @MainActor init(panel: String, title: String, placement: FloatingPanelPlacement = .automatic) {
+            self.panel = panel
+            self.title = title
+            self.placement = placement == .dockedToMainWindowRight ? "dockedToMainWindowRight" : "automatic"
+            dockedWidth = placement == .dockedToMainWindowRight ? Double(FloatingPanelController.dockedWidth) : nil
+        }
     }
 
     /// ContentView's own bookkeeping that isn't a panel: runs before each state read, as its `.onChange` handlers do
@@ -38,7 +47,10 @@ enum FloatingPanels {
         if let operation = session.selectionAmountOperation {
             panels.append(Open(panel: "SelectionAmountSheet", title: operation.rawValue + " Selection"))
         }
-        if !editor.filterInShellDialog, let edit = session.filterEdit { panels.append(Open(panel: "FilterSheet", title: edit.kind.rawValue)) }
+        if !editor.filterInShellDialog, let edit = session.filterEdit {
+            panels.append(Open(panel: "FilterSheet", title: edit.kind.rawValue,
+                placement: edit.kind == .cameraRaw ? .dockedToMainWindowRight : .automatic))
+        }
         if ShortcutSettings.shared.sheet != nil { panels.append(Open(panel: "KeyboardShortcutsSheet", title: "Keyboard Shortcuts")) }
         return panels
     }

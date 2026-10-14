@@ -2,6 +2,12 @@
 
 Generated 2026-09-21 against `upstream/main` (c39da13). Method and honest verdict below.
 
+This is a historical checkpoint. Its 70 feature rows (including 20 Missing and
+18 Partial) are not current implementation verdicts. See the
+[current status table](current-linux-compatibility-inventory.md#current-feature-comparison-with-upstream)
+and [completion audit/crosswalk](linux-status-completion-audit.md) for current
+evidence and unresolved verification. Preserve the old findings as history.
+
 ## Reproducible audit commands
 
 The old table below is a historical approximate name audit. Generate the current

@@ -43,10 +43,11 @@ public final class NSPasteboardItem: NSPasteboardWriting, @unchecked Sendable {
 
 extension NSPasteboard {
     /// The items written with `writeObjects`, as AppKit lists them; a drag's pasteboard has one per dragged item.
-    public var pasteboardItems: [NSPasteboardItem]? { draggedItems[ObjectIdentifier(self)] }
+    public var pasteboardItems: [NSPasteboardItem]? { draggedObjects }
     @discardableResult public func writeObjects(_ objects: [NSPasteboardWriting]) -> Bool {
         let items = objects.compactMap { $0 as? NSPasteboardItem }
-        draggedItems[ObjectIdentifier(self), default: []] += items
+        if draggedObjects == nil { draggedObjects = [] }
+        draggedObjects?.append(contentsOf: items)
         // The first item's values also answer the pasteboard-wide accessors, as on the Mac.
         if let first = items.first {
             for type in first.types { if let data = first.data(forType: type) { setData(data, forType: type) } }
@@ -54,7 +55,6 @@ extension NSPasteboard {
         return !items.isEmpty
     }
 }
-nonisolated(unsafe) private var draggedItems: [ObjectIdentifier: [NSPasteboardItem]] = [:]
 
 @MainActor public final class NSDraggingItem {
     public let item: NSPasteboardWriting

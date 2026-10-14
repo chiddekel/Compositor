@@ -90,7 +90,18 @@ import Observation
         case let popUp as NSPopUpButton: node = popUpNode(popUp, path: path)
         case let hosting as _AnyHostingView:
             let nodes = ViewResolver.resolveList(hosting._anyRootView, path: path + "/root")
-            if nodes.count == 1 { node = nodes[0] } else { var stack = RenderNode(kind: "VStack"); stack.children = nodes; node = stack }
+            var hosted: RenderNode
+            if nodes.count == 1 { hosted = nodes[0] } else { hosted = RenderNode(kind: "VStack"); hosted.children = nodes }
+            let bounds = hosting._anySizingBounds
+            func finite(_ value: CGFloat?) -> Double? {
+                guard let value, value.isFinite, value >= 0 else { return nil }
+                return Double(value)
+            }
+            if bounds.minimum != nil || bounds.maximum != nil {
+                hosted.modifiers.append(.frame(width: nil, height: nil, minWidth: finite(bounds.minimum?.width), minHeight: finite(bounds.minimum?.height),
+                    maxWidth: finite(bounds.maximum?.width), maxHeight: finite(bounds.maximum?.height), alignment: "center"))
+            }
+            node = hosted
         case let stack as NSStackView: node = stackNode(stack, path: path)
         case let scroll as NSScrollView: node = scrollNode(scroll, path: path)
         case let button as NSButton: node = buttonNode(button, path: path)
@@ -108,6 +119,7 @@ import Observation
         if let control = view as? NSControl, !control.isEnabled { node.modifiers.append(.disabled(true)) }
         if let tip = view.toolTip, !tip.isEmpty { node.modifiers.append(.help(tip)) }
         if let label = view.accessibilityLabel(), !label.isEmpty { node.modifiers.append(.accessibilityLabel(label)) }
+        if let identifier = view.accessibilityIdentifier(), !identifier.isEmpty { node.modifiers.append(.accessibilityIdentifier(identifier)) }
         if view.isHidden { node.modifiers.append(.opacity(0)); node.modifiers.append(.allowsHitTesting(false)) }
         // The first responder gets the keys: the shell hands it the next one pressed, as a key-down event.
         if let window = view.window, window.firstResponder === view {
@@ -332,18 +344,29 @@ import Observation
                 geometry.documentSize = size
                 if document.frame.size != size { document.setFrameSize(size) }
             }
+            // `basisX`/`basisY`: the native offset the host's view was last given. A host offset still equal to it was
+            // not scrolled there by the user; when the native viewport has moved since (a key, a reveal), that offset
+            // is out of date and must not undo the move. The host is sent the current offset instead.
+            let currentX = scroll.contentView.bounds.minX - document.frame.minX
+            let currentY = document.isFlipped ? scroll.contentView.bounds.minY - document.frame.minY
+                : document.frame.maxY - scroll.contentView.bounds.maxY
+            var outdated = false
+            if let basisX = number("basisX"), let basisY = number("basisY"), abs(x - basisX) < 0.5, abs(y - basisY) < 0.5 {
+                outdated = abs(currentX - basisX) > 0.5 || abs(currentY - basisY) > 0.5
+            }
             if let pending {
                 document.scrollToVisible(pending.offsetBy(dx: -document.frame.minX, dy: -document.frame.minY))
-            } else {
+            } else if !outdated {
                 scroll.contentView.scroll(to: CGPoint(x: document.frame.minX + x,
                     y: document.isFlipped ? document.frame.minY + y : document.frame.maxY - height - y))
             }
             document.needsLayout = true
             document.layoutSubtreeIfNeeded()
-            if pending != nil {
+            if pending != nil || outdated {
                 let actualY = document.isFlipped ? scroll.contentView.bounds.minY - document.frame.minY
                     : document.frame.maxY - scroll.contentView.bounds.maxY
-                if abs(actualY - y) > 0.5 { revision.bump() }
+                let actualX = scroll.contentView.bounds.minX - document.frame.minX
+                if abs(actualY - y) > 0.5 || abs(actualX - x) > 0.5 { revision.bump() }
             }
         }
         if !scroll.hasVerticalScroller && !scroll.hasHorizontalScroller { node.modifiers.append(.scrollIndicators("never")) }
@@ -369,6 +392,12 @@ import Observation
             }
         }
         let router = PointerRouter.for(view)
+        let accessibility = NativeAccessibility.adapter(for: view)
+        node.handlers["accessibilitySnapshot"] = { payload in
+            guard let box = payload as? NativeAccessibilityBox else { return }
+            box.data = accessibility.snapshot()
+        }
+        node.modifiers.append(.resultSink("accessibilityAction") { accessibility.perform($0) ? 1 : 0 })
         node.handlers["pointer"] = { payload in router.handle(payload) }
         node.handlers["key"] = { payload in router.key(payload) }
         node.handlers["focus"] = { payload in router.focus((payload as? Bool) ?? false) }
@@ -507,8 +536,14 @@ import Observation
 }
 
 /// An `NSHostingView`, whatever its root type.
-@MainActor protocol _AnyHostingView: AnyObject { var _anyRootView: any View { get } }
-extension NSHostingView: _AnyHostingView { var _anyRootView: any View { rootView } }
+@MainActor protocol _AnyHostingView: AnyObject {
+    var _anyRootView: any View { get }
+    var _anySizingBounds: (minimum: CGSize?, maximum: CGSize?) { get }
+}
+extension NSHostingView: _AnyHostingView {
+    var _anyRootView: any View { rootView }
+    var _anySizingBounds: (minimum: CGSize?, maximum: CGSize?) { _nativeSizingBounds }
+}
 
 /// The window lowered views live in: the pointer is wherever the host last reported it over them.
 @MainActor final class LoweringWindow: NSWindow {
@@ -567,7 +602,8 @@ extension NSHostingView: _AnyHostingView { var _anyRootView: any View { rootView
             switch type {
             case "down": down(event(.leftMouseDown), at: local, in: root)
             case "drag": drag(event(.leftMouseDragged), at: local, in: root)
-            case "up": up(event(.leftMouseUp), at: local, in: root)
+            case "up": up(event(.leftMouseUp), at: local, in: root,
+                          externalOperation: dict["externalLayerCopy"] as? Bool == true ? .copy : [])
             case "rightDown": rightDown(event(.rightMouseDown), at: local, in: root)
             case "move": hover(event(.mouseMoved), at: local, in: root, exited: false)
             case "exit": hover(event(.mouseMoved), at: local, in: root, exited: true)
@@ -627,11 +663,11 @@ extension NSHostingView: _AnyHostingView { var _anyRootView: any View { rootView
         dispatch(event) { pressed.mouseDragged(with: event) }
     }
 
-    private func up(_ event: NSEvent, at local: CGPoint, in root: NSView) {
+    private func up(_ event: NSEvent, at local: CGPoint, in root: NSView, externalOperation: NSDragOperation = []) {
         NSEvent.pressedMouseButtons = 0
         if let session {
             self.session = nil
-            var operation: NSDragOperation = []
+            var operation = externalOperation
             if let table = dropTarget, !dropOperation.isEmpty {
                 let info = CompatDraggingInfo(session: session, location: event.locationInWindow, window: root.window)
                 info.draggingSourceOperationMask = session.sourceOperationMask.intersection(event.modifierFlags.contains(.option) ? .copy : .every)
@@ -716,17 +752,28 @@ extension NSHostingView: _AnyHostingView { var _anyRootView: any View { rootView
                                      context: nil, characters: characters, charactersIgnoringModifiers: characters.lowercased(),
                                      isARepeat: (dict["repeat"] as? Bool) ?? false, keyCode: keyCode)!
         NativeLowering.act {
-            dispatch(event) { (window.firstResponder ?? root).keyDown(with: event) }
+            let responder = ownsFirstResponder(in: window, root: root) ? window.firstResponder : root
+            dispatch(event) { responder?.keyDown(with: event) }
         }
     }
 
     /// The host's view gained or lost the focus: losing it, nothing in it is first responder any more (a table's
     /// selection turns gray, as an inactive list's does).
     func focus(_ focused: Bool) {
-        guard let root, let window = root.window, !focused else { return }
-        if let responder = window.firstResponder as? NSView, responder === root || responder.isDescendant(of: root) {
+        guard let root, let window = root.window else { return }
+        if focused {
+            if !ownsFirstResponder(in: window, root: root), root.acceptsFirstResponder {
+                NativeLowering.act { window.makeFirstResponder(root) }
+            }
+        } else if ownsFirstResponder(in: window, root: root) {
             NativeLowering.act { window.makeFirstResponder(nil) }
         }
+    }
+
+    private func ownsFirstResponder(in window: NSWindow, root: NSView) -> Bool {
+        let owner = window.editedField ?? (window.firstResponder as? NSView)
+        guard let owner else { return false }
+        return owner === root || owner.isDescendant(of: root)
     }
 
     /// The host's modifier bits (1 Ctrl, 2 Alt, 4 Meta, 8 Shift) as the Mac's: Ctrl is Command, Alt Option, Meta Control.

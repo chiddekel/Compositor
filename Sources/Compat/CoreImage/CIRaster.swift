@@ -65,6 +65,36 @@ struct Raster {
         return (data[i], data[i + 1], data[i + 2], data[i + 3])
     }
 
+    /// A region with edge pixels repeated outside the image, using the same integer coordinates as `clamped`.
+    func clamped(to region: CGRect) -> Raster {
+        if rect == region { return self }
+        var out = Raster(rect: region)
+        let sourceWidth = width, sourceHeight = height, outputWidth = out.width, outputHeight = out.height
+        guard sourceWidth > 0, sourceHeight > 0, outputWidth > 0, outputHeight > 0 else { return out }
+        let x0 = Int(region.minX) - Int(rect.minX), y0 = Int(region.minY) - Int(rect.minY)
+        let left = min(outputWidth, max(0, -x0))
+        let firstSource = min(sourceWidth, max(0, x0))
+        let middle = min(outputWidth - left, sourceWidth - firstSource)
+        data.withUnsafeBufferPointer { source in
+            out.data.withUnsafeMutableBufferPointer { target in
+                guard let src = source.baseAddress, let dst = target.baseAddress else { return }
+                for y in 0..<outputHeight {
+                    let sy = min(max(y0 + y, 0), sourceHeight - 1)
+                    let row = src + sy * sourceWidth * 4, destination = dst + y * outputWidth * 4
+                    for x in 0..<left { memcpy(destination + x * 4, row, 4 * MemoryLayout<Float>.size) }
+                    if middle > 0 {
+                        memcpy(destination + left * 4, row + firstSource * 4, middle * 4 * MemoryLayout<Float>.size)
+                    }
+                    let last = row + (sourceWidth - 1) * 4
+                    for x in (left + middle)..<outputWidth {
+                        memcpy(destination + x * 4, last, 4 * MemoryLayout<Float>.size)
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     /// Bilinear sample at continuous device coordinates (pixel centres at +0.5); outside is transparent.
     /// The pixel containing the point (`fx`, `fy` in pixel units from this raster's origin); transparent outside.
     func nearest(_ fx: Double, _ fy: Double) -> (Float, Float, Float, Float) {
@@ -111,6 +141,32 @@ enum Gamma {
 // MARK: - Filters over rasters
 
 enum RasterFilters {
+    /// Spatially varying Gaussian blur, interpolated in variance between logarithmically spaced radii.
+    /// Only two blurred rasters are retained; premultiplied float channels keep alpha and HDR precision.
+    static func variableBlur(_ input: Raster, mask: Raster, radius: Double, output region: CGRect) -> Raster {
+        var lower = input.cropped(to: region)
+        guard radius > 0 && radius.isFinite else { return lower }
+        let mask = mask.cropped(to: region)
+        var output = lower
+        let radii = stride(from: 0, to: mask.data.count, by: 4).map { i -> Double in
+            let luminance = Double(mask.data[i] * 0.2126 + mask.data[i + 1] * 0.7152 + mask.data[i + 2] * 0.0722)
+            return luminance.isFinite ? min(1, max(0, luminance)) * radius : 0
+        }
+        var from = 0.0
+        while from < radius {
+            let to = min(radius, max(0.5, from * sqrt(2)))
+            let upper = gaussian(input, sigma: to, output: region)
+            for pixel in 0..<radii.count where radii[pixel] > from && radii[pixel] <= to {
+                let amount = Float((radii[pixel] * radii[pixel] - from * from) / (to * to - from * from))
+                let i = pixel * 4
+                for channel in 0..<4 { output.data[i + channel] = lower.data[i + channel] * (1 - amount) + upper.data[i + channel] * amount }
+            }
+            lower = upper
+            from = to
+        }
+        return output
+    }
+
     /// Separable Gaussian. The input raster already includes the margin the kernel needs.
     static func gaussian(_ input: Raster, sigma: Double, output region: CGRect) -> Raster {
         let radius = Int(ceil(sigma * 3))
@@ -219,14 +275,14 @@ enum RasterFilters {
         return out
     }
 
-    /// CIColorMatrix: on unpremultiplied colour, out = M * rgba + bias, clamped, premultiplied again.
+    /// CIColorMatrix: on unpremultiplied color, out = M * rgba + bias, premultiplied again. HDR stays unclipped.
     static func colorMatrix(_ input: Raster, r: [Float], g: [Float], b: [Float], a: [Float], bias: [Float]) -> Raster {
         var out = input
         var i = 0
         while i < out.data.count {
             let alpha = input.data[i + 3]
             let c: [Float] = alpha > 0 ? [input.data[i] / alpha, input.data[i + 1] / alpha, input.data[i + 2] / alpha, alpha] : [0, 0, 0, 0]
-            func dot(_ v: [Float], _ bias: Float) -> Float { min(1, max(0, v[0] * c[0] + v[1] * c[1] + v[2] * c[2] + v[3] * c[3] + bias)) }
+            func dot(_ v: [Float], _ bias: Float) -> Float { v[0] * c[0] + v[1] * c[1] + v[2] * c[2] + v[3] * c[3] + bias }
             let na = dot(a, bias[3])
             out.data[i] = dot(r, bias[0]) * na; out.data[i + 1] = dot(g, bias[1]) * na
             out.data[i + 2] = dot(b, bias[2]) * na; out.data[i + 3] = na
@@ -465,6 +521,7 @@ enum RasterFilters {
 
     /// Inverse-maps `output` through a projective transform given by the 3x3 matrix `inverse` (device -> source).
     static func projective(_ input: Raster, inverse m: [Double], output region: CGRect, nearest: Bool = false) -> Raster {
+        if let copied = alignedAffine(input, inverse: m, output: region) { return copied }
         var out = Raster(rect: region)
         for y in 0..<out.height {
             for x in 0..<out.width {
@@ -476,6 +533,54 @@ enum RasterFilters {
                 let p = nearest ? input.nearest(sx, sy) : input.bilinear(sx, sy)
                 let o = out.index(x, y)
                 out.data[o] = p.0; out.data[o + 1] = p.1; out.data[o + 2] = p.2; out.data[o + 3] = p.3
+            }
+        }
+        return out
+    }
+
+    /// Unit-scale axis flips and integer translations map pixel centers exactly; no interpolation is needed.
+    private static func alignedAffine(_ input: Raster, inverse m: [Double], output region: CGRect) -> Raster? {
+        guard m.count == 9, m[1] == 0, m[3] == 0, m[6] == 0, m[7] == 0, m[8] == 1,
+              (m[0] == 1 || m[0] == -1), (m[4] == 1 || m[4] == -1),
+              m[2].isFinite, m[5].isFinite, m[2].rounded() == m[2], m[5].rounded() == m[5]
+        else { return nil }
+        // Keep exact pixel-center arithmetic: fractional and very large coordinate origins use the general path.
+        let coordinates = [Double(input.rect.minX), Double(input.rect.minY), Double(region.minX), Double(region.minY), m[2], m[5]]
+        guard coordinates.allSatisfy({ $0.isFinite && abs($0) < 1_099_511_627_776 && $0.rounded() == $0 }) else { return nil }
+        // Preserve the general sampler's IEEE arithmetic for nonfinite, subnormal and negative-zero samples.
+        guard input.data.allSatisfy({ value in
+            let bits = value.bitPattern, exponent = bits & 0x7f800000
+            return exponent != 0x7f800000 && (exponent != 0 || bits == 0)
+        }) else { return nil }
+        if m[0] == 1, m[4] == 1, m[2] == 0, m[5] == 0, input.rect == region { return input }
+        var out = Raster(rect: region)
+        let initialX = m[0] * Double(out.rect.minX) + m[2] - Double(input.rect.minX) + (m[0] < 0 ? -1 : 0)
+        let initialY = m[4] * Double(out.rect.minY) + m[5] - Double(input.rect.minY) + (m[4] < 0 ? -1 : 0)
+        let limit = Double(Int.max / 4)
+        guard initialX.isFinite, initialY.isFinite, abs(initialX) < limit, abs(initialY) < limit,
+              initialX.rounded() == initialX, initialY.rounded() == initialY else { return nil }
+        let x0 = Int(initialX), y0 = Int(initialY), dx = Int(m[0]), dy = Int(m[4])
+        let first = max(0, dx == 1 ? -x0 : x0 - input.width + 1)
+        let end = min(out.width, dx == 1 ? input.width - x0 : x0 + 1)
+        guard first < end else { return out }
+        let outputWidth = out.width, outputHeight = out.height
+        input.data.withUnsafeBufferPointer { source in
+            out.data.withUnsafeMutableBufferPointer { target in
+                guard let src = source.baseAddress, let dst = target.baseAddress else { return }
+                for y in 0..<outputHeight {
+                    let sy = y0 + dy * y
+                    guard sy >= 0 && sy < input.height else { continue }
+                    let row = src + sy * input.width * 4
+                    let destination = dst + (y * outputWidth + first) * 4
+                    if dx == 1 {
+                        memcpy(destination, row + (x0 + first) * 4, (end - first) * 4 * MemoryLayout<Float>.size)
+                    } else {
+                        for x in first..<end {
+                            let pixel = row + (x0 - x) * 4, offset = (x - first) * 4
+                            for channel in 0..<4 { destination[offset + channel] = pixel[channel] }
+                        }
+                    }
+                }
             }
         }
         return out

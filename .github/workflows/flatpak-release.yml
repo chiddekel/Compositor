@@ -48,6 +48,7 @@ jobs:
         run: |
           bash scripts/test-flatpak-updates.sh
           python3 tests/test_flatpak_release.py
+          python3 tests/test_linux_release_script.py
       - name: Cache dependency downloads
         uses: actions/cache@v4
         with:
@@ -110,9 +111,12 @@ jobs:
       - name: Deploy download page and repository
         id: deployment
         uses: actions/deploy-pages@v4
-      - name: Publish the alpha release
+      - name: Publish the Linux alpha release as Latest
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --prerelease
+        # GitHub excludes prereleases from Latest; the title/version retain alpha.
+        run: |
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"

@@ -74,12 +74,12 @@ private enum RawFixture {
             }
             let nodes = descendants(root)
             let labels = nodes.filter { $0.kind == "Text" }.compactMap { $0.stringParams["text"] }
-            for title in ["Exposure", "Temperature", "Tint", "Boost", "Noise Reduction", "Lens Correction", "Highlight Recovery", "Reset", "Cancel", "Import"] {
+            for title in ["Exposure", "Temperature", "Tint", "Boost", "Noise Reduction", "Lens Correction", "Highlight Recovery", "Reset", "Cancel", "Import", "Camera Raw…"] {
                 #expect(labels.contains(title), "RAW sheet lost \(title)")
             }
             #expect(nodes.filter { $0.kind == "Slider" }.count == 5)
             #expect(nodes.filter { $0.kind == "Toggle" }.count == 2)
-            #expect(nodes.filter { $0.kind == "Button" }.count == 3)
+            #expect(nodes.filter { $0.kind == "Button" }.count == 4)
             let lens = try #require(nodes.first { node in
                 node.kind == "Toggle" && descendants(node).contains { $0.stringParams["text"] == "Lens Correction" }
             })
@@ -100,5 +100,61 @@ private enum RawFixture {
             #expect(settings.supportsNoiseReduction && settings.supportsHighlightRecovery)
             #expect(!settings.supportsLensCorrection && !settings.lensCorrection)
         }
+    }
+
+    @Test(arguments: ["edit", "reload", "unsaved", "generation", "location"])
+    func replacementImportDoesNotOverwriteChangesDuringDevelop(change: String) async throws {
+        let old = (RawDecoding.probeFn, RawDecoding.openFn, RawDecoding.developFn, RawDecoding.closeFn, RawDecoding.capabilitiesFn)
+        RawFixture.flags = 5; RawFixture.received = nil
+        compositor_raw_register(RawFixture.probe, RawFixture.open, RawFixture.develop, RawFixture.close, RawFixture.capabilities)
+        defer { compositor_raw_register(old.0, old.1, old.2, old.3, old.4) }
+        let editor = UpstreamEditor(), session = editor.session
+        #expect(editor.importRGBA([UInt8](repeating: 255, count: 16 * 12 * 4), width: 16, height: 12,
+                                  name: "Original", replacing: true) == 0)
+        session.projectURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".comp")
+        var expectedDocument = session.document, expectedRevision = session.history.currentRevision
+        var expectedGeneration = editor.persistenceGeneration, expectedModified = session.history.isModified
+        var expectedURL = session.projectURL
+        let image = session.activeLayer?.asset?.image, frame = try editor.renderRGBA().bytes
+        var sawDevelop = false
+        session.confirmRawDevelop = { _, settings in
+            sawDevelop = true
+            #expect(session.isProjectBusy && editor.replacementImportSession != nil)
+            switch change {
+            case "edit":
+                session.beginEdit("External Rename")
+                session.document?.layers[0].name = "External"
+                session.endEdit()
+            case "reload":
+                if let snapshot = session.projectSnapshot() { session.reloadProject(snapshot) }
+            case "unsaved": session.history.markSaved(UUID())
+            case "location": session.projectURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".comp")
+            default: editor.persistenceGeneration = UUID()
+            }
+            expectedDocument = session.document; expectedRevision = session.history.currentRevision
+            expectedGeneration = editor.persistenceGeneration; expectedModified = session.history.isModified
+            expectedURL = session.projectURL
+            return settings
+        }
+        let raw = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".dng")
+        let command: [String: Any] = ["version": 1, "action": "importFiles", "paths": [raw.path], "enabled": true]
+        #expect(await editor.commandAsync(try JSONSerialization.data(withJSONObject: command)) == -5)
+        #expect(sawDevelop && RawFixture.received != nil)
+        #expect(editor.error == "The project changed during replacement import")
+        #expect(session.document == expectedDocument && session.activeLayer?.asset?.image === image)
+        #expect(session.history.currentRevision == expectedRevision && session.history.isModified == expectedModified)
+        #expect(editor.persistenceGeneration == expectedGeneration && !session.isProjectBusy && editor.replacementImportSession == nil)
+        #expect(session.projectURL == expectedURL)
+        #expect(try editor.renderRGBA().bytes == frame)
+        if change == "edit" {
+            session.undo(); #expect(session.activeLayer?.name == "Original")
+            session.redo(); #expect(session.activeLayer?.name == "External")
+        }
+        session.confirmRawDevelop = nil
+        let valid = try ImageImportTests().fixture(.png)
+        defer { try? FileManager.default.removeItem(at: valid) }
+        let retry: [String: Any] = ["version": 1, "action": "importFiles", "paths": [valid.path], "enabled": true]
+        #expect(await editor.commandAsync(try JSONSerialization.data(withJSONObject: retry)) == 0)
+        #expect(session.document?.width == 64 && editor.error == nil && session.history.canUndo)
     }
 }

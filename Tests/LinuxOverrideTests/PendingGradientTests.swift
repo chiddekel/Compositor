@@ -118,6 +118,9 @@ struct PendingGradientTests {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         #expect(editor.session.isProjectBusy)
+        let nativeState = try #require(try JSONSerialization.jsonObject(with: editor.stateJSON()) as? [String: Any])
+        #expect(nativeState["busy"] as? Bool == true, "The native shell must wait for in-flight document work")
+        #expect(nativeState["canSwitch"] as? Bool == false)
         #expect(!completed)
         #expect(editor.session.gradientEdit != nil)
         #expect(editor.session.document?.layers.count == 1)

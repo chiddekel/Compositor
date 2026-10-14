@@ -16,6 +16,8 @@ extern "C" {
 #endif
 
 int compositor_host_run(int argc, char **argv);
+void compositor_host_install_application_state_bridge(void);
+void compositor_host_install_menu_tracking_bridge(void);
 double compositor_session_layers_panel_width(uint64_t handle, double width);
 int32_t compositor_host_measure_swiftui(const uint8_t *json, size_t count, double width, double height,
                                       double *measured_width, double *measured_height);
@@ -25,6 +27,7 @@ int compositor_host_save_smoke(int argc, char **argv);
 int compositor_host_text_smoke(int argc, char **argv, int (*probe)(void));
 int compositor_host_interchange(int argc, char **argv);
 int compositor_host_preview_smoke(int argc, char **argv);
+int compositor_host_tab_smoke(int argc, char **argv);
 int compositor_host_raw_lens_smoke(int argc, char **argv);
 int compositor_host_color_range_smoke(int argc, char **argv);
 int compositor_host_io_smoke(int argc, char **argv);

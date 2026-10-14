@@ -3,6 +3,18 @@ import FoundationCompat
 import CSQLite
 
 final class SQLiteUserDefaultsTests: XCTestCase {
+    func testNamedSuitesAreIsolatedAndPersist() throws {
+        let name = "suite-\(UUID())/żółć/../settings"
+        let first = try XCTUnwrap(SQLiteUserDefaults(suiteName: name))
+        let other = try XCTUnwrap(SQLiteUserDefaults(suiteName: name + "-other"))
+        first.set(Data([1, 2, 3]), forKey: "keyboardShortcuts.v1")
+        XCTAssertNil(other.data(forKey: "keyboardShortcuts.v1"))
+        let reopened = try XCTUnwrap(SQLiteUserDefaults(suiteName: name))
+        XCTAssertEqual(reopened.data(forKey: "keyboardShortcuts.v1"), Data([1, 2, 3]))
+        reopened.removeObject(forKey: "keyboardShortcuts.v1")
+        XCTAssertNil(try XCTUnwrap(SQLiteUserDefaults(suiteName: name)).data(forKey: "keyboardShortcuts.v1"))
+    }
+
     private func withDatabase(_ body: (URL) throws -> Void) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("preferences-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -351,6 +351,10 @@ public struct Picker<Label: View, SelectionValue: Hashable, Content: View>: View
                 sel.wrappedValue = iv
                 return
             }
+            if let boolVal = Bool(str.lowercased()), let value = boolVal as? SelectionValue {
+                sel.wrappedValue = value
+                return
+            }
         }
         node.children = children
         return node

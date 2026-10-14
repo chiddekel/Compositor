@@ -1,6 +1,6 @@
 --- a/Compositor/UI/KeyboardShortcuts.swift
 +++ b/Compositor/UI/KeyboardShortcuts.swift
-@@ -22,7 +22,7 @@
+@@ -25,7 +25,7 @@
          case 126: key = "\u{f700}"
          default:
              let typed = event.charactersIgnoringModifiers?.lowercased() ?? ""
@@ -9,10 +9,10 @@
          }
      }
      var eventModifiers: EventModifiers {
-@@ -42,11 +42,12 @@
-         return flags
+@@ -55,11 +55,12 @@
      }
      var label: String {
+         if isNone { return "None" }
 -        let special = ["\u{7f}": "Delete", "\r": "Return", "\u{1b}": "Esc", "\t": "Tab", " ": "Space",
 +        let special = ["\u{7f}": "Backspace", "\r": "Return", "\u{1b}": "Esc", "\t": "Tab", " ": "Space",
                         "\u{f702}": "←", "\u{f703}": "→", "\u{f701}": "↓", "\u{f700}": "↑"]
@@ -26,7 +26,7 @@
      }
      func event(like event: NSEvent) -> NSEvent? {
          let codes: [String: UInt16] = ["\u{7f}": 51, "\r": 36, "\u{1b}": 53, "\t": 48, " ": 49,
-@@ -127,11 +128,10 @@
+@@ -143,11 +144,10 @@
      }()
  }
  
@@ -38,9 +38,9 @@
 -    @ObservationIgnored private let panel = FloatingPanelController(name: "keyboardShortcuts")
 +    private let panel = FloatingPanelController(name: "keyboardShortcuts")
      private static let storageKey = "keyboardShortcuts.v1"
-     private init() {
-         if let data = UserDefaults.standard.data(forKey: Self.storageKey),
-@@ -153,14 +153,20 @@
+     private let defaults: UserDefaults
+     /// `defaults` is the app's own everywhere but tests, which use a throwaway suite.
+@@ -185,14 +185,20 @@
          guard let definition = ShortcutDefinition.all.first(where: { !$0.isMenu && $0.original == original }) else { return original }
          return chord(definition)
      }
@@ -57,14 +57,14 @@
      func save(_ values: [String: ShortcutChord]) {
          guard Self.problem(in: values) == nil, let data = try? JSONEncoder().encode(values) else { return }
          overrides = values
-         UserDefaults.standard.set(data, forKey: Self.storageKey)
+         defaults.set(data, forKey: Self.storageKey)
 +        // Linux Foundation keeps defaults in memory until told to write them (the Mac writes them for us).
-+        UserDefaults.standard.synchronize()
++        defaults.synchronize()
          close()
      }
      static func problem(in values: [String: ShortcutChord]) -> String? {
-@@ -169,10 +175,10 @@
-             let chord = values[definition.id] ?? definition.original
+@@ -202,10 +208,10 @@
+             if chord.isNone { continue }
              guard chord.key.count == 1, (0...15).contains(chord.modifiers) else { return "Choose a single key with optional modifiers." }
              if definition.group == "Text Editing", chord.modifiers & 7 == 0 {
 -                return "Text-editing shortcuts need Command, Option, or Control so they do not replace normal typing."
@@ -76,7 +76,7 @@
              }
              if let other = assigned[chord] { return "\(chord.label) is assigned to both \(other) and \(definition.title)." }
              assigned[chord] = definition.title
-@@ -226,7 +232,7 @@
+@@ -261,7 +267,7 @@
      }
  }
  
@@ -85,7 +85,7 @@
      let settings: ShortcutSettings
      @State private var draft: [String: ShortcutChord]
      @State private var search = ""
-@@ -238,7 +244,7 @@
+@@ -273,7 +279,7 @@
                  .foregroundStyle(.secondary)
              TextField("Search shortcuts", text: $search).textFieldStyle(.roundedBorder)
              ScrollView {
@@ -94,7 +94,7 @@
                      ForEach(["Menus", "Canvas & Layers", "Text Editing"], id: \.self) { group in
                          Text(group).font(.headline).padding(.top, 8)
                          ForEach(ShortcutDefinition.all.filter { $0.group == group && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }) { definition in
-@@ -258,8 +264,8 @@
+@@ -304,8 +310,8 @@
                      }
                      Divider().padding(.vertical, 8)
                      Text("Contextual keys & mouse gestures").font(.headline)

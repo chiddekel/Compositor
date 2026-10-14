@@ -7,6 +7,7 @@
 #include "interfaces/IPlatformServices.h"
 #include "ColorPickerDialog.h"
 #include "ImageImportDialog.h"
+#include "LocalFilePath.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -94,9 +95,8 @@ QString runProjectSaveDialog(const QString &suggestedPath, bool native) {
     if (dialog.exec() != QDialog::Accepted) return {};
     const QStringList selected = dialog.selectedFiles();
     if (selected.isEmpty()) return {};
-    QString path = selected.first();
-    if (path.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
-        path = QUrl(path).toLocalFile();
+    const QString path = localFilePath(selected.first());
+    if (path.isEmpty()) return {};
     return QDir::cleanPath(path);
 }
 }  // namespace

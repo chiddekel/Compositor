@@ -7,6 +7,7 @@
 
 import Foundation
 import CoreGraphics
+import AppKit
 
 // Not `private`: SwiftUIBridge.swift's `compositor_session_render_tree` reuses this same handle/session registry
 // (a Qt-visible tree of the same session's panels, not a separate one) rather than duplicating it.
@@ -120,20 +121,35 @@ nonisolated public func compositorWorkspaceBootstrap() -> UInt64 {
 }
 
 /// Opens a brand-new document tab (never reusing an empty one — matches upstream's `newCanvas()`) and returns its handle.
+/// As `newCanvas()`, nothing opens (0) while the current project cannot switch (a sheet, an edit or an import is active).
 @_cdecl("compositor_workspace_add_tab")
 nonisolated public func compositorWorkspaceAddTab() -> UInt64 {
-    onMain { registerWorkspaceTab(Workspace.shared.addTab(reuseEmpty: false)) }
+    onMain {
+        guard Workspace.shared.canSwitch else { return 0 }
+        Workspace.shared.current.session.commitTransform()
+        return registerWorkspaceTab(Workspace.shared.addTab(reuseEmpty: false))
+    }
 }
 
-/// Makes `handle`'s tab the workspace's current one. No-op (but not an error) if it already is, or if upstream
-/// refuses the switch (`canSwitch`, e.g. mid-transform) — the shell keeps showing whatever is actually selected.
+/// Makes `handle`'s tab current. Returns 0 if selected (including an already-current tab), -5 if upstream
+/// refuses the switch, or -6 for a non-workspace handle. The shell must keep its previous tab on refusal.
 @_cdecl("compositor_workspace_select_tab")
 nonisolated public func compositorWorkspaceSelectTab(_ handle: UInt64) -> Int32 {
     onMain {
         guard let id = Sessions.entries[handle]?.workspaceTabID else { return -6 }
         Workspace.shared.select(id)
-        return 0
+        if Workspace.shared.current.id == id, let entry = Sessions.entries[handle] {
+            entry.editor.nativeProjects.window = UpstreamCanvases.canvas(handle, entry).window
+            entry.editor.nativeProjects.resumeExternalChangeCheck()
+        }
+        return Workspace.shared.current.id == id ? 0 : -5
     }
+}
+
+/// ProjectTabStrip's drag-start gate, including workspace-wide project operations.
+@_cdecl("compositor_workspace_can_reorder")
+nonisolated public func compositorWorkspaceCanReorder() -> Int32 {
+    onMain { Workspace.shared.canSwitch ? 1 : 0 }
 }
 
 /// Closes `handle`'s tab (`ProjectWorkspace.removeTab`, which always leaves at least one tab open) and returns a
@@ -142,9 +158,8 @@ nonisolated public func compositorWorkspaceSelectTab(_ handle: UInt64) -> Int32 
 @_cdecl("compositor_workspace_close_tab")
 nonisolated public func compositorWorkspaceCloseTab(_ handle: UInt64) -> UInt64 {
     onMain {
-        guard let id = Sessions.entries[handle]?.workspaceTabID else { return 0 }
-        Sessions.entries.removeValue(forKey: handle)
-        Workspace.shared.removeTab(id)
+        guard Sessions.entries[handle]?.workspaceTabID != nil else { return 0 }
+        releaseSessionHandle(handle)
         let current = Workspace.shared.current
         return handleForWorkspaceTab(current.id) ?? registerWorkspaceTab(current)
     }
@@ -158,6 +173,85 @@ nonisolated public func compositorWorkspaceMoveTab(_ handle: UInt64, _ toIndex: 
         Workspace.shared.moveTab(id, to: Int(toIndex))
         return 0
     }
+}
+
+@MainActor private func layerDropIDs(_ bytes: UnsafePointer<UInt8>?, _ count: Int) -> [UUID]? {
+    guard let bytes, count > 0, count <= 1048576,
+          let strings = try? JSONDecoder().decode([String].self, from: Data(bytes: bytes, count: count)),
+          !strings.isEmpty else { return nil }
+    let ids = strings.compactMap(UUID.init(uuidString:))
+    return ids.count == strings.count ? ids : nil
+}
+
+@MainActor private func layerDropAllowed(_ destination: UInt64, _ ids: [UUID], _ modifiers: Int32) -> Bool {
+    let workspace = Workspace.shared
+    guard modifiers & 2 == 0, workspace.canSwitch, let first = ids.first,
+          let source = workspace.tabs.first(where: { $0.session.document?.layers.contains(where: { $0.id == first }) == true }),
+          source.session.canEditLayers,
+          ids.allSatisfy({ id in source.session.document?.layers.contains(where: { $0.id == id }) == true }) else { return false }
+    if destination == 0 { return true }
+    guard let id = Sessions.entries[destination]?.workspaceTabID,
+          id != source.id,
+          let target = workspace.tabs.first(where: { $0.id == id }) else { return false }
+    return target.session.canStartProjectOperation
+}
+
+@_cdecl("compositor_workspace_layer_drop_allowed")
+nonisolated public func compositorWorkspaceLayerDropAllowed(_ destination: UInt64, _ bytes: UnsafePointer<UInt8>?, _ count: Int, _ modifiers: Int32) -> Int32 {
+    onMain {
+        guard let ids = layerDropIDs(bytes, count) else { return 0 }
+        return layerDropAllowed(destination, ids, modifiers) ? 1 : 0
+    }
+}
+
+/// Supplies the live upstream row drag to the Qt pointer adapter; other native drag kinds stay in their view.
+@_cdecl("compositor_current_layer_drag")
+nonisolated public func compositorCurrentLayerDrag(_ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard capacity >= 0 else { return -1 }
+    return onMain {
+        guard let drag = NSDraggingSession.current, drag.sourceOperationMask.contains(.copy),
+              let items = drag.draggingPasteboard.pasteboardItems else { return 0 }
+        let strings = items.compactMap { $0.string(forType: .init(ProjectWorkspace.layerType)) }
+        guard !strings.isEmpty, strings.count == items.count,
+              let data = try? JSONEncoder().encode(strings) else { return 0 }
+        if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
+        return Int64(data.count)
+    }
+}
+
+/// Retires a row drag if its native source widget was replaced during delivery.
+@_cdecl("compositor_end_layer_drag")
+nonisolated public func compositorEndLayerDrag(_ copied: Int32) {
+    onMain {
+        NSDraggingSession.current?.end(at: .zero, operation: copied == 1 ? .copy : [])
+    }
+}
+
+/// Runs upstream provider delivery, including its folder/mask/effect copying and history semantics.
+@_cdecl("compositor_workspace_drop_layers")
+nonisolated public func compositorWorkspaceDropLayers(_ destination: UInt64, _ bytes: UnsafePointer<UInt8>?, _ count: Int,
+                                                     _ modifiers: Int32, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard let output, capacity >= 1048576 else { return -1 }
+    guard let ids = onMain({ layerDropIDs(bytes, count) }) else { return -1 }
+    let (result, response): (Int64, Data) = awaitOnMain({
+        guard layerDropAllowed(destination, ids, modifiers) else { return (-5, Data()) }
+        let workspace = Workspace.shared
+        let before = Set(workspace.tabs.map(\.id))
+        let target = destination == 0 ? nil : Sessions.entries[destination]?.workspaceTabID
+        let providers = ids.map { NSItemProvider(item: Data($0.uuidString.utf8) as NSData, typeIdentifier: ProjectWorkspace.layerType) }
+        await workspace.receiveProviders(providers, into: target)
+        let newHandles = workspace.tabs.filter { !before.contains($0.id) }.map { String(handleForWorkspaceTab($0.id) ?? registerWorkspaceTab($0)) }
+        let selected = destination != 0 && Sessions.entries[destination]?.workspaceTabID == workspace.current.id
+            ? destination : handleForWorkspaceTab(workspace.current.id) ?? registerWorkspaceTab(workspace.current)
+        let response = (try? JSONSerialization.data(withJSONObject: ["newHandles": newHandles, "selectedHandle": String(selected)])) ?? Data()
+        return (0, response)
+    }, whileWaiting: {
+        if let pump = ImportPrompts.waitPump { pump(ImportPrompts.waitPumpContext) }
+    })
+    guard result == 0 else { return result }
+    guard !response.isEmpty, response.count <= capacity else { return -1 }
+    response.copyBytes(to: output, count: response.count)
+    return Int64(response.count)
 }
 
 /// UTF-8 title for `handle`'s tab (upstream's `ProjectTab.title`: the project filename, or "Untitled"/"Untitled N"),
@@ -184,7 +278,7 @@ nonisolated public func compositorWorkspaceSettle() -> Int32 {
             guard tab.session.finishText() else { return Int64(-5) }
         }
         await workspace.settlePendingEdits()
-        return 0
+        return workspace.canSwitch ? 0 : -5
     }, whileWaiting: {
         if let pump = ImportPrompts.waitPump { pump(ImportPrompts.waitPumpContext) }
     }))
@@ -222,7 +316,26 @@ nonisolated public func compositorSessionCreate() -> UInt64 {
 
 @_cdecl("compositor_session_close")
 nonisolated public func compositorSessionClose(_ handle: UInt64) {
-    onMain { _ = Sessions.entries.removeValue(forKey: handle) }
+    onMain { releaseSessionHandle(handle) }
+}
+
+@MainActor private func releaseSessionHandle(_ handle: UInt64) {
+    let canvas = UpstreamCanvases.canvases.removeValue(forKey: handle)
+    guard let entry = Sessions.entries.removeValue(forKey: handle) else {
+        canvas?.window.close()
+        return
+    }
+    let remaining = Sessions.entries.filter { $0.value.editor.session === entry.editor.session }
+    let controller = entry.editor.nativeProjects
+    if remaining.isEmpty {
+        controller.externalChanges.watcher?.stop()
+        controller.stopWatchingProject()
+        entry.editor.session.clearProject()
+        if let id = entry.workspaceTabID { Workspace.shared.removeTab(id) }
+    } else if let canvas, controller.window === canvas.window {
+        controller.window = remaining.keys.compactMap { UpstreamCanvases.canvases[$0]?.window }.first
+    }
+    canvas?.window.close()
 }
 
 @_cdecl("compositor_session_command")
@@ -406,10 +519,11 @@ nonisolated public func compositorSessionViewportUpdate(_ handle: UInt64, _ op: 
 }
 
 /// Runs whatever is waiting on the main actor/queue (upstream async work started from a panel: previews, `Task {}` in
-/// button actions), without blocking. The shell calls it from a timer; nothing else drains that queue under Qt.
+/// button actions). An already-expired deadline can starve task starts and worker continuations under Qt;
+/// allow at most one millisecond for ready sources. The shell calls this from its timer and pointer callbacks.
 @_cdecl("compositor_pump_main")
 nonisolated public func compositorPumpMain() {
-    RunLoop.main.run(mode: .default, before: Date())
+    RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.001))
 }
 
 /// Cancels upstream's RAW Develop sheet (the shell's dialog was closed without Import).
@@ -417,8 +531,9 @@ nonisolated public func compositorPumpMain() {
 nonisolated public func compositorSessionRawDevelopCancel(_ handle: UInt64) {
     _ = withEntry(handle) { entry in
         // Closing the shell's dialog answers Cancel for whichever upstream sheet it was showing.
-        if entry.editor.session.showsRawDevelop { entry.editor.session.finishRawDevelop(nil) }
-        if entry.editor.session.showsConversionSheet { entry.editor.session.finishConversion(false) }
+        let importing = entry.editor.importSession
+        if importing.showsRawDevelop { importing.finishRawDevelop(nil) }
+        if importing.showsConversionSheet { importing.finishConversion(false) }
         if entry.editor.trimSheet != nil { entry.editor.finishTrim(nil) }
         if entry.editor.canvasSizeSheet != nil || entry.editor.imageSizeSheet != nil { entry.editor.finishSizeSheet(nil) }
         if entry.editor.exportAsSheet != nil { entry.editor.finishExportAsSheet(nil) }
@@ -540,4 +655,75 @@ nonisolated public func compositorSessionImportLayer(_ handle: UInt64, _ layerID
         if code == 0 { entry.rendered = nil }
         return Int64(code)
     })
+}
+
+/// Upstream validates and decodes the entire package before any document is installed.
+@_cdecl("compositor_session_load_package")
+nonisolated public func compositorSessionLoadPackage(_ handle: UInt64, _ path: UnsafePointer<CChar>?,
+                                                    _ width: UnsafeMutablePointer<Int32>?, _ height: UnsafeMutablePointer<Int32>?) -> Int32 {
+    guard let path else { return -1 }
+    let string = String(cString: path)
+    guard string.hasPrefix("/") else { return -1 }
+    let url = URL(fileURLWithPath: string)
+    guard case .success(let loaded) = projectStoreOperation({
+        let snapshot = try await ProjectStore.shared.load(from: url)
+        return (snapshot, try? ProjectDigest.compute(for: url))
+    }) else { return -1 }
+    let snapshot = loaded.0
+    let code = withEntry(handle) { entry in
+        let result = entry.editor.importProjectSnapshot(snapshot)
+        if result == 0 {
+            entry.rendered = nil
+            bindNativeProject(handle, entry, url: url, digest: loaded.1)
+        }
+        return Int64(result)
+    }
+    if code == 0 {
+        width?.pointee = Int32(snapshot.manifest.width)
+        height?.pointee = Int32(snapshot.manifest.height)
+    }
+    return Int32(code)
+}
+
+@MainActor private func bindNativeProject(_ handle: UInt64, _ entry: Entry, url: URL, digest: ProjectDigest?) {
+    let controller = entry.editor.nativeProjects
+    entry.editor.session.projectURL = url
+    controller.window = UpstreamCanvases.canvas(handle, entry).window
+    controller.externalChanges.knownDigest = digest
+    controller.watchProject(at: url)
+}
+
+@_cdecl("compositor_project_save_state")
+nonisolated public func compositorProjectSaveState(_ handle: UInt64, _ saving: Int32) {
+    _ = withEntry(handle) { entry in
+        entry.editor.nativeProjects.externalChanges.saving = saving != 0
+        return 0
+    }
+}
+
+@_cdecl("compositor_project_did_save")
+nonisolated public func compositorProjectDidSave(_ handle: UInt64, _ path: UnsafePointer<CChar>?) {
+    guard let path else { return }
+    let url = URL(fileURLWithPath: String(cString: path))
+    let digest = try? ProjectDigest.compute(for: url)
+    _ = withEntry(handle) { entry in
+        bindNativeProject(handle, entry, url: url, digest: digest)
+        return 0
+    }
+}
+
+public typealias NativeAlertPresenter = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32
+
+@_cdecl("compositor_set_alert_presenter")
+nonisolated public func compositorSetAlertPresenter(_ presenter: NativeAlertPresenter?) {
+    onMain {
+        guard let presenter else { NSAlert.handler = nil; return }
+        NSAlert.handler = { alert in
+            guard let data = try? JSONEncoder().encode(alert.buttonTitles), let buttons = String(data: data, encoding: .utf8) else { return .cancel }
+            let index = alert.messageText.withCString { title in
+                alert.informativeText.withCString { detail in buttons.withCString { presenter(title, detail, $0) } }
+            }
+            return index >= 0 ? NSApplication.ModalResponse(rawValue: 1000 + Int(index)) ?? .cancel : .cancel
+        }
+    }
 }

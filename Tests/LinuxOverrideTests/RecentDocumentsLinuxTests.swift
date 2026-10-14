@@ -11,8 +11,8 @@ import Foundation
 
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
 
-        let xbel = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/share/recently-used.xbel")
+        let xbel = FreedesktopRecentDocuments.dataDirectory()
+            .appendingPathComponent("recently-used.xbel")
         let text = try String(contentsOf: xbel, encoding: .utf8)
         #expect(text.contains(url.lastPathComponent), "expected bookmark for \(url.lastPathComponent)")
         #expect(NSDocumentController.shared.recentDocumentURLs.contains { $0.path == url.path })

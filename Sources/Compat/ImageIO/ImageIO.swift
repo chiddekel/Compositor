@@ -24,6 +24,14 @@ public let kCGImagePropertyDepth: CFString = "Depth"
 public let kCGImagePropertyOrientation: CFString = "Orientation"
 public let kCGImagePropertyHasAlpha: CFString = "HasAlpha"
 public let kCGImageDestinationLossyCompressionQuality: CFString = "kCGImageDestinationLossyCompressionQuality"
+public let kCGImagePropertyColorModel: CFString = "ColorModel"
+public let kCGImagePropertyColorModelRGB: CFString = "RGB"
+public let kCGImagePropertyColorModelGray: CFString = "Gray"
+public let kCGImagePropertyColorModelCMYK: CFString = "CMYK"
+public let kCGImagePropertyColorModelLab: CFString = "Lab"
+public let kCGImagePropertyProfileName: CFString = "ProfileName"
+public let kCGImagePropertyTIFFDictionary: CFString = "{TIFF}"
+public let kCGImagePropertyTIFFCompression: CFString = "Compression"
 
 // MARK: - Source
 
@@ -88,8 +96,9 @@ public func CGImageSourceCopyPropertiesAtIndex(_ source: CGImageSource, _ index:
     var dict: [AnyHashable: Any] = [
         kCGImagePropertyPixelWidth: info.width, kCGImagePropertyPixelHeight: info.height,
         kCGImagePropertyDepth: info.bitDepth, kCGImagePropertyOrientation: info.orientation,
-        kCGImagePropertyHasAlpha: info.hasAlpha,
+        kCGImagePropertyHasAlpha: info.hasAlpha, kCGImagePropertyColorModel: info.colorModel,
     ]
+    if let profileName = info.profileName { dict[kCGImagePropertyProfileName] = profileName }
     if let dpi = info.dpi { dict[kCGImagePropertyDPIWidth] = dpi; dict[kCGImagePropertyDPIHeight] = dpi }
     return dict
 }

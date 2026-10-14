@@ -5,9 +5,8 @@ import CoreGraphics
 // multiplier on dimensions), layout guides and stack views. A view lays out its own subviews and guides from the
 // active constraints that involve them, by propagation: a constraint whose one side is known fixes the other, and
 // any two of an item's minimum, maximum, center and size fix the rest. That covers constraint sets that are not
-// circular, which is what row and control layouts are. Required dimension inequalities bound an otherwise
-// unsized item's intrinsic/current size; positional inequalities and priorities below required are ignored.
-// An item a constraint leaves unsized takes its intrinsic size, then its current frame.
+// circular, which is what row and control layouts are. A priority solver settles conflicting preferences and
+// positional bounds; simple layouts keep the propagation path. Unsized items prefer their intrinsic/current size.
 
 /// Something constraints can position: a view or a layout guide.
 @MainActor public protocol NSLayoutItem: AnyObject {
@@ -190,9 +189,19 @@ extension NSView: NSLayoutItem {
             }
         }
     }
-    public func setContentHuggingPriority(_ priority: NSLayoutConstraint.Priority, for orientation: NSLayoutConstraint.Orientation) {}
+    public func setContentHuggingPriority(_ priority: NSLayoutConstraint.Priority, for orientation: NSLayoutConstraint.Orientation) {
+        setLayoutPriority(priority, orientation: orientation, compression: false)
+    }
+    public func contentHuggingPriority(for orientation: NSLayoutConstraint.Orientation) -> NSLayoutConstraint.Priority {
+        layoutPriority(orientation: orientation, compression: false)
+    }
     public func setContentCompressionResistancePriority(_ priority: NSLayoutConstraint.Priority,
-                                                        for orientation: NSLayoutConstraint.Orientation) {}
+                                                        for orientation: NSLayoutConstraint.Orientation) {
+        setLayoutPriority(priority, orientation: orientation, compression: true)
+    }
+    public func contentCompressionResistancePriority(for orientation: NSLayoutConstraint.Orientation) -> NSLayoutConstraint.Priority {
+        layoutPriority(orientation: orientation, compression: true)
+    }
 
     /// Positions the subviews and guides that constraints place (those with
     /// `translatesAutoresizingMaskIntoConstraints` off), in this view's bounds.
@@ -208,6 +217,7 @@ extension NSView: NSLayoutItem {
         guard !mine.isEmpty else { return }
         var solver = LayoutSolver(container: self)
         solver.solve(mine)
+        PrioritizedLayoutSolver.solveIfNeeded(container: self, constraints: mine)
     }
 }
 

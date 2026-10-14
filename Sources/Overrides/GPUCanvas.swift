@@ -1,10 +1,8 @@
 // OVERRIDE for Compositor/Rendering/GPUCanvas.swift (excluded from the Linux build).
 //
-// Metal → Vulkan: `GPUCanvasRenderer.shared` drives tip `EditorCanvas.drawOnGPU` when
-// COMPOSITOR_FORCE_GPU_CANVAS=1. Constraint: look, feel, and UX must match Mac (sRGB, orientation,
-// sampling, brush response). Shipped default is Core Graphics (`shared == nil`) so the Qt canvas
-// matches Mac CG look; set COMPOSITOR_FORCE_GPU_CANVAS=1 to exercise the GPU present path.
-// CompRenderer's Vulkan composite via SkiaBridge is independent and stays on.
+// Metal → Vulkan: hardware-backed pointwise graphs drive `EditorCanvas.drawOnGPU` on eligible
+// devices, preserving the upstream sRGB, orientation, sampling and brush behavior. Unsupported
+// hardware, user opt-out and failed raster contexts use the Core Graphics canvas.
 
 import Foundation
 import AppKit
@@ -22,7 +20,17 @@ final class CAMetalLayer {
 @MainActor final class GPUCanvasRenderer {
     /// Non-nil when Vulkan (or FORCE) is available — same gate as tip's Metal device check.
     /// Non-failable construction: Swift `init?()` + `@MainActor` static let segfaults under swift-testing on Linux.
-    static let shared: GPUCanvasRenderer? = GPUCanvasRenderer.vulkanAvailable() ? GPUCanvasRenderer() : nil
+    private static let candidate: GPUCanvasRenderer? = {
+        guard vulkanAvailable() else { return nil }
+        let renderer = GPUCanvasRenderer()
+        return renderer.context.gpuAvailable || ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1"
+            ? renderer : nil
+    }()
+    static var shared: GPUCanvasRenderer? {
+        guard let renderer = candidate else { return nil }
+        return renderer.context.gpuAvailable || ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] == "1"
+            ? renderer : nil
+    }
 
     let space: CGColorSpace
     let context: CIContext
@@ -45,7 +53,7 @@ final class CAMetalLayer {
         space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         // As tip: extended sRGB working space (sRGB blending, an HDR layer's light past white carried through), no
         // intermediate cache.
-        context = CIContext(options: [.workingColorSpace: DeepLayer.hdrSpace, .cacheIntermediates: false])
+        context = CIContext(options: [.workingColorSpace: DeepLayer.hdrSpace, .cacheIntermediates: false, .hardwareCanvas: true])
         device = MTLDevice()
         queue = MTLCommandQueue()
     }
@@ -59,9 +67,7 @@ final class CAMetalLayer {
             if forced == "1" { return true }
             if forced == "0" { return false }
         }
-        // As tip's Metal device check: present wherever a Vulkan device is (GPUCanvasTests meet tip's thresholds). The
-        // app's own canvas still draws with Core Graphics by default (hostMain registers CompositorCPUCanvas): this
-        // frame is evaluated by the compat Core Image on the CPU, far slower than the Core Graphics canvas.
+        // Basic Vulkan availability is followed by the raster backend's precision and feature checks.
         return CanvasBackends.vulkanGPUAvailable
     }
 
@@ -100,15 +106,13 @@ final class CAMetalLayer {
     /// As a texture filled from the image's rows would be (CIImage(mtlTexture:) on the Mac): the top row at y = 0, the
     /// frame being built with y counting down. A mask comes back with its values in the red channel.
     private func upload(_ image: CGImage, mask: Bool) -> CIImage? {
-        let source: CGImage
-        if mask {
-            guard let copy = try? Self.grayCopy(image), let cg = copy.makeImage() else { return nil }
-            source = cg
-        } else {
-            source = image
-        }
-        return CIImage(cgImage: source)
-            .transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: CGFloat(source.height)))
+        // Use upstream's texture precision: a mask's gray, HDR as half floats, a 16-bit layer at 16 bits, else 8 bits.
+        let hdr = !mask && DeepLayer.isHDR(image)
+        let sixteen = !mask && !hdr && image.bitsPerComponent == 16
+        guard let pixels = try? (mask ? Self.grayCopy(image) : hdr ? DeepLayer.hdr(image)
+                                 : sixteen ? DeepLayer.canonical(image) : BrushRaster.copy(image)),
+              let source = pixels.makeImage() else { return nil }
+        return CIImage(cgImage: source, topDownRows: true)
     }
 
     func cachedLevels(of image: CGImage) -> [Int] {
@@ -164,7 +168,22 @@ final class CAMetalLayer {
         strokes = strokes.filter { frame - $0.value.used < keepFrames }
     }
 
-    func present(_ image: CIImage, in layer: CAMetalLayer) {
+    /// `image` with just under half an 8-bit level of fixed noise per color channel (upstream's dither for 16-bit and
+    /// HDR documents), alpha untouched.
+    static func dithered(_ image: CIImage) -> CIImage {
+        let step = 0.999 / 255
+        let noise = CIFilter(name: "CIRandomGenerator")!.outputImage!.cropped(to: image.extent).settingAlphaOne(in: image.extent)
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: step, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: step, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: step, w: 0),
+            ])
+        return noise.applyingFilter("CILinearDodgeBlendMode", parameters: [kCIInputBackgroundImageKey: image])
+            .applyingFilter("CIColorMatrix", parameters: ["inputBiasVector": CIVector(x: -step / 2, y: -step / 2, z: -step / 2, w: 0)])
+            .cropped(to: image.extent)
+    }
+
+    func present(_ image: CIImage, in layer: CAMetalLayer, dither: Bool = false) {
+        let image = dither ? Self.dithered(image) : image
         let size = layer.drawableSize
         guard size.width >= 1, size.height >= 1 else { return }
         let bounds = CGRect(origin: .zero, size: size)

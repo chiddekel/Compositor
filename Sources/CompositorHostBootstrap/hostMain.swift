@@ -45,8 +45,9 @@ struct HostBootstrap {
             return
         }
         compositorConfigureBrushAcceleration(ProcessInfo.processInfo.environment["COMPOSITOR_BRUSH_BACKEND"] != "cpu")
-        // The canvas draws with Core Graphics unless COMPOSITOR_FORCE_GPU_CANVAS=1: the GPU canvas frame runs through the
-        // compat Core Image, on the CPU, many times slower. A user's own CompositorCPUCanvas setting still wins.
+        // Hardware graphs accelerate supported operations, but complete frames still lose to Core Graphics in
+        // the measured six-layer scene. Keep the fast default while transform/generator work continues.
+        // A user's CompositorCPUCanvas setting still wins; FORCE exercises the hardware present path.
         if ProcessInfo.processInfo.environment["COMPOSITOR_FORCE_GPU_CANVAS"] != "1" {
             UserDefaults.standard.register(defaults: ["CompositorCPUCanvas": true])
         }
@@ -63,6 +64,11 @@ struct HostBootstrap {
         if CommandLine.arguments.contains("--raw-lens-smoke") {
             let result = compositor_host_raw_lens_smoke(CommandLine.argc, CommandLine.unsafeArgv)
             guard result == 0 else { fail("RAW lens smoke returned \(result)") }
+            return
+        }
+        if CommandLine.arguments.contains("--tab-smoke") {
+            let result = compositor_host_tab_smoke(CommandLine.argc, CommandLine.unsafeArgv)
+            guard result == 0 else { fail("Qt tab smoke returned \(result)") }
             return
         }
         if CommandLine.arguments.contains("--preview-smoke") {

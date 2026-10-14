@@ -1,0 +1,25 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_ARB_gpu_shader_fp64 : require
+#include "../../brush/shaders/warp_precision.glsl"
+#include "raster_ops.glsl"
+layout(local_size_x=16,local_size_y=16) in;
+layout(push_constant) uniform Parameters { uint width; uint height; uint operation; uint channel; } u;
+layout(std430,binding=0) readonly buffer Source { vec4 source[]; };
+layout(std430,binding=1) writeonly buffer Destination { vec4 destination[]; };
+layout(std430,binding=2) readonly buffer Mask { vec4 mask[]; };
+layout(std430,binding=3) readonly buffer Background { vec4 background[]; };
+layout(std430,binding=4) readonly buffer Values { vec4 values[]; };
+
+void main() {
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if (p.x>=u.width || p.y>=u.height) return;
+    uint i=p.y*u.width+p.x;
+    // Absent inputs are bound to small placeholder buffers: read only what the operation uses.
+    const vec4 bg=u.operation<=2?background[i]:vec4(0);
+    const vec4 m=u.operation==2?mask[i]:vec4(0);
+    const uint parameterCount=u.operation==3?5:u.operation==4?2:u.operation==7?1:0;
+    vec4 v[5]=vec4[5](vec4(0),vec4(0),vec4(0),vec4(0),vec4(0));
+    for (uint k=0;k<parameterCount;++k) v[k]=values[k];
+    destination[i]=rasterOperation(u.operation,u.channel,source[i],bg,m,v[0],v[1],v[2],v[3],v[4],p);
+}

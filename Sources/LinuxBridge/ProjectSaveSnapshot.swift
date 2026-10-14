@@ -8,6 +8,9 @@ nonisolated struct ProjectSaveSnapshot: @unchecked Sendable {
     let revision: UUID
     let generation: UUID
     let sessionHandle: UInt64
+    private let preview = ProjectSavePreview()
+
+    nonisolated func previewData() -> Data? { preview.data(for: project) }
 
     @MainActor init?(editor: UpstreamEditor, handle: UInt64) {
         guard let project = editor.session.projectSnapshot() else { return nil }
@@ -22,6 +25,29 @@ nonisolated struct ProjectSaveSnapshot: @unchecked Sendable {
               editor.session.document?.id == project.manifest.documentID else { return false }
         editor.session.history.markSaved(revision)
         return true
+    }
+}
+
+/// Render only the frozen project, without hopping back to the live session/main actor.
+/// Keep the bytes for both C ABI calls and concurrent readers of the same save token.
+nonisolated private final class ProjectSavePreview: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generated = false
+    private var bytes: Data?
+
+    func data(for project: ProjectSnapshot) -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        guard !generated else { return bytes }
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var result: Data?
+        Task.detached {
+            result = await ImageExporter.shared.quickLookImages(project)?.preview
+            done.signal()
+        }
+        done.wait()
+        bytes = result
+        generated = true
+        return bytes
     }
 }
 
@@ -47,6 +73,32 @@ nonisolated private enum ProjectSaveSnapshots {
     static func remove(_ token: UInt64) {
         lock.lock(); defer { lock.unlock() }
         values.removeValue(forKey: token)
+    }
+}
+
+/// The upstream store only works on immutable data and codecs, never the main actor.
+nonisolated func projectStoreOperation<Value: Sendable>(_ body: @escaping @Sendable () async throws -> Value) -> Result<Value, Error> {
+    let done = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var result: Result<Value, Error>?
+    Task.detached {
+        do { result = .success(try await body()) } catch { result = .failure(error) }
+        done.signal()
+    }
+    done.wait()
+    return result!
+}
+
+/// Encode in the shell's private staging directory; Qt still installs the completed package.
+@_cdecl("compositor_save_write_package")
+nonisolated public func compositorSaveWritePackage(_ token: UInt64, _ path: UnsafePointer<CChar>?, _ includePreview: Int32) -> Int32 {
+    guard let path, let snapshot = ProjectSaveSnapshots.get(token) else { return -1 }
+    let string = String(cString: path)
+    guard string.hasPrefix("/") else { return -1 }
+    let url = URL(fileURLWithPath: string)
+    let preview = includePreview != 0 ? snapshot.previewData().map { QuickLookImages(preview: $0) } : nil
+    switch projectStoreOperation({ try await ProjectStore.shared.save(snapshot.project, to: url, quickLook: preview) }) {
+    case .success: return 0
+    case .failure: return -1
     }
 }
 
@@ -89,11 +141,10 @@ nonisolated public func compositorSaveExportLayer(_ token: UInt64, _ layerID: Un
 /// ImageExporter path as macOS). Returns 0 when the canvas is too large to flatten on every save.
 @_cdecl("compositor_save_export_preview")
 nonisolated public func compositorSaveExportPreview(_ token: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
-    guard capacity >= 0, ProjectSaveSnapshots.get(token) != nil else { return -1 }
-    // The Qt package writer runs on a background thread while the UI thread may be blocked in a local event
-    // loop (writeProjectPackage). Flattening for QuickLook here used to hang or fail the whole save.
-    _ = output
-    return 0
+    guard capacity >= 0, let snapshot = ProjectSaveSnapshots.get(token) else { return -1 }
+    guard let data = snapshot.previewData() else { return 0 }
+    if let output, capacity >= data.count { data.copyBytes(to: output, count: data.count) }
+    return Int64(data.count)
 }
 
 /// Only call after successful installation of the package. Autosave releases its

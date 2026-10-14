@@ -131,8 +131,26 @@ public final class NSTrackingArea {
     open func viewWillMove(toWindow newWindow: NSWindow?) {}
     open func viewWillMove(toSuperview newSuperview: NSView?) {}
     open func accessibilityPerformPress() -> Bool { false }
-    /// Scrolls the enclosing scroll view toward a drag past this view's edge; there is no scrolling to do headless.
-    @discardableResult open func autoscroll(with event: NSEvent) -> Bool { false }
+    /// Scrolls the enclosing viewport toward a drag outside it. Tracking loops call this for each drag event.
+    @discardableResult open func autoscroll(with event: NSEvent) -> Bool {
+        guard let scroll = enclosingScrollView else { return false }
+        let clip = scroll.contentView
+        let visible = clip.bounds
+        guard visible.width > 0, visible.height > 0 else { return false }
+        let point = clip.convert(event.locationInWindow, from: nil)
+        var origin = visible.origin
+        // Bound each tracking step so a pointer far beyond the viewport does not jump to the document's end.
+        if point.x < visible.minX { origin.x -= min(32, visible.minX - point.x) }
+        else if point.x >= visible.maxX { origin.x += min(32, max(1, point.x - visible.maxX)) }
+        if point.y < visible.minY { origin.y -= min(32, visible.minY - point.y) }
+        else if point.y >= visible.maxY { origin.y += min(32, max(1, point.y - visible.maxY)) }
+        guard origin != visible.origin else { return false }
+        clip.scroll(to: origin)
+        guard clip.bounds.origin != visible.origin else { return false }
+        scroll.reflectScrolledClipView(clip)
+        needsDisplay = true
+        return true
+    }
     public var autoresizingMask: AutoresizingMask = []
     public struct AutoresizingMask: OptionSet, Sendable {
         public let rawValue: Int
@@ -197,6 +215,14 @@ public final class NSTrackingArea {
     }
     open func removeFromSuperview() {
         guard let superview else { return }
+        // A detached subtree must not keep receiving keys through its former window.
+        // The shared field editor lives outside the subtree, so use its edited field as the owner.
+        if let window {
+            let owner = window.editedField ?? (window.firstResponder as? NSView)
+            if let owner, owner === self || owner.isDescendant(of: self) {
+                window.makeFirstResponder(nil)
+            }
+        }
         viewWillMove(toSuperview: nil)
         if window != nil { viewWillMove(toWindow: nil) }
         // Remove constraints crossing the detached subtree's boundary. Its own constraints must survive,
@@ -345,7 +371,9 @@ public final class NSTrackingArea {
     open func isAccessibilityElement() -> Bool { accessibilityElementStorage }
     open func setAccessibilityElement(_ isElement: Bool) { accessibilityElementStorage = isElement }
     open func accessibilityRole() -> NSAccessibility.Role? { accessibilityRoleStorage }
-    open func setAccessibilityIdentifier(_ identifier: String?) {}
+    private var accessibilityIdentifierStorage: String?
+    open func accessibilityIdentifier() -> String? { accessibilityIdentifierStorage }
+    open func setAccessibilityIdentifier(_ identifier: String?) { accessibilityIdentifierStorage = identifier }
     private var accessibilityLabelStorage: String?
     /// The label `setAccessibilityLabel(_:)` stored, as AppKit's accessor pair; the plain getter the tests read.
     @discardableResult open func accessibilityLabel() -> String? { accessibilityLabelStorage }
@@ -510,6 +538,10 @@ public enum NSAccessibility {
             hostingContentMinimum = nil
             hostingContentMaximum = nil
             if oldValue !== contentView {
+                let owner = editedField ?? (firstResponder as? NSView)
+                if let oldValue, let owner, owner === oldValue || owner.isDescendant(of: oldValue) {
+                    makeFirstResponder(nil)
+                }
                 oldValue?.hostWindow = nil
                 oldValue?.windowDidChange()
             }
@@ -935,6 +967,11 @@ extension NSControl {
         if let clickHandler { clickHandler(); return }
         if let action { NSApp.sendAction(action, to: target, from: self) }
     }
+    open override func accessibilityPerformPress() -> Bool {
+        guard isEnabled, !isHiddenOrHasHiddenAncestor else { return false }
+        performClick(self)
+        return true
+    }
     /// An image-only button, as `NSButton(image:target:action:)` makes one.
     public convenience init(image: NSImage, target: AnyObject?, action: Selector?) {
         self.init(frame: .zero)
@@ -1018,10 +1055,16 @@ extension NSTableViewDataSource {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat
     func tableViewSelectionDidChange(_ notification: Notification)
+    func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String?
+    func tableView(_ tableView: NSTableView, shouldTypeSelectFor event: NSEvent, withCurrentSearch search: String?) -> Bool
 }
 extension NSTableViewDelegate {
     public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { nil }
     public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { tableView.rowHeight }
+    public func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {
+        tableView.defaultTypeSelectString(row: row)
+    }
+    public func tableView(_ tableView: NSTableView, shouldTypeSelectFor event: NSEvent, withCurrentSearch search: String?) -> Bool { true }
     public func tableViewSelectionDidChange(_ notification: Notification) {}
 }
 
@@ -1055,15 +1098,22 @@ extension NSTableViewDelegate {
     public var selectionHighlightStyle: SelectionHighlightStyle = .regular
     public var usesAlternatingRowBackgroundColors = false
     public var allowsMultipleSelection = false
+    public var allowsTypeSelect = true
     public var allowsEmptySelection = true
     public var doubleAction: Selector?
     /// The row (and column) of the click being handled, -1 outside one, as AppKit sets them around `action`.
     public private(set) var clickedRow = -1
     public private(set) var clickedColumn = -1
-    open var selectedRow: Int { selectedRowIndexes.first ?? -1 }
+    open var selectedRow: Int {
+        if let lastSelectedRow, selectedRowIndexes.contains(lastSelectedRow) { return lastSelectedRow }
+        return selectedRowIndexes.last ?? -1
+    }
     open var selectedRowIndexes = IndexSet() {
         didSet {
             guard selectedRowIndexes != oldValue else { return }
+            if let userSelectionRow, selectedRowIndexes.contains(userSelectionRow) { lastSelectedRow = userSelectionRow }
+            else if let added = selectedRowIndexes.subtracting(oldValue).last { lastSelectedRow = added }
+            else if lastSelectedRow.map({ selectedRowIndexes.contains($0) }) != true { lastSelectedRow = selectedRowIndexes.last }
             let note = Notification(name: Self.selectionDidChangeNotification, object: self)
             delegate?.tableViewSelectionDidChange(note)
             NotificationCenter.default.post(note)
@@ -1081,6 +1131,11 @@ extension NSTableViewDelegate {
     private var keyboardSelectionAnchor: Int?
     private var keyboardSelectionExtent: Int?
     private var keyboardSelectionIndexes = IndexSet()
+    private var keyboardSelectionBase = IndexSet()
+    private var lastSelectedRow: Int?
+    private var userSelectionRow: Int?
+    private var typeSelectSearch = ""
+    private var typeSelectTimestamp: TimeInterval = -.infinity
     /// Where the drop being validated would land (`setDropRow`), -1 with none.
     public private(set) var dropRow = -1
     public private(set) var dropOperation: DropOperation = .above
@@ -1088,6 +1143,13 @@ extension NSTableViewDelegate {
     open func addTableColumn(_ column: NSTableColumn) { tableColumns.append(column) }
     open func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool) {
         selectedRowIndexes = extend ? selectedRowIndexes.union(indexes) : indexes
+    }
+    private func selectUserRows(_ indexes: IndexSet, focusedRow: Int) {
+        let previous = userSelectionRow
+        userSelectionRow = focusedRow
+        if indexes.contains(focusedRow) { lastSelectedRow = focusedRow }
+        selectRowIndexes(indexes, byExtendingSelection: false)
+        userSelectionRow = previous
     }
     open func deselectAll(_ sender: Any?) { if allowsEmptySelection { selectedRowIndexes = [] } }
     /// AppKit's Select All: every row. `LayerTableView` overrides this to select the canvas instead.
@@ -1221,22 +1283,88 @@ extension NSTableViewDelegate {
 
     // MARK: Keys
 
-    /// The table's default Up/Down handling. A subclass can consume the arrows first (the layer table's Move tool
-    /// nudges the layer), then forward other arrows here to select and reveal rows.
+    fileprivate func defaultTypeSelectString(row: Int) -> String? {
+        guard let cell = view(atColumn: 0, row: row, makeIfNecessary: true) else { return nil }
+        if let cell = cell as? NSTableCellView, let field = cell.textField { return field.stringValue }
+        func text(in view: NSView) -> String? {
+            guard !view.isHidden else { return nil }
+            if let field = view as? NSTextField, !field.stringValue.isEmpty { return field.stringValue }
+            for child in view.subviews { if let value = text(in: child) { return value } }
+            return nil
+        }
+        return text(in: cell)
+    }
+
+    private func typeSelect(with event: NSEvent) -> Bool {
+        let continuing = event.timestamp >= typeSelectTimestamp && event.timestamp - typeSelectTimestamp < 1
+        guard allowsTypeSelect, let typed = event.characters, !typed.isEmpty,
+              typed.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && !(0xf700...0xf8ff).contains($0.value) }),
+              delegate?.tableView(self, shouldTypeSelectFor: event, withCurrentSearch: !continuing || typeSelectSearch.isEmpty ? nil : typeSelectSearch) != false
+        else { return false }
+        let repeated = continuing && typeSelectSearch.compare(typed, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        typeSelectSearch = continuing && !repeated ? typeSelectSearch + typed : typed
+        typeSelectTimestamp = event.timestamp
+        let count = numberOfRows
+        guard count > 0 else { return true }
+        let start = max(0, selectedRow + (continuing && !repeated ? 0 : 1)) % count
+        for offset in 0..<count {
+            let row = (start + offset) % count
+            let value: String?
+            if let delegate { value = delegate.tableView(self, typeSelectStringFor: tableColumns.first, row: row) }
+            else { value = defaultTypeSelectString(row: row) }
+            if let value, value.range(of: typeSelectSearch, options: [.anchored, .caseInsensitive, .diacriticInsensitive]) != nil {
+                selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                keyboardSelectionAnchor = nil
+                keyboardSelectionExtent = row
+                keyboardSelectionIndexes = selectedRowIndexes
+                scrollRowToVisible(row)
+                needsDisplay = true
+                break
+            }
+        }
+        return true
+    }
+
+    /// Subclasses consume tool shortcuts first. Plain paging scrolls without changing the row selection.
     open override func keyDown(with event: NSEvent) {
-        guard isEnabled, [125, 126].contains(event.keyCode),
+        guard isEnabled,
               event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
             super.keyDown(with: event)
             return
         }
+        if [115, 119, 116, 121].contains(event.keyCode), !event.modifierFlags.contains(.shift),
+           let scroll = enclosingScrollView {
+            tile()
+            let clip = scroll.contentView
+            var origin = clip.bounds.origin
+            let forward = event.keyCode == 119 || event.keyCode == 121
+            let document = scroll.documentView?.frame ?? .zero
+            let top = clip.isFlipped ? document.minY : max(document.minY, document.maxY - clip.frame.height)
+            let bottom = clip.isFlipped ? max(document.minY, document.maxY - clip.frame.height) : document.minY
+            if event.keyCode == 115 { origin.y = top }
+            else if event.keyCode == 119 { origin.y = bottom }
+            else { origin.y += clip.frame.height * (forward == clip.isFlipped ? 1 : -1) }
+            clip.scroll(to: origin)
+            scroll.reflectScrolledClipView(clip)
+            return
+        }
+        guard [125, 126].contains(event.keyCode) else {
+            if typeSelect(with: event) { return }
+            super.keyDown(with: event)
+            return
+        }
+        typeSelectSearch = ""
+        typeSelectTimestamp = -.infinity
         let count = numberOfRows
         guard count > 0 else { return }
         let down = event.keyCode == 125
         let selected = selectedRowIndexes.intersection(IndexSet(integersIn: 0..<count))
         let extending = allowsMultipleSelection && event.modifierFlags.contains(.shift)
         if !extending || keyboardSelectionAnchor == nil || keyboardSelectionIndexes != selected {
-            keyboardSelectionAnchor = extending ? (down ? selected.first : selected.last) : nil
-            keyboardSelectionExtent = down ? selected.last : selected.first
+            let focus = selected.contains(selectedRow) ? selectedRow : (down ? selected.last : selected.first)
+            keyboardSelectionAnchor = extending ? focus : nil
+            keyboardSelectionExtent = extending ? focus : (down ? selected.last : selected.first)
+            keyboardSelectionBase = extending ? selected.subtracting(focus.map { IndexSet(integer: $0) } ?? []) : []
         }
         let row = keyboardSelectionExtent.map { min(max($0 + (down ? 1 : -1), 0), count - 1) }
             ?? (down ? 0 : count - 1)
@@ -1244,13 +1372,13 @@ extension NSTableViewDelegate {
         if extending {
             let anchor = keyboardSelectionAnchor ?? row
             keyboardSelectionAnchor = anchor
-            indexes = IndexSet(integersIn: min(anchor, row)...max(anchor, row))
+            indexes = keyboardSelectionBase.union(IndexSet(integersIn: min(anchor, row)...max(anchor, row)))
         } else {
             indexes = IndexSet(integer: row)
         }
         keyboardSelectionExtent = row
         keyboardSelectionIndexes = indexes
-        selectRowIndexes(indexes, byExtendingSelection: false)
+        selectUserRows(indexes, focusedRow: row)
         scrollRowToVisible(row)
         needsDisplay = true
     }
@@ -1260,23 +1388,43 @@ extension NSTableViewDelegate {
     /// A click: it selects the row under it (Command toggles it, Shift extends to it, when several may be selected),
     /// then `action` — or `doubleAction` on a second click — goes to `target` with `clickedRow` set.
     open override func mouseDown(with event: NSEvent) {
+        typeSelectSearch = ""
+        typeSelectTimestamp = -.infinity
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         clickedRow = row
         clickedColumn = row >= 0 && !tableColumns.isEmpty ? 0 : -1
         defer { clickedRow = -1; clickedColumn = -1 }
+        // A press on an already selected row can carry the entire set. Collapse only if it ends as a click.
+        let collapseOnRelease = row >= 0 && selectedRowIndexes.count > 1 && selectedRowIndexes.contains(row)
+            && event.modifierFlags.intersection([.command, .shift]).isEmpty
         if row >= 0 {
-            if allowsMultipleSelection, event.modifierFlags.contains(.command) {
+            if allowsMultipleSelection, event.modifierFlags.contains(.shift), !selectedRowIndexes.isEmpty {
+                if keyboardSelectionAnchor == nil || keyboardSelectionIndexes != selectedRowIndexes {
+                    keyboardSelectionAnchor = selectedRow
+                    keyboardSelectionBase = selectedRowIndexes.subtracting(IndexSet(integer: selectedRow))
+                }
+                let anchor = keyboardSelectionAnchor ?? selectedRow
+                selectUserRows(keyboardSelectionBase.union(IndexSet(integersIn: min(anchor, row)...max(anchor, row))), focusedRow: row)
+                keyboardSelectionExtent = row
+            } else if allowsMultipleSelection, event.modifierFlags.contains(.command) {
                 var rows = selectedRowIndexes
                 if rows.contains(row) { if rows.count > 1 || allowsEmptySelection { rows.remove(row) } } else { rows.insert(row) }
-                selectRowIndexes(rows, byExtendingSelection: false)
-            } else if allowsMultipleSelection, event.modifierFlags.contains(.shift), let anchor = selectedRowIndexes.first {
-                selectRowIndexes(IndexSet(integersIn: min(anchor, row)...max(anchor, row)), byExtendingSelection: false)
-            } else if !selectedRowIndexes.contains(row) || selectedRowIndexes.count > 1 {
-                selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                selectUserRows(rows, focusedRow: row)
+                keyboardSelectionAnchor = selectedRow >= 0 ? selectedRow : nil
+                keyboardSelectionExtent = keyboardSelectionAnchor
+                keyboardSelectionBase = rows.subtracting(keyboardSelectionAnchor.map { IndexSet(integer: $0) } ?? [])
+            } else if !collapseOnRelease {
+                selectUserRows(IndexSet(integer: row), focusedRow: row)
+                keyboardSelectionAnchor = row
+                keyboardSelectionExtent = row
+                keyboardSelectionBase = []
             }
+            keyboardSelectionIndexes = selectedRowIndexes
         } else if allowsEmptySelection {
             selectRowIndexes([], byExtendingSelection: false)
+            keyboardSelectionAnchor = nil; keyboardSelectionExtent = nil
+            keyboardSelectionBase = []; keyboardSelectionIndexes = []
         }
         // AppKit tracks the press: dragging it a few points carries the selected rows (or the pressed one) away as the
         // data source writes them, and no action follows; letting go is the click.
@@ -1295,6 +1443,13 @@ extension NSTableViewDelegate {
                 beginDraggingSession(with: items, event: event, source: self)
                 return
             }
+        }
+        if collapseOnRelease {
+            selectUserRows(IndexSet(integer: row), focusedRow: row)
+            keyboardSelectionAnchor = row
+            keyboardSelectionExtent = row
+            keyboardSelectionBase = []
+            keyboardSelectionIndexes = selectedRowIndexes
         }
         if event.clickCount >= 2, let doubleAction {
             NSApp.sendAction(doubleAction, to: target, from: self)

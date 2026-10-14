@@ -56,6 +56,42 @@ import Testing
         func updateNSView(_ view: NaturalView, context: Context) { view.naturalSize = CGSize(width: 78, height: 29) }
         func sizeThatFits(_ proposal: ProposedViewSize, nsView: NaturalView, context: Context) -> CGSize? { response }
     }
+    private struct LoweredHosting: @preconcurrency NSViewRepresentable {
+        var minimum: CGFloat
+        var maximum: CGFloat
+        var options: NSHostingSizingOptions
+        func makeNSView(context: Context) -> NSHostingView<AnyView> { NSHostingView(rootView: AnyView(EmptyView())) }
+        func updateNSView(_ view: NSHostingView<AnyView>, context: Context) {
+            view.rootView = AnyView(Text("Bounds").frame(minWidth: minimum, maxWidth: maximum))
+            view.sizingOptions = options
+        }
+    }
+
+    @Test func nativeLoweringForwardsEnabledHostingBoundsAndRootChanges() throws {
+        let scope = "loweredHostingBounds"
+        let active = NativeLowering.isActive
+        try #require(StateStore.begin(scope: scope))
+        NativeLowering.isActive = true
+        defer { StateStore.end(); NativeLowering.discard(scope: scope); NativeLowering.isActive = active }
+        func frames(_ node: RenderNode) -> [(Double?, Double?, Double?, Double?)] {
+            node.modifiers.compactMap { modifier in
+                if case let .frame(_, _, minWidth, minHeight, maxWidth, maxHeight, _) = modifier {
+                    return (minWidth, minHeight, maxWidth, maxHeight)
+                }
+                return nil
+            }
+        }
+        let source = LoweredHosting(minimum: 80, maximum: 200, options: [.minSize, .maxSize])
+        let initial = frames(ViewResolver.resolve(source))
+        #expect(initial.count == 2)
+        let bounds = try #require(initial.last)
+        #expect(bounds.0 == 80 && bounds.2 == 200)
+        let changed = frames(ViewResolver.resolve(LoweredHosting(minimum: 120, maximum: .infinity, options: .minSize)))
+        let minimum = try #require(changed.last)
+        #expect(minimum.0 == 120 && minimum.2 == nil)
+        let disabled = frames(ViewResolver.resolve(LoweredHosting(minimum: 120, maximum: .infinity, options: [])))
+        #expect(disabled.count == 1)
+    }
 
     @Test func sizingOptionsControlIntrinsicSizeWithoutChangingFittingSize() {
         #expect(NSHostingSizingOptions.standardBounds == [.minSize, .intrinsicContentSize, .maxSize])

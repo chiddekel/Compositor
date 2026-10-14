@@ -46,12 +46,12 @@ final class ReferenceWarpStroke {
         if useGPU, let deep, MetalWarp.pipelines != nil {
             let wide = try DeepLayer.context(width: width, height: height, hdr: DeepLayer.isHDR(deep))
             LayerRenderer.draw(deep, transform: transform, center: transform.center, in: wide)
-            gpu = MetalWarp(pixels: wide)
+            gpu = MetalWarp(pixels: wide, acceleratedWarp: false)
             context = wide
         } else {
             context = try BrushRaster.context(width: width, height: height, mask: false)
             LayerRenderer.draw(image, transform: transform, center: transform.center, in: context)
-            if useGPU { gpu = MetalWarp(pixels: context) }
+            if useGPU { gpu = MetalWarp(pixels: context, acceleratedWarp: false) }
         }
         if gpu == nil, context.bitsPerComponent != 8 {
             context = try BrushRaster.context(width: width, height: height, mask: false)

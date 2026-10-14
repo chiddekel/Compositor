@@ -4,6 +4,7 @@
 // MaskBuffer) in a reference-typed CGImage interface matching CoreGraphics.
 
 import Foundation
+import CompositorColorManagement
 
 // MARK: - CGImageAlphaInfo
 
@@ -141,6 +142,10 @@ public final class CGImage: @unchecked Sendable {
     private var deferred: (() -> PortableImage)?
     private var regionRenderer: ((CGRect) -> PortableImage)?
     private var regionCache: [(rect: CGRect, image: PortableImage)] = []
+    /// A CMYK image's own ink bytes (8 bits a channel, no alpha) and the intent it was made with. Its `nativeImage` is
+    /// those inks converted to sRGB through its profile, so everything that draws it sees colours.
+    private var inks: CGDataProvider?
+    private let intent: CGColorRenderingIntent
     /// Filter-backed images can supply just the source pixels visible through a drawing context's clip.
     public var supportsRegionRendering: Bool { regionRenderer != nil }
     /// The raster behind this image, at its own depth (8 bits, 16 bits or half floats a channel). Images built over a
@@ -188,6 +193,7 @@ public final class CGImage: @unchecked Sendable {
             | (depth == .float32 ? CGBitmapInfo.byteOrder32Little.rawValue : 0)
             | (depth == .half || depth == .float32 ? CGBitmapInfo.floatComponents.rawValue : 0))
         self.resolved = portableImage
+        self.intent = .defaultIntent
     }
 
     public convenience init(_ buffer: PixelBuffer) {
@@ -210,6 +216,7 @@ public final class CGImage: @unchecked Sendable {
         self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue)
         self.regionRenderer = renderRegion
         self.deferred = { renderRegion(CGRect(x: 0, y: 0, width: width, height: height)) }
+        self.intent = .defaultIntent
     }
 
     public init?(width: Int,
@@ -232,6 +239,21 @@ public final class CGImage: @unchecked Sendable {
         self.space = space
         self.alphaInfo = CGImageAlphaInfo(rawValue: bitmapInfo.rawValue & CGBitmapInfo.alphaInfoMask.rawValue) ?? .premultipliedLast
         self.bitmapInfo = bitmapInfo
+        self.intent = intent
+        if space.model == .cmyk {
+            // 8-bit inks, four a pixel, as Core Graphics' CMYK bitmaps; nothing else is a CMYK layout it draws.
+            guard bitsPerComponent == 8, bitsPerPixel == 32, bytesPerRow >= width * 4, let profile = space.iccData else { return nil }
+            self.inks = provider
+            let expectedBytes = height * bytesPerRow
+            self.deferred = {
+                var inkBytes = provider.bytes
+                if inkBytes.count < expectedBytes { inkBytes.append(contentsOf: repeatElement(0, count: expectedBytes - inkBytes.count)) }
+                let rgba = CGImage.colors(ofInks: inkBytes, bytesPerRow: bytesPerRow, width: width, height: height,
+                                          profile: profile, intent: intent)
+                return PortableImage(width: width, height: height, kind: .rgba, depth: .uint8, bytesPerRow: width * 4, bytes: rgba)
+            }
+            return
+        }
 
         let kind: PortableImage.Kind = (space.model == .monochrome || bitsPerPixel == 8) ? .mask : .rgba
         // 16 bits a component: unsigned, or half floats with `.floatComponents` (Apple's 64-bit RGBA layouts).
@@ -302,8 +324,48 @@ public final class CGImage: @unchecked Sendable {
                              bytesPerRow: w * channels, bytes: bytes)
     }
 
-    /// The image's own bytes, at its own depth (as Apple's data provider).
+    /// The image's own bytes, at its own depth (as Apple's data provider); a CMYK image's inks.
     public var dataProvider: CGDataProvider? {
-        CGDataProvider(data: nativeImage.bytes as [UInt8])
+        if let inks { return inks }
+        return CGDataProvider(data: nativeImage.bytes as [UInt8])
+    }
+
+    /// A CMYK image's colours drawn with `intent` (a context's own), or nil for any other image.
+    func colors(intent drawing: CGColorRenderingIntent) -> PortableImage? {
+        guard let inks, let profile = space.iccData else { return nil }
+        if drawing == .defaultIntent || drawing == intent { return nativeImage }
+        let rgba = CGImage.colors(ofInks: inks.bytes, bytesPerRow: bytesPerRow, width: width, height: height,
+                                  profile: profile, intent: drawing)
+        return PortableImage(width: width, height: height, kind: .rgba, depth: .uint8, bytesPerRow: width * 4, bytes: rgba)
+    }
+
+    /// Ink bytes to opaque sRGB RGBA through `profile` (black where the profile can't be used).
+    static func colors(ofInks inks: [UInt8], bytesPerRow: Int, width: Int, height: Int, profile: Data,
+                       intent: CGColorRenderingIntent) -> [UInt8] {
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for i in stride(from: 3, to: rgba.count, by: 4) { rgba[i] = 255 }
+        profile.withUnsafeBytes { icc in
+            inks.withUnsafeBufferPointer { source in
+                rgba.withUnsafeMutableBufferPointer { target in
+                    _ = compositor_icc_cmyk_to_srgb(icc.bindMemory(to: UInt8.self).baseAddress, icc.count, intent.rawValue,
+                                                    source.baseAddress, bytesPerRow, target.baseAddress, width * 4,
+                                                    UInt32(width), UInt32(height))
+                }
+            }
+        }
+        return rgba
+    }
+
+    /// Premultiplied sRGB RGBA to ink bytes (four a pixel) through `profile`; nil when the profile can't be used.
+    static func inks(ofColors rgba: UnsafePointer<UInt8>, bytesPerRow: Int, width: Int, height: Int, profile: Data,
+                     intent: CGColorRenderingIntent) -> [UInt8]? {
+        var inks = [UInt8](repeating: 0, count: width * height * 4)
+        let status = profile.withUnsafeBytes { icc in
+            inks.withUnsafeMutableBufferPointer { target in
+                compositor_icc_srgb_to_cmyk(icc.bindMemory(to: UInt8.self).baseAddress, icc.count, intent.rawValue,
+                                            rgba, bytesPerRow, target.baseAddress, width * 4, UInt32(width), UInt32(height))
+            }
+        }
+        return status == 0 ? inks : nil
     }
 }

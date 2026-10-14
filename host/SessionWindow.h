@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 // SessionWindow — a moc'd Qt window that drives the Swift editor core through the
 // compositor_session_* C ABI, built by SwiftPM (with a committed moc output) and
@@ -38,6 +39,7 @@
 #include "NativeTextHistory.h"
 
 class QTreeView;
+class QTimer;
 class QMimeData;
 class QStandardItemModel;
 class QStandardItem;
@@ -94,6 +96,7 @@ public:
     bool saveProject(const QString &path);
     bool writeProjectPackage(const QString &path);   // saveProject without noting it as recent
     bool loadProject(const QString &path);
+    void openStartupFiles(const QStringList &paths);
     bool readProjectPackage(const QString &path);    // loadProject without noting it as recent
 
     // Command Palette (Ctrl+Shift+P / F1)
@@ -209,6 +212,8 @@ public:
     std::vector<std::unique_ptr<QMouseEvent>> m_pendingDrags;   // ordered pointer samples awaiting delivery
     void syncAppMenus();
     void performAppMenu(const QString &path);
+    void performPaletteCommand(const QString &id);
+    void refreshAfterMenuAction();
     /// Cmd/Ctrl+T: enter persistent Free Transform (layer or selection). Clears leftover Ctrl from the chord so the
     /// first handle drag scales/rotates instead of distorting (Linux maps Ctrl → ⌘). Enter applies; Esc resets.
     void enterFreeTransform();
@@ -232,6 +237,7 @@ public:
     /// Upstream's .fileImporter / the welcome's Open project, when the session asks for them.
     void handleSessionFileRequests();
     void updateFloatingPanelsPass();
+    void syncDockedFloatingPanels();
     /// Upstream's alerts ("Couldn’t paint", "Couldn’t crop"): shown when the session raises one.
     void showSessionAlert();
     /// A key in upstream's ShortcutChord form: one lowercase key and Command 1 / Option 2 / Control 4 / Shift 8 bits.
@@ -247,7 +253,10 @@ public:
     void updateLayersPanel();
 
 protected:
+    bool event(QEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void moveEvent(QMoveEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -255,7 +264,17 @@ protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     /// Files (first readable one) or an image dropped on the window or the tab bar, imported into the current tab.
-    bool importDroppedMime(const QMimeData *mime);
+    bool importDroppedMime(const QMimeData *mime, bool newTab = false);
+    /// Upstream ProjectWorkspace.receive: files dropped while the editor cannot take them wait, in order, for their
+    /// project, and are imported once it can (rather than refused).
+    struct PendingDrop { uint64_t handle = 0; bool newTab = false; QStringList paths; QImage image; };
+    bool importDrop(const PendingDrop &drop);
+    void drainPendingDrops();
+    QList<PendingDrop> m_pendingDrops;
+    QTimer *m_pendingDropTimer = nullptr;
+public:
+    int pendingDropCount() const { return int(m_pendingDrops.size()); }
+private:
     void closeEvent(QCloseEvent *event) override;
 public:
     void restoreWindowPlacement();
@@ -414,7 +433,8 @@ private:
         QPointF panOffset{0, 0};
     };
     void addDocumentTab(uint64_t handle, const QString &title, const QString &filePath = QString());
-    void switchToDocumentTab(int index);
+    bool switchToDocumentTab(int index);
+    void releaseDocumentSessions();
     void closeDocumentTab(int index);
     // Upstream ProjectController.confirmReplacement: "Save changes to …?" Save / Cancel / Don't Save for the tab at
     // index (made current first, as upstream does). True when closing may proceed.
@@ -491,8 +511,14 @@ private:
     QList<std::pair<CanvasChord, CanvasChord>> m_canvasRemap;  // pressed chord -> the original chord it now stands for
     QList<CanvasChord> m_canvasBlocked;                  // originals reassigned elsewhere (pressing them does nothing)
     bool m_translatingKey = false;
-    struct FloatingPanelWindow { QPointer<QDialog> window; QWidget *content = nullptr; QString title; };
+    struct FloatingPanelWindow {
+        QPointer<QDialog> window;
+        QWidget *content = nullptr;
+        QString title, placement;
+        double dockedWidth = 0;
+    };
     QHash<QString, FloatingPanelWindow> m_floatingPanels;   // panel name -> its window (updateFloatingPanels)
+    std::optional<QPoint> m_colorPickerPosition;   // the picker reopens where it was last left
     bool m_updatingFloatingPanels = false, m_floatingPanelsDirty = false;
     QTimer *m_floatingPanelDragTimer = nullptr;   // throttles updateFloatingPanels during DragGesture drags
     bool m_floatingPanelDragBypass = false;
@@ -560,6 +586,7 @@ private:
     QHash<QString, QAction *> m_appMenuActions;
     bool m_handlingFileRequests = false;
     QTabBar *m_documentTabBar = nullptr;
+    std::function<int(int)> m_documentTabNaturalWidth;
     QToolButton *m_tabOverflowButton = nullptr;
     void refreshTabOverflow();
     QLabel *m_statusZoomLabel = nullptr;

@@ -96,6 +96,15 @@ import Testing
         }
         actual.session.finishWarp()
         expected.session.finishReferenceWarp(reference)
+        #expect(reference.gpu?.smudgeGPUDispatchCount == 0)
+        #expect(reference.gpu?.liquifyGPUDispatchCount == 0)
+        if ProcessInfo.processInfo.environment["COMPOSITOR_REQUIRE_WARP_VULKAN"] == "1" {
+            let submissions = mode == .smudge ? warp.gpu?.smudgeGPUDispatchCount : warp.gpu?.liquifyGPUDispatchCount
+            #expect((submissions ?? 0) > 0)
+        }
+        if ProcessInfo.processInfo.environment["COMPOSITOR_REQUIRE_WARP_HARDWARE"] == "1" {
+            #expect(warp.gpu?.warpGPUDeviceType == 1 || warp.gpu?.warpGPUDeviceType == 2)
+        }
         let pointMismatchCount = zip(warp.points, reference.points).filter { $0 != $1 }.count + abs(warp.points.count - reference.points.count)
         #expect(pointMismatchCount == 0)
         #expect(actual.session.brushError == nil)

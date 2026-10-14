@@ -8,6 +8,7 @@
 #include <QImageWriter>
 #include <QFile>
 #include <QTemporaryFile>
+#include <QtCore/qfloat16.h>
 #include <tiffio.h>
 #include <algorithm>
 #include <cmath>
@@ -27,9 +28,11 @@ using Decode = int32_t (*)(const uint8_t *, size_t, uint8_t **, int32_t *, int32
 using Encode = int32_t (*)(const uint8_t *, int32_t, int32_t, int32_t, const char *, double, double,
                            int32_t, uint8_t **, size_t *);
 extern "C" int compositor_qt_imageio_functions(Decode *, Encode *);
+extern "C" int compositor_qt_imageio_deep_decode(Decode *);
 
 namespace {
 Decode decode;
+Decode decodeDeep;
 Encode encode;
 void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
@@ -309,6 +312,135 @@ void tiffLayouts() {
     std::unique_ptr<uint8_t, decltype(&std::free)> owner(raw, std::free);
     require(rc != 0 && !raw, "truncated gray-alpha TIFF must fail without an opaque fallback");
 }
+
+QByteArray floatTIFF(int bits, bool gray, bool separate, bool tiled, bool associated, bool big, bool profiled) {
+    QTemporaryFile temporary;
+    require(temporary.open(), "open float TIFF fixture");
+    const QByteArray path = temporary.fileName().toUtf8(); temporary.close();
+    auto tif = std::unique_ptr<TIFF, decltype(&TIFFClose)>(TIFFOpen(path.constData(), big ? "wb" : "wl"), TIFFClose);
+    require(bool(tif), "open float TIFF writer");
+    constexpr int width = 19, height = 17;
+    const int colors = gray ? 1 : 3, samples = colors + 1;
+    uint16_t extra = associated ? EXTRASAMPLE_ASSOCALPHA : EXTRASAMPLE_UNASSALPHA;
+    require(TIFFSetField(tif.get(), TIFFTAG_IMAGEWIDTH, width) && TIFFSetField(tif.get(), TIFFTAG_IMAGELENGTH, height) &&
+            TIFFSetField(tif.get(), TIFFTAG_BITSPERSAMPLE, bits) && TIFFSetField(tif.get(), TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_IEEEFP) &&
+            TIFFSetField(tif.get(), TIFFTAG_SAMPLESPERPIXEL, samples) &&
+            TIFFSetField(tif.get(), TIFFTAG_PHOTOMETRIC, gray ? PHOTOMETRIC_MINISBLACK : PHOTOMETRIC_RGB) &&
+            TIFFSetField(tif.get(), TIFFTAG_PLANARCONFIG, separate ? PLANARCONFIG_SEPARATE : PLANARCONFIG_CONTIG) &&
+            TIFFSetField(tif.get(), TIFFTAG_EXTRASAMPLES, 1, &extra) &&
+            TIFFSetField(tif.get(), TIFFTAG_COMPRESSION, COMPRESSION_ADOBE_DEFLATE) &&
+            TIFFSetField(tif.get(), TIFFTAG_PREDICTOR, PREDICTOR_FLOATINGPOINT) &&
+            TIFFSetField(tif.get(), TIFFTAG_ORIENTATION, ORIENTATION_RIGHTTOP) &&
+            TIFFSetField(tif.get(), TIFFTAG_XRESOLUTION, 144.0) && TIFFSetField(tif.get(), TIFFTAG_YRESOLUTION, 144.0) &&
+            TIFFSetField(tif.get(), TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH), "set float TIFF tags");
+    if (profiled) {
+        const QColorSpace space = gray ? QColorSpace(QPointF(0.3127, 0.3290), QColorSpace::TransferFunction::Gamma, 2.2f)
+                                       : QColorSpace(QColorSpace::Primaries::SRgb, QColorSpace::TransferFunction::Gamma, 2.2f);
+        const QByteArray profile = space.iccProfile();
+        require(!profile.isEmpty() && TIFFSetField(tif.get(), TIFFTAG_ICCPROFILE, profile.size(), profile.constData()),
+                "float TIFF embeds independent gray/RGB gamma profile");
+    }
+    if (tiled) require(TIFFSetField(tif.get(), TIFFTAG_TILEWIDTH, 16) && TIFFSetField(tif.get(), TIFFTAG_TILELENGTH, 16), "float TIFF tiles");
+    else require(TIFFSetField(tif.get(), TIFFTAG_ROWSPERSTRIP, 3), "float TIFF strips");
+    const int blockWidth = tiled ? 16 : width, blockHeight = tiled ? 16 : 3;
+    const int stride = blockWidth * (separate ? 1 : samples);
+    std::vector<float> block(size_t(stride) * blockHeight);
+    for (int plane = 0; plane < (separate ? samples : 1); ++plane)
+        for (int y = 0; y < height; y += blockHeight) for (int x = 0; x < width; x += blockWidth) {
+            std::fill(block.begin(), block.end(), 0);
+            for (int row = 0; row < std::min(blockHeight, height - y); ++row)
+                for (int col = 0; col < std::min(blockWidth, width - x); ++col) {
+                    const float values[] = {0.25f, 2.0f, 4.0f};
+                    const float alphas[] = {0, 0.5f, 1};
+                    const float alpha = alphas[(y + row) % 3];
+                    for (int c = 0; c < (separate ? 1 : samples); ++c) {
+                        const int channel = separate ? plane : c;
+                        const float value = channel == colors ? alpha : values[(x + col + (gray ? 0 : channel)) % 3] * (associated ? alpha : 1);
+                        block[row * stride + col * (separate ? 1 : samples) + c] = value;
+                    }
+                }
+            // Predictor 3 stores byte planes most-significant first regardless of the TIFF directory byte order.
+            // Encode that layout independently; the SDK's big-endian float writer does not round-trip its own data.
+            const int rows = tiled ? blockHeight : std::min(blockHeight, height - y);
+            const int sampleBytes = bits / 8;
+            QByteArray predicted(rows * stride * sampleBytes, char(0));
+            for (int row = 0; row < rows; ++row) {
+                auto *bytes = reinterpret_cast<uint8_t *>(predicted.data()) + row * stride * sampleBytes;
+                for (int sample = 0; sample < stride; ++sample) {
+                    const float value = block[row * stride + sample];
+                    uint64_t word = 0;
+                    if (bits == 16) { const qfloat16 half(value); uint16_t encoded; memcpy(&encoded, &half, 2); word = encoded; }
+                    else if (bits == 32) { uint32_t encoded; memcpy(&encoded, &value, 4); word = encoded; }
+                    else { const double wide = value; memcpy(&word, &wide, 8); }
+                    for (int byte = 0; byte < sampleBytes; ++byte)
+                        bytes[byte * stride + sample] = uint8_t(word >> ((sampleBytes - byte - 1) * 8));
+                }
+                const int channels = separate ? 1 : samples;
+                for (int i = stride * sampleBytes - 1; i >= channels; --i) bytes[i] = uint8_t(bytes[i] - bytes[i - channels]);
+            }
+            const QByteArray compressed = qCompress(predicted).mid(4);
+            require(tiled ? TIFFWriteRawTile(tif.get(), TIFFComputeTile(tif.get(), x, y, 0, plane),
+                                            const_cast<char *>(compressed.constData()), compressed.size()) >= 0
+                          : TIFFWriteRawStrip(tif.get(), TIFFComputeStrip(tif.get(), y, plane),
+                                             const_cast<char *>(compressed.constData()), compressed.size()) >= 0,
+                    "write independent predicted float TIFF samples");
+        }
+    tif.reset();
+    if (bits == 32 && big && !tiled && !separate) {
+        auto probe = std::unique_ptr<TIFF, decltype(&TIFFClose)>(TIFFOpen(path.constData(), "r"), TIFFClose);
+        std::vector<float> row(size_t(width) * samples);
+        require(TIFFReadScanline(probe.get(), row.data(), 0) >= 0, "read first float TIFF writer probe");
+        require(TIFFReadScanline(probe.get(), row.data(), 1) >= 0, "read float TIFF writer probe");
+        require(row[colors] == 0.5f && row[0] == (associated ? 0.125f : 0.25f), "independent float TIFF writer/readback");
+    }
+    QFile file(QString::fromUtf8(path)); require(file.open(QIODevice::ReadOnly), "read float TIFF fixture");
+    return file.readAll();
+}
+
+void floatTIFFImports() {
+    for (int bits : {16, 32, 64}) for (bool gray : {true, false}) for (bool separate : {false, true}) for (bool tiled : {false, true})
+        for (bool associated : {false, true}) for (bool big : {false, true}) for (bool profiled : {false, true}) {
+            const QByteArray fixture = floatTIFF(bits, gray, separate, tiled, associated, big, profiled);
+            uint8_t *raw = nullptr;
+            int32_t w = 0, h = 0, layout = 0, orientation = 0; double dpi = 0;
+            const int rc = decodeDeep(reinterpret_cast<const uint8_t *>(fixture.constData()), fixture.size(), &raw,
+                                      &w, &h, &layout, &dpi, &orientation, nullptr, 0);
+            std::unique_ptr<uint8_t, decltype(&std::free)> owner(raw, std::free);
+            require(rc == 0 && raw, "float TIFF decoded through deep ImageIO callback");
+            require(w == 19 && h == 17 && layout == 16 && orientation == 6, "float TIFF dimensions, HDR layout and orientation");
+            near(std::lround(dpi), 144, 1, "float TIFF DPI");
+            const auto *pixels = reinterpret_cast<const float *>(raw);
+            const float values[] = {0.25f, 2.0f, 4.0f}, alphas[] = {0, 0.5f, 1};
+            for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+                const int offset = (y * w + x) * 4;
+                if (std::abs(pixels[offset + 3] - alphas[y % 3]) >= 1e-6f) {
+                    std::fprintf(stderr, "float TIFF bits=%d gray=%d separate=%d tiled=%d associated=%d big=%d at %d,%d: alpha %g expected %g\n",
+                                 bits, gray, separate, tiled, associated, big, x, y, pixels[offset + 3], alphas[y % 3]);
+                    throw std::runtime_error("float TIFF preserves alpha");
+                }
+                for (int c = 0; c < 3; ++c) {
+                    const double value = values[(x + (gray ? 0 : c)) % 3];
+                    const double expected = (profiled ? std::pow(value, 2.2) : value) * alphas[y % 3];
+                    if (std::abs(pixels[offset + c] - expected) >= std::max(1e-5, expected * 0.001)) {
+                        std::fprintf(stderr, "float TIFF bits=%d gray=%d profiled=%d channel=%d: got %g expected %g\n",
+                                     bits, gray, profiled, c, pixels[offset + c], expected);
+                        throw std::runtime_error("float TIFF preserves premultiplied linear highlights and ICC conversion");
+                    }
+                }
+            }
+            const auto sdr = imported(fixture, 4, 19, 17, 6, 144);
+            for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+                const int alpha = std::lround(alphas[y % 3] * 255), offset = (y * w + x) * 4;
+                near(sdr[offset + 3], alpha, 0, "SDR float TIFF alpha");
+                for (int c = 0; c < 3; ++c) {
+                    const double value = values[(x + (gray ? 0 : c)) % 3];
+                    near(sdr[offset + c], std::lround(srgbByte(profiled ? std::pow(value, 2.2) : value) * alphas[y % 3]), 1,
+                         "SDR float TIFF converts linear light before clipping");
+                }
+            }
+        }
+    std::puts("ImageIO float TIFF HDR/SDR, gray/RGB, strips/tiles, planar/contiguous, associated/straight, byte order and metadata OK");
+}
 void exports() {
     const uint8_t pixels[] = {100, 50, 25, 128, 200, 100, 50, 255};
     for (const char *uti : {"public.png", "public.jpeg", "public.tiff", "org.webmproject.webp"}) {
@@ -324,7 +456,7 @@ void exports() {
 }
 #ifdef COMPOSITOR_TEST_LIBHEIF
 void heifOK(heif_error error) { require(error.code == heif_error_Ok, error.message); }
-QByteArray heifFixture(int bits, uint16_t transfer, int alpha, bool linearICC = false) {
+QByteArray heifFixture(int bits, uint16_t transfer, int alpha, bool linearICC = false, int luma = -1, uint16_t primaries = 1) {
     auto ctx = std::unique_ptr<heif_context, decltype(&heif_context_free)>(heif_context_alloc(), heif_context_free);
     heif_encoder *encoderRaw = nullptr;
     heifOK(heif_context_get_encoder_for_format(ctx.get(), heif_compression_HEVC, &encoderRaw));
@@ -338,7 +470,7 @@ QByteArray heifFixture(int bits, uint16_t transfer, int alpha, bool linearICC = 
         heifOK(heif_image_add_plane(image.get(), channel, 32, 32, bits));
         int stride = 0;
         auto *plane = heif_image_get_plane(image.get(), channel, &stride);
-        const int value = channel == heif_channel_Y ? (1 << (bits - 2)) :
+        const int value = channel == heif_channel_Y ? (luma < 0 ? (1 << (bits - 2)) : luma) :
                           channel == heif_channel_Alpha ? alpha : (1 << (bits - 1));
         require(value <= maximum, "fixture channel value in range");
         for (int y = 0; y < 32; ++y) for (int x = 0; x < 32; ++x) {
@@ -348,7 +480,7 @@ QByteArray heifFixture(int bits, uint16_t transfer, int alpha, bool linearICC = 
     }
     auto nclx = std::unique_ptr<heif_color_profile_nclx, decltype(&heif_nclx_color_profile_free)>(
         heif_nclx_color_profile_alloc(), heif_nclx_color_profile_free);
-    heifOK(heif_nclx_color_profile_set_color_primaries(nclx.get(), 1));
+    heifOK(heif_nclx_color_profile_set_color_primaries(nclx.get(), primaries));
     heifOK(heif_nclx_color_profile_set_transfer_characteristics(nclx.get(), transfer));
     heifOK(heif_nclx_color_profile_set_matrix_coefficients(nclx.get(), 6));
     nclx->full_range_flag = 1;
@@ -398,6 +530,52 @@ void heifImports() {
     }
     std::puts("ImageIO HEIF ICC precedence OK");
 }
+void heifDeepImports() {
+    for (int bits : {10, 12}) for (uint16_t transfer : {16, 18}) {
+        const int maximum = (1 << bits) - 1, code = maximum * 3 / 4, alphaCode = 1 << (bits - 1);
+        const QByteArray fixture = heifFixture(bits, transfer, alphaCode, false, code, 9);
+        uint8_t *raw = nullptr; int32_t w = 0, h = 0, layout = 0;
+        require(decodeDeep(reinterpret_cast<const uint8_t *>(fixture.constData()), fixture.size(), &raw,
+                           &w, &h, &layout, nullptr, nullptr, nullptr, 0) == 0, "decode HDR HEIF");
+        std::unique_ptr<uint8_t, decltype(&std::free)> owner(raw, std::free);
+        require(raw && w == 32 && h == 32 && layout == 16, "HDR HEIF comes back as linear float pixels");
+        const double e = double(code) / maximum, alpha = double(alphaCode) / maximum;
+        // BT.2100 equations, using Qt's documented-by-source scene normalization (PQ peak 64, HLG peak 12).
+        const double root = std::pow(e, 32.0 / 2523);
+        const double expected = transfer == 16 ? 64 * std::pow(std::max(root - 107.0 / 128, 0.0) /
+                                                              (2413.0 / 128 - 2392.0 / 128 * root), 8192.0 / 1305)
+                                               : std::exp((e - 0.55991073) / 0.17883277) + 1 - 4 * 0.17883277;
+        require(expected > 1, "HDR fixture actually has highlights beyond white");
+        const auto *pixels = reinterpret_cast<const float *>(raw);
+        for (int i = 0; i < w * h; ++i) {
+            require(std::abs(pixels[i * 4 + 3] - alpha) < 0.002, "HDR HEIF alpha precision");
+            for (int c = 0; c < 3; ++c)
+                if (std::abs(pixels[i * 4 + c] - expected * alpha) >= expected * 0.025) {
+                    std::fprintf(stderr, "HDR HEIF bits=%d transfer=%u channel=%d: got %g expected %g (alpha %g)\n",
+                                 bits, transfer, c, pixels[i * 4 + c], expected * alpha, pixels[i * 4 + 3]);
+                    throw std::runtime_error("HDR HEIF retains independently calculated linear highlights and premultiplication");
+                }
+        }
+        std::printf("ImageIO HEIF %d-bit HDR transfer %u preserves highlights and alpha OK\n", bits, transfer);
+    }
+    for (int bits : {10, 12}) {
+        const int maximum = (1 << bits) - 1, code = 1 << (bits - 2), alphaCode = 1 << (bits - 1);
+        const QByteArray fixture = heifFixture(bits, 13, alphaCode);
+        uint8_t *raw = nullptr; int32_t w = 0, h = 0, layout = 0;
+        require(decodeDeep(reinterpret_cast<const uint8_t *>(fixture.constData()), fixture.size(), &raw,
+                           &w, &h, &layout, nullptr, nullptr, nullptr, 0) == 0, "decode deep SDR HEIF");
+        std::unique_ptr<uint8_t, decltype(&std::free)> owner(raw, std::free);
+        require(raw && layout == 8, "10/12-bit SDR HEIF retains 16-bit output precision");
+        const auto *pixels = reinterpret_cast<const uint16_t *>(raw);
+        const double alpha = double(alphaCode) / maximum;
+        for (int i = 0; i < w * h; ++i) {
+            near(pixels[i * 4 + 3], std::lround(alpha * 65535), 1, "deep HEIF alpha");
+            for (int c = 0; c < 3; ++c)
+                near(pixels[i * 4 + c], std::lround(double(code) / maximum * alpha * 65535), 100, "deep HEIF color precision");
+        }
+    }
+    std::puts("ImageIO 10/12-bit SDR HEIF source precision OK");
+}
 void heifExport() {
     std::vector<uint8_t> pixels(32 * 32 * 4);
     for (size_t i = 0; i < pixels.size(); i += 4) {
@@ -428,11 +606,15 @@ int main(int argc, char **argv) {
     QGuiApplication app(argc, argv);
     try {
         require(compositor_qt_imageio_functions(&decode, &encode), "load ImageIO callbacks");
+        require(compositor_qt_imageio_deep_decode(&decodeDeep), "load deep ImageIO callback");
+        floatTIFFImports();
+        if (argc > 1 && !std::strcmp(argv[1], "--hdr-only")) return 0;
         pngImports();
         tiffImports();
         tiffLayouts();
         exports();
 #ifdef COMPOSITOR_TEST_LIBHEIF
+        heifDeepImports();
         heifImports();
         heifExport();
 #else

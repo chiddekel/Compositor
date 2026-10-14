@@ -1,4 +1,5 @@
 #include "CompositorUIFont.h"
+#include "LocalFilePath.h"
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -74,6 +75,72 @@ extern "C" int compositor_qt_imageio_install(void);
 extern "C" int compositor_raw_install(void);
 extern "C" int32_t compositor_install_subject_model(void);
 extern "C" void compositor_app_did_become_active(void);
+extern "C" void compositor_app_did_resign_active(void);
+extern "C" void compositor_modifiers_changed(int32_t);
+extern "C" void compositor_menu_did_end_tracking(void);
+
+static void pollPlatformModifiers() {
+    const auto flags = QGuiApplication::queryKeyboardModifiers();
+    compositor_modifiers_changed((flags & Qt::ControlModifier ? 1 : 0) | (flags & Qt::AltModifier ? 2 : 0)
+                                 | (flags & Qt::MetaModifier ? 4 : 0) | (flags & Qt::ShiftModifier ? 8 : 0));
+}
+
+static void refreshOptionHeaders() {
+    for (QWidget *widget : QApplication::topLevelWidgets())
+        if (auto *window = qobject_cast<SessionWindow *>(widget); window && window->isVisible() && window->sessionHandle())
+            window->updateOptionsBar();
+}
+
+class MenuTrackingBridge final : public QObject {
+public:
+    using QObject::QObject;
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::Hide && qobject_cast<QMenu *>(watched)) {
+            bool ownsTracking = false;
+            for (QObject *owner = watched; owner; owner = owner->parent())
+                ownsTracking |= owner->property("upstreamMenuOwnsTracking").toBool();
+            m_notifyEnd |= !ownsTracking;
+            if (!m_pending) {
+                m_pending = true;
+                QTimer::singleShot(0, this, [this] {
+                    m_pending = false;
+                    const bool notifyEnd = m_notifyEnd;
+                    m_notifyEnd = false;
+                    if (qobject_cast<QMenu *>(QApplication::activePopupWidget())) return;
+                    pollPlatformModifiers();
+                    if (notifyEnd) compositor_menu_did_end_tracking();
+                    refreshOptionHeaders();
+                });
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+private:
+    bool m_pending = false, m_notifyEnd = false;
+};
+
+extern "C" void compositor_host_install_menu_tracking_bridge(void) {
+    if (!qApp || qApp->property("compositorMenuTrackingBridge").toBool()) return;
+    qApp->setProperty("compositorMenuTrackingBridge", true);
+    qApp->installEventFilter(new MenuTrackingBridge(qApp));
+}
+
+extern "C" void compositor_host_install_application_state_bridge(void) {
+    if (!qApp || qApp->property("compositorApplicationStateBridge").toBool()) return;
+    qApp->setProperty("compositorApplicationStateBridge", true);
+    QObject::connect(qApp, &QGuiApplication::applicationStateChanged, qApp, [](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive) {
+            // Keys released in another app never reached this one; poll the platform on return.
+            pollPlatformModifiers();
+            compositor_app_did_become_active();
+        } else {
+            compositor_modifiers_changed(0);
+            compositor_app_did_resign_active();
+        }
+        refreshOptionHeaders();
+    });
+}
 
 extern "C" int compositor_host_run(int argc, char **argv) {
     QApplication app(argc, argv);
@@ -92,9 +159,8 @@ extern "C" int compositor_host_run(int argc, char **argv) {
     systemclipboard::install();   // NSPasteboard.general is the desktop clipboard, as on macOS
     compositor_install_subject_model();   // Select Subject / Remove Background: U²-Net-small when bundled
     // NSApplication.didBecomeActiveNotification: coming back to the app (upstream re-checks its recent projects).
-    QObject::connect(qApp, &QGuiApplication::applicationStateChanged, qApp, [](Qt::ApplicationState state) {
-        if (state == Qt::ApplicationActive) compositor_app_did_become_active();
-    });
+    compositor_host_install_application_state_bridge();
+    compositor_host_install_menu_tracking_bridge();
     app.setApplicationName("Compositor");
     app.setOrganizationName("Compositor");
     app.setDesktopFileName("com.compositor.Client");
@@ -133,23 +199,15 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         window.setWindowIcon(appIcon);
     }
     bool openNewCanvas = false;
+    QStringList startupFiles;
     for (int i = 1; i < argc; ++i) {
         if (!argv[i]) continue;
         QString arg = QString::fromLocal8Bit(argv[i]);
         if (arg == QLatin1String("--new-canvas")) { openNewCanvas = true; continue; }
         if (arg.startsWith(QLatin1Char('-'))) continue;
-        if (QFile::exists(arg)) {
-            // .comp is the directory package (macOS document package twin); keep .cproject as alias.
-            if (arg.endsWith(QStringLiteral(".comp"), Qt::CaseInsensitive)
-                || arg.endsWith(QStringLiteral(".cproject"), Qt::CaseInsensitive)
-                || QFileInfo(arg + QStringLiteral("/manifest.json")).isFile()) {
-                window.loadProject(arg);
-            } else {
-                window.importImage(arg);
-            }
-            break;
-        }
+        startupFiles.append(arg);
     }
+    window.openStartupFiles(startupFiles);
     if (qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty() && !QCoreApplication::arguments().filter(QStringLiteral("-smoke")).size())
         window.restoreWindowPlacement();
     window.show();

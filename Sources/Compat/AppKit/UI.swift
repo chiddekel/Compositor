@@ -68,6 +68,8 @@ extension NSApplication {
     public var allowedContentTypes: [UTType] = []
     public var nameFieldStringValue = ""
     public var title = ""
+    /// The line a panel shows above its file list (the Qt dialog shows it as its caption, as it has no message line).
+    public var message = ""
     public var canCreateDirectories = false
     public var isExtensionHidden = true
     public var url: URL?
@@ -108,7 +110,10 @@ open class NSOpenPanel: NSSavePanel {
         Self.mirrorFreedesktopRecent(url)
         Self.onNoteRecent?(url)
     }
-    public func clearRecentDocuments(_ sender: Any?) { recentDocumentURLs = []; save() }
+    public func clearRecentDocuments(_ sender: Any?) {
+        recentDocumentURLs = []; save()
+        try? FreedesktopRecentDocuments.clear(in: FreedesktopRecentDocuments.dataDirectory())
+    }
     private func save() {
         UserDefaults.standard.set(recentDocumentURLs.map(\.path), forKey: Self.defaultsKey)
         UserDefaults.standard.synchronize()   // written now, not at some later flush a quit can beat
@@ -117,52 +122,6 @@ open class NSOpenPanel: NSSavePanel {
     /// Freedesktop recently-used.xbel so file managers / Open dialogs see projects opened in Compositor
     /// (macOS uses Launch Services; Flatpak sandboxes may still ignore host xbel).
     private static func mirrorFreedesktopRecent(_ url: URL) {
-        let fileURL = url.standardizedFileURL
-        guard fileURL.isFileURL else { return }
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/share", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let xbel = dir.appendingPathComponent("recently-used.xbel")
-        let href = fileURL.absoluteString
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        let epoch = String(Int(Date().timeIntervalSince1970))
-        var existing = (try? String(contentsOf: xbel, encoding: .utf8)) ?? ""
-        if existing.isEmpty {
-            existing = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <xbel version="1.0"
-                  xmlns:bookmark="http://www.freedesktop.org/standards/desktop-bookmarks"
-                  xmlns:mime="http://www.freedesktop.org/standards/shared-mime-info">
-            </xbel>
-            """
-        }
-        // Drop a prior bookmark for the same file, then insert this one at the top.
-        let marker = "<bookmark href=\"\(href)\""
-        if let start = existing.range(of: marker) {
-            if let end = existing.range(of: "</bookmark>", range: start.lowerBound..<existing.endIndex) {
-                existing.removeSubrange(start.lowerBound..<end.upperBound)
-            }
-        }
-        let mime = fileURL.pathExtension.lowercased() == "comp" || fileURL.pathExtension.lowercased() == "compositor"
-            ? "application/x-compositor-project" : "application/octet-stream"
-        let bookmark = """
-          <bookmark href="\(href)" added="\(stamp)" modified="\(stamp)" visited="\(stamp)">
-            <info>
-              <metadata owner="http://freedesktop.org">
-                <mime:mime-type type="\(mime)"/>
-                <bookmark:applications>
-                  <bookmark:application name="Compositor" exec="compositor %u" count="1" timestamp="\(epoch)"/>
-                </bookmark:applications>
-              </metadata>
-            </info>
-          </bookmark>
-        """
-        if let insert = existing.range(of: "<xbel") {
-            // After the opening <xbel ...> tag
-            if let close = existing[insert.lowerBound...].range(of: ">") {
-                existing.insert(contentsOf: "\n" + bookmark, at: close.upperBound)
-            }
-        }
-        try? existing.write(to: xbel, atomically: true, encoding: .utf8)
+        try? FreedesktopRecentDocuments.note(url, in: FreedesktopRecentDocuments.dataDirectory())
     }
 }

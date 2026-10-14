@@ -6,7 +6,9 @@ bus_pid=
 trap 'if [[ -n "$bus_pid" ]]; then kill "$bus_pid"; fi; rm -rf "$build_dir"' EXIT
 bus_pid=$(dbus-daemon --session --fork --address="unix:path=$build_dir/bus" --print-pid=1)
 sdk=$(sed -n "s/^runtime-version: *['\"]\?\([0-9.]*\)['\"]\?.*/\1/p" com.compositor.Client.yaml)
-flatpak run --command=bash --devel --filesystem="$PWD" --filesystem="$build_dir" \
+sdk_scope=(--system)
+if flatpak info --user "org.kde.Sdk//$sdk" >/dev/null 2>&1; then sdk_scope=(--user); fi
+flatpak run "${sdk_scope[@]}" --command=bash --devel --filesystem="$PWD" --filesystem="$build_dir" \
   --env=COMPOSITOR_TEST_DBUS_ADDRESS="unix:path=$build_dir/bus" "org.kde.Sdk//$sdk" -c '
   set -euo pipefail
   cd "$1"

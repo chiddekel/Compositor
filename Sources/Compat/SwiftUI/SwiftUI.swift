@@ -170,6 +170,10 @@
     public var sizingOptions: NSHostingSizingOptions = .standardBounds {
         didSet { if sizingOptions != oldValue { invalidateIntrinsicContentSize() } }
     }
+    var _nativeSizingBounds: (minimum: CGSize?, maximum: CGSize?) {
+        (sizingOptions.contains(.minSize) ? measuredIdealSize(.zero) : nil,
+         sizingOptions.contains(.maxSize) ? measuredIdealSize(.infinity) : nil)
+    }
 }
 
 public struct NSHostingSizingOptions: OptionSet, Sendable {

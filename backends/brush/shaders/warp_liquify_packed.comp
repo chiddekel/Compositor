@@ -1,0 +1,40 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "warp_precision.glsl"
+#include "warp_formats.glsl"
+layout(local_size_x=16,local_size_y=16) in;
+layout(push_constant) uniform Parameters { uvec4 source; uvec4 region; vec4 move; ivec4 brush; } u;
+layout(std430,binding=0) readonly buffer Original { vec4 original[]; };
+layout(std430,binding=1) readonly buffer Prior { vec2 prior[]; };
+layout(std430,binding=2) readonly buffer Falloff { float falloff[]; };
+layout(std430,binding=3) writeonly buffer Offsets { vec2 offsets[]; };
+layout(std430,binding=4) writeonly buffer Pixels { uint pixels[]; };
+void main() {
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(p,u.region.xy))) return;
+    uint i=p.y*u.region.x+p.x, stride=u.region.z==0?1u:2u, at=i*stride;
+    offsets[i]=prior[i]; pixels[at]=0; if (stride==2) pixels[at+1]=0;
+    ivec2 offset=ivec2(p+u.source.zw)-u.brush.xy;
+    if (any(greaterThan(abs(offset),ivec2(u.brush.z)))) return;
+    float w=falloff[offset.x*offset.x+offset.y*offset.y];
+    if (!(w>0)) return;
+    precise vec2 displacement=u.move.xy*w;
+    precise vec2 samplePosition=clamp(vec2(p)-displacement,vec2(0),vec2(u.region.xy-1));
+    ivec2 corner=min(ivec2(u.region.xy)-2,ivec2(samplePosition));
+    precise vec2 fraction=samplePosition-vec2(corner);
+    uint a=uint(corner.y)*u.region.x+uint(corner.x), b=a+u.region.x;
+    precise vec2 top=prior[a]+(prior[a+1]-prior[a])*fraction.x;
+    precise vec2 bottom=prior[b]+(prior[b+1]-prior[b])*fraction.x;
+    precise vec2 moved=top+(bottom-top)*fraction.y-displacement;
+    offsets[i]=moved;
+    precise vec2 absolutePosition=vec2(p+u.source.zw)+moved;
+    precise vec2 clipped=clamp(absolutePosition,vec2(0),vec2(u.source.xy-1));
+    ivec2 sourceCorner=min(ivec2(u.source.xy)-2,ivec2(clipped));
+    precise vec2 sourceFraction=clipped-vec2(sourceCorner);
+    uint sa=uint(sourceCorner.y)*u.source.x+uint(sourceCorner.x), sb=sa+u.source.x;
+    precise vec4 sourceTop=original[sa]+(original[sa+1]-original[sa])*sourceFraction.x;
+    precise vec4 sourceBottom=original[sb]+(original[sb+1]-original[sb])*sourceFraction.x;
+    precise vec4 sampled=sourceTop+(sourceBottom-sourceTop)*sourceFraction.y;
+    uvec2 result=encodeColor(sampled,u.region.z);
+    pixels[at]=result.x; if (stride==2) pixels[at+1]=result.y;
+}

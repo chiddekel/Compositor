@@ -8,6 +8,8 @@
 
 @_exported import Foundation
 @_exported import CoreGraphics
+// As on macOS, AppKit brings ImageIO's image sources and properties (upstream's CMYK.swift imports only AppKit).
+@_exported import ImageIO
 @_exported import Observation
 
 public typealias NSPoint = CGPoint

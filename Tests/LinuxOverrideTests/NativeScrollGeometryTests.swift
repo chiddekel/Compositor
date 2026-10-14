@@ -10,6 +10,47 @@ import Testing
         override var isFlipped: Bool { flipped }
     }
     private final class Probe { var scroll: NSScrollView? }
+    private func drag(at point: CGPoint) -> NSEvent {
+        NSEvent.mouseEvent(with: .leftMouseDragged, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+
+    @Test(arguments: [true, false]) func dragAutoscrollUsesTheViewportAndClampsAtDocumentEdges(flipped: Bool) throws {
+        let scroll = NSScrollView(frame: CGRect(x: 40, y: 30, width: 200, height: 120))
+        let document = Document(frame: CGRect(x: 0, y: 0, width: 400, height: 600))
+        document.flipped = flipped
+        scroll.documentView = document
+        scroll.contentView.scroll(to: CGPoint(x: 70, y: 180))
+        let child = NSView(frame: CGRect(x: 10, y: 200, width: 20, height: 20))
+        document.addSubview(child)
+        func event(_ point: CGPoint) -> NSEvent {
+            drag(at: scroll.contentView.convert(point, to: nil))
+        }
+        #expect(!child.autoscroll(with: event(CGPoint(x: 100, y: 200))))
+        #expect(scroll.contentView.bounds.origin == CGPoint(x: 70, y: 180))
+        #expect(child.autoscroll(with: event(CGPoint(x: 280, y: 310))))
+        #expect(scroll.contentView.bounds.origin == CGPoint(x: 80, y: 190))
+        #expect(child.autoscroll(with: event(CGPoint(x: 60, y: 170))))
+        #expect(scroll.contentView.bounds.origin == CGPoint(x: 60, y: 170))
+        scroll.contentView.scroll(to: CGPoint(x: 200, y: 480))
+        #expect(!child.autoscroll(with: event(CGPoint(x: 500, y: 700))))
+        scroll.contentView.scroll(to: .zero)
+        #expect(!child.autoscroll(with: event(CGPoint(x: -100, y: -100))))
+        #expect(!NSView().autoscroll(with: drag(at: .zero)))
+    }
+
+    @Test func dragAutoscrollPublishesTheNewOriginForNativeRendering() throws {
+        try withLowering("nativeDragAutoscroll") {
+            let probe = Probe()
+            let source = Scroll(probe: probe)
+            _ = ViewResolver.resolve(source)
+            let scroll = try #require(probe.scroll)
+            let document = try #require(scroll.documentView)
+            let point = scroll.contentView.convert(CGPoint(x: 100, y: 130), to: nil)
+            #expect(document.autoscroll(with: drag(at: point)))
+            #expect(ViewResolver.resolve(source).doubleParams["scrollY"] == 10)
+        }
+    }
     private struct Scroll: @preconcurrency NSViewRepresentable {
         var probe: Probe
         var flipped = true

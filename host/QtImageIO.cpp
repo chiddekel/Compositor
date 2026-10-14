@@ -13,6 +13,9 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QColorSpace>
+#include <QColorTransform>
+#include <QtGui/qrgbafloat.h>
+#include <QtCore/qfloat16.h>
 #include <QRawFont>
 #include <QGuiApplication>
 #include <QString>
@@ -31,6 +34,7 @@
 #include <memory>
 #include <zlib.h>
 #include <tiffio.h>
+#include <lcms2.h>
 #include <limits>
 
 // HEIF/HEIC/AVIF go through libheif directly: the Qt plugin for them is not dependable (it swaps the dimensions of a
@@ -65,6 +69,12 @@ typedef int32_t (*CompositorImageEncodeFn)(const uint8_t *, int32_t, int32_t, in
 void compositor_imageio_register(CompositorImageDecodeFn, CompositorImageEncodeFn) __attribute__((weak));
 // The deep decode (16-bit and float layouts), registered beside the 8-bit one.
 void compositor_imageio_register_deep(CompositorImageDecodeFn) __attribute__((weak));
+// CMYK JPEG and TIFF, as Apple's ImageIO keeps them: ink amounts (0 none, 255 full, four a pixel) and the embedded profile.
+typedef int32_t (*CompositorCMYKDecodeFn)(const uint8_t *, size_t, uint8_t **, int32_t *, int32_t *, uint8_t **, size_t *,
+                                          double *, char *, size_t);
+typedef int32_t (*CompositorCMYKEncodeFn)(const uint8_t *, int32_t, int32_t, const uint8_t *, size_t, const char *, double,
+                                          double, uint8_t **, size_t *);
+void compositor_imageio_register_cmyk(CompositorCMYKDecodeFn, CompositorCMYKEncodeFn) __attribute__((weak));
 }
 
 namespace {
@@ -112,9 +122,9 @@ QImage grayAlphaToSRGB(const QImage &image, const QColorSpace &space) {
     return converted;
 }
 
-// Qt's grayscale TIFF path loses alpha and the gray profile. Decode those samples before color conversion;
+// Qt's grayscale TIFF path loses alpha and the gray profile; float TIFFs also need an unclipped linear path.
 // libtiff handles byte order, compression, planar storage and tiles without an intermediate RGBA8 reduction.
-QImage decodeGrayAlphaTIFF(const uint8_t *data, size_t length, bool &handled, int &orientation) {
+QImage decodeNativeTIFF(const uint8_t *data, size_t length, bool &handled, int &orientation) {
     struct Reader { const uint8_t *data; size_t size, offset; } reader{data, length, 0};
     auto options = std::unique_ptr<TIFFOpenOptions, decltype(&TIFFOpenOptionsFree)>(TIFFOpenOptionsAlloc(), TIFFOpenOptionsFree);
     if (!options) return {};
@@ -160,47 +170,70 @@ QImage decodeGrayAlphaTIFF(const uint8_t *data, size_t length, bool &handled, in
         [](thandle_t, void *, toff_t) {}, options.get());
     auto tif = std::unique_ptr<TIFF, decltype(&TIFFClose)>(raw, TIFFClose);
     if (!tif) return {};
-    uint16_t samples = 0, photo = 0, extras = 0, *extraTypes = nullptr;
+    uint16_t samples = 0, photo = 0, extras = 0, *extraTypes = nullptr, sampleFormat = 0;
     TIFFGetFieldDefaulted(tif.get(), TIFFTAG_SAMPLESPERPIXEL, &samples);
     TIFFGetFieldDefaulted(tif.get(), TIFFTAG_PHOTOMETRIC, &photo);
-    if (samples != 2 || (photo != PHOTOMETRIC_MINISBLACK && photo != PHOTOMETRIC_MINISWHITE) ||
-        !TIFFGetField(tif.get(), TIFFTAG_EXTRASAMPLES, &extras, &extraTypes) || extras != 1 ||
-        !extraTypes || (extraTypes[0] != EXTRASAMPLE_UNASSALPHA && extraTypes[0] != EXTRASAMPLE_ASSOCALPHA)) return {};
+    TIFFGetFieldDefaulted(tif.get(), TIFFTAG_SAMPLEFORMAT, &sampleFormat);
+    const bool floating = sampleFormat == SAMPLEFORMAT_IEEEFP;
+    const bool grayscale = photo == PHOTOMETRIC_MINISBLACK || photo == PHOTOMETRIC_MINISWHITE;
+    const int colors = grayscale ? 1 : 3;
+    TIFFGetField(tif.get(), TIFFTAG_EXTRASAMPLES, &extras, &extraTypes);
+    if (!floating && (!grayscale || samples != 2)) return {};
+    if (floating && !grayscale && photo != PHOTOMETRIC_RGB) return {};
     handled = true;
+    const bool hasAlpha = samples == colors + 1;
+    if ((samples != colors && !hasAlpha) || (hasAlpha && (extras != 1 || !extraTypes ||
+        (extraTypes[0] != EXTRASAMPLE_UNASSALPHA && extraTypes[0] != EXTRASAMPLE_ASSOCALPHA))) ||
+        (!hasAlpha && extras != 0)) return {};
     uint32_t width = 0, height = 0;
-    uint16_t bits = 0, planar = 0, sampleFormat = 0, orient = 1;
+    uint16_t bits = 0, planar = 0, orient = 1;
     TIFFGetField(tif.get(), TIFFTAG_IMAGEWIDTH, &width); TIFFGetField(tif.get(), TIFFTAG_IMAGELENGTH, &height);
     TIFFGetFieldDefaulted(tif.get(), TIFFTAG_BITSPERSAMPLE, &bits);
     TIFFGetFieldDefaulted(tif.get(), TIFFTAG_PLANARCONFIG, &planar);
     TIFFGetFieldDefaulted(tif.get(), TIFFTAG_SAMPLEFORMAT, &sampleFormat);
     TIFFGetFieldDefaulted(tif.get(), TIFFTAG_ORIENTATION, &orient);
     if (!width || !height || width > uint32_t(INT_MAX) || height > uint32_t(INT_MAX) ||
-        (bits != 8 && bits != 16) || sampleFormat != SAMPLEFORMAT_UINT ||
+        (floating ? bits != 16 && bits != 32 && bits != 64 : (bits != 8 && bits != 16) || sampleFormat != SAMPLEFORMAT_UINT) ||
         (planar != PLANARCONFIG_CONTIG && planar != PLANARCONFIG_SEPARATE)) return {};
-    // Keep the Qt reader's configured admission limit (its old TIFF path used four bytes per pixel).
+    // Account for the actual output allocation, including floating-point samples.
     const int limit = QImageReader::allocationLimit();
-    if (limit > 0 && uint64_t(width) * height > uint64_t(limit) * 1024 * 1024 / 4) return {};
-    QImage image(int(width), int(height), QImage::Format_RGBA64);
+    if (limit > 0 && uint64_t(width) * height > uint64_t(limit) * 1024 * 1024 / (floating ? 16 : 8)) return {};
+    QImage image(int(width), int(height), floating ? QImage::Format_RGBA32FPx4 : QImage::Format_RGBA64);
     if (image.isNull()) return {};
-    const bool separate = planar == PLANARCONFIG_SEPARATE, associated = extraTypes[0] == EXTRASAMPLE_ASSOCALPHA;
-    const uint32_t maximum = bits == 8 ? 255 : 65535;
-    const auto unpack = [&](const uint8_t *grayData, const uint8_t *alphaData, uint32_t x, uint32_t y,
-                            uint32_t count, size_t first) {
-        auto *out = reinterpret_cast<QRgba64 *>(image.scanLine(int(y)));
-        const auto sample = [&](const uint8_t *p, size_t i) -> uint32_t {
-            if (bits == 8) return p[i];
-            uint16_t value; memcpy(&value, p + i * 2, 2); return value;
+    const bool separate = planar == PLANARCONFIG_SEPARATE, associated = hasAlpha && extraTypes[0] == EXTRASAMPLE_ASSOCALPHA;
+    const double maximum = floating ? 1 : bits == 8 ? 255 : 65535;
+    const auto unpack = [&](const std::vector<std::vector<uint8_t>> &planes, uint32_t x, uint32_t y,
+                            uint32_t count, size_t rowOffset) -> bool {
+        const auto sample = [&](uint32_t i, int c) -> double {
+            const auto *p = planes[separate ? c : 0].data() + rowOffset + size_t(i * (separate ? 1 : samples) + c * !separate) * (bits / 8);
+            if (floating) {
+                if (bits == 16) { qfloat16 value; memcpy(&value, p, 2); return float(value); }
+                if (bits == 32) { float value; memcpy(&value, p, 4); return value; }
+                double value; memcpy(&value, p, 8); return value;
+            }
+            if (bits == 8) return *p / maximum;
+            uint16_t value; memcpy(&value, p, 2); return value / maximum;
         };
         for (uint32_t i = 0; i < count; ++i) {
-            const size_t index = first + i;
-            uint32_t g = sample(grayData, index * (separate ? 1 : 2));
-            const uint32_t a = sample(alphaData, separate ? index : index * 2 + 1);
-            if (associated) g = a ? std::min(maximum, (g * maximum + a / 2) / a) : 0;
-            if (photo == PHOTOMETRIC_MINISWHITE) g = maximum - g;
-            const auto gray = uint16_t((g * 65535 + maximum / 2) / maximum);
-            const auto alpha = uint16_t((a * 65535 + maximum / 2) / maximum);
-            out[x + i] = QRgba64::fromRgba64(gray, gray, gray, alpha);
+            const double originalAlpha = hasAlpha ? sample(i, colors) : 1;
+            if (!std::isfinite(originalAlpha)) return false;
+            const float a = float(std::clamp(originalAlpha, 0.0, 1.0));
+            float rgba[4] = {0, 0, 0, a};
+            for (int c = 0; c < 3; ++c) {
+                double v = sample(i, grayscale ? 0 : c);
+                if (!std::isfinite(v)) return false;
+                if (associated) v = a > 0 ? v / a : 0;
+                if (!floating) v = std::clamp(v, 0.0, 1.0);
+                if (photo == PHOTOMETRIC_MINISWHITE) v = 1 - v;
+                if (std::abs(v) > std::numeric_limits<float>::max()) return false;
+                rgba[c] = float(v);
+            }
+            if (floating) memcpy(image.scanLine(int(y)) + size_t(x + i) * 16, rgba, 16);
+            else reinterpret_cast<QRgba64 *>(image.scanLine(int(y)))[x + i] = QRgba64::fromRgba64(
+                uint16_t(std::lround(rgba[0] * 65535)), uint16_t(std::lround(rgba[1] * 65535)),
+                uint16_t(std::lround(rgba[2] * 65535)), uint16_t(std::lround(a * 65535)));
         }
+        return true;
     };
     const bool tiled = TIFFIsTiled(tif.get());
     uint32_t blockWidth = width, blockHeight = 0;
@@ -210,11 +243,11 @@ QImage decodeGrayAlphaTIFF(const uint8_t *data, size_t length, bool &handled, in
     const uint64_t rowBytes = tiled ? TIFFTileRowSize64(tif.get()) : TIFFScanlineSize64(tif.get());
     const uint64_t blockBytes = tiled ? TIFFTileSize64(tif.get()) : TIFFStripSize64(tif.get());
     if (!blockWidth || !blockHeight || !blockBytes || blockBytes > uint64_t(bufferLimit) ||
-        rowBytes < uint64_t(blockWidth) * (separate ? 1 : 2) * (bits / 8)) return {};
-    std::vector<uint8_t> gray, alpha;
+        rowBytes < uint64_t(blockWidth) * (separate ? 1 : samples) * (bits / 8)) return {};
+    std::vector<std::vector<uint8_t>> planes;
     try {
-        gray.resize(blockBytes);
-        if (separate) alpha.resize(blockBytes);
+        planes.resize(separate ? samples : 1);
+        for (auto &plane : planes) plane.resize(blockBytes);
     } catch (const std::bad_alloc &) { return {}; }
     for (uint32_t y = 0; y < height;) {
         const uint32_t rows = std::min(blockHeight, height - y);
@@ -226,12 +259,10 @@ QImage decodeGrayAlphaTIFF(const uint8_t *data, size_t length, bool &handled, in
             };
             if (!rowBytes || rows > blockBytes / rowBytes) return {};
             const uint64_t needed = rowBytes * rows;
-            if (read(gray, 0) < tmsize_t(needed) || (separate && read(alpha, 1) < tmsize_t(needed))) return {};
-            for (uint32_t row = 0; row < rows; ++row) {
-                const auto *g = gray.data() + rowBytes * row;
-                const auto *a = separate ? alpha.data() + rowBytes * row : g;
-                unpack(g, a, x, y + row, columns, 0);
-            }
+            for (size_t plane = 0; plane < planes.size(); ++plane)
+                if (read(planes[plane], uint16_t(plane)) < tmsize_t(needed)) return {};
+            for (uint32_t row = 0; row < rows; ++row)
+                if (!unpack(planes, x, y + row, columns, rowBytes * row)) return {};
             x += columns;
         }
         y += rows;
@@ -241,10 +272,45 @@ QImage decodeGrayAlphaTIFF(const uint8_t *data, size_t length, bool &handled, in
         if (!profile || !profileSize || profileSize > 4 * 1024 * 1024) return {};
         const QColorSpace space = QColorSpace::fromIccProfile(QByteArray(static_cast<const char *>(profile), profileSize));
         if (!space.isValid()) return {};
-        if (space.colorModel() == QColorSpace::ColorModel::Gray) image = grayAlphaToSRGB(image, space);
+        if (floating && space.colorModel() == QColorSpace::ColorModel::Gray) {
+            // Qt's scalar float transform treats gray as RGB and introduces a color cast.
+            // Keep gray as one channel through ICC conversion, with alpha outside the transform.
+            const auto closeProfile = [](cmsHPROFILE p) { if (p) cmsCloseProfile(p); };
+            std::unique_ptr<void, decltype(closeProfile)> source(cmsOpenProfileFromMem(profile, profileSize), closeProfile);
+            const cmsCIExyY white = {0.3127, 0.3290, 1};
+            const cmsCIExyYTRIPLE primaries = {{0.64, 0.33, 1}, {0.30, 0.60, 1}, {0.15, 0.06, 1}};
+            std::unique_ptr<cmsToneCurve, decltype(&cmsFreeToneCurve)> gamma(cmsBuildGamma(nullptr, 1), cmsFreeToneCurve);
+            if (!source || !gamma) return {};
+            cmsToneCurve *curves[] = {gamma.get(), gamma.get(), gamma.get()};
+            std::unique_ptr<void, decltype(closeProfile)> destination(cmsCreateRGBProfile(&white, &primaries, curves), closeProfile);
+            if (!destination) return {};
+            std::unique_ptr<void, decltype(&cmsDeleteTransform)> transform(
+                cmsCreateTransform(source.get(), TYPE_GRAY_FLT, destination.get(), TYPE_RGB_FLT,
+                                   INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOOPTIMIZE), cmsDeleteTransform);
+            if (!transform) return {};
+            for (int y = 0; y < image.height(); ++y) {
+                auto *row = reinterpret_cast<QRgbaFloat32 *>(image.scanLine(y));
+                for (int x = 0; x < image.width(); ++x) {
+                    const float gray = row[x].red(); float rgb[3];
+                    cmsDoTransform(transform.get(), &gray, rgb, 1);
+                    if (!std::isfinite(rgb[0]) || !std::isfinite(rgb[1]) || !std::isfinite(rgb[2])) return {};
+                    row[x] = QRgbaFloat32{rgb[0], rgb[1], rgb[2], row[x].alpha()};
+                }
+            }
+            image.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));
+        }
+        else if (floating && space.colorModel() == QColorSpace::ColorModel::Rgb) {
+            const QColorTransform transform = space.transformationToColorSpace(QColorSpace(QColorSpace::SRgbLinear));
+            for (int y = 0; y < image.height(); ++y) {
+                auto *row = reinterpret_cast<QRgbaFloat32 *>(image.scanLine(y));
+                for (int x = 0; x < image.width(); ++x) row[x] = transform.map(row[x]);
+            }
+            image.setColorSpace(QColorSpace(QColorSpace::SRgbLinear));
+        }
+        else if (space.colorModel() == QColorSpace::ColorModel::Gray) image = grayAlphaToSRGB(image, space);
         else if (space.colorModel() == QColorSpace::ColorModel::Rgb) { image.setColorSpace(space); image = toSRGB(image); }
         else return {};
-    } else image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+    } else image.setColorSpace(QColorSpace(floating ? QColorSpace::SRgbLinear : QColorSpace::SRgb));
     if (image.isNull()) return {};
     float xResolution = 0, yResolution = 0; uint16_t unit = RESUNIT_NONE;
     TIFFGetField(tif.get(), TIFFTAG_XRESOLUTION, &xResolution); TIFFGetField(tif.get(), TIFFTAG_YRESOLUTION, &yResolution);
@@ -359,7 +425,7 @@ QColorSpace heifColorSpace(const heif_image_handle *handle) {
 }
 
 int32_t decodeHeif(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height, int32_t *channels,
-                   int32_t *orientation, char *uti, size_t utiCapacity) {
+                   int32_t *orientation, char *uti, size_t utiCapacity, bool deepAllowed) {
     heif_context *ctx = heif_context_alloc();
     heif_image_handle *handle = nullptr;
     heif_image *img = nullptr;
@@ -387,33 +453,38 @@ int32_t decodeHeif(const uint8_t *data, size_t length, uint8_t **out, int32_t *w
                         target[x * 4 + c] = static_cast<uint16_t>((uint32_t(source[x * 4 + c]) * 65535 + maximum / 2) / maximum);
                 }
             }
+            int layout = kLayoutRGBA8;
             if (!decoded.isNull()) {
                 const QColorSpace space = heifColorSpace(handle);
                 if (!space.isValid()) decoded = {};
                 else {
                     decoded.setColorSpace(space);
-                    decoded = toSRGB(decoded).convertToFormat(QImage::Format_RGBA8888);
+                    const bool hdr = deepAllowed && (space.transferFunction() == QColorSpace::TransferFunction::St2084 ||
+                                                     space.transferFunction() == QColorSpace::TransferFunction::Hlg);
+                    if (hdr) {
+                        // Convert encoded PQ/HLG and wide primaries directly into linear float pixels. An integer
+                        // sRGB intermediate would clip light above white before the upstream HDR importer sees it.
+                        decoded = decoded.convertedToColorSpace(QColorSpace(QColorSpace::SRgbLinear),
+                                                                 QImage::Format_RGBA32FPx4);
+                        decoded = decoded.convertToFormat(QImage::Format_RGBA32FPx4_Premultiplied);
+                        layout = kLayoutRGBAFloat;
+                    } else {
+                        layout = deepAllowed && bits > 8 ? kLayoutRGBA16 : kLayoutRGBA8;
+                        decoded = toSRGB(decoded).convertToFormat(layout == kLayoutRGBA16 ? QImage::Format_RGBA64_Premultiplied
+                                                                                        : QImage::Format_RGBA8888_Premultiplied);
+                    }
                 }
             }
             const uint8_t *src = decoded.isNull() ? nullptr : decoded.constBits();
             stride = decoded.isNull() ? 0 : static_cast<int>(decoded.bytesPerLine());
-            auto *pixels = static_cast<uint8_t *>(malloc(static_cast<size_t>(w) * h * 4));
+            const size_t rowBytes = static_cast<size_t>(w) * layout;
+            auto *pixels = src ? static_cast<uint8_t *>(malloc(rowBytes * h)) : nullptr;
             if (src && pixels && w > 0 && h > 0) {
-                for (int y = 0; y < h; ++y) {
-                    const uint8_t *row = src + static_cast<size_t>(y) * stride;
-                    uint8_t *dst = pixels + static_cast<size_t>(y) * w * 4;
-                    for (int x = 0; x < w; ++x) {  // straight -> premultiplied
-                        const int a = row[x * 4 + 3];
-                        dst[x * 4] = static_cast<uint8_t>((row[x * 4] * a + 127) / 255);
-                        dst[x * 4 + 1] = static_cast<uint8_t>((row[x * 4 + 1] * a + 127) / 255);
-                        dst[x * 4 + 2] = static_cast<uint8_t>((row[x * 4 + 2] * a + 127) / 255);
-                        dst[x * 4 + 3] = static_cast<uint8_t>(a);
-                    }
-                }
+                for (int y = 0; y < h; ++y) memcpy(pixels + size_t(y) * rowBytes, src + size_t(y) * stride, rowBytes);
                 *out = pixels;
                 if (width) *width = w;
                 if (height) *height = h;
-                if (channels) *channels = 4;
+                if (channels) *channels = layout;
                 if (orientation) *orientation = 1;
                 // Typed by major brand as CGImageSourceGetType does: AV1 is AVIF, the generic MIAF brands (cameras'
                 // .hif/.heif) are public.heif, HEVC brands are public.heic.
@@ -701,7 +772,7 @@ int32_t decodeAny(const uint8_t *data, size_t length, uint8_t **out, int32_t *wi
     }
 #endif
 #if defined(COMPOSITOR_HAS_LIBHEIF)
-    if (isHeifContainer(data, length)) return decodeHeif(data, length, out, width, height, channels, orientation, uti, utiCapacity);
+    if (isHeifContainer(data, length)) return decodeHeif(data, length, out, width, height, channels, orientation, uti, utiCapacity, deepAllowed);
 #endif
     QByteArray bytes = QByteArray::fromRawData(reinterpret_cast<const char *>(data), static_cast<qsizetype>(length));
     QBuffer buffer(&bytes);
@@ -714,7 +785,7 @@ int32_t decodeAny(const uint8_t *data, size_t length, uint8_t **out, int32_t *wi
     bool nativeTIFF = false;
     int nativeOrientation = 1;
     QImage image;
-    if (!strcmp(type, "public.tiff")) image = decodeGrayAlphaTIFF(data, length, nativeTIFF, nativeOrientation);
+    if (!strcmp(type, "public.tiff")) image = decodeNativeTIFF(data, length, nativeTIFF, nativeOrientation);
     if (!nativeTIFF) image = reader.read();
     if (image.isNull()) return -3;
     // As Apple's ImageIO: float files (Radiance HDR) come as linear-light floats, 16-bit color files at 16 bits.
@@ -754,6 +825,74 @@ int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *
 int32_t decodeImageDeep(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
                         int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity) {
     return decodeAny(data, length, out, width, height, channels, dpi, orientation, uti, utiCapacity, true);
+}
+
+// A CMYK JPEG or TIFF as its inks and embedded profile (nullptr when it names none). Anything else: -2.
+int32_t decodeCMYK(const uint8_t *data, size_t length, uint8_t **inks, int32_t *width, int32_t *height, uint8_t **profile,
+                   size_t *profileLength, double *dpi, char *uti, size_t utiCapacity) {
+    if (!data || !length || !inks || !profile || !profileLength) return -1;
+    QByteArray bytes = QByteArray::fromRawData(reinterpret_cast<const char *>(data), static_cast<qsizetype>(length));
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer);
+    reader.setAutoTransform(false);
+    const char *type = utiForFormat(reader.format());
+    if (!type || (strcmp(type, "public.jpeg") && strcmp(type, "public.tiff"))) return -2;
+    if (reader.imageFormat() != QImage::Format_CMYK8888) return -2;
+    const QImage image = reader.read();
+    if (image.isNull() || image.format() != QImage::Format_CMYK8888) return -3;
+    const size_t row = static_cast<size_t>(image.width()) * 4;
+    auto *pixels = static_cast<uint8_t *>(malloc(row * image.height()));
+    if (!pixels) return -4;
+    for (int y = 0; y < image.height(); ++y) memcpy(pixels + y * row, image.constScanLine(y), row);
+    const QByteArray icc = image.colorSpace().colorModel() == QColorSpace::ColorModel::Cmyk ? image.colorSpace().iccProfile()
+                                                                                              : QByteArray();
+    *profile = nullptr;
+    *profileLength = 0;
+    if (!icc.isEmpty()) {
+        *profile = static_cast<uint8_t *>(malloc(static_cast<size_t>(icc.size())));
+        if (!*profile) { free(pixels); return -4; }
+        memcpy(*profile, icc.constData(), static_cast<size_t>(icc.size()));
+        *profileLength = static_cast<size_t>(icc.size());
+    }
+    *inks = pixels;
+    if (width) *width = image.width();
+    if (height) *height = image.height();
+    if (dpi) *dpi = image.dotsPerMeterX() > 0 ? image.dotsPerMeterX() * 0.0254 : 0.0;
+    if (uti && utiCapacity) { strncpy(uti, type, utiCapacity - 1); uti[utiCapacity - 1] = 0; }
+    return 0;
+}
+
+// Inks (four a pixel) as a CMYK JPEG or LZW TIFF with `profile` embedded, as print shops take it.
+int32_t encodeCMYK(const uint8_t *inks, int32_t width, int32_t height, const uint8_t *profile, size_t profileLength,
+                   const char *uti, double quality, double dpi, uint8_t **out, size_t *outLength) {
+    if (!inks || width <= 0 || height <= 0 || !uti || !out || !outLength) return -1;
+    const bool tiff = !strcmp(uti, "public.tiff");
+    if (!tiff && strcmp(uti, "public.jpeg")) return -1;
+    QImage image = QImage(inks, width, height, width * 4, QImage::Format_CMYK8888).copy();
+    if (profile && profileLength) {
+        const QColorSpace space = QColorSpace::fromIccProfile(QByteArray(reinterpret_cast<const char *>(profile),
+                                                                         static_cast<qsizetype>(profileLength)));
+        if (!space.isValid() || space.colorModel() != QColorSpace::ColorModel::Cmyk) return -1;
+        image.setColorSpace(space);
+    }
+    if (dpi > 0) {
+        const int dpm = static_cast<int>(dpi / 0.0254 + 0.5);
+        image.setDotsPerMeterX(dpm);
+        image.setDotsPerMeterY(dpm);
+    }
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    QImageWriter writer(&buffer, tiff ? "tiff" : "jpeg");
+    if (tiff) writer.setCompression(1);   // LZW
+    else if (quality >= 0) writer.setQuality(static_cast<int>(quality * 100 + 0.5));
+    if (!writer.write(image)) return -3;
+    *out = static_cast<uint8_t *>(malloc(static_cast<size_t>(bytes.size())));
+    if (!*out) return -4;
+    memcpy(*out, bytes.constData(), static_cast<size_t>(bytes.size()));
+    *outLength = static_cast<size_t>(bytes.size());
+    return 0;
 }
 
 int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_t channels, const char *uti,
@@ -1093,6 +1232,15 @@ extern "C" int compositor_qt_imageio_install(void) {
     if (!compositor_imageio_register) return 0;
     compositor_imageio_register(decodeImage, encodeImage);
     if (compositor_imageio_register_deep) compositor_imageio_register_deep(decodeImageDeep);
+    if (compositor_imageio_register_cmyk) compositor_imageio_register_cmyk(decodeCMYK, encodeCMYK);
+    return 1;
+}
+
+// CMYK JPEG/TIFF for loaders that dlopen this library.
+extern "C" int compositor_qt_imageio_cmyk_functions(CompositorCMYKDecodeFn *decode, CompositorCMYKEncodeFn *encode) {
+    if (!decode || !encode) return 0;
+    *decode = decodeCMYK;
+    *encode = encodeCMYK;
     return 1;
 }
 

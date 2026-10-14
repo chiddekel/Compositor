@@ -1,5 +1,11 @@
 # Upstream release feature inventory → Linux status (tip `v1.4.5` / `11d8d7a`)
 
+Historical checkpoint: the statuses below describe the 1.4.5 assessment and do
+not certify current macOS identity. Current protected content is `e8c9e29`; use
+the [current status table](current-linux-compatibility-inventory.md#current-feature-comparison-with-upstream)
+and [completion audit](linux-status-completion-audit.md) for scoped implementation
+evidence, platform differences and remaining work.
+
 **Editor status:** product features through tip **1.4.5** are ✅ on GNU/Linux (CPU/CG canvas by default + Vulkan brush/effects; Flatpak adapters for Sparkle/Quick Look/Dock). `GPUCanvasRenderer.shared` is nil unless `COMPOSITOR_FORCE_GPU_CANVAS=1` (GPU present Adapter / parity work).
 
 Source: [robbietilton/Compositor releases](https://github.com/robbietilton/Compositor/releases) plus the Features section of upstream `README.md`. Treat each release note as the catch-up **prompt**: inherit tip trees, then Port / Adapter only what Linux still lacks.

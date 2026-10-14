@@ -1,9 +1,8 @@
 // OVERRIDE for Compositor/Rendering/MetalWarp.swift (excluded from the Linux build).
 //
-// Metal → Vulkan/CPU: same surface as tip's MetalWarp so WarpStroke compiles unmodified. Dabs run on a CPU working
-// copy that mirrors the Metal kernels' math (weight / pick_up / smudge / push) — brush feel and look must match Mac,
-// not merely compile. When Vulkan is present this path is still used for correctness; a future SPIR-V port can
-// replace the dab bodies behind the same API only if pixel response stays identical.
+// Metal → Vulkan/CPU: same surface as tip's MetalWarp so WarpStroke compiles unmodified. Smudge blending submits
+// and Liquify offset/source sampling to Vulkan on hardware devices, with a CPU retry if submission fails.
+// Pick-up and format conversion still use the CPU working copy. Arithmetic and quantization preserve pixel response.
 //
 // Tip 1.4.2+ Liquify keeps pixels sharp by warping source offsets against an untouched original (not resampling
 // the working pixels each dab). Smudge lays down carried color at strength and then carries what it just left.
@@ -15,6 +14,20 @@
 import Foundation
 import CoreGraphics
 import CoreImage
+import CompositorBrushBackend
+
+private final class VulkanWarp: @unchecked Sendable {
+    let handle: OpaquePointer
+    init?(allowSoftware: Bool) {
+        guard let handle = compositor_vulkan_smudge_create() else { return nil }
+        if !allowSoftware && compositor_vulkan_smudge_device_type(handle) == 4 {
+            compositor_vulkan_smudge_destroy(handle)
+            return nil
+        }
+        self.handle = handle
+    }
+    deinit { compositor_vulkan_smudge_destroy(handle) }
+}
 
 @MainActor final class MetalWarp {
     /// Tip's compute pipelines; WarpStroke only asks whether there are any. The dab kernels here always run.
@@ -40,10 +53,22 @@ import CoreImage
     private var scratchW = 0
     private var scratchH = 0
     private var scratchOrigin = SIMD2<Int32>.zero
+    private let warpGPU: VulkanWarp?
+    private(set) var smudgeGPUDispatchCount = 0
+    private(set) var liquifyGPUDispatchCount = 0
+    private var liquifyOriginalUploaded = false
+    private var warpGPUFailed = false
+    var warpGPUDevice: String? {
+        warpGPU.map { String(cString: compositor_vulkan_smudge_device($0.handle)) }
+    }
+    var warpGPUDeviceType: UInt32? {
+        warpGPU.map { compositor_vulkan_smudge_device_type($0.handle) }
+    }
+    /// Borrowed backend handle for Linux diagnostics; the stroke owns its lifetime.
+    var warpGPUBackend: OpaquePointer? { warpGPU?.handle }
 
-    init?(pixels context: CGContext) {
-        // Linux MetalWarp is CPU-backed dab math (tip 1.4.2 sharp Liquify). Do not gate on
-        // GPUCanvasRenderer.shared — that only controls the Metal/Vulkan canvas present path.
+    init?(pixels context: CGContext, acceleratedWarp: Bool? = nil) {
+        // Canvas presentation availability does not determine compute availability or the CPU fallback.
         guard let data = context.data else { return nil }
         width = context.width
         height = context.height
@@ -58,6 +83,9 @@ import CoreImage
             channelBytes = 1
             steps = 255
         }
+        let preference = ProcessInfo.processInfo.environment["COMPOSITOR_WARP_BACKEND"]
+        warpGPU = acceleratedWarp == false || (acceleratedWarp == nil && preference == "cpu")
+            ? nil : VulkanWarp(allowSoftware: acceleratedWarp == true || preference == "vulkan")
     }
 
     private func load(_ base: UnsafeMutableRawPointer, _ offset: Int) -> Float {
@@ -158,19 +186,84 @@ import CoreImage
 
     private var falloff: [Float] = []
     private var falloffKey: (radius: Int, diameter: CGFloat, hardness: CGFloat) = (-1, 0, 0)
+    private var falloffSpans: [Int] = []
+    private var gpuFalloffUploaded = false
+    private var packedFormat: UInt32 { format == .byte ? 0 : format == .short ? 1 : 2 }
+
+    private func prepareFalloff(radius: Int, diameter: CGFloat, hardness: CGFloat) {
+        guard falloffKey.radius != radius || falloffKey.diameter != diameter || falloffKey.hardness != hardness else { return }
+        let invR = 1 / Float(diameter / 2), h = Float(hardness)
+        falloff = (0...(2 * radius * radius)).map { weight(Float($0).squareRoot() * invR, hardness: h) }
+        falloffSpans = (0...(2 * radius)).map { row in
+            let y = row - radius
+            guard falloff[y * y] > 0 else { return -1 }
+            var span = radius
+            while span > 0 && !(falloff[span * span + y * y] > 0) { span -= 1 }
+            return span
+        }
+        falloffKey = (radius, diameter, hardness)
+        gpuFalloffUploaded = false
+    }
+
+    private func uploadFalloff(_ gpu: VulkanWarp) -> Bool {
+        if gpuFalloffUploaded { return true }
+        let status = falloff.withUnsafeBufferPointer {
+            compositor_vulkan_warp_weights(gpu.handle, UInt32(falloffKey.radius), $0.baseAddress, $0.count)
+        }
+        if status == -2 { warpGPUFailed = true }
+        gpuFalloffUploaded = status == 0
+        return gpuFalloffUploaded
+    }
 
     func smudge(at center: CGPoint, radius: Int, diameter: CGFloat, hardness: CGFloat, strength: CGFloat) {
         guard carriedSide == 2 * radius + 1, !carried.isEmpty else { return }
         let cx = Int(center.x.rounded()), cy = Int(center.y.rounded())
-        let invR = 1 / Float(diameter / 2)
         let keep = Float(strength)
-        let h = Float(hardness)
         let side = carriedSide
         // The falloff by squared distance, computed once per brush (as WarpStroke's radialWeights): a square root and
         // the weight curve for every pixel of every dab stalled live smudging.
-        if falloffKey.radius != radius || falloffKey.diameter != diameter || falloffKey.hardness != hardness {
-            falloff = (0...(2 * radius * radius)).map { weight(Float($0).squareRoot() * invR, hardness: h) }
-            falloffKey = (radius, diameter, hardness)
+        prepareFalloff(radius: radius, diameter: diameter, hardness: hardness)
+        if let gpu = warpGPU, !warpGPUFailed, uploadFalloff(gpu) {
+            let bpp = channelBytes * 4
+            var under = [UInt8](repeating: 0, count: side * side * bpp)
+            var packed = under
+            let left = max(0, cx - radius), right = min(width, cx + radius + 1)
+            under.withUnsafeMutableBytes { buffer in
+                guard left < right, let base = buffer.baseAddress else { return }
+                for gy in 0..<side {
+                    let py = cy + gy - radius
+                    guard py >= 0, py < height else { continue }
+                    memcpy(base + (gy * side + left - cx + radius) * bpp, pixels + at(left, py), (right - left) * bpp)
+                }
+            }
+            var parameters = CompositorSmudgePackedUniforms()
+            parameters.width = UInt32(side); parameters.height = UInt32(side)
+            parameters.strength = keep; parameters.format = packedFormat
+            parameters.center_x = Int32(cx); parameters.center_y = Int32(cy)
+            parameters.canvas_width = UInt32(width); parameters.canvas_height = UInt32(height)
+            parameters.radius = UInt32(radius)
+            let result = under.withUnsafeBytes { u in
+                packed.withUnsafeMutableBytes { out in
+                    carried.withUnsafeMutableBufferPointer { c in
+                        compositor_vulkan_smudge_packed(gpu.handle, &parameters, u.baseAddress,
+                            c.baseAddress, c.baseAddress, out.baseAddress)
+                    }
+                }
+            }
+            if result == 0 {
+                packed.withUnsafeBytes { buffer in
+                    guard left < right, let base = buffer.baseAddress else { return }
+                    for gy in 0..<side {
+                        let py = cy + gy - radius
+                        guard py >= 0, py < height else { continue }
+                        memcpy(pixels + at(left, py), base + (gy * side + left - cx + radius) * bpp, (right - left) * bpp)
+                    }
+                }
+                smudgeGPUDispatchCount += 1
+                return
+            }
+            if result == -2 { warpGPUFailed = true }
+            // A failed submission never changes pixels or carried color; retry this dab on CPU.
         }
         for gy in 0..<side {
             let oy = gy - radius
@@ -222,17 +315,17 @@ import CoreImage
         scratchOrigin = SIMD2(Int32(x0), Int32(y0))
         // Scratch holds prior offsets (dx, dy) for the dab region.
         scratch = [Float](repeating: 0, count: cw * ch * 2)
-        for gy in 0..<ch {
-            for gx in 0..<cw {
-                let i = ((y0 + gy) * width + (x0 + gx)) * 2
-                let o = (gy * cw + gx) * 2
-                scratch[o] = offsets[i]
-                scratch[o + 1] = offsets[i + 1]
+        scratch.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            for gy in 0..<ch {
+                memcpy(base + gy * cw * 2, offsets + ((y0 + gy) * width + x0) * 2, cw * 2 * MemoryLayout<Float>.size)
             }
         }
 
         let invR = 1 / Float(diameter / 2)
         let side = 2 * r + 1
+        if pushVulkan(move: move, cx: cx, cy: cy, radius: r, diameter: diameter, hardness: hardness,
+                      x0: x0, y0: y0, cw: cw, ch: ch, offsets: offsets) { return }
         for gy in 0..<side {
             for gx in 0..<side {
                 let ox = gx - r, oy = gy - r
@@ -258,5 +351,67 @@ import CoreImage
                 write(px, py, sampleOriginal(Float(px) + moved.x, Float(py) + moved.y))
             }
         }
+    }
+
+    private func pushVulkan(move: SIMD2<Float>, cx: Int, cy: Int, radius: Int, diameter: CGFloat, hardness: CGFloat,
+                            x0: Int, y0: Int, cw: Int, ch: Int, offsets: UnsafeMutablePointer<Float>) -> Bool {
+        guard let gpu = warpGPU, !warpGPUFailed, let original, cw >= 2, ch >= 2 else { return false }
+        prepareFalloff(radius: radius, diameter: diameter, hardness: hardness)
+        guard uploadFalloff(gpu) else { return false }
+        if !liquifyOriginalUploaded {
+            var source = [Float](repeating: 0, count: width * height * 4)
+            for i in source.indices { source[i] = load(original, i * channelBytes) }
+            let status = source.withUnsafeBufferPointer {
+                compositor_vulkan_liquify_original(gpu.handle, UInt32(width), UInt32(height), $0.baseAddress)
+            }
+            guard status == 0 else {
+                if status == -2 { warpGPUFailed = true }
+                return false
+            }
+            liquifyOriginalUploaded = true
+        }
+        var parameters = CompositorLiquifyPackedUniforms()
+        parameters.base.source_width = UInt32(width); parameters.base.source_height = UInt32(height)
+        parameters.base.origin_x = UInt32(x0); parameters.base.origin_y = UInt32(y0)
+        parameters.base.width = UInt32(cw); parameters.base.height = UInt32(ch)
+        parameters.base.move_x = move.x; parameters.base.move_y = move.y
+        parameters.base.padding0 = packedFormat
+        parameters.center_x = Int32(cx); parameters.center_y = Int32(cy); parameters.radius = UInt32(radius)
+        var moved = [Float](repeating: 0, count: cw * ch * 2)
+        let bpp = channelBytes * 4
+        var colors = [UInt8](repeating: 0, count: cw * ch * bpp)
+        let status = scratch.withUnsafeBufferPointer { prior in
+            moved.withUnsafeMutableBufferPointer { outOffsets in
+                colors.withUnsafeMutableBytes { outColors in
+                    compositor_vulkan_liquify_packed(gpu.handle, &parameters, prior.baseAddress,
+                        outOffsets.baseAddress, outColors.baseAddress)
+                }
+            }
+        }
+        // No offset or pixel writes occur until both GPU outputs have completed successfully.
+        guard status == 0 else {
+            if status == -2 { warpGPUFailed = true }
+            return false
+        }
+        moved.withUnsafeBufferPointer { data in
+            guard let base = data.baseAddress else { return }
+            for row in 0..<ch {
+                memcpy(offsets + ((y0 + row) * width + x0) * 2, base + row * cw * 2, cw * 2 * MemoryLayout<Float>.size)
+            }
+        }
+        colors.withUnsafeBytes { data in
+            guard let base = data.baseAddress else { return }
+            for row in 0..<ch {
+                let py = y0 + row, brushRow = py - cy + radius
+                guard brushRow >= 0, brushRow < falloffSpans.count else { continue }
+                let span = falloffSpans[brushRow]
+                guard span >= 0 else { continue }
+                let left = max(x0, cx - span), right = min(x0 + cw, cx + span + 1)
+                guard left < right else { continue }
+                memcpy(pixels + at(left, py), base + (row * cw + left - x0) * bpp, (right - left) * bpp)
+            }
+        }
+        liquifyGPUDispatchCount += 1
+        return true
     }
 }

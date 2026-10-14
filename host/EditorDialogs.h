@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QJsonObject>
+#include <QPointer>
 #include "interfaces/IPlatformServices.h"
 #include <functional>
 #include <vector>
@@ -53,17 +54,10 @@ public:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 private:
-    struct CommandEntry {
-        QString title;
-        QString category;
-        QString shortcut;
-        QAction *action = nullptr;
-    };
     SessionWindow *m_window = nullptr;
+    QPointer<QWidget> m_returnFocus;
     QLineEdit *m_filter = nullptr;
     QListWidget *m_list = nullptr;
-    std::vector<CommandEntry> m_entries;
-    void collectCommands();
     void populateList(const QString &query);
     void triggerSelected();
 };

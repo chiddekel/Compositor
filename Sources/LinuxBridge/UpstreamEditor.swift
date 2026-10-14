@@ -11,6 +11,7 @@
 
 import Foundation
 import CoreGraphics
+import AppKit
 
 /// Runs `operation` (main-actor, async) to completion from a synchronous call on the main thread.
 func awaitOnMain<Value: Sendable>(_ operation: @escaping @MainActor @Sendable () async -> Value,
@@ -49,6 +50,32 @@ private struct Command: Decodable {
     var length: Int?
     var draftID: UUID?
     var textStyle: LayerTextStyle?
+
+    var newCanvasSize: (width: Int, height: Int)? {
+        guard let width, let height, (1...30_000).contains(width), (1...30_000).contains(height) else { return nil }
+        return (width, height)
+    }
+
+    /// JSON doubles must be representable before dispatch converts them to integer controls.
+    var integerArgumentRefusal: String? {
+        let argument: (name: String, value: Double?)
+        switch action {
+        case "featherSelection", "expandSelection", "contractSelection", "setSelectionExpandAmount":
+            argument = ("amount", parameters?["amount"])
+        case "moveActiveLayer": argument = ("layer offset", value)
+        case "magicWand": argument = ("tolerance", parameters?["tolerance"])
+        case "distortDragBegin": argument = ("handle", value)
+        case "brushBegin":
+            guard (parameters?["healing"] ?? 0) != 0 else { return nil }
+            argument = ("healing mode", parameters?["healingMode"])
+        default: return nil
+        }
+        guard let value = argument.value else { return nil }
+        guard value.isFinite, Int(exactly: value.rounded(.towardZero)) != nil else {
+            return "\(argument.name) is outside the supported integer range"
+        }
+        return nil
+    }
 }
 
 private struct State: Encodable {
@@ -77,6 +104,10 @@ private struct State: Encodable {
     let undoName: String
     let redoName: String
     let busy: Bool
+    /// The filter worker or its queued settings are still rendering; distinct from an open filter edit.
+    let filterPreviewRendering: Bool
+    /// Upstream ProjectWorkspace.canSwitch for this session: dropped or opened files wait while it is false.
+    let canSwitch: Bool
     let layers: [Layer]
     let error: String?
     let hasSelection: Bool
@@ -210,6 +241,13 @@ private func rgb(_ color: PaletteColor) -> [Double] { [Double(color.red), Double
 /// -5 operation failed, -6 unknown handle, -7 command not supported by this bridge yet.
 final class UpstreamEditor {
     let session: EditorSession
+    private lazy var standaloneProjects = ProjectController(session: session)
+    var nativeProjects: ProjectController {
+        Workspace.shared.tabs.first(where: { $0.session === session })?.controller ?? standaloneProjects
+    }
+    /// Replacement imports keep the current document/history intact until every file succeeds.
+    private(set) var replacementImportSession: EditorSession?
+    var importSession: EditorSession { replacementImportSession ?? session }
     /// Distinguishes reloading the same document ID from editing that document.
     var persistenceGeneration = UUID()
     private(set) var error: String?
@@ -227,6 +265,7 @@ final class UpstreamEditor {
         "setOpacity", "setBlendMode", "setSelectedOpacity", "cycleBlendMode", "flipLayer", "flipCanvas", "undo", "redo",
         "addRevealMask", "addHideMask", "toggleMaskAlone", "clearMaskAlone", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
         "selectAll", "deselect", "invertSelection", "loadLayerSelection", "loadMaskSelection", "selectSubject", "featherSelection",
+        "setSelectionExpandAmount", "setSelectionMode",
         "colorRangeBegin", "colorRangeSample", "colorRangeUpdate", "colorRangeCommit", "colorRangeCancel",
         "selectRectangle", "selectEllipse", "selectLasso", "expandSelection", "contractSelection",
         "fillForeground", "fillBackground", "clearSelection", "invert", "copy", "copyMerged", "cut", "paste",
@@ -274,6 +313,20 @@ final class UpstreamEditor {
     /// A Move-tool handle drag that distorts (Ctrl held, or the layer already distorted): upstream's own TransformDrag.
     private var distortDrag: TransformDrag?
 
+    /// ProjectController.begin(): a project operation starts only when the session can take one; it then cancels a
+    /// crop, commits a transform and holds the project busy until the caller's sheet or write ends (`isProjectBusy`
+    /// disables Undo/Redo, layer edits and other project commands meanwhile, as upstream's menus show).
+    private func beginProjectOperation() -> Bool {
+        let s = session
+        guard s.canStartProjectOperation else { return false }
+        s.cancelCrop()
+        s.commitTransform()
+        s.isProjectBusy = true
+        return true
+    }
+    /// Export As holds the project from its sheet until the shell's save panel answers with `writeExport`.
+    private var exportHoldsProject = false
+
     /// Answers the open Canvas Size / Image Size sheet (nil = Cancel).
     func finishSizeSheet(_ options: Any?) {
         let answer = sizeAnswer
@@ -320,8 +373,8 @@ final class UpstreamEditor {
     /// Modal upstream sheets open now, by panel name (the shell shows each while it is listed).
     var openSheets: [String] {
         var sheets: [String] = []
-        if session.showsRawDevelop { sheets.append("RawDevelopSheet") }
-        if session.showsConversionSheet { sheets.append("PSDConversionSheet") }
+        if importSession.showsRawDevelop { sheets.append("RawDevelopSheet") }
+        if importSession.showsConversionSheet { sheets.append("PSDConversionSheet") }
         if trimSheet != nil { sheets.append("TrimSheet") }
         if canvasSizeSheet != nil { sheets.append("CanvasSizeSheet") }
         if imageSizeSheet != nil { sheets.append("ImageSizeSheet") }
@@ -331,6 +384,9 @@ final class UpstreamEditor {
     }
     /// The manifest of a project being loaded; its layers' images and masks arrive through `installLayerAsset`.
     private var loadingManifest: ProjectManifest?
+    private var pendingLayerImages: Set<UUID> = []
+    private var pendingLayerMasks: Set<UUID> = []
+    private var loadingRevision: UUID?
 
     /// Synchronous entry for the C ABI (called from the Qt main thread): runs `commandAsync`, pumping the run loop while
     /// upstream's async operations finish. Must not be called from inside a main-actor job (tests use `commandAsync`).
@@ -362,7 +418,22 @@ final class UpstreamEditor {
     func commandAsync(_ json: Data) async -> Int32 {
         guard let command = try? JSONDecoder().decode(Command.self, from: json) else { error = "Invalid command JSON"; return -1 }
         guard command.version == 1 else { error = "Unsupported command version"; return -4 }
+        guard Self.supportedActions.contains(command.action) else {
+            return fail(-7, "Unsupported by the upstream bridge yet: \(command.action)")
+        }
+        if let refusal = command.integerArgumentRefusal { return fail(-1, refusal) }
+        if replacementImportSession != nil { return fail(-3, "The editor is busy; a replacement import is in progress") }
         let s = session
+        // Project commands can arrive through the native event pump while an operation or modal is active.
+        // Refuse before resolving a gradient or replacing the document and unsaved history.
+        if (command.action == "importFiles" || command.action == "new"), !s.canStartProjectOperation {
+            return fail(-3, command.action == "new" ? "The editor is busy; no canvas was created" : "The editor is busy; no files were imported")
+        }
+        if command.action == "new", command.newCanvasSize == nil { return fail(-1, "invalid size") }
+        if command.action == "importFiles", command.enabled == true {
+            guard let paths = command.paths, !paths.isEmpty else { return fail(-1, "paths required") }
+            return await importReplacement(paths)
+        }
         // Upstream applies a pending gradient when the tool, layer or target changes (selectTool / selectLayer →
         // resolveGradient), in a Task that the Mac's run loop finishes before the next click reaches the canvas. The
         // shell's commands arrive back to back (brushBegin switches tool and starts the stroke in one call), so the
@@ -370,14 +441,14 @@ final class UpstreamEditor {
         // Re-choosing the current tool is no switch (upstream selectTool resolves only when the tool changes).
         let reselectsTool = command.action == "selectTool" && (command.kind ?? command.name) == s.tool.rawValue
         if s.gradientEdit != nil, !reselectsTool, !Self.keepsPendingGradient.contains(command.action) {
+            if let refusal = refusalBeforeGradient(command) { return fail(refusal.code, refusal.message) }
             let result = await commitPendingGradient()
             guard result == 0 else { return result }
         }
         switch command.action {
         case "new":
-            guard let width = command.width, let height = command.height, (1...30_000).contains(width), (1...30_000).contains(height)
-            else { return fail(-1, "invalid size") }
-            s.createDocument(width: width, height: height, emptyLayer: command.emptyLayer ?? false)
+            guard let size = command.newCanvasSize else { return fail(-1, "invalid size") }
+            s.createDocument(width: size.width, height: size.height, emptyLayer: command.emptyLayer ?? false)
         case "addLayer":
             guard s.document != nil else { return fail(-2, "no document") }
             s.addBlankLayer()
@@ -576,7 +647,6 @@ final class UpstreamEditor {
         case "importFiles":
             guard let paths = command.paths, !paths.isEmpty else { return fail(-1, "paths required") }
             ImportPrompts.install(on: s)
-            if command.enabled == true, s.document != nil { s.clearProject() }
             await s.importImages(paths.map { URL(fileURLWithPath: $0) })
             if let message = s.importError {
                 s.importError = nil   // reported to the shell; left set, it would block editing
@@ -798,6 +868,8 @@ final class UpstreamEditor {
         // Image > Trim… (ProjectController.trim): upstream's sheet, then its trim, as one undo step.
         case "trim":
             guard s.document != nil else { return fail(-2, "no document") }
+            guard beginProjectOperation() else { return fail(-3, "The editor is busy; the image was not trimmed") }
+            defer { s.isProjectBusy = false }
             let options: TrimOptions? = await withCheckedContinuation { continuation in
                 trimAnswer = { continuation.resume(returning: $0) }
                 trimSheet = TrimSheet { [weak self] options in self?.finishTrim(options) }
@@ -810,6 +882,8 @@ final class UpstreamEditor {
         // ProjectController.canvasSize() / imageSize(): upstream's sheet, then its resizer, one undo step.
         case "canvasSizeSheet":
             guard let document = s.document else { return fail(-2, "no document") }
+            guard beginProjectOperation() else { return fail(-3, "The editor is busy; the canvas size was not changed") }
+            defer { s.isProjectBusy = false }
             let options: CanvasSizeOptions? = await withCheckedContinuation { continuation in
                 sizeAnswer = { continuation.resume(returning: $0 as? CanvasSizeOptions) }
                 canvasSizeSheet = CanvasSizeSheet(document: document, session: s) { [weak self] in
@@ -823,6 +897,8 @@ final class UpstreamEditor {
             } catch { return fail(-5, "Couldn’t change canvas size: \(error.localizedDescription)") }
         case "imageSizeSheet":
             guard let document = s.document else { return fail(-2, "no document") }
+            guard beginProjectOperation() else { return fail(-3, "The editor is busy; the image size was not changed") }
+            defer { s.isProjectBusy = false }
             let options: ImageSizeOptions? = await withCheckedContinuation { continuation in
                 sizeAnswer = { continuation.resume(returning: $0 as? ImageSizeOptions) }
                 imageSizeSheet = ImageSizeSheet(document: document) { [weak self] in self?.finishSizeSheet($0) }
@@ -836,14 +912,22 @@ final class UpstreamEditor {
         // Export As starting on JPEG, as in upstream 1.4.8 ("exportAsSheet" with kind "jpeg").
         case "exportPNG":
             guard let path = command.paths?.first, let snapshot = s.projectSnapshot() else { return fail(-1, "nothing to export") }
+            guard beginProjectOperation() else { return fail(-3, "The editor is busy; nothing was exported") }
+            defer { s.isProjectBusy = false }
             do { try await ImageExporter.shared.exportPNG(snapshot, to: URL(fileURLWithPath: path)) }
             catch { return fail(-5, "Couldn’t export PNG: \(error.localizedDescription)") }
         case "exportPDF":
             guard let path = command.paths?.first, let snapshot = s.projectSnapshot() else { return fail(-1, "nothing to export") }
+            guard beginProjectOperation() else { return fail(-3, "The editor is busy; nothing was exported") }
+            defer { s.isProjectBusy = false }
             do { try await ImageExporter.shared.exportPDF(snapshot, to: URL(fileURLWithPath: path)) }
             catch { return fail(-5, "Couldn’t export PDF: \(error.localizedDescription)") }
         case "exportAsSheet":
             guard let snapshot = s.projectSnapshot() else { return fail(-2, "no document") }
+            guard beginProjectOperation() else { return fail(-3, "The editor is busy; nothing was exported") }
+            exportHoldsProject = true
+            var chosenExport = false
+            defer { if !chosenExport { exportHoldsProject = false; s.isProjectBusy = false } }
             do {
                 let raster = try await ImageExporter.shared.render(snapshot)
                 // As upstream ProjectController.exportAs: a 16-bit PNG with a 16-bit layer, an EXR with an HDR layer.
@@ -857,6 +941,7 @@ final class UpstreamEditor {
                     case "pdf": return .pdf
                     case "png": return .png
                     case "exr": return .exr
+                    case "tiff": return .tiff
                     default: return lastExportFormat
                     }
                 }()
@@ -870,6 +955,7 @@ final class UpstreamEditor {
                 guard let chosen else { return fail(-7, "cancelled") }
                 pendingExport = chosen
                 lastExportFormat = chosen.format
+                chosenExport = true
             } catch { return fail(-5, "Couldn’t export: \(error.localizedDescription)") }
         case "gridSettingsSheet":
             // ProjectController.gridSettings(): live preview while open; Cancel restores the backup.
@@ -882,6 +968,8 @@ final class UpstreamEditor {
                 gridSettingsAnswer = { continuation.resume() }
             }
         case "writeExport":
+            // The save panel has answered: Export As's hold on the project ends whatever happens next.
+            if exportHoldsProject { exportHoldsProject = false; s.isProjectBusy = false }
             // No path: Cancel on the save panel — drop pending bytes (nothing is written).
             guard let pending = pendingExport else { return fail(-1, "nothing to write") }
             pendingExport = nil
@@ -1096,6 +1184,162 @@ final class UpstreamEditor {
 
     private func fail(_ code: Int32, _ message: String) -> Int32 { error = message; return code }
 
+    private func importReplacement(_ paths: [String]) async -> Int32 {
+        let originalDocument = session.document, originalRevision = session.history.currentRevision
+        let originalModified = session.history.isModified, originalGeneration = persistenceGeneration
+        let originalURL = session.projectURL
+        let staged = EditorSession()
+        staged.confirmConversions = session.confirmConversions
+        staged.confirmRawDevelop = session.confirmRawDevelop
+        replacementImportSession = staged
+        session.isProjectBusy = true
+        var folders: [URL] = []
+        defer {
+            for folder in folders { folder.stopAccessingSecurityScopedResource() }
+            // A cached RAW sheet can retain the staged session after the modal closes.
+            staged.clearProject()
+            replacementImportSession = nil
+            session.isProjectBusy = false
+        }
+        ImportPrompts.install(on: staged)
+        var files: [URL] = []
+        var cameraRawLayer: UUID?
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            if ImageFolder.matches(url) {
+                if url.startAccessingSecurityScopedResource() { folders.append(url) }
+                let images = ImageFolder.images(in: url)
+                guard !images.isEmpty else { return fail(-5, "“\(url.lastPathComponent)” has no images to import.") }
+                files.append(contentsOf: images)
+            } else { files.append(url) }
+        }
+        for file in files {
+            let before = staged.history.currentRevision
+            await staged.importImages([file])
+            if let message = staged.importError { return fail(-5, message) }
+            // Upstream skips a cancelled RAW/Photoshop input. A replacement must abort the entire staged batch.
+            guard staged.history.currentRevision != before else { return fail(-7, "cancelled") }
+            if staged.filterEdit?.kind == .cameraRaw {
+                cameraRawLayer = staged.activeLayerID
+                staged.cancelFilter()   // The batch continues; reopen on the installed document after success.
+            }
+        }
+        guard let document = staged.document else { return fail(-7, "cancelled") }
+        guard session.document == originalDocument, session.history.currentRevision == originalRevision,
+              session.history.isModified == originalModified, persistenceGeneration == originalGeneration,
+              session.projectURL == originalURL else {
+            return fail(-5, "The project changed during replacement import")
+        }
+        // Match the original successful replacement's new-document Undo entry, without a partial clear on failure.
+        session.cancelGradient()
+        nativeProjects.stopWatchingProject()
+        session.clearProject()
+        session.beginEdit(files.allSatisfy { PSDReader.matches($0) } ? "Import Photoshop File" : "Import Images")
+        session.document = document
+        session.activeLayerID = staged.activeLayerID
+        session.selectedLayerIDs = staged.selectedLayerIDs
+        session.collapsedGroupIDs = staged.collapsedGroupIDs
+        session.viewport = staged.viewport
+        session.endEdit()
+        persistenceGeneration = UUID()
+        replacementImportSession = nil
+        session.isProjectBusy = false
+        if let cameraRawLayer, session.document?.layers.contains(where: { $0.id == cameraRawLayer }) == true {
+            session.selectLayer(cameraRawLayer)
+            session.beginFilter(.cameraRaw)
+        }
+        error = nil
+        return 0
+    }
+
+    /// Check immutable arguments and current target preconditions before applying an unrelated pending draft.
+    /// Dispatch checks remain necessary because resolving the gradient can suspend and change session state.
+    private func refusalBeforeGradient(_ command: Command) -> (code: Int32, message: String)? {
+        let s = session
+        switch command.action {
+        case "selectLayer":
+            guard let id = command.layerID else { return (-1, "layerID required") }
+            if s.document?.layers.contains(where: { $0.id == id }) != true { return (-5, "no such layer") }
+        case "renameLayer":
+            if command.name == nil || s.activeLayerID == nil { return (-1, "name required") }
+        case "setVisible":
+            if command.enabled == nil || s.activeLayer == nil { return (-1, "enabled required") }
+        case "setOpacity":
+            if command.value?.isFinite != true || s.activeLayer == nil { return (-1, "value required") }
+        case "setSelectedOpacity":
+            if command.value == nil { return (-1, "value required") }
+        case "setBlendMode":
+            if command.kind.flatMap(LayerBlendMode.init(rawValue:)) == nil { return (-1, "unknown blend mode") }
+        case "setMaskEnabled", "setMaskLinked":
+            if command.enabled == nil || s.activeLayer?.mask == nil { return (-1, "no mask") }
+        case "moveLayer":
+            if command.x?.isFinite != true || command.y?.isFinite != true || s.activeLayer == nil { return (-1, "delta required") }
+        case "selectRectangle", "selectEllipse":
+            guard s.document != nil else { return (-2, "no document") }
+            guard point(command) != nil, let width = command.width, let height = command.height,
+                  (0...30_000).contains(width), (0...30_000).contains(height) else { return (-1, "invalid rectangle") }
+        case "selectLasso":
+            guard s.document != nil else { return (-2, "no document") }
+            guard let points = command.points, points.count >= 3 else { return (-1, "lasso needs 3+ points") }
+            if !points.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isFinite) }) { return (-1, "invalid point") }
+        case "shapeBegin", "shapeDrag", "textBegin", "textEditAt", "brushMove", "cloneSetSource", "magicWand", "warpMove":
+            if point(command) == nil { return (-1, "invalid point") }
+        case "textBeginBox":
+            if point(command) == nil || command.width == nil || command.height == nil { return (-1, "invalid box") }
+        case "brushBegin":
+            if s.document == nil || point(command) == nil { return (-1, "invalid brush start") }
+            if command.kind == "Clone", s.cloneSource == nil { return (-5, "no clone source set (send cloneSetSource first)") }
+        case "openFilter", "filterBegin":
+            if command.kind.flatMap(FilterKind.init(rawValue:)) == nil { return (-1, "unknown filter") }
+        case "addAdjustment":
+            if command.kind.flatMap(AdjustmentKind.init(rawValue:)) == nil { return (-1, "unknown adjustment") }
+        case "addLayerEffect":
+            if command.kind.flatMap(LayerEffectKind.init(rawValue:)) == nil { return (-1, "invalid effect") }
+            if s.activeLayer == nil { return (-2, "no layer") }
+        case "selectTool":
+            if (command.kind ?? command.name).flatMap(NavigationTool.init(rawValue:)) == nil { return (-1, "unknown tool") }
+        case "addShape":
+            if s.document == nil || command.kind.flatMap(ShapeKind.init(rawValue:)) == nil
+                || command.width == nil || command.height == nil || command.x == nil || command.y == nil {
+                return (-1, "invalid shape")
+            }
+        case "warpBegin":
+            if command.kind.flatMap(BlurToolMode.init(rawValue:)) == nil || point(command) == nil { return (-1, "invalid warp") }
+        case "importFiles":
+            if command.paths?.isEmpty != false { return (-1, "paths required") }
+        case "exportPNG", "exportPDF":
+            if command.paths?.first == nil || s.document == nil { return (-1, "nothing to export") }
+            if !s.canStartProjectOperation { return (-3, "The editor is busy; nothing was exported") }
+        case "trim", "canvasSizeSheet", "imageSizeSheet", "exportAsSheet":
+            if s.document == nil { return (-2, "no document") }
+            if !s.canStartProjectOperation { return (-3, "The editor is busy; the project operation did not start") }
+        case "resizeCanvas", "cropCanvas", "resizeImage":
+            let crop = command.action == "cropCanvas", image = command.action == "resizeImage"
+            guard let width = command.width, let height = command.height, s.document != nil else {
+                return (-1, crop ? "invalid crop" : "invalid size")
+            }
+            if image, let kind = command.kind, LayerSampling(rawValue: kind) == nil { return (-1, "unknown sampling") }
+            if !crop && !image {
+                let anchor = command.parameters?["anchor"] ?? 4
+                if !(0...8).contains(anchor) || anchor.rounded() != anchor { return (-1, "invalid anchor") }
+            }
+            let failure = crop ? "crop failed" : image ? "image resize failed" : "canvas resize failed"
+            if !(1...DocumentLimits.maxSide).contains(width) || !(1...DocumentLimits.maxSide).contains(height) {
+                return (-5, failure)
+            }
+            if image {
+                let resolution = command.value ?? s.document?.resolution ?? 72
+                if !resolution.isFinite || !(1...9600).contains(resolution) { return (-5, failure) }
+            }
+            if crop {
+                let x = command.x ?? 0, y = command.y ?? 0
+                if !x.isFinite || !y.isFinite || abs(x) > 1_000_000 || abs(y) > 1_000_000 { return (-5, failure) }
+            }
+        default: break
+        }
+        return nil
+    }
+
     private func commitPendingGradient() async -> Int32 {
         let s = session
         guard let pending = s.gradientEdit else { return 0 }
@@ -1158,6 +1402,24 @@ final class UpstreamEditor {
 
     // MARK: Project persistence (the shell writes the files; the session hands over and takes back layer pixels)
 
+    func importProjectSnapshot(_ snapshot: ProjectSnapshot) -> Int32 {
+        do { try LinuxProjectValidation.validate(snapshot.manifest) }
+        catch { return fail(-1, error.localizedDescription) }
+        guard snapshot.manifest.width * snapshot.manifest.height <= DocumentLimits.maxSurfacePixels,
+              snapshot.images.values.allSatisfy({ $0.image.width * $0.image.height <= DocumentLimits.maxSurfacePixels }),
+              snapshot.masks.values.allSatisfy({ $0.image.width * $0.image.height <= DocumentLimits.maxSurfacePixels })
+        else { return fail(-1, ProjectError.tooLarge.localizedDescription) }
+        guard session.canStartProjectOperation else { return fail(-3, "The editor is busy; the project was not imported") }
+        nativeProjects.stopWatchingProject()
+        session.installProject(snapshot, from: URL(fileURLWithPath: "/dev/null"))
+        session.projectURL = nil // Qt owns the document path and save/autosave lifecycle.
+        persistenceGeneration = UUID()
+        pendingLayerImages = []; pendingLayerMasks = []
+        loadingManifest = nil; loadingRevision = nil
+        error = nil
+        return 0
+    }
+
     func exportManifest() throws -> Data {
         guard let snapshot = session.projectSnapshot() else { throw ExportError.render }
         return try JSONEncoder().encode(snapshot.manifest)
@@ -1172,11 +1434,16 @@ final class UpstreamEditor {
             try LinuxProjectValidation.validate(manifest)
             guard manifest.width * manifest.height <= DocumentLimits.maxSurfacePixels else { throw ProjectError.tooLarge }
         } catch { return fail(-1, error.localizedDescription) }
+        guard session.canStartProjectOperation else { return fail(-3, "The editor is busy; the project was not imported") }
+        nativeProjects.stopWatchingProject()
         session.installProject(ProjectSnapshot(manifest: manifest, images: [:]), from: URL(fileURLWithPath: "/dev/null"))
         persistenceGeneration = UUID()
         session.projectURL = nil
-        loadingManifest = manifest
         session.history.reset()
+        pendingLayerImages = Set(manifest.layers.filter { $0.imageFile != nil }.map(\.id))
+        pendingLayerMasks = Set(manifest.layers.filter { $0.maskFile != nil }.map(\.id))
+        loadingManifest = pendingLayerImages.isEmpty && pendingLayerMasks.isEmpty ? nil : manifest
+        loadingRevision = loadingManifest == nil ? nil : session.history.currentRevision
         error = nil
         return 0
     }
@@ -1189,20 +1456,33 @@ final class UpstreamEditor {
     func installLayerAsset(_ pixels: PortableImage, id: UUID, mask: Bool) -> Int32 {
         let s = session
         guard var document = s.document, let index = document.layers.firstIndex(where: { $0.id == id }) else { return fail(-5, "no such layer") }
+        guard s.canStartProjectOperation, s.canEditLayers else { return fail(-3, "The editor is busy; the layer asset was not imported") }
+        guard let manifest = loadingManifest, manifest.documentID == document.id,
+              let record = manifest.layers.first(where: { $0.id == id }),
+              mask ? pendingLayerMasks.contains(id) : pendingLayerImages.contains(id)
+        else { return fail(-5, "The project has no pending asset for this layer") }
+        // Installing load assets resets history. A caller must not erase edits made after staging began.
+        guard loadingRevision == s.history.currentRevision, !s.history.isModified, !s.history.canUndo, !s.history.canRedo
+        else { return fail(-5, "The project changed during asset loading") }
         let image = CGImage(pixels)
         if mask {
-            guard let record = loadingManifest?.layers.first(where: { $0.id == id }) ?? nil, record.maskFile != nil,
-                  let asset = try? LayerMask.asset(from: image) else { return fail(-1, "invalid mask") }
+            guard let asset = try? LayerMask.asset(from: image) else { return fail(-1, "invalid mask") }
             document.layers[index].mask = LayerMask(asset: asset, isEnabled: record.maskEnabled ?? true, placement: record.maskPlacement, isLinked: record.maskLinked ?? true)
         } else {
             guard pixels.kind == .rgba, pixels.width > 0, pixels.height > 0, let thumbnail = try? PixelAdjust.thumbnail(of: image) else { return fail(-1, "invalid image") }
             document.layers[index].asset = ImportedImage(image: image, thumbnail: thumbnail, name: document.layers[index].name)
-            let record = loadingManifest?.layers.first(where: { $0.id == id }) ?? nil
-            document.layers[index].shape = LayerShape.loaded(record?.shape, image: image)
-            document.layers[index].text = LayerText.loaded(record?.text, image: image)
+            document.layers[index].shape = LayerShape.loaded(record.shape, image: image)
+            document.layers[index].text = LayerText.loaded(record.text, image: image)
         }
         s.document = document
         s.history.reset()
+        if mask { pendingLayerMasks.remove(id) } else { pendingLayerImages.remove(id) }
+        if pendingLayerImages.isEmpty && pendingLayerMasks.isEmpty {
+            loadingManifest = nil
+            loadingRevision = nil
+        } else {
+            loadingRevision = s.history.currentRevision
+        }
         error = nil
         return 0
     }
@@ -1239,7 +1519,11 @@ final class UpstreamEditor {
         let state = State(width: s.document?.width ?? 0, height: s.document?.height ?? 0, resolution: s.document?.resolution ?? 72,
             activeLayerID: s.activeLayerID, modified: s.history.isModified, canUndo: s.canUndo, canRedo: s.canRedo,
             undoName: s.history.undoName, redoName: s.history.redoName,
-            busy: s.brushStroke != nil || s.filterEdit != nil || s.transformEdit != nil,
+            busy: replacementImportSession != nil || s.isProjectBusy || s.pixelMove != nil
+                || s.brushStroke != nil || s.filterEdit != nil || s.transformEdit != nil,
+            filterPreviewRendering: s.filterEdit?.previewTask != nil || s.filterEdit?.pending != nil,
+            canSwitch: replacementImportSession == nil && s.canStartProjectOperation && s.hueSaturation == nil
+                && s.filterEdit == nil && s.gradientEdit == nil && s.pixelMove == nil && s.colorPicker == nil,
             layers: (s.document?.layers ?? []).map { State.Layer(id: $0.id, name: $0.name, visible: $0.isVisible, opacity: $0.opacity,
                 blendMode: $0.blendMode.rawValue, parentID: $0.parentID, isGroup: $0.isGroup, hasMask: $0.mask != nil,
                 maskEnabled: $0.mask?.isEnabled, maskLinked: $0.mask?.isLinked, maskPlacement: $0.mask?.placement,
@@ -1297,8 +1581,8 @@ final class UpstreamEditor {
                     alignment: style.alignment.rawValue, boxSize: style.boxSize.map { [Double($0.width), Double($0.height)] },
                     padding: Double(LayerTextStyle.padding), editingLayer: draft.layerID != nil)
             },
-            rawDevelopOpen: s.showsRawDevelop,
-            conversionSheetOpen: s.showsConversionSheet,
+            rawDevelopOpen: importSession.showsRawDevelop,
+            conversionSheetOpen: importSession.showsConversionSheet,
             floatingPanels: FloatingPanels.open(in: self),
             showsImporter: s.showsImporter,
             openProjectRequested: openProjectRequested,
@@ -1335,11 +1619,15 @@ final class UpstreamEditor {
         for i in stride(from: 0, to: pixels.count, by: 4) where pixels[i] > pixels[i + 3] || pixels[i + 1] > pixels[i + 3] || pixels[i + 2] > pixels[i + 3] {
             return fail(-1, "pixels are not premultiplied")
         }
+        guard session.canStartProjectOperation else { return fail(-3, "The editor is busy; the image was not imported") }
         let image = CGImage(PortableImage(width: width, height: height, kind: .rgba, bytesPerRow: width * 4, bytes: pixels))
         guard let thumbnail = try? PixelAdjust.thumbnail(of: image) else { return fail(-5, "thumbnail failed") }
         let asset = ImportedImage(image: image, thumbnail: thumbnail, name: name)
         let s = session
         if replacing || s.document == nil {
+            nativeProjects.stopWatchingProject()
+            s.projectURL = nil
+            persistenceGeneration = UUID()
             let layer = ImageLayer(asset: asset, origin: .zero)
             s.document = CanvasDocument(width: width, height: height, layers: [layer])
             s.activeLayerID = layer.id
@@ -1417,11 +1705,12 @@ final class UpstreamEditor {
             }
             // Text being edited is drawn by the shell's inline editor, not from the layer (EditorCanvas skips it too).
             let editing = s.textDraft?.layerID == layer.id
-            if shown != layer.transform || maskPlacement != layer.mask?.placement || editing {
+            let blendMode = s.displayedBlendMode(for: layer)
+            if shown != layer.transform || maskPlacement != layer.mask?.placement || editing || blendMode != layer.blendMode {
                 let record = manifest.layers[index]
                 manifest.layers[index] = ProjectLayerRecord(id: record.id, name: record.name, isVisible: record.isVisible && !editing, transform: shown,
                     imageFile: record.imageFile, parentID: record.parentID, isGroup: record.isGroup, opacity: record.opacity,
-                    blendMode: record.blendMode, maskFile: record.maskFile, maskEnabled: record.maskEnabled, maskSourceID: record.maskSourceID,
+                    blendMode: blendMode, maskFile: record.maskFile, maskEnabled: record.maskEnabled, maskSourceID: record.maskSourceID,
                     adjustment: record.adjustment, maskPlacement: maskPlacement, maskLinked: record.maskLinked,
                     shape: record.shape, effects: record.effects, text: record.text)
             }

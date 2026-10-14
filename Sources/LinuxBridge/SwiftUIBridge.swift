@@ -5,6 +5,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import AppKit
 
 /// A positive width updates the native dock; zero reads its saved, clamped width. Geometry is UI state, not an edit.
 @_cdecl("compositor_session_layers_panel_width")
@@ -52,6 +53,7 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
             StateStore.discard(scope: scope)
             ChangeTracker.discard(scope: scope)
             NativeLowering.discard(scope: scope)
+            entry.actionHandlers[panel] = [:]
             entry.resultHandlers[panel] = [:]
             return nil
         }
@@ -123,8 +125,9 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
             onOpen: { editor.openProjectRequested = true }))
     case "RawDevelopSheet":
         // One sheet per develop request, kept while it is open: its sliders and preview live in its @State.
+        let session = entry.editor.importSession
         guard let develop = session.rawDevelop else { entry.rawDevelopSheet = nil; return nil }
-        if entry.rawDevelopSheet?.url != develop.url {
+        if entry.rawDevelopSheet?.url != develop.url || entry.rawDevelopSheet?.view.session !== session {
             entry.rawDevelopSheet = (develop.url, RawDevelopSheet(session: session, url: develop.url, settings: develop.settings))
         }
         resolved = ViewResolver.resolve(entry.rawDevelopSheet!.view)
@@ -165,6 +168,7 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
         resolved = ViewResolver.resolve(sheet)
     case "PSDConversionSheet":
         // Upstream's Photoshop conversion sheet: "Reading…" while the file parses, then the list and Import / Cancel.
+        let session = entry.editor.importSession
         guard let request = session.conversionRequest else { return nil }
         resolved = ViewResolver.resolve(PSDConversionSheet(request: request, finish: session.finishConversion))
     case "CurvesControls":
@@ -225,6 +229,32 @@ nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: U
 /// The tree a `compositor_session_render_tree` size query resolved, waiting for the fill call that follows it.
 nonisolated(unsafe) private var pendingTree: (handle: UInt64, panel: String, data: Data)?
 
+/// Accessibility is queried independently from painting; offscreen table rows need not be created on every frame.
+@_cdecl("compositor_session_accessibility_tree")
+nonisolated public func compositorSessionAccessibilityTree(_ handle: UInt64, _ panel: UnsafePointer<CChar>?,
+                                                          _ nodeID: UnsafePointer<CChar>?, _ output: UnsafeMutablePointer<UInt8>?,
+                                                          _ capacity: Int) -> Int64 {
+    guard let panel, let nodeID, capacity >= 0 else { return -1 }
+    let panelName = String(cString: panel), node = String(cString: nodeID)
+    return withEntry(handle) { entry in
+        if let output, let pending = pendingAccessibility, pending.handle == handle,
+           pending.panel == panelName, pending.node == node {
+            pendingAccessibility = nil
+            guard capacity >= pending.data.count else { return Int64(pending.data.count) }
+            pending.data.copyBytes(to: output, count: pending.data.count)
+            return Int64(pending.data.count)
+        }
+        pendingAccessibility = nil
+        guard let snapshot = entry.actionHandlers[panelName]?[node]?["accessibilitySnapshot"] else { return -1 }
+        let box = NativeAccessibilityBox(); snapshot(box)
+        guard !box.data.isEmpty else { return -1 }
+        if let output, capacity >= box.data.count { box.data.copyBytes(to: output, count: box.data.count) }
+        if output == nil { pendingAccessibility = (handle, panelName, node, box.data) }
+        return Int64(box.data.count)
+    }
+}
+nonisolated(unsafe) private var pendingAccessibility: (handle: UInt64, panel: String, node: String, data: Data)?
+
 /// Draws a `Canvas` node's `draw` handler into a fresh `width`×`height` RGBA context (via the existing
 /// Skia-backed `CGContext`, `Sources/Compat/CoreGraphics/CoreGraphicsCompat`) and returns the raw pixels, so the
 /// Qt renderer can blit them without knowing anything about `GraphicsContext`/`Path` itself — the same "one
@@ -265,6 +295,24 @@ nonisolated public func compositorSessionDispatchSwiftUIAction(_ handle: UInt64,
     return Int32(withEntry(handle) { entry in
         guard let action = entry.actionHandlers[panelName]?[nodeIDString]?[handlerKeyString] else { return -1 }
         let value: Any = payloadData.isEmpty ? () : ((try? JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed])) ?? ())
+        let previousEvent = NSApp.currentEvent
+        let previousModifiers = NSEvent.modifierFlags
+        var scopesActivation = false
+        if handlerKeyString == "action", let data = value as? [String: Any], let bits = data["modifiers"] as? Int {
+            scopesActivation = true
+            var flags: NSEvent.ModifierFlags = []
+            if bits & 1 != 0 { flags.insert(.command) }
+            if bits & 2 != 0 { flags.insert(.option) }
+            if bits & 4 != 0 { flags.insert(.control) }
+            if bits & 8 != 0 { flags.insert(.shift) }
+            NSApp.currentEvent = NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: flags,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 0)
+            NSEvent.modifierFlags = flags
+        }
+        defer {
+            if scopesActivation { NSApp.currentEvent = previousEvent; NSEvent.modifierFlags = previousModifiers }
+        }
         action(value)
         // A toolbar button or picker finishes its field change in one interaction. Numeric fields and label
         // scrubs keep their draft until focus leaves or the drag ends; explicit Free Transform still waits.
@@ -272,9 +320,14 @@ nonisolated public func compositorSessionDispatchSwiftUIAction(_ handle: UInt64,
            let edit = entry.editor.session.transformEdit, edit.fromFields, !edit.persistent {
             entry.editor.session.commitTransform()
         }
-        // The host keeps a field's widgets while it is being edited. Settle focus observers now so both gaining
-        // and losing focus are observed, and a draft commits before the next button action (such as the picker's OK).
-        if handlerKeyString == "focused" || handlerKeyString == "onSubmit" || handlerKeyString == "onExitCommand" {
+        // The host keeps a field's widgets while it is being edited, and does not resolve the panel then. Settle focus
+        // observers now so both gaining and losing focus are observed, and a draft commits before the next button
+        // action (such as the picker's OK). Typed text is often view @State, which in SwiftUI re-evaluates the body:
+        // resolve so its .onChange runs while typing (the transform fields preview each typed value live). Only on
+        // the main thread, where the host types: a main-queue block run on a C-ABI caller's thread cannot cast to
+        // the main-actor-isolated NSViewRepresentable conformance, so such a resolve would not lower native views.
+        if handlerKeyString == "focused" || (handlerKeyString == "text" && Thread.isMainThread)
+            || handlerKeyString == "onSubmit" || handlerKeyString == "onExitCommand" {
             _ = resolvePanel(panelName, entry: entry)
         }
         // No blanket invalidation: compositor_session_render re-renders only when its RenderKey changed.

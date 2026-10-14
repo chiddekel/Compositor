@@ -1,6 +1,7 @@
 #ifndef COMPOSITOR_CORE_IMAGE_KERNELS_H
 #define COMPOSITOR_CORE_IMAGE_KERNELS_H
 #include <stddef.h>
+#include "VulkanRaster.h"
 #ifdef __cplusplus
 extern "C" {
 #endif

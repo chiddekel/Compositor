@@ -248,6 +248,15 @@ public struct KeyEquivalent: Sendable, Equatable, ExpressibleByExtendedGraphemeC
     public static let cancelAction = KeyEquivalent(action: "\u{1b}"), defaultAction = KeyEquivalent(action: "\r")
 }
 
+/// A key and its modifiers, as one value (SwiftUI's `KeyboardShortcut`).
+public struct KeyboardShortcut: Sendable, Equatable {
+    public let key: KeyEquivalent
+    public let modifiers: EventModifiers
+    public init(_ key: KeyEquivalent, modifiers: EventModifiers = .command) { self.key = key; self.modifiers = modifiers }
+    public static let defaultAction = KeyboardShortcut(.defaultAction, modifiers: [])
+    public static let cancelAction = KeyboardShortcut(.cancelAction, modifiers: [])
+}
+
 /// A minimal `Shape` for the handful of custom shapes upstream draws (e.g. `HueArrow`); it only needs to exist as
 /// a `View` (drawing happens through `Canvas`/`GraphicsContext`, already bridged via Compat/CoreGraphics).
 public protocol Shape: PrimitiveView {

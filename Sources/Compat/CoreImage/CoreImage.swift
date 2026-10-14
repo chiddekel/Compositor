@@ -75,7 +75,7 @@ public let kCIInputAspectRatioKey = "inputAspectRatio"
 
 private let infiniteExtent = CGRect(x: -8_000_000, y: -8_000_000, width: 16_000_000, height: 16_000_000)
 
-private struct Env { var linear: Bool }
+private struct Env { var linear: Bool; var gpu: VulkanRaster? = nil }
 
 private indirect enum Node {
     case source(Raster, CGRect)
@@ -83,6 +83,9 @@ private indirect enum Node {
     /// without the float round trip, which for a very large RAW would cost more memory than the image itself.
     case bitmap(CGImage)
     case color(CIColor)
+    /// CIRandomGenerator: independent uniform values in [0, 1) for every channel of every pixel (alpha included), the
+    /// same at the same place every time, over the whole plane.
+    case random
     /// CILinearGradient: color0 at point0 to color1 at point1 along their line, constant beyond either end.
     case linearGradient(CGPoint, CIColor, CGPoint, CIColor)
     case crop(Node, CGRect)
@@ -92,6 +95,7 @@ private indirect enum Node {
     case maxComponent(Node)
     case alphaOne(Node, CGRect)
     case gaussian(Node, Double)
+    case variableBlur(Node, Node, Double)
     case bloom(Node, Double, Double)          // radius, intensity
     case motion(Node, Double, Double)
     case matrix(Node, [[Float]], [Float])
@@ -122,9 +126,10 @@ private indirect enum Node {
         switch self {
         case .source(_, let r): return r
         case .bitmap(let image): return CGRect(x: 0, y: 0, width: image.width, height: image.height)
-        case .color, .clamp, .linearGradient, .radialGradient, .tile: return infiniteExtent
+        case .color, .random, .clamp, .linearGradient, .radialGradient, .tile: return infiniteExtent
         case .crop(let n, let r): return n.extent.intersection(r)
         case .gaussian(let n, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
+        case .variableBlur(let n, _, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
@@ -152,14 +157,167 @@ private indirect enum Node {
 
     var isRegionalFilter: Bool {
         switch self {
-        case .gaussian: return true
+        case .gaussian, .variableBlur: return true
         case .crop(let node, _): return node.isRegionalFilter
         default: return false
         }
     }
 
+    // Count only connected pointwise operations, stopping once batching is worthwhile.
+    private func graphOperationCount(_ limit: Int) -> Int {
+        guard limit > 0 else { return 0 }
+        switch self {
+        case .crop(let n, _):
+            let count = n.graphOperationCount(limit)
+            return count > 0 ? min(limit, count + 1) : 0
+        case .matrix(let n, _, _), .colorClamp(let n, _, _), .unpremultiply(let n), .maxComponent(let n):
+            return 1 + n.graphOperationCount(limit - 1)
+        case .over(let s, let b):
+            let count = 1 + s.graphOperationCount(limit - 1)
+            return count + b.graphOperationCount(limit - count)
+        case .blendMask(let s, let b, let m, _):
+            var count = 1 + s.graphOperationCount(limit - 1)
+            count += b.graphOperationCount(limit - count)
+            return count + m.graphOperationCount(limit - count)
+        default: return 0
+        }
+    }
+
+    /// An exact identity for a leaf whose pixels depend only on what the key records: retained source storage (by
+    /// address, kept alive with the cached result so it cannot be reused), geometry, generators and blur radii. Equal
+    /// keys always evaluate to the same pixels, so a cached leaf can stand in for evaluating it again.
+    private func geometryLeafIdentity(domain: CGRect, region: CGRect, linear: Bool) -> (sources: [[Float]], key: [UInt64])? {
+        var sources: [[Float]] = [], key: [UInt64] = []
+        func rectangle(_ rect: CGRect) {
+            key += [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)].map(\.bitPattern)
+        }
+        func color(_ value: CIColor) {
+            key += [Double(value.red), Double(value.green), Double(value.blue), Double(value.alpha)].map(\.bitPattern)
+        }
+        func affine(_ transform: CGAffineTransform) {
+            key += [Double(transform.a), Double(transform.b), Double(transform.c), Double(transform.d),
+                    Double(transform.tx), Double(transform.ty)].map(\.bitPattern)
+        }
+        func visit(_ node: Node, depth: Int) -> Bool {
+            guard depth < 64, key.count < 4096 else { return false }
+            switch node {
+            case .source(let raster, let extent):
+                sources.append(raster.data)
+                key.append(raster.data.withUnsafeBufferPointer {
+                    $0.baseAddress.map { UInt64(UInt(bitPattern: UnsafeRawPointer($0))) } ?? 0
+                })
+                rectangle(raster.rect); rectangle(extent)
+            case .nearest(let child):
+                guard visit(child, depth: depth + 1) else { return false }
+                key.append(1)
+            case .clamp(let child):
+                guard visit(child, depth: depth + 1) else { return false }
+                key.append(2)
+            case .crop(let child, let rect):
+                guard visit(child, depth: depth + 1) else { return false }
+                key.append(3); rectangle(rect)
+            case .transform(let child, let transform):
+                guard visit(child, depth: depth + 1) else { return false }
+                key.append(4); affine(transform)
+            case .color(let value):
+                key.append(5); color(value)
+            case .random:
+                key.append(9)
+            case .tile(let child, let transform):
+                guard visit(child, depth: depth + 1) else { return false }
+                key.append(6); affine(transform)
+            case .over(let top, let bottom):
+                guard visit(top, depth: depth + 1), visit(bottom, depth: depth + 1) else { return false }
+                key.append(7)
+            case .gaussian(let child, let sigma):
+                guard visit(child, depth: depth + 1) else { return false }
+                key.append(8); key.append(sigma.bitPattern)
+            default: return false
+            }
+            return true
+        }
+        guard visit(self, depth: 0) else { return nil }
+        key.append(linear ? 1 : 0)
+        rectangle(domain); rectangle(region)
+        return (sources, key)
+    }
+
+    private func evalGraph(_ region: CGRect, _ env: Env) -> Raster? {
+        guard let gpu = env.gpu, gpu.isAvailable, region.width * region.height >= Double(gpu.minimumGraphPixels),
+              graphOperationCount(2) > 1 else { return nil }
+        var sources: [Raster] = [], steps: [VulkanRasterStep] = []
+        func visit(_ node: Node, _ domain: CGRect, depth: Int) -> Int? {
+            guard depth < 128, steps.count < 128 else { return nil }
+            let step: VulkanRasterStep
+            switch node {
+            case .crop(let n, let rect) where n.graphOperationCount(1) > 0:
+                let intersection = domain.intersection(rect)
+                if intersection.isNull || intersection.width <= 0 || intersection.height <= 0 {
+                    guard sources.count < 64 else { return nil }
+                    sources.append(Raster(rect: region))
+                    return -sources.count
+                }
+                let clipped = intersection.integral
+                guard let input = visit(n, clipped, depth: depth + 1) else { return nil }
+                step = VulkanRasterStep(operation: 7, source: input, parameters: [
+                    Float(clipped.minX - region.minX), Float(clipped.minY - region.minY),
+                    Float(clipped.maxX - region.minX), Float(clipped.maxY - region.minY)])
+            case .over(let s, let b):
+                guard let top = visit(s, domain, depth: depth + 1), let bottom = visit(b, domain, depth: depth + 1) else { return nil }
+                step = VulkanRasterStep(operation: 1, source: top, background: bottom)
+            case .blendMask(let s, let b, let m, let channel):
+                guard let top = visit(s, domain, depth: depth + 1), let bottom = visit(b, domain, depth: depth + 1),
+                      let mask = visit(m, domain, depth: depth + 1) else { return nil }
+                step = VulkanRasterStep(operation: 2, source: top, background: bottom, mask: mask, channel: UInt32(channel))
+            case .matrix(let n, let rows, let bias):
+                guard let input = visit(n, domain, depth: depth + 1) else { return nil }
+                step = VulkanRasterStep(operation: 3, source: input, parameters: rows.flatMap { $0 } + bias)
+            case .colorClamp(let n, let lo, let hi):
+                guard let input = visit(n, domain, depth: depth + 1) else { return nil }
+                step = VulkanRasterStep(operation: 4, source: input, parameters: lo + hi)
+            case .unpremultiply(let n):
+                guard let input = visit(n, domain, depth: depth + 1) else { return nil }
+                step = VulkanRasterStep(operation: 5, source: input)
+            case .maxComponent(let n):
+                guard let input = visit(n, domain, depth: depth + 1) else { return nil }
+                step = VulkanRasterStep(operation: 6, source: input)
+            default:
+                // Keep the CPU node's original crop domain; padding happens only at the graph boundary.
+                let evaluate = { node.eval(domain, Env(linear: env.linear)).cropped(to: region) }
+                let raster: Raster
+                if let identity = node.geometryLeafIdentity(domain: domain, region: region, linear: env.linear) {
+                    raster = gpu.geometryLeaf(key: identity.key, sources: identity.sources, evaluate: evaluate)
+                } else {
+                    raster = evaluate()
+                }
+                for (index, old) in sources.enumerated() where old.data.count == raster.data.count {
+                    let same = old.data.withUnsafeBufferPointer { a in
+                        raster.data.withUnsafeBufferPointer { b in a.baseAddress == b.baseAddress }
+                    }
+                    if same { return -index - 1 }
+                }
+                guard sources.count < 64 else { return nil }
+                sources.append(raster)
+                return -sources.count
+            }
+            guard steps.count < 128 else { return nil }
+            steps.append(step)
+            return steps.count - 1
+        }
+        guard visit(self, region, depth: 0) != nil else { return nil }
+        func reference(_ value: Int) -> Int { value < 0 ? -value - 1 : sources.count + value }
+        let nativeSteps = steps.map { step -> VulkanRasterStep in
+            var s = step; s.source = reference(step.source)
+            if s.operation <= 2 { s.background = reference(step.background) }
+            if s.operation == 2 { s.mask = reference(step.mask) }
+            return s
+        }
+        return gpu.renderGraph(sources: sources, steps: nativeSteps)
+    }
+
     /// Computes `region` (integral, in CI coordinates). Outside the node's extent the result is transparent.
     func eval(_ region: CGRect, _ env: Env) -> Raster {
+        if let batched = evalGraph(region, env) { return batched }
         switch self {
         case .bitmap(let image): return CIImage(cgImage: image).node.eval(region, env)
         case .source(let raster, let rect):
@@ -181,6 +339,18 @@ private indirect enum Node {
             if env.linear { r = Gamma.toLinear(r); g = Gamma.toLinear(g); b = Gamma.toLinear(b) }
             var i = 0
             while i < out.data.count { out.data[i] = r * a; out.data[i + 1] = g * a; out.data[i + 2] = b * a; out.data[i + 3] = a; i += 4 }
+            return out
+        case .random:
+            var out = Raster(rect: region, uninitialized: true)
+            let x0 = Int(region.minX), y0 = Int(region.minY), w = out.width, h = out.height
+            out.data.withUnsafeMutableBufferPointer { values in
+                for y in 0..<h {
+                    for x in 0..<w {
+                        let base = (y * w + x) * 4
+                        for c in 0..<4 { values[base + c] = RandomField.value(x: x0 + x, y: y0 + y, channel: c) }
+                    }
+                }
+            }
             return out
         case .linearGradient(let p0, let c0, let p1, let c1):
             // Premultiplied, interpolated per channel like Core Image's generator; sampled at pixel centers.
@@ -212,15 +382,10 @@ private indirect enum Node {
             // Already endless (or empty): there is no edge to carry outwards.
             guard !ext.isInfiniteLike, !ext.isNull, ext.width >= 1, ext.height >= 1 else { return n.eval(region, env) }
             let inner = n.eval(ext.intersection(infiniteExtent).integral, env)
-            var out = Raster(rect: region)
-            for y in 0..<out.height { for x in 0..<out.width {
-                let sx = Int(region.minX) + x - Int(inner.rect.minX), sy = Int(region.minY) + y - Int(inner.rect.minY)
-                let p = inner.clamped(sx, sy), o = out.index(x, y)
-                out.data[o] = p.0; out.data[o + 1] = p.1; out.data[o + 2] = p.2; out.data[o + 3] = p.3
-            } }
-            return out
+            return inner.clamped(to: region)
         case .maxComponent(let n):
             var out = n.eval(region, env)
+            if let result = env.gpu?.render(6, source: out) { return result }
             for i in stride(from: 0, to: out.data.count, by: 4) {
                 let m = max(out.data[i], out.data[i + 1], out.data[i + 2])
                 out.data[i] = m; out.data[i + 1] = m; out.data[i + 2] = m
@@ -228,6 +393,7 @@ private indirect enum Node {
             return out
         case .unpremultiply(let n):
             var out = n.eval(region, env)
+            if let result = env.gpu?.render(5, source: out) { return result }
             for i in stride(from: 0, to: out.data.count, by: 4) {
                 let alpha = out.data[i + 3]
                 for c in 0..<3 { out.data[i + c] = alpha > 0 ? out.data[i + c] / alpha : 0 }
@@ -244,6 +410,10 @@ private indirect enum Node {
         case .gaussian(let n, let sigma):
             let pad = ceil(sigma * 3)
             return RasterFilters.gaussian(n.eval(region.insetBy(dx: -pad, dy: -pad), env), sigma: sigma, output: region)
+        case .variableBlur(let n, let mask, let radius):
+            let pad = ceil(radius * 3)
+            return RasterFilters.variableBlur(n.eval(region.insetBy(dx: -pad, dy: -pad), env),
+                                              mask: mask.eval(region, Env(linear: false)), radius: radius, output: region)
         case .bloom(let n, let radius, let intensity):
             // CIBloom: adds a blurred, intensity-scaled copy of the image back onto itself — a screen-like glow
             // that brightens highlights without touching midtones/shadows much (their blurred neighborhood is dark).
@@ -255,17 +425,24 @@ private indirect enum Node {
             let pad = ceil(radius) + 1
             return RasterFilters.motionBlur(n.eval(region.insetBy(dx: -pad, dy: -pad), env), radius: radius, angle: angle, output: region)
         case .matrix(let n, let rows, let bias):
-            return RasterFilters.colorMatrix(n.eval(region, env), r: rows[0], g: rows[1], b: rows[2], a: rows[3], bias: bias)
-        case .colorClamp(let n, let lo, let hi): return RasterFilters.colorClamp(n.eval(region, env), minimum: lo, maximum: hi)
+            let input = n.eval(region, env)
+            if let result = env.gpu?.render(3, source: input, parameters: rows.flatMap { $0 } + bias) { return result }
+            return RasterFilters.colorMatrix(input, r: rows[0], g: rows[1], b: rows[2], a: rows[3], bias: bias)
+        case .colorClamp(let n, let lo, let hi):
+            let input = n.eval(region, env)
+            if let result = env.gpu?.render(4, source: input, parameters: lo + hi) { return result }
+            return RasterFilters.colorClamp(input, minimum: lo, maximum: hi)
         case .cube(let n, let dim, let data): return RasterFilters.colorCube(n.eval(region, env), dimension: dim, cube: data)
         case .blendMask(let n, let bg, let mask, let channel):
-            return RasterFilters.blendWithMask(n.eval(region, env), background: bg.eval(region, env), mask: mask.eval(region, env),
-                                               channel: channel)
+            let input = n.eval(region, env), background = bg.eval(region, env), coverage = mask.eval(region, env)
+            if let result = env.gpu?.render(2, source: input, background: background, mask: coverage, channel: UInt32(channel)) { return result }
+            return RasterFilters.blendWithMask(input, background: background, mask: coverage, channel: channel)
         case .nearest(let n):
             return n.eval(region, env)
         case .over(let top, let bottom):
             let s = top.eval(region, env)
             var out = bottom.eval(region, env)
+            if let result = env.gpu?.render(1, source: s, background: out) { return result }
             var i = 0
             while i < out.data.count {
                 let keep = 1 - s.data[i + 3]
@@ -310,7 +487,7 @@ private indirect enum Node {
             }
             return out
         case .curves(let n, let table, let domain):
-            var out = n.eval(region, Env(linear: false))
+            var out = n.eval(region, Env(linear: false, gpu: env.gpu))
             let entries = table.count / 3
             guard entries >= 2 else { return n.eval(region, env) }
             let lo = Float(domain.lowerBound), hi = Float(domain.upperBound), scale = Float(entries - 1) / max(1e-6, hi - lo)
@@ -334,8 +511,8 @@ private indirect enum Node {
             // Separable blend modes (PDF 1.7 / W3C Compositing & Blending) are defined on non-linear perceptual
             // (sRGB) color components. When linear working space is active, evaluate inputs in sRGB and map the
             // blended result into linear space so the caller receives the linear values it expects.
-            let sRGB_s = s.eval(region, Env(linear: false))
-            let sRGB_b = b.eval(region, Env(linear: false))
+            let sRGB_s = s.eval(region, Env(linear: false, gpu: env.gpu))
+            let sRGB_b = b.eval(region, Env(linear: false, gpu: env.gpu))
             var res = RasterFilters.nonSeparableModes.contains(mode)
                 ? RasterFilters.nonSeparableBlend(sRGB_s, backdrop: sRGB_b, mode: mode)
                 : RasterFilters.separableBlend(sRGB_s, backdrop: sRGB_b, RasterFilters.separableFormula(mode))
@@ -377,6 +554,18 @@ private extension CGRect {
 
 private let byteToFloatTable: [Float] = (0...255).map { Float($0) / 255.0 }
 
+/// CIRandomGenerator's field: a hash of the pixel's position and channel, so the noise stays put as an image moves
+/// over it (a dithered canvas doesn't crawl from frame to frame).
+enum RandomField {
+    static func value(x: Int, y: Int, channel: Int) -> Float {
+        var h = UInt64(bitPattern: Int64(x)) &* 0x9E3779B97F4A7C15 ^ UInt64(bitPattern: Int64(y)) &* 0xC2B2AE3D27D4EB4F
+            ^ UInt64(channel) &* 0x165667B19E3779F9
+        h ^= h >> 33; h &*= 0xFF51AFD7ED558CCD; h ^= h >> 33; h &*= 0xC4CEB9FE1A85EC53; h ^= h >> 33
+        // 24 random bits: every value exact in a Float, all below 1.
+        return Float(h >> 40) / 16_777_216
+    }
+}
+
 // MARK: - CIImage
 
 public final class CIImage: @unchecked Sendable {
@@ -386,6 +575,11 @@ public final class CIImage: @unchecked Sendable {
     fileprivate init(node: Node) { self.node = node }
 
     public convenience init(cgImage: CGImage) {
+        self.init(cgImage: cgImage, topDownRows: false)
+    }
+
+    /// Linux canvas textures keep their uploaded row order instead of flipping the bitmap during every evaluation.
+    public convenience init(cgImage: CGImage, topDownRows: Bool) {
         let w = cgImage.width, h = cgImage.height
         // A 16-bit, half-float or 32-bit-float image keeps its precision (and an HDR one its light past white): its
         // values come in as sRGB-encoded floats like every other source, 32-bit floats (linear light) encoded first.
@@ -395,8 +589,9 @@ public final class CIImage: @unchecked Sendable {
             let values = native.premultipliedSRGB()
             deep.data.withUnsafeMutableBufferPointer { dst in
                 values.withUnsafeBufferPointer { src in
-                    for y in 0..<h {   // CGImage rows run top-down; CI rows run bottom-up.
-                        memcpy(dst.baseAddress! + (h - 1 - y) * w * 4, src.baseAddress! + y * w * 4, w * 4 * MemoryLayout<Float>.size)
+                    for y in 0..<h {
+                        let row = topDownRows ? y : h - 1 - y
+                        memcpy(dst.baseAddress! + row * w * 4, src.baseAddress! + y * w * 4, w * 4 * MemoryLayout<Float>.size)
                     }
                 }
             }
@@ -417,8 +612,7 @@ public final class CIImage: @unchecked Sendable {
                         guard startY < h else { return }
                         let endY = min(h, startY + chunkSize)
                         for y in startY..<endY {
-                            // CGImage rows run top-down; CI rows run bottom-up.
-                            let dst = (h - 1 - y) * w * 4
+                            let dst = (topDownRows ? y : h - 1 - y) * w * 4
                             let srcRow = y * stride
                             if gray {
                                 var srcP = bPtr + srcRow
@@ -518,12 +712,12 @@ public class CIFilter {
         "CIAffineTile", "CIBlendWithAlphaMask", "CIBlendWithMask", "CIBlendWithRedMask", "CIBloom",
         "CIColorBlendMode", "CIColorBurnBlendMode", "CIColorClamp", "CIColorCube", "CIColorCurves",
         "CIColorDodgeBlendMode", "CIColorMatrix", "CIDarkenBlendMode", "CIDifferenceBlendMode", "CIDivideBlendMode",
-        "CIEdgePreserveUpsampleFilter", "CIExclusionBlendMode", "CIGaussianBlur", "CIHardLightBlendMode",
+        "CIEdgePreserveUpsampleFilter", "CIExclusionBlendMode", "CIGaussianBlur", "CIMaskedVariableBlur", "CIHardLightBlendMode",
         "CIHardMixBlendMode", "CIHueBlendMode", "CILanczosScaleTransform", "CILightenBlendMode",
         "CILinearBurnBlendMode", "CILinearDodgeBlendMode", "CILinearGradient", "CILinearLightBlendMode",
         "CILuminosityBlendMode", "CIMaximumComponent", "CIMotionBlur", "CIMultiplyBlendMode", "CIMultiplyCompositing",
         "CIOverlayBlendMode",
-        "CIPerspectiveTransform", "CIPerspectiveTransformWithExtent", "CIPinLightBlendMode", "CIRadialGradient",
+        "CIPerspectiveTransform", "CIPerspectiveTransformWithExtent", "CIPinLightBlendMode", "CIRadialGradient", "CIRandomGenerator",
         "CISaturationBlendMode", "CIScreenBlendMode", "CISoftLightBlendMode", "CISubtractBlendMode",
         "CIVividLightBlendMode"]
 
@@ -552,6 +746,7 @@ public class CIFilter {
 
     public var outputImage: CIImage? {
         // Generators make an image from their parameters alone.
+        if name == "CIRandomGenerator" { return CIImage(node: .random) }
         if name == "CIRadialGradient" {
             let center = (inputs[kCIInputCenterKey] as? CIVector).map { CGPoint(x: $0[0], y: $0[1]) } ?? CGPoint(x: 150, y: 150)
             let r0 = number("inputRadius0", 5), r1 = number("inputRadius1", 100)
@@ -568,6 +763,10 @@ public class CIFilter {
         guard let input = image(kCIInputImageKey) else { return nil }
         switch name {
         case "CIGaussianBlur": return input.applyingGaussianBlur(sigma: number(kCIInputRadiusKey, 10))
+        case "CIMaskedVariableBlur":
+            guard let mask = image("inputMask") else { return nil }
+            let radius = number(kCIInputRadiusKey, 10)
+            return radius > 0 && radius.isFinite ? CIImage(node: .variableBlur(input.node, mask.node, radius)) : input
         case "CIBloom": return CIImage(node: .bloom(input.node, number(kCIInputRadiusKey, 10), number(kCIInputIntensityKey, 0.5)))
         case "CIMotionBlur":
             return CIImage(node: .motion(input.node, number(kCIInputRadiusKey, 20), number(kCIInputAngleKey, 0)))
@@ -637,13 +836,30 @@ public struct CIContextOption: Hashable, Sendable {
     public static let outputColorSpace = CIContextOption(key: "outputColorSpace")
     public static let cacheIntermediates = CIContextOption(key: "cacheIntermediates")
     public static let useSoftwareRenderer = CIContextOption(key: "useSoftwareRenderer")
+    /// Linux canvas contexts may batch larger graphs on hardware; ordinary image contexts stay CPU by default.
+    public static let hardwareCanvas = CIContextOption(key: "hardwareCanvas")
     /// Apple working-pixel format; recorded and ignored (evaluator stays float).
     public static let workingFormat = CIContextOption(key: "workingFormat")
 }
 
 public final class CIContext: @unchecked Sendable {
     private let linearWorkingSpace: Bool
+    private let gpu: VulkanRaster?
+    public var gpuDevice: String? { gpu?.device }
+    public var gpuDeviceType: UInt32? { gpu?.deviceType }
+    public var gpuSubmissionCount: UInt64 { gpu?.submissions ?? 0 }
+    public var gpuUploadBytes: UInt64 { gpu?.uploadBytes ?? 0 }
+    /// Graph evaluations that ran as one fused hardware pass.
+    public var gpuFusedSubmissionCount: UInt64 { gpu?.fusedSubmissions ?? 0 }
+    public var gpuReadbackBytes: UInt64 { gpu?.readbackBytes ?? 0 }
+    public var gpuAvailable: Bool { gpu?.isAvailable ?? false }
+    var gpuBackend: OpaquePointer? { gpu?.backend }
     public init(options: [CIContextOption: Any]? = nil) {
+        let backend = ProcessInfo.processInfo.environment["COMPOSITOR_COREIMAGE_BACKEND"]
+        let hardwareCanvas = (options?[.hardwareCanvas] as? Bool) == true
+        gpu = backend != "cpu" && (backend == "vulkan" || hardwareCanvas)
+            && (options?[.useSoftwareRenderer] as? Bool) != true
+            ? VulkanRaster(graphsOnly: backend != "vulkan") : nil
         // Core Image works in linear light unless told otherwise. An explicit NSNull working space turns colour
         // management off (values pass through), and a named one is worked in as it is: sRGB stays gamma-encoded,
         // only a linear space (linearSRGB, extendedLinearSRGB) is linear.
@@ -658,7 +874,7 @@ public final class CIContext: @unchecked Sendable {
     private func raster(_ image: CIImage, _ rect: CGRect) -> Raster? {
         let region = rect.integral
         guard region.width >= 1, region.height >= 1, region.width * region.height <= 200_000_000 else { return nil }
-        var raster = image.node.eval(region, Env(linear: linearWorkingSpace))
+        var raster = image.node.eval(region, Env(linear: linearWorkingSpace, gpu: gpu))
         if linearWorkingSpace { Gamma.map(&raster, Gamma.toSRGB) }
         return raster
     }

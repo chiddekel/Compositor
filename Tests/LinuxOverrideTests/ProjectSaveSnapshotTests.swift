@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import CoreGraphics
+import ImageIO
 @testable import Compositor
 
 @MainActor
@@ -45,6 +47,124 @@ struct ProjectSaveSnapshotTests {
         #expect(await Task.detached { compositorSaveMarkSaved(token) }.value == -6)
         compositorSaveRelease(token)
         #expect(compositorSaveExportManifest(token, nil, 0) == -1)
+    }
+
+    nonisolated private static func preview(_ token: UInt64) throws -> Data {
+        let size = compositorSaveExportPreview(token, nil, 0)
+        #expect(size > 0)
+        guard size > 0 else { return Data() }
+        var short = [UInt8](repeating: 73, count: Int(size) - 1)
+        #expect(compositorSaveExportPreview(token, &short, short.count) == size)
+        #expect(short.allSatisfy { $0 == 73 })
+        var bytes = [UInt8](repeating: 0, count: Int(size))
+        #expect(compositorSaveExportPreview(token, &bytes, bytes.count) == size)
+        return Data(bytes)
+    }
+
+    @Test func workerPreviewRetainsCapturedCompositeAfterReplacementAndClose() async throws {
+        let (handle, e) = try await create()
+        var pixels = [UInt8](repeating: 0, count: 16 * 12 * 4)
+        for y in 0..<12 { for x in 0..<8 {
+            pixels[(y * 16 + x) * 4] = 255
+            pixels[(y * 16 + x) * 4 + 3] = 255
+        } }
+        #expect(e.importRGBA(pixels, width: 16, height: 12, name: "Captured red", replacing: true) == 0)
+        let frozen = try #require(e.session.projectSnapshot())
+        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        defer { compositorSaveRelease(token) }
+        #expect(e.importRGBA([UInt8](repeating: 255, count: 8 * 8 * 4), width: 8, height: 8, name: "New white", replacing: true) == 0)
+        await Task.detached { compositorSessionClose(handle) }.value
+        let data = try await Task.detached {
+            #expect(!Thread.isMainThread)
+            return try Self.preview(token)
+        }.value
+        let expected = try #require(await ImageExporter.shared.quickLookImages(frozen))
+        #expect(data == expected.preview)
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        #expect(CGImageSourceGetType(source) as String? == "public.jpeg")
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(image.width == 16 && image.height == 12)
+        let decoded = image.portableImage
+        let red = (6 * 16 + 2) * 4, white = (6 * 16 + 13) * 4
+        #expect(decoded.bytes[red] > 240 && decoded.bytes[red + 1] < 15 && decoded.bytes[red + 2] < 15)
+        #expect(decoded.bytes[white] > 240 && decoded.bytes[white + 1] > 240 && decoded.bytes[white + 2] > 240)
+        #expect(decoded.bytes[red + 3] == 255 && decoded.bytes[white + 3] == 255)
+        #expect(try await Task.detached { try Self.preview(token) }.value == data)
+        #expect(compositorSaveExportPreview(token, nil, -1) == -1)
+        compositorSaveRelease(token)
+        #expect(compositorSaveExportPreview(token, nil, 0) == -1)
+    }
+
+    @Test func previewUsesUpstreamSizeAndLargeCanvasLimit() async throws {
+        let (handle, e) = try await create()
+        defer { Sessions.entries.removeValue(forKey: handle) }
+        #expect(e.importRGBA([UInt8](repeating: 255, count: 2050 * 8 * 4), width: 2050, height: 8, name: "Wide", replacing: true) == 0)
+        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        defer { compositorSaveRelease(token) }
+        let data = try await Task.detached { try Self.preview(token) }.value
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(image.width == 1024 && image.height == 4)
+        let manifest = ProjectManifest(documentID: UUID(), width: 8000, height: 8000, activeLayerID: nil, layers: [])
+        #expect(e.importManifest(try JSONEncoder().encode(manifest)) == 0)
+        let large = await Task.detached { compositorSaveCapture(handle) }.value
+        defer { compositorSaveRelease(large) }
+        #expect(await Task.detached { compositorSaveExportPreview(large, nil, 0) }.value == 0)
+    }
+
+    @Test(arguments: [false, true]) func workerPackagePreservesDeepPixelsAfterReplacementAndClose(hdr: Bool) async throws {
+        let (handle, e) = try await create()
+        #expect(e.importRGBA([UInt8](repeating: 255, count: 256 * 8 * 4), width: 256, height: 8, name: "Frozen deep", replacing: true) == 0)
+        let context = try DeepLayer.context(width: 256, height: 8, hdr: hdr)
+        let pixels = try #require(context.data).assumingMemoryBound(to: UInt16.self)
+        for i in 0..<(256 * 8) {
+            let alpha16 = [0, 16384, 32768, 65535][i % 4]
+            let alpha = Float(alpha16) / 65535
+            let value = hdr ? Float16((2 + Float(i % 256) / 256) * alpha).bitPattern
+                : UInt16(((25000 + i % 256) * alpha16 + 32767) / 65535)
+            pixels[i * 4] = value; pixels[i * 4 + 1] = value; pixels[i * 4 + 2] = value
+            pixels[i * 4 + 3] = hdr ? Float16(alpha).bitPattern : UInt16(alpha16)
+        }
+        let image = try #require(context.makeImage())
+        e.session.document?.layers[0].asset = try hdr ? DeepLayer.wideAsset(image, name: "Frozen deep") : DeepLayer.asset(image, name: "Frozen deep")
+        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        defer { compositorSaveRelease(token) }
+        #expect(e.importRGBA([UInt8](repeating: 0, count: 4 * 4 * 4), width: 4, height: 4, name: "Newer", replacing: true) == 0)
+        await Task.detached { compositorSessionClose(handle) }.value
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("deep-save-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let package = directory.appendingPathComponent("saved.comp")
+        #expect(await Task.detached { package.path.withCString { compositorSaveWritePackage(token, $0, 1) } }.value == 0)
+        #expect(FileManager.default.fileExists(atPath: package.appendingPathComponent("QuickLook/Preview.jpg").path))
+        let loaded = try await ProjectStore.shared.load(from: package)
+        let asset = try #require(loaded.images.values.first)
+        let deep = try #require(asset.deep)
+        #expect(deep.bitsPerComponent == 16 && DeepLayer.isHDR(deep) == hdr)
+        #expect(loaded.manifest.layers.first?.name == "Frozen deep")
+        #expect(loaded.manifest.layers.first?.imageFile?.hasSuffix(hdr ? ".exr" : ".png") == true)
+        let decoded = try hdr ? DeepLayer.hdr(deep) : DeepLayer.canonical(deep)
+        let actual = try #require(decoded.data).assumingMemoryBound(to: UInt16.self)
+        for i in 0..<(256 * 8 * 4) {
+            if hdr { #expect(abs(Float(Float16(bitPattern: actual[i])) - Float(Float16(bitPattern: pixels[i]))) < 0.008) }
+            else { #expect(abs(Int(actual[i]) - Int(pixels[i])) <= 1) }
+        }
+        let autosave = directory.appendingPathComponent("autosave.comp")
+        #expect(await Task.detached { autosave.path.withCString { compositorSaveWritePackage(token, $0, 0) } }.value == 0)
+        #expect(!FileManager.default.fileExists(atPath: autosave.appendingPathComponent("QuickLook/Preview.jpg").path))
+        let reopened = await Task.detached { compositorSessionCreate() }.value
+        defer { Sessions.entries.removeValue(forKey: reopened) }
+        let reopenedResult = await Task.detached {
+            var width: Int32 = 0, height: Int32 = 0
+            let code = package.path.withCString { compositorSessionLoadPackage(reopened, $0, &width, &height) }
+            return (code, width, height)
+        }.value
+        #expect(reopenedResult.0 == 0 && reopenedResult.1 == 256 && reopenedResult.2 == 8)
+        #expect(Sessions.entries[reopened]?.editor.session.activeLayer?.asset?.deep != nil)
+        #expect("relative.comp".withCString { compositorSaveWritePackage(token, $0, 0) } == -1)
+        compositorSaveRelease(token)
+        #expect(package.path.withCString { compositorSaveWritePackage(token, $0, 0) } == -1)
+        withExtendedLifetime(context) {}
     }
 
     @Test func completionMarksCapturedRevisionAndUndoReturnsToSavedState() async throws {

@@ -33,6 +33,47 @@ struct LivePreviewTests {
         Array(bytes[(y * 64 + x) * 4..<(y * 64 + x + 1) * 4])
     }
 
+    @Test(arguments: LayerBlendMode.allCases)
+    func blendMenuPreviewMatchesCommitWithoutEditingSource(mode: LayerBlendMode) throws {
+        let e = try editor()
+        var top = [UInt8](repeating: 0, count: 64 * 32 * 4)
+        for y in 0..<32 { for x in 0..<64 {
+            let i = (y * 64 + x) * 4
+            let alpha = x < 32 ? 128 : 255
+            top[i] = UInt8(180 * alpha / 255)
+            top[i + 1] = UInt8((32 + y * 5) * alpha / 255)
+            top[i + 2] = UInt8(220 * alpha / 255)
+            top[i + 3] = UInt8(alpha)
+        } }
+        #expect(e.importRGBA(top, width: 64, height: 32, name: "Blend", replacing: false) == 0)
+        let s = e.session
+        let id = try #require(s.activeLayerID)
+        let original = try e.renderRGBA().bytes
+        let originalKey = e.renderKey()
+        let revision = s.history.currentRevision
+        s.previewBlendMode(mode, for: id)
+        let shown = try #require(e.displayedSnapshot()?.manifest.layers.first { $0.id == id })
+        #expect(shown.blendMode == mode)
+        #expect(s.activeLayer?.blendMode == .normal)
+        #expect(s.history.currentRevision == revision)
+        #expect((e.renderKey() != originalKey) == (mode != .normal))
+        let preview = try e.renderRGBA().bytes
+        s.previewBlendMode(nil, for: nil)
+        #expect(e.renderKey() == originalKey)
+        #expect(try e.renderRGBA().bytes == original)
+        #expect(s.history.currentRevision == revision)
+        s.setLayerBlendMode(mode)
+        #expect(try e.renderRGBA().bytes == preview)
+        if mode != .normal {
+            s.undo()
+            #expect(s.activeLayer?.blendMode == .normal)
+            #expect(try e.renderRGBA().bytes == original)
+            s.redo()
+            #expect(s.activeLayer?.blendMode == mode)
+            #expect(try e.renderRGBA().bytes == preview)
+        }
+    }
+
     private func checkRegion(_ editor: UpstreamEditor, whole: [UInt8], rect: CGRect, tolerance: Int = 0) throws {
         let region = try editor.renderRegionRGBA(rect)
         var maximumDifference = 0

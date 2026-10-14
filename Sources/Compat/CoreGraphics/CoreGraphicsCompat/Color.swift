@@ -4,6 +4,7 @@
 // Maps blend modes to Skia blend mode integers (SkBlendMode).
 
 import Foundation
+import CompositorColorManagement
 
 // MARK: - CGColorSpace
 
@@ -11,11 +12,15 @@ public final class CGColorSpace: @unchecked Sendable, Equatable {
     public enum Model: Sendable {
         case rgb
         case monochrome
+        case cmyk
         case unknown
     }
 
     public let name: String
     public let model: Model
+    /// The ICC profile a space made with `init(iccData:)` was made from (its pixels are converted through it by
+    /// LittleCMS where Core Graphics would use ColorSync); nil for the named spaces.
+    public let iccData: Data?
 
     // Apple's colour-space names are CFString constants (`CGColorSpace.sRGB`), and `CGColorSpace(name:)` is failable.
     public static let sRGB: CFString = "kCGColorSpaceSRGB"
@@ -47,15 +52,40 @@ public final class CGColorSpace: @unchecked Sendable, Equatable {
             self.name = name; self.model = .monochrome
         default: return nil
         }
+        self.iccData = nil
     }
 
     init(name: String, model: Model) {
         self.name = name
         self.model = model
+        self.iccData = nil
     }
 
+    /// A colour space from an ICC profile: RGB, gray or CMYK as the profile says; nil when the bytes aren't a usable
+    /// profile.
+    public init?(iccData: CFData) {
+        let model = iccData.withUnsafeBytes { bytes -> Int32 in
+            guard let base = bytes.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+            return compositor_icc_color_model(base, bytes.count)
+        }
+        switch Int(model) {
+        case Int(COMPOSITOR_ICC_RGB): self.model = .rgb
+        case Int(COMPOSITOR_ICC_GRAY): self.model = .monochrome
+        case Int(COMPOSITOR_ICC_CMYK): self.model = .cmyk
+        default: return nil
+        }
+        self.name = "kCGColorSpaceICCBased"
+        self.iccData = iccData
+    }
+
+    /// The space's ICC profile, as Core Graphics returns it for a profile-based space.
+    public func copyICCData() -> CFData? { iccData }
+
+    /// Components per pixel, alpha aside.
+    public var numberOfComponents: Int { model == .cmyk ? 4 : model == .monochrome ? 1 : 3 }
+
     public static func == (lhs: CGColorSpace, rhs: CGColorSpace) -> Bool {
-        lhs.name == rhs.name && lhs.model == rhs.model
+        lhs.name == rhs.name && lhs.model == rhs.model && lhs.iccData == rhs.iccData
     }
 }
 

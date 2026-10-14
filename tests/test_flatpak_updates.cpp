@@ -1,9 +1,12 @@
 #include "FlatpakUpdateService.h"
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDBusMessage>
+#include <QDialog>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QSettings>
+#include <QPushButton>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -18,6 +21,25 @@ static bool until(const std::function<bool()> &predicate) {
     QElapsedTimer timer; timer.start();
     while (!predicate() && timer.elapsed() < 3000) { QApplication::processEvents(); QThread::msleep(1); }
     return predicate();
+}
+
+class RefuseCloseWindow : public QWidget {
+public:
+    int attempts = 0;
+protected:
+    void closeEvent(QCloseEvent *event) override { ++attempts; event->ignore(); }
+};
+
+static QDialog *updateDialog() {
+    for (auto *widget : QApplication::topLevelWidgets())
+        if (widget->objectName() == "flatpakUpdates") return qobject_cast<QDialog *>(widget);
+    return nullptr;
+}
+
+static QPushButton *updateButton(QDialog *dialog, const QString &text) {
+    if (dialog) for (auto *button : dialog->findChildren<QPushButton *>())
+        if (button->text() == text) return button;
+    return nullptr;
 }
 
 class Monitor : public QObject {
@@ -87,6 +109,13 @@ int main(int argc, char **argv) {
         unsupported.installUpdate(); unsupported.checkForUpdates(false);
         QApplication::processEvents();
         CHECK(unsupported.status() == UpdateStatus::Unsupported && portal.creates == 0);
+        unsupported.checkForUpdates(true);
+        auto *dialog = updateDialog();
+        CHECK(dialog && dialog->isVisible());
+        auto *install = updateButton(dialog, "Check and Update");
+        auto *restart = updateButton(dialog, "Restart Now");
+        CHECK(install && !install->isVisible() && restart && !restart->isVisible());
+        CHECK(portal.creates == 0);
     }
     {
         FlatpakUpdateService updater(file, "/app/bin/compositor", bus);
@@ -122,6 +151,17 @@ int main(int argc, char **argv) {
         updater.installUpdate();
         QApplication::processEvents();
         CHECK(portal.monitor.updates == 4); // No second transaction and no forced app exit.
+        // A refused document close must keep the installed update available without relaunching.
+        RefuseCloseWindow document;
+        document.show();
+        updater.checkForUpdates(true);
+        auto *dialog = updateDialog();
+        auto *restart = updateButton(dialog, "Restart Now");
+        CHECK(dialog && dialog->isVisible() && restart && restart->isVisible() && restart->isEnabled());
+        if (restart) restart->click();
+        CHECK(document.attempts == 1 && document.isVisible());
+        CHECK(dialog && dialog->isVisible() && updater.status() == UpdateStatus::ReadyToRestart);
+        CHECK(portal.monitor.updates == 4);
     }
     CHECK(until([&] { return portal.monitor.closes >= 1; }));
     server.unregisterService("org.freedesktop.portal.Flatpak");

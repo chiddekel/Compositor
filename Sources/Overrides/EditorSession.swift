@@ -278,6 +278,13 @@ final class EditorSession {
     var wandSettings = WandSettings()
     var objectSelectionSettings = ObjectSelectionSettings()
     var showsPixelGrid = ToolDefaults.bool("pixelGrid", true) { didSet { ToolDefaults.set(showsPixelGrid, "pixelGrid") } }
+    /// View › CMYK › Proof Colors: the canvas as printing through `proofProfile` would show it, on white paper (`CMYK`).
+    var proofsColors = false { didSet { if proofsColors, proofProfile == nil { proofProfile = CMYK.chosen }; brushRevision += 1 } }
+    /// View › CMYK › Gamut Warning: colors the profile can't print as they are show gray, over the proof or the document's
+    /// own colors.
+    var showsGamutWarning = false { didSet { if showsGamutWarning, proofProfile == nil { proofProfile = CMYK.chosen }; brushRevision += 1 } }
+    /// The CMYK profile proofing and CMYK export use, as View › CMYK › Profile last set it.
+    var proofProfile: CMYKProfile? { didSet { CMYK.chosen = proofProfile; brushRevision += 1 } }
     /// Layout grid (View > Show > Grid). Off until turned on; independent of the 800% pixel grid.
     var showsGrid = ToolDefaults.bool("grid", false) { didSet { ToolDefaults.set(showsGrid, "grid") } }
     /// The layout grid's spacing and subdivisions (View > Grid Settings…). The person's, not the project's.
@@ -583,6 +590,9 @@ final class EditorSession {
     var showsRawDevelop = false { didSet { resumeFileRequests() } }
     /// Import was pressed and the full frame is developing: the sheet stays up, showing that, until the layer is in.
     var rawImporting = false
+    /// Camera Raw… was pressed: once the import is done, the Camera Raw Filter opens on the RAW's layer.
+    @ObservationIgnored private var rawOpensCameraRaw = false
+    @ObservationIgnored private var cameraRawAfterImport: UUID?
     @ObservationIgnored private var rawContinuation: CheckedContinuation<RawDevelopSettings?, Never>?
     /// Tests assign this to develop without a sheet.
     @ObservationIgnored var confirmRawDevelop: ((URL, RawDevelopSettings) async -> RawDevelopSettings?)?
@@ -597,7 +607,8 @@ final class EditorSession {
             showsRawDevelop = true
         }
     }
-    func finishRawDevelop(_ settings: RawDevelopSettings?) {
+    func finishRawDevelop(_ settings: RawDevelopSettings?, openingCameraRaw: Bool = false) {
+        rawOpensCameraRaw = settings != nil && openingCameraRaw
         // Importing, the sheet waits for the develop to finish (see `endRawDevelop`); cancelling closes it now.
         if settings != nil, rawContinuation != nil { rawImporting = true } else { endRawDevelop() }
         let continuation = rawContinuation
@@ -847,6 +858,15 @@ final class EditorSession {
           let point = document == nil ? nil : request.point
           for (url, scoped) in request.files {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            // A CMYK file making a new document: its profile is kept and chosen, for proofing and for CMYK export when
+            // it's asked for.
+            let startsDocument = document == nil
+            var psdProfile: CMYKProfile?
+            defer {
+                if startsDocument, document != nil, let profile = psdProfile ?? CMYK.profile(ofImageAt: url) {
+                    proofProfile = CMYK.adopt(profile)
+                }
+            }
             do {
                 guard url.isFileURL else { throw ImageImportError.unsupported }
                 let usedPixels = document?.layers.reduce(0) { total, layer in
@@ -864,6 +884,8 @@ final class EditorSession {
                     guard let developed = await RawImporter.Queue.shared.develop(url, settings: settings, limit: nil, sixteenBit: true)
                     else { throw ImageImportError.unreadable }
                     insert(try DeepLayer.asset(developed, name: url.deletingPathExtension().lastPathComponent), centeredAt: point)
+                    if rawOpensCameraRaw { cameraRawAfterImport = activeLayerID }
+                    rawOpensCameraRaw = false
                 } else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .svg) == true {
                     let asset = try await ImageImporter.shared.decodeSVG(url, fitting: document?.size,
                                                                          remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
@@ -873,6 +895,7 @@ final class EditorSession {
                     let imported: PSDImport
                     do {
                         let parsed = try await ImageImporter.shared.loadPhotoshop(url, remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
+                        psdProfile = parsed.cmykProfile
                         // Only a background: Photoshop writes no layer records, just the merged image, so that is
                         // what comes in, as one layer.
                         if parsed.layers.isEmpty {
@@ -903,6 +926,13 @@ final class EditorSession {
         }
         isImporting = false
         if !failures.isEmpty { importError = failures.joined(separator: "\n\n") }
+        if let layer = cameraRawAfterImport {
+            cameraRawAfterImport = nil
+            if document?.layers.contains(where: { $0.id == layer }) == true {
+                selectLayer(layer)
+                beginFilter(.cameraRaw)
+            }
+        }
     }
 
     func insert(_ asset: ImportedImage, centeredAt point: CGPoint? = nil) {

@@ -73,6 +73,23 @@ import AppKit
         }
     }
 
+    /// Qt normalizes its wheel units before upstream handles navigation and active-edit refusal.
+    func scroll(x: Double, y: Double, deltaX: Double, deltaY: Double, precise: Bool, modifiers: Int) {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers & 1 != 0 { flags.insert(.command) }
+        if modifiers & 2 != 0 { flags.insert(.option) }
+        if modifiers & 4 != 0 { flags.insert(.control) }
+        if modifiers & 8 != 0 { flags.insert(.shift) }
+        let location = view.convert(CGPoint(x: x, y: y), to: nil)
+        guard let event = NSEvent.mouseEvent(with: .scrollWheel, location: location, modifierFlags: flags,
+                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                             context: nil, eventNumber: 0, clickCount: 0, pressure: 0) else { return }
+        event.scrollingDeltaX = CGFloat(deltaX)
+        event.scrollingDeltaY = CGFloat(deltaY)
+        event.hasPreciseScrollingDeltas = precise
+        view.scrollWheel(with: event)
+    }
+
     /// A trackpad pinch (Qt's zoom gesture): upstream's `magnify(with:)`, zooming about the pointer by `1 + magnification`.
     func magnify(x: Double, y: Double, magnification: Double) {
         let location = view.convert(CGPoint(x: x, y: y), to: nil)
@@ -238,6 +255,16 @@ nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _
 nonisolated public func compositorCanvasMagnify(_ handle: UInt64, _ x: Double, _ y: Double, _ magnification: Double) -> Int32 {
     Int32(withEntry(handle) { entry in
         UpstreamCanvases.canvas(handle, entry).magnify(x: x, y: y, magnification: magnification)
+        return 0
+    })
+}
+
+@_cdecl("compositor_canvas_scroll")
+nonisolated public func compositorCanvasScroll(_ handle: UInt64, _ x: Double, _ y: Double,
+                                               _ deltaX: Double, _ deltaY: Double, _ precise: Int32, _ modifiers: Int32) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        UpstreamCanvases.canvas(handle, entry).scroll(x: x, y: y, deltaX: deltaX, deltaY: deltaY,
+                                                    precise: precise != 0, modifiers: Int(modifiers))
         return 0
     })
 }

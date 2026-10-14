@@ -13,6 +13,8 @@
 #include <QPixmap>
 #include <QBuffer>
 #include <QElapsedTimer>
+extern "C" int64_t compositor_current_layer_drag(uint8_t *output, size_t capacity);
+extern "C" void compositor_end_layer_drag(int32_t copied);
 // SwiftUIQtRenderer — see SwiftUIQtRenderer.h. Fetches the resolved tree via compositor_session_render_tree
 // (same size-query convention as compositor_session_state, see SessionWindow::sessionState) and walks it once,
 // mapping each `RenderNode` kind to the matching Qt widget. Interactive widgets (Button, Toggle) wire their Qt
@@ -26,6 +28,7 @@
 #include <QStyleOption>
 #include <QAbstractItemView>
 #include <QAbstractButton>
+#include <QActionGroup>
 #include <QSvgRenderer>
 #include "PerfTrace.h"
 #include <QTimer>
@@ -73,6 +76,7 @@
 
 extern "C" {
 int64_t compositor_session_render_tree(uint64_t handle, const char *panel, uint8_t *output, size_t capacity);
+int64_t compositor_session_accessibility_tree(uint64_t handle, const char *panel, const char *node_id, uint8_t *output, size_t capacity);
 int32_t compositor_session_dispatch_swiftui_action(uint64_t handle, const char *panel, const char *node_id, const char *handler_key,
                                                    const uint8_t *payload, size_t payload_count);
 int32_t compositor_session_dispatch_swiftui_drop_event(uint64_t handle, const char *panel, const char *node_id, const char *handler_key,
@@ -85,6 +89,171 @@ namespace {
 
 // Defined below (with the cursor codes); the AppKit view widget applies it after each pointer event.
 static void applyCompositorCursor(QWidget *widget);
+static void synchronizeTrackingScroll(QWidget *widget);
+QByteArray fetchTreeBytes(uint64_t handle, const QString &panel);
+struct ScrollTraceEntry {
+    const char *event;
+    const void *owner;
+    int y, maximum, desired, model, viewportHeight, documentHeight, flags;
+};
+// Keep failure diagnostics allocation-free while tracking. Only the failing native journey formats them.
+static ScrollTraceEntry g_scrollTrace[512];
+static unsigned g_scrollTraceCount = 0;
+static void recordScrollTrace(const char *event, const void *owner, int y = 0, int maximum = 0,
+                              int desired = 0, int model = -1, int viewportHeight = 0,
+                              int documentHeight = 0, int flags = 0) {
+    static const bool enabled = qEnvironmentVariableIsSet("COMPOSITOR_TRACE_SCROLL_BUFFER")
+        || qEnvironmentVariableIsSet("XCTestConfigurationFilePath");
+    if (!enabled) return;
+    g_scrollTrace[g_scrollTraceCount++ % 512] = {event, owner, y, maximum, desired, model, viewportHeight, documentHeight, flags};
+}
+
+QAccessible::Role nativeAccessibilityRole(const QJsonObject &data) {
+    static const QHash<QString, QAccessible::Role> roles{{"list", QAccessible::List}, {"listItem", QAccessible::ListItem},
+        {"button", QAccessible::Button}, {"checkBox", QAccessible::CheckBox}, {"text", QAccessible::StaticText},
+        {"textField", QAccessible::EditableText}, {"image", QAccessible::Graphic}, {"group", QAccessible::Grouping}};
+    return roles.value(data.value("role").toString(), QAccessible::Grouping);
+}
+
+// Qt modal blocking does not disable the widget or its backing AppKit controls.
+bool nativeAccessibilityBlockedByModal(QWidget *widget) {
+    const auto *window = widget->window();
+    for (auto *modal : QApplication::topLevelWidgets()) {
+        if (!modal->isVisible() || !modal->isModal() || modal == window || modal->isAncestorOf(widget)) continue;
+        if (modal->windowModality() == Qt::ApplicationModal) return true;
+        for (auto *parent = modal->parentWidget(); parent; parent = parent->parentWidget()) {
+            if (parent->window() == window || parent->window()->isAncestorOf(widget)) return true;
+        }
+    }
+    return false;
+}
+
+// Transparent descendants give Qt ownership of accessible-object lifetimes while AppKit keeps drawing and input.
+class NativeAccessibilityProxy : public QWidget {
+public:
+    NativeAccessibilityProxy(QJsonObject value, QWidget *parent, std::function<void(QString)> action)
+        : QWidget(parent), data(std::move(value)), perform(std::move(action)) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setFocusPolicy(Qt::NoFocus);
+        setAccessibleName(data.value("label").toString());
+        setAccessibleDescription(data.value("help").toString());
+        setObjectName(data.value("identifier").toString());
+        setEnabled(data.value("enabled").toBool(true));
+    }
+    QJsonObject data;
+    std::function<void(QString)> perform;
+protected:
+    void paintEvent(QPaintEvent *) override {}
+};
+
+class NativeAccessibilityProxyInterface : public QAccessibleWidget {
+public:
+    explicit NativeAccessibilityProxyInterface(NativeAccessibilityProxy *proxy)
+        : QAccessibleWidget(proxy, nativeAccessibilityRole(proxy->data)) {}
+    QAccessible::State state() const override {
+        auto current = QAccessibleWidget::state();
+        auto *proxy = static_cast<NativeAccessibilityProxy *>(widget());
+        current.disabled = current.disabled || nativeAccessibilityBlockedByModal(proxy);
+        current.selected = proxy->data.value("selected").toBool();
+        current.selectable = role() == QAccessible::ListItem;
+        current.focusable = proxy->data.value("press").toBool();
+        current.focused = proxy->data.value("focused").toBool();
+        current.offscreen = proxy->data.value("offscreen").toBool();
+        current.checkable = proxy->data.contains("checked");
+        current.checked = proxy->data.value("checked").toBool();
+        return current;
+    }
+    QStringList actionNames() const override {
+        auto *proxy = static_cast<NativeAccessibilityProxy *>(widget());
+        if (!proxy->isVisible() || !proxy->isEnabled() || nativeAccessibilityBlockedByModal(proxy)
+                || !proxy->data.value("press").toBool()) return {};
+        QStringList actions{role() == QAccessible::CheckBox ? toggleAction() : pressAction()};
+        if (role() == QAccessible::ListItem) actions << setFocusAction();
+        return actions;
+    }
+    void doAction(const QString &name) override {
+        if (!actionNames().contains(name)) return;
+        auto *proxy = static_cast<NativeAccessibilityProxy *>(widget());
+        const auto action = proxy->perform;
+        const QString id = proxy->data.value("id").toString();
+        action(id);
+    }
+};
+
+class NativeAppKitAccessibility : public QAccessibleWidget {
+public:
+    explicit NativeAppKitAccessibility(QWidget *owner) : QAccessibleWidget(owner, QAccessible::Grouping) {}
+    int childCount() const override { refresh(); return QAccessibleWidget::childCount(); }
+    QAccessibleInterface *child(int index) const override { refresh(); return QAccessibleWidget::child(index); }
+    QAccessible::Role role() const override { refresh(); return nativeAccessibilityRole(m_data); }
+    QAccessible::State state() const override {
+        refresh();
+        auto current = QAccessibleWidget::state();
+        current.disabled = current.disabled || !m_data.value("enabled").toBool() || nativeAccessibilityBlockedByModal(widget());
+        current.invisible = current.invisible || m_data.isEmpty() || m_data.value("hidden").toBool();
+        current.offscreen = current.offscreen || m_data.value("offscreen").toBool();
+        return current;
+    }
+    QString text(QAccessible::Text type) const override {
+        refresh();
+        if (type == QAccessible::Name && !m_data.value("label").toString().isEmpty()) return m_data.value("label").toString();
+        return QAccessibleWidget::text(type);
+    }
+private:
+    void refresh() const {
+        if (m_refreshing || !widget()) return;
+        m_refreshing = true;
+        const uint64_t handle = widget()->property("appKitSession").toULongLong();
+        const QString location = widget()->property("appKitNode").toString();
+        const int split = location.indexOf('|');
+        const QString panel = location.left(split), node = location.mid(split + 1);
+        fetchTreeBytes(handle, panel); // synchronize the coordinator before reading names/states or dispatching actions
+        const QByteArray panelBytes = panel.toUtf8(), nodeBytes = node.toUtf8();
+        const int64_t size = compositor_session_accessibility_tree(handle, panelBytes.constData(), nodeBytes.constData(), nullptr, 0);
+        QByteArray bytes;
+        if (size > 0 && size <= 4 * 1024 * 1024) {
+            bytes.resize(qsizetype(size));
+            if (compositor_session_accessibility_tree(handle, panelBytes.constData(), nodeBytes.constData(),
+                reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) bytes.clear();
+        }
+        if (bytes != m_bytes) {
+            for (auto *proxy : m_proxies) delete proxy;
+            m_proxies.clear();
+            m_bytes = bytes;
+            m_data = QJsonDocument::fromJson(bytes).object();
+            widget()->setObjectName(m_data.value("identifier").toString());
+            QPointer<QWidget> owner(widget());
+            const auto action = [handle, panel, node, owner](QString id) {
+                if (!owner || !owner->isVisible() || !owner->isEnabled() || nativeAccessibilityBlockedByModal(owner)) return;
+                fetchTreeBytes(handle, panel);
+                const QByteArray p = panel.toUtf8(), n = node.toUtf8();
+                const QByteArray payload = QJsonDocument(QJsonObject{{"id", id}, {"action", "press"}}).toJson(QJsonDocument::Compact);
+                const int32_t result = compositor_session_dispatch_swiftui_drop_event(handle, p.constData(), n.constData(),
+                    "accessibilityAction", reinterpret_cast<const uint8_t *>(payload.constData()), payload.size());
+                if (result > 0 && owner) owner->setFocus(Qt::OtherFocusReason);
+                QTimer::singleShot(0, [handle, panel] { notifyAccessibilityAction(handle, panel); });
+            };
+            std::function<void(QJsonObject, QWidget *, QPointF)> add = [&](QJsonObject value, QWidget *parent, QPointF offset) {
+                auto *proxy = new NativeAccessibilityProxy(value, parent, action);
+                const QPointF origin(value.value("x").toDouble(), value.value("y").toDouble());
+                proxy->setGeometry(qRound(origin.x() - offset.x()), qRound(origin.y() - offset.y()),
+                    qMax(1, qRound(value.value("width").toDouble())), qMax(1, qRound(value.value("height").toDouble())));
+                for (const auto &child : value.value("children").toArray()) add(child.toObject(), proxy, origin);
+                proxy->show();
+                if (parent == widget()) m_proxies.append(proxy);
+            };
+            for (const auto &child : m_data.value("children").toArray()) add(child.toObject(), widget(), {});
+        }
+        m_refreshing = false;
+    }
+    static void notifyAccessibilityAction(uint64_t handle, const QString &panel);
+    mutable bool m_refreshing = false;
+    mutable QByteArray m_bytes;
+    mutable QJsonObject m_data;
+    mutable QList<NativeAccessibilityProxy *> m_proxies;
+};
 
 class SwiftUIAccessibleWidget : public QAccessibleWidget {
 public:
@@ -118,6 +287,8 @@ bool hasNativeAccessibilityInterface(QWidget *widget) {
 
 QAccessibleInterface *swiftUIAccessibilityFactory(const QString &, QObject *object) {
     auto *widget = qobject_cast<QWidget *>(object);
+    if (auto *proxy = dynamic_cast<NativeAccessibilityProxy *>(widget)) return new NativeAccessibilityProxyInterface(proxy);
+    if (widget && widget->property("appKitView").toBool()) return new NativeAppKitAccessibility(widget);
     if (!widget || !widget->property("swiftuiAccessibilityAdapter").toBool() || hasNativeAccessibilityInterface(widget)) return nullptr;
     const QString children = widget->property("swiftuiAccessibilityChildren").toString();
     const bool customMetadata = widget->property("swiftuiAccessibilityValue").isValid()
@@ -175,6 +346,7 @@ private:
 
 /// The `_AppKit` view (panel|node) that has the keys, so a rebuilt panel's widget for it takes them back.
 QString g_appKitFocusedNode;
+uint64_t g_appKitFocusedSession = 0;
 /// The `_AppKit` widget a press is being tracked in (an AppKit tracking loop running the event pump), if any.
 QPointer<QWidget> g_appKitTracking;
 int g_appKitPumpDepth = 0;
@@ -196,27 +368,76 @@ public:
         setFocusPolicy(Qt::ClickFocus);
         setProperty("appKitView", true);   // headless journeys find it by this
         setProperty("appKitNode", key());
+        setProperty("appKitSession", QVariant::fromValue<qulonglong>(m_handle));
+        m_trackingDragTimer = new QTimer(this);
+        m_trackingDragTimer->setInterval(50);
+        QObject::connect(m_trackingDragTimer, &QTimer::timeout, this, [this] {
+            if (!m_hasDragged || g_appKitTracking != this || g_appKitPumpDepth == 0
+                || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) return;
+            for (QWidget *parent = parentWidget(); parent; parent = parent->parentWidget()) {
+                auto *scroll = qobject_cast<QScrollArea *>(parent);
+                if (!scroll || !scroll->property("appKitScroll").toBool()) continue;
+                const QPointF point = scroll->viewport()->mapFromGlobal(m_lastDragGlobalPosition);
+                if (!scroll->viewport()->rect().contains(point.toPoint())) {
+                    // A held pointer beyond the viewport keeps reaching new rows as the document scrolls.
+                    send("drag", mapFromGlobal(m_lastDragGlobalPosition), m_lastDragModifiers);
+                }
+                break;
+            }
+        });
         // The view had the keys before its panel was rebuilt: it keeps them.
-        if (g_appKitFocusedNode == key()) QTimer::singleShot(0, this, [this] { setFocus(Qt::OtherFocusReason); });
+        if (g_appKitFocusedNode == key() && g_appKitFocusedSession == m_handle)
+            QTimer::singleShot(0, this, [this] { restoreFocus(); });
         setAttribute(Qt::WA_OpaquePaintEvent, false);
     }
 
 protected:
+    void showEvent(QShowEvent *event) override {
+        SwiftUICanvasWidget::showEvent(event);
+        // A modifier and its key can straddle a panel refresh. Restore logical focus before
+        // the next key arrives, rather than leaving it on the dock until a queued callback.
+        restoreFocus();
+    }
     void mousePressEvent(QMouseEvent *event) override { press(event); }
     void mouseDoubleClickEvent(QMouseEvent *event) override { press(event); }
     void mouseMoveEvent(QMouseEvent *event) override {
+        if (event->buttons() & Qt::LeftButton) {
+            m_hasDragged = true;
+            m_lastDragGlobalPosition = event->globalPosition();
+            m_lastDragModifiers = event->modifiers();
+        }
+        const QPointer<SwiftUIAppKitWidget> self(this);
         send((event->buttons() & Qt::LeftButton) ? "drag" : "move", event->position(), event->modifiers());
+        if (self && event->buttons() & Qt::LeftButton) updateLayerTabTarget(event->globalPosition(), event->modifiers());
     }
     void mouseReleaseEvent(QMouseEvent *event) override {
         if (event->button() != Qt::LeftButton) return;
+        m_trackingDragTimer->stop();
+        m_hasDragged = false;
         releaseMouse();
-        send("up", event->position(), event->modifiers());
+        const QPointer<SwiftUIAppKitWidget> self(this);
+        updateLayerTabTarget(event->globalPosition(), event->modifiers());
+        bool copied = false;
+        if (m_layerTabTarget && !m_layerDrag.isEmpty()) {
+            QMimeData mime; mime.setData("com.compositor.layer-row", m_layerDrag);
+            const QPointF point = m_layerTabTarget->mapFromGlobal(event->globalPosition().toPoint());
+            QDropEvent drop(point, Qt::CopyAction, &mime, Qt::LeftButton, event->modifiers());
+            QApplication::sendEvent(m_layerTabTarget, &drop);
+            copied = drop.isAccepted() && drop.dropAction() == Qt::CopyAction;
+        }
+        if (!self) { compositor_end_layer_drag(copied ? 1 : 0); return; }
+        m_layerTabTarget = nullptr; m_layerDrag.clear();
+        send("up", event->position(), event->modifiers(), copied);
     }
     void leaveEvent(QEvent *) override { send("exit", QPointF(-1, -1), QGuiApplication::keyboardModifiers()); }
     bool event(QEvent *event) override {
         // Tab is the table's key (tip's keyDown cycles the tool mode), not focus navigation.
         if (event->type() == QEvent::KeyPress) { key(static_cast<QKeyEvent *>(event)); return true; }
-        if (event->type() == QEvent::FocusIn) g_appKitFocusedNode = key();
+        if (event->type() == QEvent::FocusIn) {
+            g_appKitFocusedNode = key();
+            g_appKitFocusedSession = m_handle;
+            dispatchQuietly("focus", QByteArrayLiteral("true"));
+        }
         if (event->type() == QEvent::FocusOut) {
             // A rebuilt panel replaces this widget with one for the same view, which takes the focus back (buildNode):
             // the view only loses the keys when the focus really went elsewhere.
@@ -224,8 +445,15 @@ protected:
             const uint64_t handle = m_handle; const QString panel = m_panel, nodeID = m_nodeID;
             QTimer::singleShot(0, qApp, [node, handle, panel, nodeID] {
                 QWidget *focus = QApplication::focusWidget();
-                if (focus && focus->property("appKitNode").toString() == node) return;
-                if (g_appKitFocusedNode == node) g_appKitFocusedNode.clear();
+                // An inline editor is a real Qt child over the drawn view and still belongs to its responder tree.
+                for (QWidget *owner = focus; owner; owner = owner->parentWidget()) {
+                    if (owner->property("appKitNode").toString() == node
+                        && owner->property("appKitSession").toULongLong() == handle) return;
+                }
+                if (g_appKitFocusedNode == node && g_appKitFocusedSession == handle) {
+                    g_appKitFocusedNode.clear();
+                    g_appKitFocusedSession = 0;
+                }
                 const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8();
                 compositor_session_dispatch_swiftui_action(handle, panelUtf8.constData(), nodeUtf8.constData(), "focus",
                                                            reinterpret_cast<const uint8_t *>("false"), 5);
@@ -235,6 +463,13 @@ protected:
     }
 
 private:
+    void restoreFocus() {
+        if (g_appKitFocusedNode != key() || g_appKitFocusedSession != m_handle) return;
+        for (QWidget *owner = QApplication::focusWidget(); owner; owner = owner->parentWidget())
+            if (owner == this) return;
+        recordScrollTrace("focus", this);
+        setFocus(Qt::OtherFocusReason);
+    }
     void press(QMouseEvent *event) {
         if (event->button() == Qt::RightButton) { send("rightDown", event->position(), event->modifiers()); return; }
         if (event->button() != Qt::LeftButton) { event->ignore(); return; }
@@ -249,12 +484,47 @@ private:
         grabMouse();
         QPointer<QWidget> self(this);
         g_appKitTracking = this;
+        m_hasDragged = false;
+        m_trackingDragTimer->start();
         send("down", event->position(), event->modifiers());
+        if (self) {
+            m_trackingDragTimer->stop();
+            // The final queued drag can change the clip origin immediately before release ends the native loop.
+            synchronizeTrackingScroll(self);
+        }
         if (g_appKitTracking == self) g_appKitTracking = nullptr;
+        if (self && m_hasDragged) updateLayerTabTarget(m_lastDragGlobalPosition, m_lastDragModifiers);
     }
-    void send(const char *type, const QPointF &at, Qt::KeyboardModifiers modifiers) {
+    /// The upstream native drag already owns the pointer grab. Offer its row payload to Qt's tab destination
+    /// when the pointer leaves the Layers view; internal layer/mask/effect drags keep their existing routing.
+    void updateLayerTabTarget(QPointF global, Qt::KeyboardModifiers modifiers) {
+        if (qEnvironmentVariableIsSet("COMPOSITOR_PROBE_WITHOUT_LAYER_TAB_DRAG")) {
+            m_layerTabTarget = nullptr; m_layerDrag.clear(); return;
+        }
+        QWidget *target = QApplication::widgetAt(global.toPoint());
+        while (target && target->objectName() != QLatin1String("header.documentTabs")
+               && target->objectName() != QLatin1String("header.dragArea")) target = target->parentWidget();
+        if (!target) { m_layerTabTarget = nullptr; return; }
+        const int64_t size = compositor_current_layer_drag(nullptr, 0);
+        if (size <= 0 || size > 1048576) { m_layerTabTarget = nullptr; return; }
+        m_layerDrag.resize(size);
+        if (compositor_current_layer_drag(reinterpret_cast<uint8_t *>(m_layerDrag.data()), m_layerDrag.size()) != size) {
+            m_layerTabTarget = nullptr; m_layerDrag.clear(); return;
+        }
+        QMimeData mime; mime.setData("com.compositor.layer-row", m_layerDrag);
+        const QPoint point = target->mapFromGlobal(global.toPoint());
+        if (m_layerTabTarget != target) {
+            QDragEnterEvent enter(point, Qt::CopyAction, &mime, Qt::LeftButton, modifiers);
+            QApplication::sendEvent(target, &enter);
+            m_layerTabTarget = target;
+        }
+        QDragMoveEvent move(point, Qt::CopyAction, &mime, Qt::LeftButton, modifiers);
+        QApplication::sendEvent(target, &move);
+        setCursor(move.dropAction() == Qt::CopyAction ? Qt::DragCopyCursor : Qt::ForbiddenCursor);
+    }
+    void send(const char *type, const QPointF &at, Qt::KeyboardModifiers modifiers, bool externalLayerCopy = false) {
         const QJsonObject payload{{"type", QLatin1String(type)}, {"x", at.x()}, {"y", at.y()}, {"clicks", m_clicks},
-                                  {"modifiers", appKitModifierBits(modifiers)}};
+                                  {"modifiers", appKitModifierBits(modifiers)}, {"externalLayerCopy", externalLayerCopy}};
         QPointer<QWidget> self(this);
         dispatchQuietly("pointer", QJsonDocument(payload).toJson(QJsonDocument::Compact));
         if (!self) return;   // what it did rebuilt the panel
@@ -278,6 +548,10 @@ private:
         const QJsonObject payload{{"characters", characters}, {"keyCode", codes.value(k, 0xffff)},
                                   {"modifiers", appKitModifierBits(event->modifiers())}, {"repeat", event->isAutoRepeat()}};
         QPointer<QWidget> self(this);
+        // Model commands can precede the next paint. Update the native coordinator/cells before delivering keys,
+        // without replacing the widget that owns focus (type selection must see current names and selection).
+        fetchTreeBytes(m_handle, m_panel);
+        if (!self) return;
         dispatchQuietly("key", QJsonDocument(payload).toJson(QJsonDocument::Compact));
         if (self) update();
     }
@@ -296,6 +570,12 @@ private:
     int m_clicks = 1;
     QElapsedTimer m_clickTimer;
     QPoint m_lastPress;
+    QTimer *m_trackingDragTimer = nullptr;
+    bool m_hasDragged = false;
+    QPointF m_lastDragGlobalPosition;
+    Qt::KeyboardModifiers m_lastDragModifiers = Qt::NoModifier;
+    QPointer<QWidget> m_layerTabTarget;
+    QByteArray m_layerDrag;
 };
 
 } // namespace
@@ -305,6 +585,7 @@ private:
 /// so no panel is rebuilt under the press. Returns whether the left button is still down.
 extern "C" int32_t compositor_host_pump_events(void) {
     ++g_appKitPumpDepth;
+    if (g_appKitTracking) synchronizeTrackingScroll(g_appKitTracking);
     QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents);
     if (g_appKitTracking) g_appKitTracking->update();
     --g_appKitPumpDepth;
@@ -312,6 +593,17 @@ extern "C" int32_t compositor_host_pump_events(void) {
 }
 
 bool swiftUIAppKitTracking() { return g_appKitPumpDepth > 0; }
+QString swiftUIScrollTrace() {
+    QStringList lines;
+    for (unsigned index = g_scrollTraceCount > 512 ? g_scrollTraceCount - 512 : 0; index < g_scrollTraceCount; ++index) {
+        const auto &entry = g_scrollTrace[index % 512];
+        lines.append(QString("%1 %2 %3 y%4 max%5 desired%6 model%7 vh%8 dh%9 flags%10")
+            .arg(index).arg(entry.event).arg(qulonglong(reinterpret_cast<quintptr>(entry.owner)), 0, 16)
+            .arg(entry.y).arg(entry.maximum).arg(entry.desired).arg(entry.model)
+            .arg(entry.viewportHeight).arg(entry.documentHeight).arg(entry.flags));
+    }
+    return lines.join('\n');
+}
 
 /// A small SVG for a style sheet's `image: url(...)`: Qt style sheets take files, not data: URLs, so each image is
 /// written once to a per-user runtime directory and referenced by path.
@@ -534,6 +826,8 @@ void notifyListeners(uint64_t handle, const QString &panel) {
     for (const auto &cb : g_actionListeners) cb(handle, panel);
 }
 
+void NativeAppKitAccessibility::notifyAccessibilityAction(uint64_t handle, const QString &panel) { notifyListeners(handle, panel); }
+
 namespace {
 /// dragChanged can arrive every mouse move; coalesce shell refreshes so the picker doesn't rebuild at 500 Hz.
 struct DragActionRefreshCoalescer {
@@ -574,6 +868,22 @@ void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, cons
     else notifyListeners(handle, panel);
 }
 
+class SwiftUIButton : public QPushButton {
+public:
+    using QPushButton::QPushButton;
+    int takeActivationModifiers() { const int value = m_modifiers; m_modifiers = 0; return value; }
+protected:
+    bool event(QEvent *event) override {
+        if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease)
+            m_modifiers = appKitModifierBits(static_cast<QMouseEvent *>(event)->modifiers());
+        else if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)
+            m_modifiers = appKitModifierBits(static_cast<QKeyEvent *>(event)->modifiers());
+        return QPushButton::event(event);
+    }
+private:
+    int m_modifiers = 0;
+};
+
 class SwiftUITextField : public QLineEdit {
 public:
     explicit SwiftUITextField(bool handlesSubmit) : m_handlesSubmit(handlesSubmit) {}
@@ -607,6 +917,7 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
         // Commit the draft before the next button action, but let the mouse press reach that button before a
         // visual refresh can replace its widgets. The pressed button keeps its panel alive until release.
+        if (event->type() == QEvent::FocusOut && watched->property("swiftuiPreservingFocus").toBool()) return false;
         if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut)
             dispatch(m_handle, m_panel, m_nodeID, QStringLiteral("focused"), event->type() == QEvent::FocusIn ? "true" : "false", true);
         return QObject::eventFilter(watched, event);
@@ -1651,8 +1962,13 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
         } else if (kind == "help" || kind == "accessibilityLabel") {
             const QString text = strings.value("text").toString();
             if (!text.isEmpty()) {
-                if (kind == "help") widget->setToolTip(text);
-                else widget->setAccessibleName(text);
+                if (kind == "help") {
+                    widget->setToolTip(text);
+                    // An icon-only button or menu is named by its help, as its tooltip is all a person sees of it
+                    // (an explicit accessibilityLabel still replaces this).
+                    if (auto *button = qobject_cast<QAbstractButton *>(widget); button && button->text().trimmed().isEmpty()
+                        && button->accessibleName().isEmpty()) button->setAccessibleName(text);
+                } else widget->setAccessibleName(text);
             }
         } else if (kind == "identifier") {
             widget->setProperty("swiftuiIdentifier", strings.value("text").toString());   // .id(_:), for scrollTo
@@ -1864,20 +2180,22 @@ public:
         if (!m_gestureWidget) return false;
         const QString name = m_gestureWidget->property("swiftuiGestureCoordinateSpace").toString();
         QWidget *space = m_gestureWidget;
-        if (name == QLatin1String("global")) {
-            DragTracker::shared().start(m_handle, m_panel, m_id, QPoint(0, 0),
-                                        static_cast<QMouseEvent *>(event)->globalPosition(),
-                                        m_gestureWidget->property("swiftuiGestureMinimumDistance").toDouble());
-            return true;
-        }
-        if (name != QLatin1String("local")) {
+        if (name != QLatin1String("local") && name != QLatin1String("global")) {
             for (QWidget *w = m_gestureWidget; w; w = w->parentWidget()) {
                 if (w->property("swiftuiCoordinateSpaces").toStringList().contains(name)) { space = w; break; }
             }
         }
-        DragTracker::shared().start(m_handle, m_panel, m_id, space->mapToGlobal(QPoint(0, 0)),
-                                    static_cast<QMouseEvent *>(event)->globalPosition(),
-                                    m_gestureWidget->property("swiftuiGestureMinimumDistance").toDouble());
+        // Leaving a field permits the panel to refresh. Capture the gesture's
+        // coordinates and identity first, since that refresh can replace its widgets.
+        const QPoint origin = name == QLatin1String("global") ? QPoint(0, 0) : space->mapToGlobal(QPoint(0, 0));
+        const QPointF press = static_cast<QMouseEvent *>(event)->globalPosition();
+        const double minimum = m_gestureWidget->property("swiftuiGestureMinimumDistance").toDouble();
+        const uint64_t handle = m_handle;
+        const QString panel = m_panel, id = m_id;
+        auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+        if (field && field->window() == m_gestureWidget->window() && field != m_gestureWidget
+            && !m_gestureWidget->isAncestorOf(field)) field->clearFocus();
+        DragTracker::shared().start(handle, panel, id, origin, press, minimum);
         return true;
     }
 private:
@@ -2080,8 +2398,9 @@ class SwiftUIScrollArea : public QScrollArea {
 public:
     SwiftUIScrollArea() {
         for (QScrollBar *bar : {horizontalScrollBar(), verticalScrollBar()}) {
-            QObject::connect(bar, &QScrollBar::rangeChanged, this, [this] { scheduleGeometry(); });
+            QObject::connect(bar, &QScrollBar::rangeChanged, this, [this] { trace("range"); scheduleGeometry(); });
             QObject::connect(bar, &QScrollBar::valueChanged, this, [this] {
+                trace("value");
                 if (m_applyingOffset) return;
                 m_pendingOffset = false;
                 reportGeometry();
@@ -2093,8 +2412,22 @@ public:
         const QJsonObject doubles = node.value("doubleParams").toObject();
         m_pendingOffset = doubles.contains("scrollX") && doubles.contains("scrollY");
         m_desiredOffset = QPoint(qRound(doubles.value("scrollX").toDouble()), qRound(doubles.value("scrollY").toDouble()));
+        m_hasBasis = m_pendingOffset;
+        m_basis = m_desiredOffset;
+        trace("bind");
         setProperty("appKitScroll", true);
         setProperty("appKitScrollNode", panel + QLatin1Char('|') + m_nodeID);
+        // A rebuilt panel replaces the scroll area that was showing the native offset. When the content is already
+        // tall enough, show that offset from the first paint instead of the top until the deferred pass runs; the
+        // deferred pass still reports the settled geometry.
+        if (m_pendingOffset && widget() && horizontalScrollBar()->maximum() >= m_desiredOffset.x()
+            && verticalScrollBar()->maximum() >= m_desiredOffset.y()) {
+            m_applyingOffset = true;
+            horizontalScrollBar()->setValue(m_desiredOffset.x());
+            verticalScrollBar()->setValue(m_desiredOffset.y());
+            m_applyingOffset = false;
+            trace("bind-apply");
+        }
         scheduleGeometry();
     }
     QSize sizeHint() const override {
@@ -2104,47 +2437,95 @@ public:
         return hint;
     }
     bool horizontalOnly = false;
+    void synchronizeTrackingOffset() {
+        if (!m_handle || !widget()) return;
+        trace("track-before");
+        const QJsonObject root = QJsonDocument::fromJson(fetchTreeBytes(m_handle, m_panel)).object();
+        std::function<void(const QJsonObject &)> visit = [&](const QJsonObject &node) {
+            if (node.value("id").toString() == m_nodeID) {
+                const QJsonObject offsets = node.value("doubleParams").toObject();
+                if (!offsets.contains("scrollX") || !offsets.contains("scrollY")) return;
+                trace("track-model", qRound(offsets.value("scrollY").toDouble()));
+                // Keep the native viewport in step without rebuilding the widgets in an AppKit tracking loop.
+                m_applyingOffset = true;
+                horizontalScrollBar()->setValue(qRound(offsets.value("scrollX").toDouble()));
+                verticalScrollBar()->setValue(qRound(offsets.value("scrollY").toDouble()));
+                m_applyingOffset = false;
+                m_pendingOffset = false;
+                m_hasBasis = true;
+                m_basis = QPoint(qRound(offsets.value("scrollX").toDouble()), qRound(offsets.value("scrollY").toDouble()));
+                reportGeometry();
+                return;
+            }
+            for (const QJsonValue &child : node.value("children").toArray()) visit(child.toObject());
+        };
+        visit(root);
+    }
 protected:
     void resizeEvent(QResizeEvent *event) override { QScrollArea::resizeEvent(event); scheduleGeometry(); }
     void showEvent(QShowEvent *event) override { QScrollArea::showEvent(event); scheduleGeometry(); }
 private:
+    void trace(const char *event, int model = -1) {
+        recordScrollTrace(event, this, verticalScrollBar()->value(), verticalScrollBar()->maximum(),
+                          m_desiredOffset.y(), model, viewport()->height(), widget() ? widget()->height() : -1,
+                          int(m_pendingOffset) | (int(m_applyingOffset) << 1) | (int(isVisible()) << 2) | (int(m_geometryQueued) << 3));
+    }
     void scheduleGeometry() {
         if (!m_handle || m_geometryQueued) return;
         m_geometryQueued = true;
         QTimer::singleShot(0, this, [this] {
             m_geometryQueued = false;
-            if (!isVisible() || !widget()) return;
+            if (!isVisible() || !widget()) { trace("apply-skip"); return; }
             if (m_pendingOffset) {
+                trace("apply-before");
                 m_applyingOffset = true;
                 horizontalScrollBar()->setValue(m_desiredOffset.x());
                 verticalScrollBar()->setValue(m_desiredOffset.y());
                 m_applyingOffset = false;
                 m_pendingOffset = false;
+                trace("apply-after");
             }
             reportGeometry();
         });
     }
     void reportGeometry() {
         if (!m_handle || !isVisible() || !widget() || viewport()->width() <= 0 || viewport()->height() <= 0) return;
-        const QByteArray payload = QJsonDocument(QJsonObject{{"width", viewport()->width()}, {"height", viewport()->height()},
+        QJsonObject geometry{{"width", viewport()->width()}, {"height", viewport()->height()},
             {"documentWidth", widget()->width()}, {"documentHeight", widget()->height()},
-            {"x", horizontalScrollBar()->value()}, {"y", verticalScrollBar()->value()}}).toJson(QJsonDocument::Compact);
+            {"x", horizontalScrollBar()->value()}, {"y", verticalScrollBar()->value()}};
+        // The native offset this view was given: an unchanged offset reported after the native one moved is stale.
+        if (m_hasBasis) { geometry.insert("basisX", m_basis.x()); geometry.insert("basisY", m_basis.y()); }
+        const QByteArray payload = QJsonDocument(geometry).toJson(QJsonDocument::Compact);
         if (payload == m_lastGeometry) return;
+        trace("report-before");
         const QByteArray panel = m_panel.toUtf8(), node = m_nodeID.toUtf8();
         // Viewport synchronization paints the current widgets; it does not dispatch a document action or rebuild
         // the panel under a scrollbar drag. A pending AppKit reveal can independently invalidate its tree.
         if (compositor_session_dispatch_swiftui_action(m_handle, panel.constData(), node.constData(), "scrollGeometry",
             reinterpret_cast<const uint8_t *>(payload.constData()), payload.size()) != 0) return;
         m_lastGeometry = payload;
+        m_hasBasis = true;
+        m_basis = QPoint(horizontalScrollBar()->value(), verticalScrollBar()->value());
+        trace("report-after");
         widget()->update();
         for (QWidget *child : widget()->findChildren<QWidget *>()) child->update();
     }
     uint64_t m_handle = 0;
     QString m_panel, m_nodeID;
-    QPoint m_desiredOffset;
+    QPoint m_desiredOffset, m_basis;
+    bool m_hasBasis = false;
     QByteArray m_lastGeometry;
     bool m_pendingOffset = false, m_applyingOffset = false, m_geometryQueued = false;
 };
+
+static void synchronizeTrackingScroll(QWidget *widget) {
+    for (QWidget *parent = widget->parentWidget(); parent; parent = parent->parentWidget()) {
+        if (auto *scroll = dynamic_cast<SwiftUIScrollArea *>(parent)) {
+            scroll->synchronizeTrackingOffset();
+            return;
+        }
+    }
+}
 
 /// `VStack`/`HStack` share everything but the layout's orientation.
 QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &node, QBoxLayout::Direction direction) {
@@ -2154,10 +2535,19 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
     const QJsonObject doubles = node.value("doubleParams").toObject();
     // No spacing given: SwiftUI's default between two views, 8 points.
     layout->setSpacing(doubles.contains("spacing") ? static_cast<int>(doubles.value("spacing").toDouble()) : 8);
+    QString precedingText;
     for (const auto &childValue : node.value("children").toArray()) {
         const QJsonObject childObj = childValue.toObject();
         if (QWidget *child = buildNode(handle, panel, childObj)) {
             const QString childKind = childObj.value("kind").toString();
+            // An unlabeled slider takes the text just before it in its row as its accessible name (a tool bar's
+            // "Opacity" then its slider), as a label sits beside the control it names.
+            if (childKind == QLatin1String("Text")) precedingText = childObj.value("stringParams").toObject().value("text").toString();
+            else {
+                if (auto *slider = qobject_cast<QAbstractSlider *>(child); slider && slider->accessibleName().isEmpty()
+                    && !precedingText.isEmpty()) slider->setAccessibleName(precedingText);
+                if (childKind != QLatin1String("Spacer")) precedingText.clear();
+            }
             int stretch = 0;
             if (childKind == "ScrollView" || childKind == "Spacer" || childKind == "Canvas") {
                 stretch = 1;
@@ -2451,7 +2841,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         auto *label = new QLabel(strings.value("text").toString());
         widget = label;
     } else if (kind == "Button") {
-        auto *button = new QPushButton;
+        auto *button = new SwiftUIButton;
+        button->setProperty("swiftUINode", id);
         QString systemIcon;
         bool isToolButton = false;
         QString textLabel;
@@ -2669,8 +3060,10 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             }
         }
         if (labelFillsWidth) button->setSizePolicy(QSizePolicy::Expanding, button->sizePolicy().verticalPolicy());
-        QObject::connect(button, &QPushButton::clicked, button, [handle, panel, id] {
-            dispatch(handle, panel, id, QStringLiteral("action"));
+        QObject::connect(button, &QPushButton::clicked, button, [handle, panel, id, button] {
+            const QByteArray payload = QJsonDocument(QJsonObject{{"modifiers", button->takeActivationModifiers()}})
+                                           .toJson(QJsonDocument::Compact);
+            dispatch(handle, panel, id, QStringLiteral("action"), payload);
         });
         widget = button;
     } else if (kind == "Toggle" && [&] {
@@ -2731,6 +3124,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }();
         auto *field = new SwiftUITextField(handlerKeys.contains(QStringLiteral("onSubmit")));
         field->setPlaceholderText(strings.value("placeholder").toString());
+        // TextField's title is its label for assistive technology, shown or not.
+        field->setAccessibleName(strings.value("placeholder").toString());
         QObject::connect(field, &QLineEdit::editingFinished, field, [handle, panel] {
             QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
         });
@@ -2754,6 +3149,11 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 for (const auto &child : node.value("children").toArray()) findField(child.toObject());
             };
             findField(fetchTree(handle, panel));
+            if (panel == "ColorPickerSheet" && nextField.value("kind").toString() == QLatin1String("TextField")
+                && nextField.value("stringParams").toObject().contains("text")) {
+                const QSignalBlocker block(field);
+                field->setText(nextField.value("stringParams").toObject().value("text").toString());
+            }
             const QJsonObject focus = nextField.value("boolParams").toObject();
             if (nextField.value("kind").toString() != QLatin1String("TextField") ||
                 (focus.contains("focused") && !focus.value("focused").toBool())) field->clearFocus();
@@ -2781,6 +3181,17 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 return text;
             };
             field->setText(formatNumber(doubles.value("value").toDouble()));
+            QObject::connect(field, &QLineEdit::editingFinished, field, [field, handle, panel, id, formatNumber] {
+                if (panel != "ColorPickerSheet" || field->property("swiftuiPreservingFocus").toBool()) return;
+                std::function<void(const QJsonObject &)> normalize = [&](const QJsonObject &node) {
+                    if (node.value("id").toString() == id && node.value("kind").toString() == "TextField") {
+                        const QSignalBlocker block(field);
+                        field->setText(formatNumber(node.value("doubleParams").toObject().value("value").toDouble()));
+                    }
+                    for (const auto &child : node.value("children").toArray()) normalize(child.toObject());
+                };
+                normalize(fetchTree(handle, panel));
+            });
             QObject::connect(field, &QLineEdit::textChanged, field, [handle, panel, id](const QString &text) {
                 bool ok = false;
                 const double number = text.toDouble(&ok);
@@ -2800,6 +3211,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         const double lower = doubles.value("lowerBound").toDouble(), upper = doubles.value("upperBound").toDouble(1);
         constexpr int steps = 1000;
         auto *slider = new QSlider(Qt::Horizontal);
+        slider->setProperty("swiftUINode", id);
         // A colored track (upstream's GradientSliderCell): the gradient across the whole 4 pt bar, no filled part.
         QString groove = QStringLiteral("background: #38383c;");
         if (const QStringList stops = strings.value("trackGradient").toString().split(QLatin1Char(';'), Qt::SkipEmptyParts); stops.size() >= 2) {
@@ -3092,6 +3504,40 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                             dispatch(handle, panel, id, QStringLiteral("onContinuousHover"), QByteArrayLiteral("[0,0]"));
                         });
                     }
+                } else if (ikind == "Picker") {
+                    auto *group = new QActionGroup(menu);
+                    group->setExclusive(true);
+                    const QString itemId = item.value("id").toString();
+                    const QString selected = item.value("stringParams").toObject().value("selection").toString();
+                    const QJsonArray choices = item.value("children").toArray();
+                    for (int index = 1; index < choices.size(); ++index) {
+                        const QJsonObject choice = choices.at(index).toObject();
+                        if (choice.value("kind").toString() == "Divider") { menu->addSeparator(); continue; }
+                        const QString title = choice.value("stringParams").toObject().value("text").toString();
+                        QString tag = title;
+                        for (const auto &value : choice.value("modifiers").toArray()) {
+                            const QJsonObject modifier = value.toObject();
+                            if (modifier.value("kind").toString() == "tag") tag = modifier.value("stringParams").toObject().value("text").toString();
+                        }
+                        auto *action = menu->addAction(title);
+                        action->setCheckable(true); group->addAction(action);
+                        action->setChecked(tag.compare(selected, Qt::CaseInsensitive) == 0 || title.compare(selected, Qt::CaseInsensitive) == 0);
+                        action->setData(tag);
+                        QObject::connect(action, &QAction::triggered, btn, [handle, panel, itemId, tag] {
+                            dispatch(handle, panel, itemId, QStringLiteral("selection"), jsonFragment(tag));
+                        });
+                    }
+                } else if (ikind == "Toggle") {
+                    QString title = item.value("stringParams").toObject().value("text").toString();
+                    for (const auto &child : item.value("children").toArray())
+                        if (child.toObject().value("kind").toString() == "Text") title = child.toObject().value("stringParams").toObject().value("text").toString();
+                    const QString itemId = item.value("id").toString();
+                    auto *action = menu->addAction(title);
+                    action->setCheckable(true);
+                    action->setChecked(item.value("boolParams").toObject().value("isOn").toBool());
+                    QObject::connect(action, &QAction::triggered, btn, [handle, panel, itemId](bool checked) {
+                        dispatch(handle, panel, itemId, QStringLiteral("isOn"), checked ? "true" : "false");
+                    });
                 } else {
                     populateActions(item.value("children").toArray());
                 }
@@ -3399,7 +3845,10 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 }
             });
         }
-        if (hKeys.contains(QStringLiteral("keyCapture"))) new KeyCaptureFilter(widget, handle, panel, id);
+        // Drawn AppKit views forward all keys themselves, including the native key code and repeat state.
+        // The one-shot shortcut recorder would otherwise intercept their next key application-wide.
+        if (kind != QLatin1String("_AppKit") && hKeys.contains(QStringLiteral("keyCapture")))
+            new KeyCaptureFilter(widget, handle, panel, id);
         if (hKeys.contains(QStringLiteral("geometryChange"))) new GeometryChangeFilter(widget, handle, panel, id);
         if (hKeys.contains(QStringLiteral("dropEvent"))) {
             const QStringList dropTypes = strings.value("dropTypes").toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
@@ -3407,6 +3856,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }
     }
 
+    if (widget) widget->setProperty("swiftUINode", id);
     return widget;
 }
 
@@ -3493,16 +3943,72 @@ static void repaintCanvases(QWidget *panel) {
         if (dynamic_cast<SwiftUICanvasWidget *>(child)) child->update();
 }
 
+// SelectionAmountSheet keeps the same controls while typing; update validation without replacing its focused field.
+static void refreshSelectionAmountValidation(QWidget *current, const QJsonObject &root) {
+    QHash<QString, bool> enabled;
+    QHash<QString, double> opacity;
+    QHash<QString, int> sliderValues;
+    std::function<void(const QJsonObject &, bool)> collect = [&](const QJsonObject &node, bool parentEnabled) {
+        bool active = parentEnabled;
+        const QString id = node.value("id").toString();
+        for (const auto &value : node.value("modifiers").toArray()) {
+            const auto modifier = value.toObject();
+            if (modifier.value("kind").toString() == "disabled")
+                active &= !modifier.value("boolParams").toObject().value("value").toBool();
+            else if (modifier.value("kind").toString() == "opacity")
+                opacity[id] = modifier.value("doubleParams").toObject().value("value").toDouble(1);
+        }
+        if (node.value("kind").toString() == "Button") enabled[id] = active;
+        if (node.value("kind").toString() == "Slider") {
+            const auto values = node.value("doubleParams").toObject();
+            const double lower = values.value("lowerBound").toDouble(), upper = values.value("upperBound").toDouble(1);
+            const double span = upper > lower ? upper - lower : 1;
+            sliderValues[id] = qBound(0, static_cast<int>((values.value("value").toDouble() - lower) / span * 1000), 1000);
+        }
+        for (const auto &child : node.value("children").toArray()) collect(child.toObject(), active);
+    };
+    collect(root, true);
+    auto widgets = current->findChildren<QWidget *>(); widgets.prepend(current);
+    for (auto *widget : widgets) {
+        const QString id = widget->property("swiftUINode").toString();
+        if (enabled.contains(id)) widget->setEnabled(enabled.value(id));
+        if (sliderValues.contains(id))
+            if (auto *slider = qobject_cast<QSlider *>(widget); slider && !slider->isSliderDown()) {
+                const QSignalBlocker block(slider);
+                slider->setValue(sliderValues.value(id));
+            }
+        if (opacity.contains(id))
+            if (auto *effect = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect())) effect->setOpacity(opacity.value(id));
+    }
+}
+
 QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &panel, QWidget *current) {
     PERF_SCOPE(QStringLiteral("swiftUIRenderPanel:") + panel);
+    QPointer<QLineEdit> search;
+    QPointer<QLineEdit> amount;
+    QPointer<QLineEdit> colorField;
+    if (panel == "ColorPickerSheet" && current && !swiftUIDragGestureActive(sessionHandle)) {
+        auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+        if (field && current->isAncestorOf(field)) colorField = field;
+    }
+    if (panel == "KeyboardShortcutsSheet" && current) {
+        auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+        if (field && current->isAncestorOf(field) && field->placeholderText() == "Search shortcuts") search = field;
+    }
+    if (panel == "SelectionAmountSheet" && current) {
+        auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+        if (field && current->isAncestorOf(field) && field->placeholderText() == "Amount") amount = field;
+    }
     // Mid-drag / mid-typing the panel stays as it is (see below), so don't even resolve its tree.
-    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && isBeingManipulated(current)) {
+    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && !search && !amount && !colorField && isBeingManipulated(current)) {
         repaintCanvases(current);
         return current;
     }
     QByteArray bytes;
     { PERF_SCOPE(QStringLiteral("fetchTree:") + panel); bytes = fetchTreeBytes(sessionHandle, panel); }
     if (bytes.isEmpty()) return nullptr;
+    if (amount && current && current->property("swiftUIHandle").toULongLong() == sessionHandle)
+        refreshSelectionAmountValidation(current, QJsonDocument::fromJson(bytes).object());
     // Same session, same tree: the widgets already show it. Node ids are positional, so its buttons still reach the
     // handlers the fetch just re-registered; canvases fetch their pixels at paint time, so a repaint refreshes them.
     if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle
@@ -3512,17 +4018,45 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
     }
     // Being dragged or typed in: rebuilding now would replace the slider under the mouse (ending the drag) or the
     // field being typed in (losing focus mid-word). Keep it; the release / end of editing refreshes the panel.
-    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && isBeingManipulated(current)) {
+    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && !search && !colorField && isBeingManipulated(current)) {
         repaintCanvases(current);
         return current;
     }
     const QJsonObject root = QJsonDocument::fromJson(bytes).object();
     if (root.isEmpty()) return nullptr;
+    if (colorField) colorField->setProperty("swiftuiPreservingFocus", true);
     PERF_SCOPE(QStringLiteral("buildNode:") + panel);
     QWidget *built = buildNode(sessionHandle, panel, root);
     if (built) {
         built->setProperty("swiftUIHandle", QVariant::fromValue<qulonglong>(sessionHandle));
         built->setProperty("swiftUITree", bytes);
+        if (search) {
+            const int cursor = search->cursorPosition(), selection = search->selectionStart(), length = search->selectedText().size();
+            for (auto *field : built->findChildren<QLineEdit *>()) if (field->placeholderText() == "Search shortcuts") {
+                QTimer::singleShot(0, field, [field, cursor, selection, length] {
+                    if (!field->isVisible()) return;
+                    field->setFocus(Qt::OtherFocusReason);
+                    if (selection >= 0) field->setSelection(selection, length);
+                    else field->setCursorPosition(cursor);
+                });
+                break;
+            }
+        }
+        if (colorField) {
+            const QString name = colorField->placeholderText(), text = colorField->text();
+            const int cursor = colorField->cursorPosition(), selection = colorField->selectionStart(), length = colorField->selectedText().size();
+            for (auto *field : built->findChildren<QLineEdit *>()) if (field->placeholderText() == name) {
+                const QSignalBlocker block(field);
+                field->setText(text);
+                QTimer::singleShot(0, field, [field, cursor, selection, length] {
+                    if (!field->isVisible()) return;
+                    field->setFocus(Qt::OtherFocusReason);
+                    if (selection >= 0) field->setSelection(selection, length);
+                    else field->setCursorPosition(cursor);
+                });
+                break;
+            }
+        }
     }
     return built;
 }

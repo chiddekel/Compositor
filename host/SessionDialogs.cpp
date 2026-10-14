@@ -77,9 +77,15 @@ void SessionWindow::showAdjustDialog(const QString &kind) {
 #include <QAction>
 #include <QMenuBar>
 #include <QMenu>
+#include <QApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QTimer>
+
+extern "C" int64_t compositor_command_palette_search(uint64_t, const char *, uint8_t *, size_t);
 
 CommandPaletteDialog::CommandPaletteDialog(SessionWindow *window, QWidget *parent)
-    : QDialog(parent), m_window(window) {
+    : QDialog(parent), m_window(window), m_returnFocus(QApplication::focusWidget()) {
     setWindowTitle(tr("Search Commands"));
     setObjectName("commandPaletteDialog");
     setMinimumSize(460, 290);
@@ -102,7 +108,6 @@ CommandPaletteDialog::CommandPaletteDialog(SessionWindow *window, QWidget *paren
     m_list->setUniformItemSizes(true);
     layout->addWidget(m_list);
 
-    collectCommands();
     populateList(QString());
 
     connect(m_filter, &QLineEdit::textChanged, this, [this](const QString &text) {
@@ -118,139 +123,55 @@ CommandPaletteDialog::CommandPaletteDialog(SessionWindow *window, QWidget *paren
 
 bool CommandPaletteDialog::eventFilter(QObject *watched, QEvent *event) {
     if (watched == m_filter && event->type() == QEvent::KeyPress) {
-        auto *keyEvent = static_cast<QKeyEvent *>(event);
-        if (keyEvent->key() == Qt::Key_Down) {
-            int row = m_list->currentRow();
-            if (row < m_list->count() - 1) m_list->setCurrentRow(row + 1);
-            return true;
-        } else if (keyEvent->key() == Qt::Key_Up) {
-            int row = m_list->currentRow();
-            if (row > 0) m_list->setCurrentRow(row - 1);
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Down || key->key() == Qt::Key_Up) {
+            const int count = m_list->count();
+            if (count > 0) {
+                const int step = key->key() == Qt::Key_Down ? 1 : -1;
+                m_list->setCurrentRow((m_list->currentRow() + step + count) % count);
+            }
             return true;
         }
     }
     return QDialog::eventFilter(watched, event);
 }
 
-void CommandPaletteDialog::collectCommands() {
-    m_entries.clear();
-    if (!m_window) return;
-
-    auto traverseMenu = [this](auto self, QMenu *menu, const QString &prefix) -> void {
-        if (!menu) return;
-        const QString cat = prefix.isEmpty() ? menu->title().remove('&') : prefix + " > " + menu->title().remove('&');
-        for (QAction *act : menu->actions()) {
-            if (act->isSeparator()) continue;
-            if (act->menu()) {
-                self(self, act->menu(), cat);
-            } else if (!act->text().isEmpty()) {
-                QString cleanText = act->text().remove('&');
-                QString shortcut = act->shortcut().toString(QKeySequence::NativeText);
-                m_entries.push_back({cleanText, cat, shortcut, act});
-            }
-        }
-    };
-
-    if (m_window->menuBar()) {
-        for (QAction *menuAct : m_window->menuBar()->actions()) {
-            if (menuAct->menu()) {
-                traverseMenu(traverseMenu, menuAct->menu(), QString());
-            }
-        }
-    }
-
-    for (QAction *act : m_window->findChildren<QAction *>()) {
-        if (act->isSeparator() || act->text().isEmpty()) continue;
-        bool already = false;
-        for (const auto &e : m_entries) {
-            if (e.action == act) { already = true; break; }
-        }
-        if (!already) {
-            QString cleanText = act->text().remove('&');
-            QString shortcut = act->shortcut().toString(QKeySequence::NativeText);
-            m_entries.push_back({cleanText, tr("Action"), shortcut, act});
-        }
-    }
-}
-
 void CommandPaletteDialog::populateList(const QString &query) {
     m_list->clear();
-    // Tip CommandPaletteSearch: fuzzy letter match + tier ranking (word start > substring > scattered).
-    const QString phrase = query.toLower().trimmed();
-    QString wanted;
-    for (QChar c : phrase) if (!c.isSpace()) wanted += c;
-
-    auto scoreOf = [&](const QString &text) -> int {
-        const QString title = text.toLower();
-        if (phrase.isEmpty()) return 0;
-        if (wanted.isEmpty()) return 0;
-        int from = 0, previous = -2, total = 0;
-        for (QChar character : wanted) {
-            const int found = title.indexOf(character, from);
-            if (found < 0) return -1;
-            const bool wordStart = found == 0 || !title.at(found - 1).isLetterOrNumber();
-            total += 1 + (wordStart ? 8 : 0) + (found == previous + 1 ? 5 : 0);
-            previous = found;
-            from = found + 1;
-        }
-        const QStringList words = phrase.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-        auto wordsStartWords = [&](const QStringList &ws) {
-            int searchFrom = 0;
-            for (const QString &word : ws) {
-                bool ok = false;
-                int at = searchFrom;
-                while ((at = title.indexOf(word, at)) >= 0) {
-                    if (at == 0 || !title.at(at - 1).isLetter()) { searchFrom = at + word.size(); ok = true; break; }
-                    ++at;
-                }
-                if (!ok) return false;
-            }
-            return true;
-        };
-        int tier = 1;
-        if (wordsStartWords({phrase})) tier = 5;
-        else if (words.size() > 1 && wordsStartWords(words)) tier = 4;
-        else if (title.contains(phrase)) tier = 3;
-        else if (QString(title).remove(QLatin1Char(' ')).contains(wanted)) tier = 2;
-        return tier * 1'000'000 + (tier == 1 ? total * 100 : 0) - title.size() / 4;
-    };
-
-    struct Ranked { int score; int index; };
-    std::vector<Ranked> ranked;
-    for (size_t i = 0; i < m_entries.size(); ++i) {
-        const auto &cmd = m_entries[i];
-        const QString full = cmd.category.isEmpty() ? cmd.title : cmd.category + QStringLiteral(" › ") + cmd.title;
-        const int score = scoreOf(full);
-        if (!phrase.isEmpty() && score < 0) continue;
-        ranked.push_back({score, static_cast<int>(i)});
-    }
-    std::sort(ranked.begin(), ranked.end(), [](const Ranked &a, const Ranked &b) {
-        if (a.score != b.score) return a.score > b.score;
-        return a.index < b.index;
-    });
-    for (const Ranked &r : ranked) {
-        const auto &cmd = m_entries[static_cast<size_t>(r.index)];
-        QString label = cmd.category.isEmpty() ? cmd.title : QStringLiteral("%1 › %2").arg(cmd.category, cmd.title);
-        if (cmd.action && cmd.action->isChecked()) label = QStringLiteral("✓ ") + label;
-        if (!cmd.shortcut.isEmpty()) label += QStringLiteral("  ") + cmd.shortcut;
+    if (!m_window) return;
+    const QByteArray utf8 = query.toUtf8();
+    const uint64_t handle = m_window->sessionHandle();
+    const int64_t size = compositor_command_palette_search(handle, utf8.constData(), nullptr, 0);
+    if (size <= 0 || size > 8 * 1024 * 1024) return;
+    QByteArray data(static_cast<qsizetype>(size), Qt::Uninitialized);
+    if (compositor_command_palette_search(handle, utf8.constData(), reinterpret_cast<uint8_t *>(data.data()), data.size()) != size) return;
+    for (const auto &value : QJsonDocument::fromJson(data).array()) {
+        const auto entry = value.toObject();
+        QString label = entry.value("title").toString();
+        if (entry.value("checked").toBool()) label.prepend(QStringLiteral("✓ "));
+        if (entry.contains("shortcut")) label += QStringLiteral("  ") + entry.value("shortcut").toString();
         auto *item = new QListWidgetItem(label, m_list);
-        item->setData(Qt::UserRole, r.index);
-        if (cmd.action && !cmd.action->isEnabled()) item->setForeground(Qt::gray);
+        item->setData(Qt::UserRole, entry.value("id").toString());
+        item->setData(Qt::UserRole + 1, entry.value("enabled").toBool());
+        if (!entry.value("enabled").toBool()) item->setForeground(Qt::gray);
     }
     if (m_list->count() > 0) m_list->setCurrentRow(0);
 }
 
 void CommandPaletteDialog::triggerSelected() {
-    QListWidgetItem *cur = m_list->currentItem();
-    if (!cur) return;
-    int idx = cur->data(Qt::UserRole).toInt();
-    if (idx >= 0 && idx < static_cast<int>(m_entries.size())) {
-        QAction *act = m_entries[idx].action;
-        accept();
-        if (act && act->isEnabled()) {
-            act->trigger();
-        }
-    }
+    auto *current = m_list->currentItem();
+    if (!current || !current->data(Qt::UserRole + 1).toBool() || !m_window) return;
+    const QString id = current->data(Qt::UserRole).toString();
+    const QPointer<SessionWindow> window(m_window);
+    const QPointer<QWidget> focus(m_returnFocus);
+    accept();
+    // As upstream: give the editor its focus, then run on the next main-loop turn.
+    QTimer::singleShot(0, m_window, [window, focus, id] {
+        if (!window) return;
+        QApplication::setActiveWindow(window);
+        if (focus && focus->isVisible() && focus->isEnabled()) focus->setFocus(Qt::OtherFocusReason);
+        window->performPaletteCommand(id);
+    });
 }
 
 void SessionWindow::showCommandPalette() {

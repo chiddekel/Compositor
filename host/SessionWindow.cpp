@@ -8,8 +8,13 @@
 #include "compositor_host_run.h"
 #include "PerfTrace.h"
 #include "ProjectPackageLimits.h"
+#include "LocalFilePath.h"
+#if defined(COMPOSITOR_HAS_OPENEXR)
+#include <OpenEXR/ImfInputFile.h>
+#include <OpenEXR/ImfHeader.h>
+#endif
+#include <limits>
 
-static bool needsUpstreamImporter(const QString &path);
 #include "ImageExporters.h"
 #include "TabletHandler.h"
 #include "LayerItemDelegate.h"
@@ -125,6 +130,7 @@ typedef int32_t (*compositor_symbol_renderer)(const char *name, int32_t width, i
 void compositor_set_symbol_renderer(compositor_symbol_renderer render);
 int64_t compositor_canvas_cursor_image(int32_t *width, int32_t *height, double *hotX, double *hotY, uint8_t *output, size_t capacity);
 int32_t compositor_canvas_magnify(uint64_t handle, double x, double y, double magnification);
+int32_t compositor_canvas_scroll(uint64_t handle, double x, double y, double deltaX, double deltaY, int32_t precise, int32_t modifiers);
 int32_t compositor_canvas_key(uint64_t handle, int32_t keyCode, const char *characters, int32_t modifiers, int32_t isRepeat);
 int32_t compositor_canvas_mouse(uint64_t handle, int32_t kind, double x, double y, int32_t modifiers, int32_t clickCount);
 int64_t compositor_canvas_overlay(uint64_t handle, int32_t width, int32_t height, uint8_t *output, size_t capacity);
@@ -133,8 +139,11 @@ int32_t compositor_canvas_overlay_invalid(uint64_t handle, double *rect);
 int32_t compositor_session_render_scaled_async(uint64_t handle, double scale);
 int64_t compositor_canvas_draw(uint64_t handle, double x, double y, double width, double height, double scale, uint8_t *output, size_t capacity);
 int64_t compositor_session_dirty_panels(uint64_t handle, uint8_t *output, size_t capacity);
+int64_t compositor_session_render_tree(uint64_t handle, const char *panel, uint8_t *output, size_t capacity);
 int64_t compositor_app_menus(uint8_t *output, size_t capacity);
 int32_t compositor_app_menu_perform(const char *path);
+int32_t compositor_command_palette_perform(uint64_t handle, const char *id);
+void compositor_set_native_text_action_handler(int32_t (*handler)(const char *));
 int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
 int64_t compositor_popup_menu_items(uint8_t *output, size_t capacity);
 void compositor_set_touch_targets(int32_t on);
@@ -147,6 +156,9 @@ void compositor_set_sheet_presenter(void (*presenter)(void *context, const char 
 void compositor_pump_main(void);
 void compositor_session_raw_develop_cancel(uint64_t handle);
 void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
+// Upstream's own NSOpenPanels (View › CMYK › Load Profile, Export As's Load Profile), answered by a Qt file dialog.
+void compositor_set_open_panel(int32_t (*panel)(const char *title, const char *message, const char *extensions, int32_t multiple,
+                                                int32_t folders, char *output, size_t capacity));
 void compositor_set_wait_pump(void (*pump)(void *context), void *context);
 void compositor_flush_preferences(void);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
@@ -161,6 +173,11 @@ int64_t compositor_save_export_layer(uint64_t token, const uint8_t *layer_id, si
 int64_t compositor_save_export_preview(uint64_t token, uint8_t *output, size_t capacity);
 int32_t compositor_save_mark_saved(uint64_t token);
 void compositor_save_release(uint64_t token);
+int32_t compositor_save_write_package(uint64_t token, const char *path, int32_t include_preview);
+int32_t compositor_session_load_package(uint64_t handle, const char *path, int32_t *width, int32_t *height);
+void compositor_project_save_state(uint64_t handle, int32_t saving);
+void compositor_project_did_save(uint64_t handle, const char *path);
+void compositor_set_alert_presenter(int32_t (*presenter)(const char *, const char *, const char *));
 int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
 int64_t compositor_session_export_layer(uint64_t handle, const uint8_t *layer_id, size_t layer_id_count,
                                         int32_t mask, uint8_t *output, size_t capacity,
@@ -176,8 +193,11 @@ int32_t compositor_session_import_rgba(uint64_t handle, const uint8_t *pixels, s
 uint64_t compositor_workspace_bootstrap(void);
 uint64_t compositor_workspace_add_tab(void);
 int32_t compositor_workspace_select_tab(uint64_t handle);
+int32_t compositor_workspace_can_reorder();
 uint64_t compositor_workspace_close_tab(uint64_t handle);
 int32_t compositor_workspace_move_tab(uint64_t handle, int32_t toIndex);
+int32_t compositor_workspace_layer_drop_allowed(uint64_t destination, const uint8_t *bytes, size_t count, int32_t modifiers);
+int64_t compositor_workspace_drop_layers(uint64_t destination, const uint8_t *bytes, size_t count, int32_t modifiers, uint8_t *output, size_t capacity);
 int64_t compositor_workspace_tab_title(uint64_t handle, uint8_t *output, size_t capacity);
 int32_t compositor_workspace_settle(void);
 void compositor_modifiers_changed(int32_t modifiers);
@@ -186,6 +206,19 @@ void compositor_modifiers_changed(int32_t modifiers);
 static int32_t cmd(uint64_t h, const char *json) {
     return compositor_session_command(h, reinterpret_cast<const uint8_t *>(json),
                                       std::strlen(json));
+}
+
+static int32_t performNativeTextAction(const char *action) {
+    if (!action) return 0;
+    QWidget *focus = QApplication::focusWidget();
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(focus)) focus = spin->findChild<QLineEdit *>();
+    if (!focus || !focus->isEnabled()
+        || !(qobject_cast<QLineEdit *>(focus) || qobject_cast<QTextEdit *>(focus) || qobject_cast<QPlainTextEdit *>(focus))) return 0;
+    // Only standard text slots are exposed. Read-only controls still answer them: a refused Cut/Paste must
+    // not fall through to document pixels, and Copy/Select All remain useful there.
+    const QByteArray name(action);
+    if (name != "undo" && name != "redo" && name != "cut" && name != "copy" && name != "paste" && name != "selectAll") return 0;
+    return QMetaObject::invokeMethod(focus, action, Qt::DirectConnection) ? 1 : 0;
 }
 
 // Fetches a document tab's title from upstream's own ProjectWorkspace (see compositor_workspace_tab_title):
@@ -312,6 +345,8 @@ protected:
 class CanvasRulerWidget : public QWidget {
 public:
     CanvasRulerWidget(SessionWindow *window, bool vertical, QWidget *parent) : QWidget(parent), m_window(window), m_vertical(vertical) {
+        setObjectName(vertical ? "ruler.vertical" : "ruler.horizontal");
+        setAccessibleName(vertical ? tr("Vertical ruler") : tr("Horizontal ruler"));
         if (vertical) setFixedWidth(kRulerThickness); else setFixedHeight(kRulerThickness);
         setCursor(vertical ? Qt::SizeHorCursor : Qt::SizeVerCursor);
         setAttribute(Qt::WA_OpaquePaintEvent, true);
@@ -473,6 +508,7 @@ void SessionWindow::createNewDocument(int width, int height) {
         // Post-construction: every "New" opens its own document tab (a real ProjectWorkspace tab, not just a bare
         // session handle) rather than overwriting the current one.
         const uint64_t handle = compositor_workspace_add_tab();
+        if (handle == 0) return;   // upstream newCanvas(): the current project cannot switch now
         compositor_session_command(handle, reinterpret_cast<const uint8_t *>(bytes.constData()), bytes.size());
         addDocumentTab(handle, workspaceTabTitle(handle));
         return;
@@ -504,6 +540,9 @@ void SessionWindow::addDocumentTab(uint64_t handle, const QString &title, const 
 /// When many tabs crowd the header, offer an overflow menu listing every project (ProjectTabStrip's "N more tabs").
 void SessionWindow::refreshTabOverflow() {
     if (!m_tabOverflowButton || !m_documentTabBar) return;
+    // Hiding the current tab emits currentChanged; overflow layout must not switch documents or recurse.
+    const QSignalBlocker blocker(m_documentTabBar);
+    const int current = m_documentTabBar->currentIndex();
     const int count = m_documentTabBar->count();
     // Keep the pill strip from shoving zoom controls off-screen: cap width and spill the rest into the menu.
     const int maxStrip = qMax(180, width() - 420);
@@ -513,19 +552,20 @@ void SessionWindow::refreshTabOverflow() {
     int shown = count;
     auto span = [&](int first, int n) {
         int width = 0;
-        for (int i = first; i < first + n; ++i) width += m_documentTabBar->tabRect(i).width();
+        for (int i = first; i < first + n; ++i)
+            width += m_documentTabNaturalWidth ? m_documentTabNaturalWidth(i) : m_documentTabBar->tabRect(i).width();
         return width;
     };
     while (shown > 1 && span(count - shown, shown) + 90 > maxStrip) --shown;
     const int hidden = count - shown;
-    for (int i = 0; i < count; ++i) m_documentTabBar->setTabVisible(i, i >= hidden);
+    for (int i = 0; i < count; ++i) m_documentTabBar->setTabVisible(i, i >= hidden || i == current);
+    if (auto *previous = m_tabOverflowButton->menu()) previous->deleteLater();
     if (hidden <= 0) {
         m_tabOverflowButton->hide();
         m_tabOverflowButton->setMenu(nullptr);
         return;
     }
     // Keep the selected tab visible: if it was among the hidden, bump it into the first visible slot.
-    const int current = m_documentTabBar->currentIndex();
     if (current >= 0 && current < hidden) {
         m_documentTabBar->setTabVisible(current, true);
         if (hidden < count) m_documentTabBar->setTabVisible(hidden, false);
@@ -547,11 +587,20 @@ void SessionWindow::refreshTabOverflow() {
     m_tabOverflowButton->setVisible(menuCount > 0);
 }
 
-void SessionWindow::switchToDocumentTab(int index) {
+bool SessionWindow::switchToDocumentTab(int index) {
     PERF_SCOPE("switchToDocumentTab");
-    if (index < 0 || index >= static_cast<int>(m_documents.size())) return;
-    m_activeDocumentIndex = index;
+    if (index < 0 || index >= static_cast<int>(m_documents.size())) return false;
     const DocumentTab &doc = m_documents[index];
+    // Visible upstream menus resolve their session through ProjectWorkspace.current.
+    // Let its operation gates decide before changing the shell's displayed document.
+    if (compositor_workspace_select_tab(doc.handle) != 0) {
+        if (m_documentTabBar && m_activeDocumentIndex >= 0) {
+            const QSignalBlocker blocker(m_documentTabBar);
+            m_documentTabBar->setCurrentIndex(m_activeDocumentIndex);
+        }
+        return false;
+    }
+    m_activeDocumentIndex = index;
     m_sessionHandle = doc.handle;
     m_hasDocument = true;
     syncViewportGeometry();
@@ -561,6 +610,13 @@ void SessionWindow::switchToDocumentTab(int index) {
     syncPaletteFromSession();   // each document has its own palette; also re-renders the tool rail
     updateStatusTelemetry();
     setWindowTitle(doc.title.isEmpty() ? tr("Compositor") : tr("%1 — Compositor").arg(doc.title));
+    syncAppMenus();
+    if (m_documentTabBar && m_documentTabBar->currentIndex() != index) {
+        const QSignalBlocker blocker(m_documentTabBar);
+        m_documentTabBar->setCurrentIndex(index);
+        refreshTabOverflow();
+    }
+    return true;
 }
 
 bool SessionWindow::isDocumentModified(uint64_t handle) const {
@@ -593,6 +649,10 @@ bool SessionWindow::saveCurrentDocument(bool forceChoosePath) {
     }
     if (path.isEmpty()) return false;
     path = normalizeProjectPackagePath(path);
+    if (path.isEmpty()) {
+        m_platform.notifier->warn(tr("Save failed"), tr("The save dialog did not return a valid local project path."));
+        return false;
+    }
     if (!path.endsWith(QLatin1String(".comp"), Qt::CaseInsensitive))
         path += QStringLiteral(".comp");
     if (path.startsWith(QStringLiteral("/run/user/")) && path.contains(QStringLiteral("/doc/"))) {
@@ -688,6 +748,7 @@ bool SessionWindow::confirmDocumentClose(int index, bool closingWindow) {
 
 void SessionWindow::closeDocumentTab(int index) {
     if (index < 0 || index >= static_cast<int>(m_documents.size())) return;
+    if (!compositor_workspace_can_reorder() || !sessionState().value("canSwitch").toBool(true)) return;
     // Closing the last tab closes the window rather than letting upstream mint a blank replacement document below;
     // closeEvent() asks about unsaved changes and handles the session teardown.
     if (m_documents.size() == 1) {
@@ -739,6 +800,14 @@ void SessionWindow::closeDocumentTab(int index) {
     } else {
         m_activeDocumentIndex = target; // a background tab closed; just re-sync the index, keep the active view
     }
+}
+
+bool SessionWindow::event(QEvent *event) {
+    const bool handled = QMainWindow::event(event);
+    // Each Qt window keeps its own displayed tab; upstream menus use the current workspace tab.
+    if (event->type() == QEvent::WindowActivate && m_sessionHandle != 0
+        && compositor_workspace_select_tab(m_sessionHandle) == 0) syncAppMenus();
+    return handled;
 }
 
 SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
@@ -1224,6 +1293,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     setupHeaderBar();
     setupOptionsBar();
     createMenus();
+    compositor_set_native_text_action_handler(performNativeTextAction);
     installAppMenus();
     refreshLayers();
     updateOptionsBar();
@@ -1295,6 +1365,26 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     });
 
     // Upstream sheets that open mid-command (RAW Develop during an import) are shown by the shell.
+    compositor_set_open_panel([](const char *title, const char *message, const char *extensions, int32_t multiple,
+                                 int32_t folders, char *output, size_t capacity) -> int32_t {
+        QStringList patterns;
+        for (const QString &ext : QString::fromUtf8(extensions ? extensions : "").split(QLatin1Char(','), Qt::SkipEmptyParts))
+            patterns << QStringLiteral("*.") + ext;
+        const QString filter = patterns.isEmpty() ? QString() : QObject::tr("Files (%1)").arg(patterns.join(QLatin1Char(' ')));
+        // Qt's dialog has no message line: the caption carries it, as the macOS panel shows it above the files.
+        QString caption = QString::fromUtf8(message ? message : "");
+        if (caption.isEmpty()) caption = QString::fromUtf8(title ? title : "");
+        QStringList chosen;
+        if (folders) { const QString dir = QFileDialog::getExistingDirectory(QApplication::activeWindow(), caption); if (!dir.isEmpty()) chosen << dir; }
+        else if (multiple) chosen = QFileDialog::getOpenFileNames(QApplication::activeWindow(), caption, QDir::homePath(), filter);
+        else { const QString file = QFileDialog::getOpenFileName(QApplication::activeWindow(), caption, QDir::homePath(), filter); if (!file.isEmpty()) chosen << file; }
+        if (chosen.isEmpty()) return 0;
+        const QByteArray joined = chosen.join(QLatin1Char('\n')).toUtf8();
+        if (size_t(joined.size()) + 1 > capacity) return -int32_t(joined.size() + 1);
+        memcpy(output, joined.constData(), size_t(joined.size()));
+        output[joined.size()] = 0;
+        return int32_t(chosen.size());
+    });
     compositor_set_sheet_presenter([](void *context, const char *panel) {
         static_cast<SessionWindow *>(context)->presentSwiftUISheet(QString::fromUtf8(panel));
     }, this);
@@ -1306,6 +1396,19 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     // (previews, Task {} in button actions) runs here, and whatever it changed shows.
     // AppKit tracking loops (NSWindow.nextEvent) wait on Qt's event loop.
     compositor_register_event_pump(compositor_host_pump_events);
+    compositor_set_alert_presenter([](const char *title, const char *detail, const char *buttons) -> int32_t {
+        const auto choices = QJsonDocument::fromJson(QByteArray(buttons ? buttons : "")).array();
+        if (choices.isEmpty()) return -1;
+        QMessageBox alert(QApplication::activeWindow());
+        alert.setText(QString::fromUtf8(title ? title : ""));
+        alert.setInformativeText(QString::fromUtf8(detail ? detail : ""));
+        QList<QAbstractButton *> actions;
+        for (const auto &choice : choices) actions.append(alert.addButton(choice.toString(), QMessageBox::ActionRole));
+        alert.setDefaultButton(qobject_cast<QPushButton *>(actions.first()));
+        alert.setEscapeButton(actions.last());
+        alert.exec();
+        return actions.indexOf(alert.clickedButton());
+    });
     installTouchTargets();
     m_mainPumpTimer = new QTimer(this);
     m_mainPumpTimer->setInterval(16);
@@ -1632,10 +1735,10 @@ void SessionWindow::updateFloatingPanelsPass() {
     const QJsonObject state = sessionState();
     // Accepting or closing the picker must also return canvas input from color sampling to the active tool.
     if (m_colorPickerOpen != !state.value("colorPickerTitle").toString().isEmpty()) syncPaletteFromSession();
-    QHash<QString, QString> wanted;
+    QHash<QString, QJsonObject> wanted;
     for (const QJsonValue &v : state.value("floatingPanels").toArray()) {
         const QJsonObject o = v.toObject();
-        wanted.insert(o.value("panel").toString(), o.value("title").toString());
+        wanted.insert(o.value("panel").toString(), o);
     }
     // However the picker went away (OK, Cancel, its window's close button, Esc, a session change), the canvas paints
     // again: it samples only while the picker's panel is up.
@@ -1645,7 +1748,15 @@ void SessionWindow::updateFloatingPanelsPass() {
     QList<QPointer<QDialog>> closing;
     for (auto it = m_floatingPanels.begin(); it != m_floatingPanels.end();) {
         if (wanted.contains(it.key()) && it->window) { ++it; continue; }
-        if (it->window) closing << it->window;
+        // Resolving a closed model releases its SwiftUI state and native controls.
+        // Use the content's owner when a project switch hides another session's panel.
+        const uint64_t owner = it->content ? it->content->property("swiftUIHandle").toULongLong() : m_sessionHandle;
+        const QByteArray panelName = it.key().toUtf8();
+        if (owner) compositor_session_render_tree(owner, panelName.constData(), nullptr, 0);
+        if (it->window) {
+            if (it.key() == QLatin1String("ColorPickerSheet")) m_colorPickerPosition = it->window->pos();
+            closing << it->window;
+        }
         it = m_floatingPanels.erase(it);
     }
     for (const QPointer<QDialog> &window : closing) {
@@ -1659,7 +1770,12 @@ void SessionWindow::updateFloatingPanelsPass() {
         if (!m_floatingPanels.contains(panel)) m_floatingPanels.insert(panel, FloatingPanelWindow());
         FloatingPanelWindow entry = m_floatingPanels.value(panel);
         if (!entry.window) {
-            auto *window = new QDialog(this, Qt::Tool);
+            QWidget *owner = this;
+            if (panel == QLatin1String("ColorPickerSheet")) {
+                // A dialog swatch's picker must be a child of its modal sheet to receive native input.
+                if (auto *modal = QApplication::activeModalWidget(); modal && modal->parentWidget() == this) owner = modal;
+            }
+            auto *window = new QDialog(owner, Qt::Tool);
             window->setObjectName("floatingPanel." + panel);
             window->setAttribute(Qt::WA_DeleteOnClose, false);
             window->setModal(false);
@@ -1678,9 +1794,19 @@ void SessionWindow::updateFloatingPanelsPass() {
             entry.content = nullptr;
             // Beside the canvas's top-right, left of the Layers panel (upstream's automatic placement).
             const QPoint anchor = mapToGlobal(QPoint(width() - 340 - 280, 120));
-            window->move(anchor);
+            window->move(panel == QLatin1String("ColorPickerSheet") && m_colorPickerPosition ? *m_colorPickerPosition : anchor);
         }
-        if (entry.title != it.value()) { entry.title = it.value(); entry.window->setWindowTitle(it.value()); }
+        const QString title = it.value().value("title").toString();
+        if (entry.title != title) { entry.title = title; entry.window->setWindowTitle(title); }
+        const QString placement = it.value().value("placement").toString("automatic");
+        if (entry.placement != placement) {
+            entry.placement = placement;
+            entry.window->layout()->setSizeConstraint(placement == QLatin1String("dockedToMainWindowRight")
+                ? QLayout::SetNoConstraint : QLayout::SetFixedSize);
+            entry.window->setMinimumSize(0, 0);
+            entry.window->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+        }
+        entry.dockedWidth = it.value().value("dockedWidth").toDouble();
         QWidget *next = swiftUIRenderPanelIfChanged(m_sessionHandle, panel, entry.content);
         if (next && next != entry.content) {
             if (entry.content) { entry.window->layout()->removeWidget(entry.content); retireRenderedPanel(entry.content); }
@@ -1694,6 +1820,33 @@ void SessionWindow::updateFloatingPanelsPass() {
         if (!entry.window->isVisible()) entry.window->show();
         m_floatingPanels.insert(panel, entry);
     }
+    syncDockedFloatingPanels();
+}
+
+void SessionWindow::syncDockedFloatingPanels() {
+    const QRect owner = frameGeometry();
+    const auto panels = m_floatingPanels;
+    for (const auto &entry : panels) {
+        const auto panel = entry.window;
+        if (!panel || !panel->isVisible() || entry.placement != QLatin1String("dockedToMainWindowRight")
+                || !(entry.dockedWidth > 0 && entry.dockedWidth <= QWIDGETSIZE_MAX)) continue;
+        // Qt's client width is the upstream view's width; platform chrome contributes to the outer dock frame.
+        const QSize chrome = panel->frameGeometry().size() - panel->size();
+        const QSize content(qRound(entry.dockedWidth), qMax(1, owner.height() - chrome.height()));
+        if (panel->size() != content || panel->minimumSize() != content || panel->maximumSize() != content)
+            panel->setFixedSize(content);
+        if (panel) panel->move(owner.right() + 1 - panel->frameGeometry().width(), owner.top());
+    }
+}
+
+void SessionWindow::resizeEvent(QResizeEvent *event) {
+    QMainWindow::resizeEvent(event);
+    syncDockedFloatingPanels();
+}
+
+void SessionWindow::moveEvent(QMoveEvent *event) {
+    QMainWindow::moveEvent(event);
+    syncDockedFloatingPanels();
 }
 
 /// Shows an upstream SwiftUI sheet panel (RAW Develop) modally, the way the macOS app shows it as a sheet: rendered
@@ -1772,8 +1925,22 @@ SessionWindow::~SessionWindow() {
         entry.window->setProperty("closingFromSession", true);
         delete entry.window.data();
     }
-    for (const DocumentTab &doc : m_documents) {
-        if (doc.handle != 0) compositor_session_close(doc.handle);
+    releaseDocumentSessions();
+}
+
+void SessionWindow::releaseDocumentSessions() {
+    if (m_autosaveTimer) m_autosaveTimer->stop();
+    if (m_documents.empty() && m_sessionHandle) compositor_session_close(m_sessionHandle);
+    for (const DocumentTab &doc : m_documents)
+        if (doc.handle) compositor_session_close(doc.handle);
+    m_documents.clear();
+    m_sessionHandle = 0;
+    m_activeDocumentIndex = -1;
+    m_hasDocument = false;
+    m_image = QImage();
+    if (m_documentTabBar) {
+        const QSignalBlocker blocker(m_documentTabBar);
+        while (m_documentTabBar->count()) m_documentTabBar->removeTab(0);
     }
 }
 
@@ -1993,7 +2160,8 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
     }
     // Responder check: editable text controls handle their own keys
     QWidget *focus = QApplication::focusWidget();
-    if (focus && (qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus) || qobject_cast<QTextEdit *>(focus))) {
+    if (focus && (qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus)
+                  || qobject_cast<QTextEdit *>(focus) || qobject_cast<QPlainTextEdit *>(focus))) {
         QMainWindow::keyPressEvent(event);
         return;
     }
@@ -2246,9 +2414,11 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
 void SessionWindow::keyReleaseEvent(QKeyEvent *event) {
     // A released Shift/Ctrl must flip Auto Select / aspect lock back without waiting for a mouse move.
     int bits = chordBits(event->modifiers());
+    const int released = event->key() == Qt::Key_Control ? 1 : event->key() == Qt::Key_Alt ? 2
+                         : event->key() == Qt::Key_Meta ? 4 : event->key() == Qt::Key_Shift ? 8 : 0;
+    bits &= ~released;   // Qt can still report the released modifier in modifiers().
     if (event->key() == Qt::Key_Control) {
         m_suppressCanvasCommand = false;
-        bits &= ~1;   // Qt often still reports the released key in modifiers()
     } else if (m_suppressCanvasCommand) {
         bits &= ~1;
     }
@@ -2487,7 +2657,9 @@ void SessionWindow::syncAppMenus() {
         menu->setObjectName("appMenu." + o.value("title").toString());
         fill(menu, o.value("items").toArray());
         // As AppKit validates a menu when it opens: titles, enabled and checked states as of now.
-        connect(menu, &QMenu::aboutToShow, this, [this] { syncAppMenus(); });
+        connect(menu, &QMenu::aboutToShow, this, [this] {
+            if (compositor_workspace_select_tab(m_sessionHandle) == 0) syncAppMenus();
+        });
         menuBar()->addMenu(menu);
         m_appMenus << menu;
     }
@@ -2496,9 +2668,20 @@ void SessionWindow::syncAppMenus() {
 /// Chooses an upstream menu item, then does what it asked of the shell (save, export, a size dialog, ...) and shows
 /// what changed.
 void SessionWindow::performAppMenu(const QString &path) {
+    if (compositor_workspace_select_tab(m_sessionHandle) != 0) return;
     syncAppMenus();
     const QByteArray utf8 = path.toUtf8();
     compositor_app_menu_perform(utf8.constData());
+    refreshAfterMenuAction();
+}
+
+void SessionWindow::performPaletteCommand(const QString &id) {
+    const QByteArray utf8 = id.toUtf8();
+    compositor_command_palette_perform(m_sessionHandle, utf8.constData());
+    refreshAfterMenuAction();
+}
+
+void SessionWindow::refreshAfterMenuAction() {
     handleShellRequests();
     compositor_pump_main();   // Task { await ... } actions start on the main queue
     handleSessionFileRequests();
@@ -2613,6 +2796,7 @@ void SessionWindow::exportAsWithUpstream(const QString &startFormat) {
     if (format == QLatin1String("JPEG")) { filter = tr("JPEG image (*.jpg *.jpeg)"); ext = QStringLiteral(".jpg"); }
     else if (format == QLatin1String("PDF")) { filter = tr("PDF document (*.pdf)"); ext = QStringLiteral(".pdf"); }
     else if (format == QLatin1String("EXR")) { filter = tr("OpenEXR image (*.exr)"); ext = QStringLiteral(".exr"); }
+    else if (format == QLatin1String("TIFF")) { filter = tr("TIFF image (*.tif *.tiff)"); ext = QStringLiteral(".tif"); }
     const QString path = QFileDialog::getSaveFileName(this, tr("Export %1").arg(format.isEmpty() ? QStringLiteral("PNG") : format),
         QDir::home().filePath(base + ext), filter);
     if (path.isEmpty()) {
@@ -2689,20 +2873,26 @@ void SessionWindow::showPopUpMenu() {
     QByteArray bytes(static_cast<int>(size), Qt::Uninitialized);
     if (compositor_popup_menu_items(reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return;
     QMenu menu(this);
-    int index = 0;
-    for (const QJsonValue &value : QJsonDocument::fromJson(bytes).array()) {
-        const QJsonObject item = value.toObject();
-        if (item.value("separator").toBool()) {
-            menu.addSeparator();
-        } else {
-            QAction *action = menu.addAction(item.value("title").toString());
+    menu.setProperty("upstreamMenuOwnsTracking", true);   // compositor_popup_menu_choose ends the original NSMenu.
+    std::function<void(QMenu *, const QJsonArray &)> populate = [&](QMenu *target, const QJsonArray &items) {
+        for (const QJsonValue &value : items) {
+            const QJsonObject item = value.toObject();
+            if (item.value("separator").toBool()) { target->addSeparator(); continue; }
+            QAction *action;
+            if (item.contains("children")) {
+                auto *submenu = target->addMenu(item.value("title").toString());
+                populate(submenu, item.value("children").toArray());
+                action = submenu->menuAction();
+            } else {
+                action = target->addAction(item.value("title").toString());
+                action->setData(item.value("id").toInt());
+            }
             action->setEnabled(item.value("enabled").toBool(true));
             action->setCheckable(item.value("checked").toBool());
             action->setChecked(item.value("checked").toBool());
-            action->setData(index);
         }
-        ++index;
-    }
+    };
+    populate(&menu, QJsonDocument::fromJson(bytes).array());
     QAction *chosen = menu.exec(QCursor::pos());
     compositor_popup_menu_choose(chosen ? chosen->data().toInt() : -1);
     compositor_pump_main();
@@ -3440,9 +3630,9 @@ void SessionWindow::paintRuler(QWidget *ruler, bool vertical) {
 
 /// Pressing a ruler starts a new guide there (the top ruler a horizontal one), following the pointer over the canvas;
 /// released back on a ruler, it goes away.
-void SessionWindow::rulerMousePress(QMouseEvent *event, QWidget *ruler, bool vertical) {
+void SessionWindow::rulerMousePress(QMouseEvent *event, QWidget *, bool vertical) {
     if (event->button() != Qt::LeftButton || !m_canEditGuides || !m_canvasWidget) return;
-    const QPointF at = m_canvasWidget->mapFrom(ruler, event->position().toPoint());
+    const QPointF at = m_canvasWidget->mapFromGlobal(event->globalPosition());
     const QPointF doc = documentPoint(at);
     const bool guideVertical = vertical;   // the left ruler makes vertical guides
     if (sendCommandQuiet({{"action", "guideCreate"}, {"kind", guideVertical ? "vertical" : "horizontal"},
@@ -3453,16 +3643,16 @@ void SessionWindow::rulerMousePress(QMouseEvent *event, QWidget *ruler, bool ver
     }
 }
 
-void SessionWindow::rulerMouseMove(QMouseEvent *event, QWidget *ruler) {
+void SessionWindow::rulerMouseMove(QMouseEvent *event, QWidget *) {
     if (!m_guideDragging || !m_canvasWidget) return;
-    const QPointF doc = documentPoint(m_canvasWidget->mapFrom(ruler, event->position().toPoint()));
+    const QPointF doc = documentPoint(m_canvasWidget->mapFromGlobal(event->globalPosition()));
     sendCommandQuiet({{"action", "guideMove"}, {"value", m_guideDragVertical ? doc.x() : doc.y()}});
     syncCanvasChrome(sessionState());
 }
 
-void SessionWindow::rulerMouseRelease(QMouseEvent *event, QWidget *ruler) {
+void SessionWindow::rulerMouseRelease(QMouseEvent *event, QWidget *) {
     if (!m_guideDragging || !m_canvasWidget) return;
-    const QPointF at = m_canvasWidget->mapFrom(ruler, event->position().toPoint());
+    const QPointF at = m_canvasWidget->mapFromGlobal(event->globalPosition());
     // EditorCanvas.isOverRuler: released left of or above the canvas.
     sendCommandQuiet({{"action", "guideFinish"}, {"enabled", m_showsRulers && (at.x() < 0 || at.y() < 0)}});
     m_guideDragging = false;
@@ -3537,14 +3727,17 @@ void SessionWindow::canvasWheelEvent(QWheelEvent *event) {
     // Precise (touchpad) deltas are points already; a wheel notch is 120 eighths of a degree, taken as AppKit's line.
     const bool precise = !event->pixelDelta().isNull();
     const QPointF delta = precise ? QPointF(event->pixelDelta()) : QPointF(event->angleDelta()) / 120.0;
-    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) {
-        // Alt turns a vertical wheel into a horizontal one under some platforms; take whichever axis moved.
-        const double dy = delta.y() != 0 ? delta.y() : delta.x();
-        changeViewport(2, viewportZoom() * std::exp(dy * (precise ? 0.015 : 0.15)), event->position().x(), event->position().y());
-    } else {
-        const double multiplier = precise ? 1.0 : 12.0 * 3;
-        changeViewport(4, delta.x() * multiplier, delta.y() * multiplier);
-    }
+    const bool zoom = event->modifiers() & (Qt::ControlModifier | Qt::AltModifier);
+    // Preserve Qt's existing wheel direction/gain and three-line notch pan while
+    // upstream supplies the viewport operation and its stroke/drag refusal gates.
+    const double multiplier = precise ? 1.0 : zoom ? 10.0 : 3.0;
+    const double dx = zoom ? 0 : delta.x() * multiplier;
+    const double dy = zoom ? -(delta.y() != 0 ? delta.y() : delta.x()) * multiplier : delta.y() * multiplier;
+    syncViewportGeometry();
+    compositor_canvas_scroll(m_sessionHandle, event->position().x(), event->position().y(), dx, dy, precise ? 1 : 0,
+                             chordBits(event->modifiers()));
+    updateStatusTelemetry();
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 /// A viewport change (upstream session.fit / zoom / zoomKeyboard / viewport.translate), then the canvas, rulers and
@@ -4098,6 +4291,7 @@ bool SessionWindow::sendCommand(const QJsonObject &command) {
         syncToolFromSession();
         syncTextEditor();
     }
+    if (result == 0 && command.value("action") == "importFiles") updateFloatingPanels();
     return result == 0;
 }
 
@@ -4147,10 +4341,17 @@ QImage SessionWindow::renderDisplayImage(double scale) {
 
 /// Exports and copies need every pixel, whatever the canvas shows.
 QImage SessionWindow::fullResolutionImage() {
-    if (m_displayScale >= 1.0 || m_sessionHandle == 0) return m_image;
-    QImage full = renderToQImage(m_sessionHandle, docWidth(), docHeight());
-    if (!full.isNull()) { full.setDotsPerMeterX(m_image.dotsPerMeterX()); full.setDotsPerMeterY(m_image.dotsPerMeterY()); }
-    return full.isNull() ? m_image : full;
+    if (m_sessionHandle == 0) return m_image;
+    // The display frame can still be catching up after an import or edit. Export the current session at its own size.
+    const auto state = sessionState();
+    const int width = state.value("width").toInt(), height = state.value("height").toInt();
+    if (width <= 0 || height <= 0) return {};
+    QImage full = renderToQImage(m_sessionHandle, width, height);
+    if (!full.isNull()) {
+        const int dotsPerMeter = qRound(state.value("resolution").toDouble(72) / 0.0254);
+        full.setDotsPerMeterX(dotsPerMeter); full.setDotsPerMeterY(dotsPerMeter);
+    }
+    return full;
 }
 
 void SessionWindow::refreshImage() {
@@ -4296,7 +4497,7 @@ void SessionWindow::refreshDirtyPanels() {
         else if (panel == QLatin1String("*")) { refreshPanels(); updateToolRail(); floating = true; }
         else floating = true;   // a floating panel's (or a sheet's own loop refreshes it)
     }
-    if (floating && !m_floatingPanels.isEmpty()) updateFloatingPanels();
+    if (floating) updateFloatingPanels();
 }
 
 /// Coalesced: many commands refresh the image, then the layers, in one turn; the layers panel rebuilds once (a direct
@@ -5118,51 +5319,93 @@ void SessionWindow::dropEvent(QDropEvent *event) {
     else event->ignore();
 }
 
-bool SessionWindow::importDroppedMime(const QMimeData *mime) {
-    if (!mime) return false;
+bool SessionWindow::importDroppedMime(const QMimeData *mime, bool newTab) {
+    if (!mime || m_sessionHandle == 0) return false;
+    PendingDrop drop{m_sessionHandle, newTab, {}, {}};
     if (mime->hasUrls()) {
-        for (const QUrl &url : mime->urls()) {
-            // ImageFileDrop.importProviders: dropped files come in as layers (an empty tab takes the first's size).
-            if (url.isLocalFile() && importWithUpstream({url.toLocalFile()}, false)) return true;
-        }
+        // ImageFileDrop.importProviders: every dropped file comes in as layers (an empty tab takes the first's size).
+        for (const QUrl &url : mime->urls())
+            if (url.isLocalFile()) drop.paths.append(url.toLocalFile());
     } else if (mime->hasImage()) {
-        QImage img = qvariant_cast<QImage>(mime->imageData());
-        if (!img.isNull()) {
-            QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
-            std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
-            const uint8_t *src = rgba.constBits();
-            for (size_t i = 0; i < premul.size(); i += 4) {
-                uint8_t a = src[i + 3];
-                premul[i] = (src[i] * a + 127) / 255;
-                premul[i + 1] = (src[i + 1] * a + 127) / 255;
-                premul[i + 2] = (src[i + 2] * a + 127) / 255;
-                premul[i + 3] = a;
-            }
-            std::string name = "Dropped Layer";
-            if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(),
-                                               rgba.width(), rgba.height(),
-                                               reinterpret_cast<const uint8_t*>(name.data()), name.size(), 0) == 0) {
-                refreshImage();
-                refreshLayers();
-                return true;
+        drop.image = qvariant_cast<QImage>(mime->imageData());
+    }
+    if (drop.paths.isEmpty() && drop.image.isNull()) return false;
+    // Upstream captures the destination project, then waits while its workspace cannot switch (a text, rename,
+    // filter, gradient or other edit in progress) and imports afterwards, keeping arrival order.
+    if (!m_pendingDrops.isEmpty() || !sessionState().value("canSwitch").toBool(true)) {
+        m_pendingDrops.append(drop);
+        if (!m_pendingDropTimer) {
+            m_pendingDropTimer = new QTimer(this);
+            m_pendingDropTimer->setInterval(30);
+            connect(m_pendingDropTimer, &QTimer::timeout, this, &SessionWindow::drainPendingDrops);
+        }
+        m_pendingDropTimer->start();
+        return true;
+    }
+    return importDrop(drop);
+}
+
+void SessionWindow::drainPendingDrops() {
+    while (!m_pendingDrops.isEmpty()) {
+        if (!sessionState().value("canSwitch").toBool(true)) return;
+        const PendingDrop drop = m_pendingDrops.takeFirst();
+        if (drop.newTab) {
+            const uint64_t before = m_sessionHandle;
+            newCanvasTab();
+            if (m_sessionHandle == before) { m_pendingDrops.prepend(drop); return; }
+            importDrop(drop);
+            refreshTabTitle();
+            continue;
+        }
+        int index = -1;
+        for (int i = 0; i < static_cast<int>(m_documents.size()); ++i)
+            if (m_documents[i].handle == drop.handle) index = i;
+        if (index < 0) continue;   // its project closed meanwhile, as upstream skips a vanished destination
+        if (index != m_activeDocumentIndex) {
+            m_documentTabBar->setCurrentIndex(index);
+            if (m_sessionHandle != drop.handle || !sessionState().value("canSwitch").toBool(true)) {
+                m_pendingDrops.prepend(drop);
+                return;
             }
         }
+        importDrop(drop);
+        refreshTabTitle();
     }
-    return false;
+    if (m_pendingDropTimer) m_pendingDropTimer->stop();
+}
+
+bool SessionWindow::importDrop(const PendingDrop &drop) {
+    if (!drop.paths.isEmpty()) return importWithUpstream(drop.paths, false);
+    QImage rgba = drop.image.convertToFormat(QImage::Format_RGBA8888);
+    std::vector<uint8_t> premul(rgba.width() * rgba.height() * 4);
+    const uint8_t *src = rgba.constBits();
+    for (size_t i = 0; i < premul.size(); i += 4) {
+        uint8_t a = src[i + 3];
+        premul[i] = (src[i] * a + 127) / 255;
+        premul[i + 1] = (src[i + 1] * a + 127) / 255;
+        premul[i + 2] = (src[i + 2] * a + 127) / 255;
+        premul[i + 3] = a;
+    }
+    std::string name = "Dropped Layer";
+    if (compositor_session_import_rgba(m_sessionHandle, premul.data(), premul.size(), rgba.width(), rgba.height(),
+                                       reinterpret_cast<const uint8_t*>(name.data()), name.size(), 0) != 0) return false;
+    refreshImage();
+    refreshLayers();
+    return true;
 }
 
 // IO milestone: Export flattened canvas as PNG using Qt's QImageWriter
 // (replaces macOS CGImageDestination/ImageIO).
 // IO milestone: Export flattened canvas as PNG via IImageExporter interface (SOLID)
 bool SessionWindow::exportPNG(const QString &path) {
-    if (m_sessionHandle == 0 || m_image.isNull()) return false;
+    if (m_sessionHandle == 0) return false;
     auto exporter = ImageExporterRegistry::instance().exporterForFormat("png");
     return exporter && exporter->exportImage(fullResolutionImage(), path);
 }
 
 // IO milestone: Export flattened canvas as JPEG via IImageExporter interface (SOLID)
 bool SessionWindow::exportJPEG(const QString &path, int quality) {
-    if (m_sessionHandle == 0 || m_image.isNull()) return false;
+    if (m_sessionHandle == 0) return false;
     auto exporter = ImageExporterRegistry::instance().exporterForFormat("jpeg");
     return exporter && exporter->exportImage(fullResolutionImage(), path, quality);
 }
@@ -5208,15 +5451,6 @@ static int32_t confirmPhotoshopConversions(const uint8_t *json, size_t length) {
     return box.clickedButton() == import ? 1 : 0;
 }
 
-/// Files Qt's image readers don't handle — Photoshop documents, camera RAW, HEIC — go through upstream's importer,
-/// which keeps a PSD's layers, masks and text rather than a flattened picture.
-static bool needsUpstreamImporter(const QString &path) {
-    static const QStringList upstreamOnly = {"psd", "psb", "heic", "heif", "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf",
-                                             "sr2", "orf", "raf", "rw2", "rwl", "pef", "ptx", "srw", "x3f", "3fr", "fff", "iiq",
-                                             "erf", "kdc", "dcr", "mos", "mef", "mrw", "raw", "gpr"};
-    return upstreamOnly.contains(QFileInfo(path).suffix().toLower());
-}
-
 bool SessionWindow::importWithUpstream(const QStringList &paths, bool replace) {
     if (m_sessionHandle == 0 || paths.isEmpty()) return false;
     compositor_set_conversion_prompt(&confirmPhotoshopConversions);
@@ -5254,6 +5488,7 @@ void SessionWindow::newCanvasTab() {
     if (sessionState().value("busy").toBool()) return;
     sendCommandQuiet({{"action", "transformCommitFinal"}});   // upstream commits a pending transform before switching
     const uint64_t handle = compositor_workspace_add_tab();
+    if (handle == 0) return;   // upstream newCanvas(): the current project cannot switch now
     addDocumentTab(handle, workspaceTabTitle(handle));
 }
 
@@ -5277,18 +5512,60 @@ bool SessionWindow::saveProject(const QString &path) {
     return true;
 }
 
-bool SessionWindow::loadProject(const QString &path) {
+bool SessionWindow::loadProject(const QString &requestedPath) {
+    const QString path = qtplatform::localFilePath(requestedPath);
+    if (path.isEmpty()) return false;
+    const auto resolved = [](const QString &value) {
+        const QFileInfo info(value);
+        const QString canonical = info.canonicalFilePath();
+        return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+    };
+    const QString target = resolved(path);
+    QList<SessionWindow *> windows{this};
+    for (auto *widget : QApplication::topLevelWidgets()) {
+        auto *window = qobject_cast<SessionWindow *>(widget);
+        if (window && window != this && window->isVisible()) windows.append(window);
+    }
+    for (auto *window : windows) {
+        for (int index = 0; index < static_cast<int>(window->m_documents.size()); ++index) {
+            const QString known = window->m_documents[index].filePath;
+            if (known.isEmpty() || resolved(known) != target) continue;
+            if (!compositor_workspace_can_reorder() || !sessionState().value("canSwitch").toBool(true)
+                || !window->sessionState().value("canSwitch").toBool(true)
+                || !window->switchToDocumentTab(index)) return false;
+            if (window != this) {
+                window->show();
+                window->raise();
+                window->activateWindow();
+            }
+            compositor_note_recent_project(path.toUtf8().constData());
+            return true;
+        }
+    }
     if (!readProjectPackage(path)) return false;
     compositor_note_recent_project(QFileInfo(path).absoluteFilePath().toUtf8().constData());
     return true;
 }
 
+void SessionWindow::openStartupFiles(const QStringList &paths) {
+    for (const QString &input : paths) {
+        const QString path = qtplatform::localFilePath(input);
+        if (path.isEmpty() || !QFile::exists(path)) continue;
+        if (path.endsWith(QStringLiteral(".comp"), Qt::CaseInsensitive)
+            || path.endsWith(QStringLiteral(".cproject"), Qt::CaseInsensitive)
+            || QFileInfo(path + QStringLiteral("/manifest.json")).isFile()) {
+            loadProject(path);
+        } else {
+            importImage(path);
+        }
+    }
+}
+
 namespace {
 
 QString normalizeProjectPackagePath(QString path) {
-    if (path.isEmpty()) return path;
-    if (path.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
-        path = QUrl(path).toLocalFile();
+    path = qtplatform::localFilePath(path);
+    if (path.isEmpty()) return {};
     path = QDir::cleanPath(path);
     const QString suffix = QStringLiteral(".comp");
     while (path.endsWith(suffix + suffix, Qt::CaseInsensitive))
@@ -5427,78 +5704,19 @@ bool writeFrozenProjectPackage(const QString &path, uint64_t snapshot, QString *
     QDir temporary(temporaryPath);
     if (!temporary.mkpath(QStringLiteral("images"))) return fail(QStringLiteral("could not create staging images/"));
 
-    QFile manifestFile(temporary.filePath("manifest.json"));
-    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return fail(QStringLiteral("could not write staging manifest"));
-    const QByteArray encodedManifest = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
-    if (encodedManifest.size() > compositor::projectMetadataBytes) return fail(QStringLiteral("encoded manifest too large"));
-    if (manifestFile.write(encodedManifest) != encodedManifest.size())
-        return fail(QStringLiteral("manifest write incomplete"));
-    manifestFile.close();
-
-    for (const QJsonValue &value : manifest.value("layers").toArray()) {
-        const QJsonObject layer = value.toObject();
-        const QString idString = layer.value("id").toString();
-        const QByteArray id = idString.toUtf8();
-        if (id.isEmpty()) return fail(QStringLiteral("layer with empty id"));
-        for (const bool isMask : {false, true}) {
-            const QString filename = layer.value(isMask ? "maskFile" : "imageFile").toString();
+    const QByteArray stagingPath = temporaryPath.toUtf8();
+    const bool includePreview = !path.endsWith(QStringLiteral("autosave.comp"), Qt::CaseInsensitive);
+    if (compositor_save_write_package(snapshot, stagingPath.constData(), includePreview ? 1 : 0) != 0)
+        return fail(QStringLiteral("could not encode the project package"));
+    // Preserve the host's encoded-asset limit before installing the completed package.
+    for (const auto &value : manifest.value("layers").toArray()) {
+        const auto layer = value.toObject();
+        for (const auto *key : {"imageFile", "maskFile"}) {
+            const QString filename = layer.value(key).toString();
             if (filename.isEmpty()) continue;
-            const QString expected = idString + (isMask ? QStringLiteral(".mask.png") : QStringLiteral(".png"));
-            if (filename.compare(expected, Qt::CaseInsensitive) != 0
-                || QFileInfo(filename).fileName() != filename)
-                return fail(QStringLiteral("layer %1 asset name mismatch (%2)").arg(idString, filename));
-
-            size_t width = 0, height = 0;
-            const int64_t size = compositor_save_export_layer(snapshot,
-                reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()),
-                isMask ? 1 : 0, nullptr, 0, &width, &height);
-            size_t surfacePixels = 0;
-            if (size <= 0 || !compositor::accountProjectAsset(width, height, surfacePixels)
-                || static_cast<uint64_t>(size) != width * height * (isMask ? 1 : 4))
-                return fail(QStringLiteral("layer %1 encode preflight failed").arg(idString));
-            std::vector<uint8_t> bytes(static_cast<size_t>(size));
-            const int64_t copied = compositor_save_export_layer(snapshot,
-                reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()),
-                isMask ? 1 : 0, bytes.data(), bytes.size(), &width, &height);
-            if (copied != size) return fail(QStringLiteral("layer %1 pixel copy failed").arg(idString));
-
-            QImage image;
-            if (isMask) {
-                image = QImage(static_cast<int>(width), static_cast<int>(height), QImage::Format_Grayscale8);
-                if (image.isNull()) return fail(QStringLiteral("layer %1 mask QImage alloc failed").arg(idString));
-                for (size_t y = 0; y < height; ++y)
-                    std::memcpy(image.scanLine(static_cast<int>(y)), bytes.data() + y * width, width);
-            } else {
-                image = straightRGBA(bytes, static_cast<int>(width), static_cast<int>(height));
-            }
-            QFile encodedAsset(temporary.filePath(QStringLiteral("images/") + filename));
-            if (!encodedAsset.open(QIODevice::WriteOnly | QIODevice::Truncate))
-                return fail(QStringLiteral("could not write %1").arg(filename));
-            QImageWriter writer(&encodedAsset, "PNG");
-            if (image.isNull() || !writer.write(image) || !encodedAsset.flush())
-                return fail(QStringLiteral("PNG encode failed for %1").arg(filename));
-            encodedAsset.close();
-            if (QFileInfo(encodedAsset.fileName()).size() > compositor::projectEncodedAssetBytes)
-                return fail(QStringLiteral("encoded %1 exceeds size limit").arg(filename));
-        }
-    }
-
-    // QuickLook/Preview.jpg is optional — never fail the save for preview issues.
-    if (!path.endsWith(QStringLiteral("/autosave.comp"), Qt::CaseInsensitive)
-        && !path.endsWith(QStringLiteral("autosave.comp"), Qt::CaseInsensitive)) {
-        const int64_t previewSize = compositor_save_export_preview(snapshot, nullptr, 0);
-        if (previewSize > 0) {
-            std::vector<uint8_t> preview(static_cast<size_t>(previewSize));
-            if (compositor_save_export_preview(snapshot, preview.data(), preview.size()) == previewSize
-                && temporary.mkpath("QuickLook")) {
-                QFile previewFile(temporary.filePath(QStringLiteral("QuickLook/Preview.jpg")));
-                if (previewFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                    if (previewFile.write(reinterpret_cast<const char *>(preview.data()), previewSize) != previewSize)
-                        qWarning("project save: QuickLook preview write incomplete");
-                    previewFile.flush();
-                }
-            }
+            const QFileInfo asset(temporary.filePath(QStringLiteral("images/") + filename));
+            if (!asset.isFile() || asset.size() <= 0 || asset.size() > compositor::projectEncodedAssetBytes)
+                return fail(QStringLiteral("encoded %1 exceeds size limit or is missing").arg(filename));
         }
     }
 
@@ -5551,8 +5769,9 @@ bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave
         if (!autosave) statusBar()->showMessage(tr("A save is already in progress."), 3000);
         return false;
     }
-    // Mac ProjectController.begin: commit Free Transform (and clear crop) before capturing the package snapshot.
-    prepareDocumentForProjectIO(handle);
+    // Explicit saves prepare the document as Mac ProjectController.begin does.
+    // Autosave captures current layer state without applying or canceling live drafts.
+    if (!autosave) prepareDocumentForProjectIO(handle);
     const uint64_t captured = compositor_save_capture(handle);
     if (!captured) {
         qWarning("project save: snapshot capture failed for handle %llu", static_cast<unsigned long long>(handle));
@@ -5564,6 +5783,7 @@ bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave
     const QJsonObject info{{"savedAt", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
                           {"width", state.value("width")}, {"height", state.value("height")}};
     m_savingDocuments.insert(handle);
+    if (!autosave) compositor_project_save_state(handle, 1);
     savingPaths().insert(path);
     QPointer<SessionWindow> window(this);
     projectWriter().start(QRunnable::create([window, snapshot, handle, path, recovery, autosave, markSaved, info,
@@ -5591,11 +5811,12 @@ bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave
         }
         QMetaObject::invokeMethod(qApp, [window, snapshot, handle, path, autosave, markSaved, saved, failureReason, completion] {
             savingPaths().remove(path);
-            if (!window) return;
+            if (!window) { if (!autosave) compositor_project_save_state(handle, 0); return; }
             window->m_savingDocuments.remove(handle);
             window->m_lastProjectSaveError = saved ? QString() : failureReason;
             if (saved && !autosave && markSaved) {
                 if (compositor_save_mark_saved(snapshot->value) == 0) {
+                    compositor_project_did_save(handle, path.toUtf8().constData());
                     auto &documents = window->m_documents;
                     const auto it = std::find_if(documents.begin(), documents.end(), [handle](const DocumentTab &doc) { return doc.handle == handle; });
                     if (it != documents.end()) {
@@ -5608,6 +5829,7 @@ bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave
                     compositor_note_recent_project(path.toUtf8().constData());
                 }
             }
+            if (!autosave) compositor_project_save_state(handle, 0);
             const bool closeRequested = window->m_closeAfterSave.remove(handle);
             const bool closeWindow = window->m_closeWindowAfterSave;
             if (closeRequested) window->m_closeWindowAfterSave = false;
@@ -5659,21 +5881,12 @@ bool SessionWindow::readProjectPackage(const QString &path) {
     const QJsonObject manifest = manifestDoc.object();
     const uint64_t replacement = compositor_workspace_add_tab();
     if (replacement == 0) return false;
-    int32_t rc = compositor_session_import_manifest(replacement,
-                                                    reinterpret_cast<const uint8_t *>(manifestData.constData()),
-                                                    manifestData.size());
-    if (rc != 0) {
-        compositor_workspace_close_tab(replacement);
-        return false;
-    }
     const QFileInfo imagesInfo(dir.filePath("images"));
     if (!imagesInfo.isDir() || imagesInfo.isSymLink()) {
         compositor_workspace_close_tab(replacement);
         return false;
     }
     size_t imagePixels = 0, maskPixels = 0;
-    struct PendingAsset { QByteArray id; QString path; bool mask; QSize size; };
-    std::vector<PendingAsset> assets;
 
     for (const QJsonValue &value : manifest.value("layers").toArray()) {
         const QJsonObject layer = value.toObject();
@@ -5683,7 +5896,8 @@ bool SessionWindow::readProjectPackage(const QString &path) {
         for (const bool isMask : {false, true}) {
             const QString filename = layer.value(isMask ? "maskFile" : "imageFile").toString();
             if (filename.isEmpty()) continue;
-            const QString expected = idString + (isMask ? ".mask.png" : ".png");
+            const bool exr = !isMask && manifest.value("version").toInt() >= 13 && filename == idString + ".exr";
+            const QString expected = idString + (isMask ? ".mask.png" : exr ? ".exr" : ".png");
             if (filename != expected || QFileInfo(filename).fileName() != filename) {
                 compositor_workspace_close_tab(replacement);
                 return false;
@@ -5693,64 +5907,38 @@ bool SessionWindow::readProjectPackage(const QString &path) {
                 compositor_workspace_close_tab(replacement);
                 return false;
             }
-            QImageReader reader(assetInfo.filePath());
-            if (reader.format().toLower() != QByteArray("png")) {
-                compositor_workspace_close_tab(replacement);
-                return false;
+            QSize decodedSize;
+            if (exr) {
+#if defined(COMPOSITOR_HAS_OPENEXR)
+                try {
+                    Imf::InputFile file(assetInfo.filePath().toUtf8().constData());
+                    const auto &box = file.header().dataWindow();
+                    const int64_t width = int64_t(box.max.x) - box.min.x + 1;
+                    const int64_t height = int64_t(box.max.y) - box.min.y + 1;
+                    if (width > 0 && height > 0 && width <= std::numeric_limits<int>::max()
+                        && height <= std::numeric_limits<int>::max()) decodedSize = QSize(int(width), int(height));
+                } catch (...) {}
+#endif
+            } else {
+                QImageReader reader(assetInfo.filePath());
+                if (reader.format().toLower() == QByteArray("png")) decodedSize = reader.size();
             }
-            const QSize decodedSize = reader.size();
             if (!decodedSize.isValid() || decodedSize.width() <= 0 || decodedSize.height() <= 0 ||
                 !compositor::accountProjectAsset(decodedSize.width(), decodedSize.height(), isMask ? maskPixels : imagePixels)) {
                 compositor_workspace_close_tab(replacement);
                 return false;
             }
-            assets.push_back({id, assetInfo.filePath(), isMask, decodedSize});
         }
     }
-    // Qt's default allocation ceiling must not silently impose a smaller policy.
-    // Keep it bounded; dimensions and cumulative totals have already been checked.
-    QImageReader::setAllocationLimit(static_cast<int>((compositor_project_max_surface_pixels() * 4 + 1048575) / 1048576));
-    for (const auto &asset : assets) {
-        const auto &id = asset.id;
-        const bool isMask = asset.mask;
-        QImageReader reader(asset.path);
-        const QImage decoded = reader.read();
-        if (decoded.isNull() || decoded.size() != asset.size) { compositor_workspace_close_tab(replacement); return false; }
-        if (isMask) {
-            const QImage gray = decoded.convertToFormat(QImage::Format_Grayscale8);
-            if (gray.isNull()) { compositor_workspace_close_tab(replacement); return false; }
-            std::vector<uint8_t> pixels(static_cast<size_t>(gray.width()) * gray.height());
-            for (int y = 0; y < gray.height(); ++y)
-                std::memcpy(pixels.data() + static_cast<size_t>(y) * gray.width(), gray.constScanLine(y), gray.width());
-            rc = compositor_session_import_layer(replacement,
-                reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()), 1,
-                pixels.data(), pixels.size(), gray.width(), gray.height());
-        } else {
-            const QImage rgba = decoded.convertToFormat(QImage::Format_RGBA8888);
-            if (rgba.isNull()) { compositor_workspace_close_tab(replacement); return false; }
-            std::vector<uint8_t> pixels(static_cast<size_t>(rgba.sizeInBytes()));
-            for (int y = 0; y < rgba.height(); ++y) {
-                const uint8_t *source = rgba.constScanLine(y);
-                uint8_t *target = pixels.data() + static_cast<size_t>(y) * rgba.width() * 4;
-                for (int x = 0; x < rgba.width(); ++x) {
-                    const uint8_t alpha = source[x * 4 + 3];
-                    target[x * 4] = static_cast<uint8_t>((source[x * 4] * alpha + 127) / 255);
-                    target[x * 4 + 1] = static_cast<uint8_t>((source[x * 4 + 1] * alpha + 127) / 255);
-                    target[x * 4 + 2] = static_cast<uint8_t>((source[x * 4 + 2] * alpha + 127) / 255);
-                    target[x * 4 + 3] = alpha;
-                }
-            }
-            rc = compositor_session_import_layer(replacement,
-                reinterpret_cast<const uint8_t *>(id.constData()), static_cast<size_t>(id.size()), 0,
-                pixels.data(), pixels.size(), rgba.width(), rgba.height());
-        }
-        if (rc != 0) { compositor_workspace_close_tab(replacement); return false; }
+    // Upstream decodes the original 16-bit/HDR pixels after all headers pass the host budget checks.
+    QImageReader::setAllocationLimit(static_cast<int>((compositor_project_max_surface_pixels() * 16 + 1048575) / 1048576));
+    int32_t width = 0, height = 0;
+    const QByteArray packagePath = QFileInfo(path).absoluteFilePath().toUtf8();
+    if (compositor_session_load_package(replacement, packagePath.constData(), &width, &height) != 0
+        || width <= 0 || height <= 0) {
+        compositor_workspace_close_tab(replacement);
+        return false;
     }
-
-    // Render the loaded document
-    int width = manifest["width"].toInt();
-    int height = manifest["height"].toInt();
-    if (width <= 0 || height <= 0) { compositor_workspace_close_tab(replacement); return false; }
     QImage rendered = renderToQImage(replacement, width, height);
     if (rendered.isNull()) { compositor_workspace_close_tab(replacement); return false; }
     // Opens as its own tab rather than replacing the current document, same as "New Canvas" / the "+" button.
@@ -5839,7 +6027,7 @@ void SessionWindow::clearAutosave() {
 
 void SessionWindow::closeEvent(QCloseEvent *event) {
     // Tip ProjectWorkspace.confirmQuit: settle canvas drafts / cancel open dialogs / finish text before Save prompts.
-    if (compositor_workspace_settle() != 0) {
+    if (compositor_workspace_settle() != 0 || !sessionState().value("canSwitch").toBool(true)) {
         event->ignore();
         return;
     }
@@ -5860,6 +6048,7 @@ void SessionWindow::closeEvent(QCloseEvent *event) {
     }
     clearAutosave();
     QSettings().setValue(QStringLiteral("window/geometry"), saveGeometry());   // reopened where it was left, as macOS does
+    releaseDocumentSessions();
     QMainWindow::closeEvent(event);
 }
 
@@ -6328,18 +6517,38 @@ public:
     using QTabBar::QTabBar;
     /// Whether tab `index` has unsaved changes (a 5-pt dot before its title, 5 from it).
     std::function<bool(int)> isModified;
+    std::function<bool()> canReorder;
+    int naturalTabWidth(int index) const { return tabSizeHint(index).width(); }
     /// Files or an image dropped on the bar: on tab `index`, or -1 anywhere else on it (ProjectTabs' bar-wide drop).
-    std::function<bool(int, const QMimeData *)> dropped;
+    std::function<bool(int, const QMimeData *, Qt::KeyboardModifiers)> dropped;
+    std::function<bool(int, const QMimeData *, Qt::KeyboardModifiers)> canReceive;
 protected:
-    bool takes(const QMimeData *mime) const { return dropped && mime && (mime->hasUrls() || mime->hasImage()); }
+    bool supports(const QMimeData *mime) const {
+        return mime && (mime->hasUrls() || mime->hasImage() || mime->hasFormat("com.compositor.layer-row"));
+    }
+    bool takes(const QMimeData *mime, QPointF position, Qt::KeyboardModifiers modifiers) const {
+        return dropped && canReceive && supports(mime) && canReceive(tabAt(position.toPoint()), mime, modifiers);
+    }
+    static void forbid(QDropEvent *event) {
+        // Ignoring entry lets Qt offer it to the parent window's different drop target.
+        // Consume the event with a forbidden action so it stays on the tab strip.
+        event->setDropAction(Qt::IgnoreAction);
+        event->accept();
+    }
     void dragEnterEvent(QDragEnterEvent *event) override {
-        if (takes(event->mimeData())) event->acceptProposedAction(); else QTabBar::dragEnterEvent(event);
+        if (takes(event->mimeData(), event->position(), event->modifiers())) event->acceptProposedAction();
+        else if (supports(event->mimeData())) forbid(event);
+        else QTabBar::dragEnterEvent(event);
     }
     void dragMoveEvent(QDragMoveEvent *event) override {
-        if (takes(event->mimeData())) event->acceptProposedAction(); else QTabBar::dragMoveEvent(event);
+        if (takes(event->mimeData(), event->position(), event->modifiers())) event->acceptProposedAction();
+        else if (supports(event->mimeData())) forbid(event);
+        else QTabBar::dragMoveEvent(event);
     }
     void dropEvent(QDropEvent *event) override {
-        if (takes(event->mimeData()) && dropped(tabAt(event->position().toPoint()), event->mimeData())) event->acceptProposedAction();
+        if (takes(event->mimeData(), event->position(), event->modifiers())
+            && dropped(tabAt(event->position().toPoint()), event->mimeData(), event->modifiers())) event->acceptProposedAction();
+        else if (supports(event->mimeData())) forbid(event);
         else event->ignore();
     }
     static QFont titleFont(const QFont &base, bool active) {
@@ -6387,6 +6596,11 @@ protected:
     void mousePressEvent(QMouseEvent *event) override {
         for (int i = 0; i < count(); ++i)
             if (closeRect(i).contains(event->position().toPoint())) { emit tabCloseRequested(i); return; }
+        // ProjectTabStrip starts a drag only when the upstream workspace can switch.
+        if (event->button() == Qt::LeftButton && canReorder && !canReorder()) {
+            event->accept();
+            return;
+        }
         QTabBar::mousePressEvent(event);
     }
     void mouseMoveEvent(QMouseEvent *event) override {
@@ -6398,6 +6612,30 @@ protected:
     void leaveEvent(QEvent *event) override { m_hoverClose = -1; update(); QTabBar::leaveEvent(event); }
 private:
     int m_hoverClose = -1;
+};
+
+/// Empty title-bar space is upstream's new-project drop destination, independent of window dragging.
+class NewProjectHeaderDropFilter : public QObject {
+public:
+    NewProjectHeaderDropFilter(QWidget *area, ProjectTabBar *tabs) : QObject(area), m_tabs(tabs) {
+        area->setAcceptDrops(true);
+        area->installEventFilter(this);
+    }
+protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() != QEvent::DragEnter && event->type() != QEvent::DragMove && event->type() != QEvent::Drop) return false;
+        auto *drop = static_cast<QDropEvent *>(event);
+        const QMimeData *mime = drop->mimeData();
+        if (!mime || !(mime->hasUrls() || mime->hasImage() || mime->hasFormat("com.compositor.layer-row"))) return false;
+        bool allowed = m_tabs && m_tabs->canReceive && m_tabs->canReceive(-1, mime, drop->modifiers());
+        if (allowed && event->type() == QEvent::Drop)
+            allowed = m_tabs->dropped && m_tabs->dropped(-1, mime, drop->modifiers());
+        drop->setDropAction(allowed ? Qt::CopyAction : Qt::IgnoreAction);
+        drop->accept();   // Keep forbidden drops from falling through to the window's different destination.
+        return true;
+    }
+private:
+    QPointer<ProjectTabBar> m_tabs;
 };
 
 void SessionWindow::setupHeaderBar() {
@@ -6421,6 +6659,7 @@ void SessionWindow::setupHeaderBar() {
         auto *dot = new QPushButton(trafficContainer);
         dot->setFixedSize(12, 12);
         dot->setToolTip(tooltip);
+        dot->setAccessibleName(tooltip);
         dot->setCursor(Qt::PointingHandCursor);
         dot->setStyleSheet(QString(
             "QPushButton { background: %1; border: 1px solid rgba(0, 0, 0, 0.35); border-radius: 6px; padding: 0px; margin: 0px; } "
@@ -6445,6 +6684,7 @@ void SessionWindow::setupHeaderBar() {
     auto *btnNew = new QPushButton(m_headerToolBar);
     btnNew->setObjectName("newCanvasToolbar");
     btnNew->setToolTip(tr("New canvas (Ctrl+N)"));
+    btnNew->setAccessibleName(tr("New canvas"));
     btnNew->setFixedSize(28, 28);
     btnNew->setIcon(renderToolVectorIcon(QStringLiteral("plus"), 15, QColor(0xdd, 0xdd, 0xdf)));
     btnNew->setIconSize(QSize(15, 15));
@@ -6458,17 +6698,56 @@ void SessionWindow::setupHeaderBar() {
     m_headerToolBar->addWidget(btnNew);
 
     // Document Tabs: sleek macOS pills
-    m_documentTabBar = new ProjectTabBar(m_headerToolBar);
+    auto *projectTabs = new ProjectTabBar(m_headerToolBar);
+    m_documentTabBar = projectTabs;
+    m_documentTabNaturalWidth = [projectTabs](int index) { return projectTabs->naturalTabWidth(index); };
     m_documentTabBar->setMouseTracking(true);
     static_cast<ProjectTabBar *>(m_documentTabBar)->isModified = [this](int index) {
         return index >= 0 && index < static_cast<int>(m_documents.size()) && isDocumentModified(m_documents[index].handle);
     };
     // As upstream's ProjectTabs: a drop on a tab goes into that project, anywhere else on the bar into a new one.
-    static_cast<ProjectTabBar *>(m_documentTabBar)->dropped = [this](int index, const QMimeData *mime) {
+    static_cast<ProjectTabBar *>(m_documentTabBar)->canReceive = [this](int index, const QMimeData *mime, Qt::KeyboardModifiers modifiers) {
+        if (mime->hasFormat("com.compositor.layer-row")) {
+            const QByteArray payload = mime->data("com.compositor.layer-row");
+            const uint64_t destination = index >= 0 && index < int(m_documents.size()) ? m_documents[index].handle : 0;
+            return compositor_workspace_layer_drop_allowed(destination, reinterpret_cast<const uint8_t *>(payload.constData()),
+                                                          payload.size(), modifiers & Qt::AltModifier ? 2 : 0) == 1;
+        }
+        return sessionState().value("canSwitch").toBool(false);
+    };
+    static_cast<ProjectTabBar *>(m_documentTabBar)->dropped = [this](int index, const QMimeData *mime, Qt::KeyboardModifiers modifiers) {
+        if (mime->hasFormat("com.compositor.layer-row")) {
+            const QByteArray payload = mime->data("com.compositor.layer-row");
+            const uint64_t destination = index >= 0 && index < int(m_documents.size()) ? m_documents[index].handle : 0;
+            QByteArray response(1048576, Qt::Uninitialized);
+            const int64_t count = compositor_workspace_drop_layers(destination, reinterpret_cast<const uint8_t *>(payload.constData()),
+                payload.size(), modifiers & Qt::AltModifier ? 2 : 0, reinterpret_cast<uint8_t *>(response.data()), response.size());
+            if (count <= 0 || count > response.size()) return false;
+            response.resize(count);
+            const QJsonObject result = QJsonDocument::fromJson(response).object();
+            for (const auto &value : result.value("newHandles").toArray()) {
+                const uint64_t handle = value.toString().toULongLong();
+                if (handle) addDocumentTab(handle, workspaceTabTitle(handle));
+            }
+            const uint64_t selected = result.value("selectedHandle").toString().toULongLong();
+            for (int i = 0; i < int(m_documents.size()); ++i) if (m_documents[i].handle == selected) {
+                m_documentTabBar->setCurrentIndex(i);
+                switchToDocumentTab(i);
+                refreshTabTitle();
+                return true;
+            }
+            return false;
+        }
         if (index >= 0 && index < static_cast<int>(m_documents.size())) {
+            const uint64_t destination = m_documents[index].handle;
             if (index != m_documentTabBar->currentIndex()) m_documentTabBar->setCurrentIndex(index);
-        } else {
+            if (m_sessionHandle != destination) return false;
+        } else if (m_pendingDrops.isEmpty() && sessionState().value("canSwitch").toBool(true)) {
+            const uint64_t before = m_sessionHandle;
             newCanvasTab();
+            if (m_sessionHandle == before) return false;
+        } else {
+            return false;   // ProjectTabDropDelegate forbids drops while its workspace cannot switch.
         }
         const bool ok = importDroppedMime(mime);
         refreshTabTitle();
@@ -6480,6 +6759,9 @@ void SessionWindow::setupHeaderBar() {
     m_documentTabBar->setExpanding(false);
     m_documentTabBar->setUsesScrollButtons(false);
     // Drag to reorder, as ProjectTabStrip does on the Mac (chrome only — ProjectWorkspace.moveTab).
+    static_cast<ProjectTabBar *>(m_documentTabBar)->canReorder = [this] {
+        return compositor_workspace_can_reorder() == 1 && sessionState().value("canSwitch").toBool(false);
+    };
     m_documentTabBar->setMovable(true);
     // No tabs yet: the document created before this window's UI existed is registered as tab 0 once the whole
     // constructor finishes (see the addDocumentTab call after updateStatusTelemetry()).
@@ -6499,6 +6781,7 @@ void SessionWindow::setupHeaderBar() {
                 break;
             }
         }
+        refreshTabOverflow();
     });
     m_headerToolBar->addWidget(m_documentTabBar);
 
@@ -6523,6 +6806,7 @@ void SessionWindow::setupHeaderBar() {
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     // The spacer covers most of the header's empty background, so it needs the drag handler itself.
     spacer->installEventFilter(this);
+    new NewProjectHeaderDropFilter(spacer, static_cast<ProjectTabBar *>(m_documentTabBar));
     m_headerToolBar->addWidget(spacer);
 
     // Right zoom pill buttons: [Fit] [100%] [🔍-] [🔍+]
@@ -6578,6 +6862,8 @@ void SessionWindow::setupHeaderBar() {
         auto *button = new QPushButton(zoomGroup);
         button->setObjectName(name);
         button->setToolTip(tip);
+        // The name without its shortcut, which assistive technology reports separately.
+        button->setAccessibleName(tip.section(QLatin1String(" ("), 0, 0));
         button->setFixedSize(30, 24);
         button->setCursor(Qt::PointingHandCursor);
         QIcon icon = renderToolVectorIcon(QString::fromLatin1(symbol), 15, QColor(0xdd, 0xdd, 0xdf));

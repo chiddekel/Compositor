@@ -15,22 +15,8 @@ if ! git -C "$ROOT" rev-parse --verify "$REF^{commit}" >/dev/null 2>&1; then
   exit 2
 fi
 
-set --
-# Upstream's trees, kept byte for byte: the app and its tests, its UI tests and its Xcode project.
-for root in Compositor CompositorTests CompositorUITests Compositor.xcodeproj; do
-  while IFS= read -r path; do
-    [ -n "$path" ] && set -- "$@" "$path"
-  done <<EOF
-$(git -C "$ROOT" diff --name-only "$REF" -- "$root")
-$(git -C "$ROOT" ls-files --others --exclude-standard -- "$root")
-EOF
-done
-
 failures=0
-if [ "$#" -ne 0 ]; then
-  echo "UPSTREAM DRIFT: protected trees differ from $REF" >&2
-  printf '%s\n' "$@" | sort -u >&2
-  echo "Move Linux-only changes behind Sources/Compat, Sources/Overrides, Sources/UpstreamCore/LinuxSupport, or host adapters." >&2
+if ! python3 "$ROOT/scripts/check-upstream-content.py" --ref "$REF"; then
   failures=$((failures + 1))
 fi
 
@@ -47,6 +33,7 @@ check() {
   fi
 }
 
+check "protected-content fault tests" python3 "$ROOT/tests/test_upstream_content.py"
 check "checked adjustment kernel" python3 "$ROOT/scripts/gen-checked-adjust-kernel.py" --check
 check "Smudge/Liquify generator" python3 "$ROOT/scripts/gen-smudge-liquify-override.py" --check
 check "text format generator" python3 "$ROOT/scripts/gen-text-format-11.py" --check

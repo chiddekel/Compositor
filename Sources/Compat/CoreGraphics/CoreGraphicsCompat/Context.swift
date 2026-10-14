@@ -35,6 +35,11 @@ public final class CGContext: @unchecked Sendable {
     private let render: CompRenderFn?
     private var externalData: UnsafeMutableRawPointer?
     private var externalBytesPerRow: Int = 0
+    /// A CMYK context's space. Drawing happens in sRGB as in every other context; its pixels become ink amounts through
+    /// the space's profile (LittleCMS, with the context's rendering intent) where they leave it: `data`, `makeImage`.
+    private var inkSpace: CGColorSpace?
+    private var inkStorage: UnsafeMutablePointer<UInt8>?
+    private var preservedInks: [UInt8]?
 
     private struct State {
         var alpha: CGFloat = 1.0
@@ -53,6 +58,8 @@ public final class CGContext: @unchecked Sendable {
         var shadowColor: CGColor? = nil
         var dashLengths: [CGFloat] = []
         var ctm: CGAffineTransform = .identity
+        var renderingIntent: CGColorRenderingIntent = .defaultIntent
+        var hasClip = false
     }
 
     private var state: State = State()
@@ -61,12 +68,38 @@ public final class CGContext: @unchecked Sendable {
 
     public var data: UnsafeMutableRawPointer? {
         syncToExternalData()
-        return externalData ?? UnsafeMutableRawPointer(pixelData)
+        if let external = externalData { return external }
+        if inkSpace != nil, let inks = currentInks() {
+            if inkStorage == nil { inkStorage = .allocate(capacity: pixelCount) }
+            inks.withUnsafeBufferPointer { _ = memcpy(inkStorage!, $0.baseAddress!, pixelCount) }
+            return UnsafeMutableRawPointer(inkStorage!)
+        }
+        return UnsafeMutableRawPointer(pixelData)
     }
+
+    /// The drawn pixels as ink amounts (four bytes a pixel) through a CMYK context's profile.
+    private func currentInks() -> [UInt8]? {
+        if let preservedInks { return preservedInks }
+        guard let profile = inkSpace?.iccData else { return nil }
+        return CGImage.inks(ofColors: pixelData, bytesPerRow: bytesPerRow, width: width, height: height, profile: profile,
+                            intent: state.renderingIntent)
+    }
+
+    /// A caller may retain `data` before drawing. Keep that exposed ink buffer live, like a bitmap context's pixels.
+    private func updateExposedInks() {
+        guard inkSpace != nil else { return }
+        if let inkStorage, let inks = currentInks() {
+            inks.withUnsafeBufferPointer { _ = memcpy(inkStorage, $0.baseAddress!, pixelCount) }
+        }
+        syncToExternalData()
+    }
+
+    /// How colours reaching a CMYK context, or CMYK images drawn here, are converted (Core Graphics' rendering intent).
+    public func setRenderingIntent(_ intent: CGColorRenderingIntent) { state.renderingIntent = intent }
 
     /// Matches Apple's bitmap-context layout flag; used when copying pixels byte-for-byte from a CGImage.
     public var bitmapInfo: CGBitmapInfo {
-        CGBitmapInfo(rawValue: (format == .gray ? CGImageAlphaInfo.none : CGImageAlphaInfo.premultipliedLast).rawValue
+        CGBitmapInfo(rawValue: (format == .gray || inkSpace != nil ? CGImageAlphaInfo.none : CGImageAlphaInfo.premultipliedLast).rawValue
             | (format.isDeep ? CGBitmapInfo.byteOrder16Little.rawValue : 0)
             | (format == .rgbaHalf ? CGBitmapInfo.floatComponents.rawValue : 0))
     }
@@ -74,7 +107,8 @@ public final class CGContext: @unchecked Sendable {
     public var bitsPerPixel: Int { format.bytesPerPixel * 8 }
     /// The colour space of the backing bitmap: sRGB (extended sRGB for half floats), gray for a gray plane.
     public var colorSpace: CGColorSpace? {
-        format == .gray ? .deviceGraySpace : format == .rgbaHalf ? .extendedSRGBSpace : .srgbSpace
+        if let inkSpace { return inkSpace }
+        return format == .gray ? .deviceGraySpace : format == .rgbaHalf ? .extendedSRGBSpace : .srgbSpace
     }
 
     public var buffer: PixelBuffer {
@@ -137,11 +171,28 @@ public final class CGContext: @unchecked Sendable {
                              space: CGColorSpace,
                              bitmapInfo: UInt32) {
         guard width > 0, height > 0, bitsPerComponent == 8 || (bitsPerComponent == 16 && space.model != .monochrome) else { return nil }
+        // CMYK: 8-bit inks through an ICC profile, as Core Graphics' CMYK bitmap contexts.
+        if space.model == .cmyk, bitsPerComponent != 8 || space.iccData == nil { return nil }
         let format: PixelFormat = space.model == .monochrome ? .gray
             : bitsPerComponent == 16 ? (CGBitmapInfo(rawValue: bitmapInfo).contains(.floatComponents) ? .rgbaHalf : .rgba16) : .rgba
         self.init(width: width, height: height, format: format, yUp: true)
         // 16-bit pixels are drawn by the canvas backend only (no pure-Swift fallback at that depth).
         if format.isDeep, canvas == nil { return nil }
+        if space.model == .cmyk {
+            inkSpace = space
+            // Ink storage starts as no ink (Core Graphics' zeroed bitmap), which is paper white once converted.
+            if data != nil { self.externalData = data; self.externalBytesPerRow = bytesPerRow }
+            if let srcData = data {
+                let colors = CGImage.colors(ofInks: Array(UnsafeBufferPointer(start: srcData.assumingMemoryBound(to: UInt8.self),
+                                                                                count: bytesPerRow * height)),
+                                            bytesPerRow: bytesPerRow, width: width, height: height, profile: space.iccData!,
+                                            intent: .defaultIntent)
+                colors.withUnsafeBufferPointer { _ = memcpy(pixelData, $0.baseAddress!, pixelCount) }
+            } else {
+                memset(pixelData, 255, pixelCount)
+            }
+            return
+        }
         if let srcData = data {
             self.externalData = srcData
             self.externalBytesPerRow = bytesPerRow
@@ -176,6 +227,7 @@ public final class CGContext: @unchecked Sendable {
         canvas = nil   // the backend must stop drawing before its pixel memory goes
         syncToExternalData()
         pixelData.deallocate()
+        inkStorage?.deallocate()
     }
 
     public func flush() {
@@ -184,6 +236,16 @@ public final class CGContext: @unchecked Sendable {
 
     public func syncToExternalData() {
         guard let dstData = externalData else { return }
+        if inkSpace != nil {
+            guard let inks = currentInks() else { return }
+            inks.withUnsafeBufferPointer { source in
+                for y in 0..<height {
+                    memcpy(dstData.advanced(by: y * externalBytesPerRow), source.baseAddress! + y * width * 4,
+                           min(width * 4, externalBytesPerRow))
+                }
+            }
+            return
+        }
         let rowLength = self.bytesPerRow
         for y in 0..<height {
             memcpy(dstData.advanced(by: y * externalBytesPerRow), pixelData.advanced(by: y * rowLength), min(rowLength, externalBytesPerRow))
@@ -264,10 +326,12 @@ public final class CGContext: @unchecked Sendable {
     // MARK: - Clipping
 
     public func clip(to rect: CGRect) {
+        state.hasClip = true
         canvas?.clip(rect: rect, antialias: state.shouldAntialias)
     }
 
     public func clip(to rect: CGRect, mask: CGImage) {
+        state.hasClip = true
         if let canvas {
             let pImg = mask.portableImage
             var bytes = pImg.bytes
@@ -284,6 +348,7 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func clip(using rule: CGPathFillRule = .winding) {
+        state.hasClip = true
         canvas?.clip(path: currentPath.segments, evenOdd: rule == .evenOdd, antialias: state.shouldAntialias)
         currentPath = CGMutablePath()
     }
@@ -361,6 +426,9 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func fill(_ rect: CGRect) {
+        if PDFRecording.noteFillIfNeeded(self, rect: rect, color: state.fillColor) { return }
+        defer { updateExposedInks() }
+        preservedInks = nil
         castShadow(of: rect)
         if let canvas, !state.shouldAntialias, fillsThroughClip {
             fillHardEdged(rect, on: canvas)
@@ -401,6 +469,8 @@ public final class CGContext: @unchecked Sendable {
 
     /// Fills `path` (user space) with the current fill colour, honouring the clip, alpha and blend mode.
     public func fill(_ path: CGPath, rule: CGPathFillRule = .winding) {
+        defer { updateExposedInks() }
+        preservedInks = nil
         let c = state.fillColor
         if let canvas {
             canvas.fill(path: path.segments, evenOdd: rule == .evenOdd, color: c)
@@ -528,6 +598,8 @@ public final class CGContext: @unchecked Sendable {
 
     /// Strokes `path` (user space) with the current stroke colour, width, cap, join and miter limit.
     public func stroke(_ path: CGPath) {
+        defer { updateExposedInks() }
+        preservedInks = nil
         // A dash pattern (setLineDash) cuts the outline into its "on" runs first, as Core Graphics does, in user space.
         if !state.dashLengths.isEmpty, state.dashLengths.reduce(0, +) > 0 {
             let dashed = Self.dashed(path.segments, lengths: state.dashLengths, phase: state.dashPhase)
@@ -557,11 +629,15 @@ public final class CGContext: @unchecked Sendable {
 
     public func drawLinearGradient(_ gradient: CGGradient, start: CGPoint, end: CGPoint,
                                    options: CGGradientDrawingOptions) {
+        defer { updateExposedInks() }
+        preservedInks = nil
         canvas?.linearGradient(gradient, from: start, to: end, options: Int32(options.rawValue))
     }
 
     public func drawRadialGradient(_ gradient: CGGradient, startCenter: CGPoint, startRadius: CGFloat,
                                    endCenter: CGPoint, endRadius: CGFloat, options: CGGradientDrawingOptions) {
+        defer { updateExposedInks() }
+        preservedInks = nil
         canvas?.radialGradient(gradient, from: startCenter, startRadius: Float(startRadius), to: endCenter,
                                endRadius: Float(endRadius), options: Int32(options.rawValue))
     }
@@ -571,6 +647,8 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func clear(_ rect: CGRect) {
+        defer { updateExposedInks() }
+        preservedInks = nil
         if let canvas {
             canvas.clear(rect: rect)
         } else {
@@ -581,8 +659,28 @@ public final class CGContext: @unchecked Sendable {
     // MARK: - Drawing Images
 
     public func draw(_ image: CGImage, in rect: CGRect, opacity: Double = 1) {
-        // PDF contexts record the full-resolution image (media box is in points, often ≪ pixels).
+        defer { updateExposedInks() }
+        preservedInks = nil
+        // PDF output must keep the original ink channels and profile, before RGB screen conversion.
         if PDFRecording.noteDrawIfNeeded(self, image: image, in: rect) { return }
+        // A CMYK image is drawn as its colours, converted with this context's rendering intent.
+        if image.colorSpace?.model == .cmyk, let colors = image.colors(intent: state.renderingIntent) {
+            draw(CGImage(colors), in: rect, opacity: opacity)
+            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            if let inkSpace, inkSpace == image.colorSpace, image.width == width, image.height == height,
+               rect == bounds, state.ctm == .identity, state.alpha == 1, opacity == 1, state.blendMode == .normal,
+               !state.hasClip, let data = image.dataProvider?.data, data.count >= image.bytesPerRow * height {
+                // An opaque same-profile bitmap copy keeps its inks. A trip through RGB changes black generation
+                // and moves colors a second time through the printer gamut (PSD's channel extraction uses this).
+                var inks = [UInt8](repeating: 0, count: width * height * 4)
+                for y in 0..<height {
+                    inks.replaceSubrange((y * width * 4)..<((y + 1) * width * 4),
+                                         with: data[(y * image.bytesPerRow)..<(y * image.bytesPerRow + width * 4)])
+                }
+                preservedInks = inks
+            }
+            return
+        }
         if let canvas {
             // The canvas already holds setAlpha's graphics state. Pass only the per-draw
             // opacity; multiplying here as well would square the context alpha in Skia.
@@ -616,7 +714,8 @@ public final class CGContext: @unchecked Sendable {
             if rc == 0 { return }
         }
 
-        drawSwift(image.portableImage, in: device, opacity: finalOpacity)
+        drawSwift(image.portableImage, in: device, opacity: finalOpacity,
+                  premultiplied: image.alphaInfo == .premultipliedLast || image.alphaInfo == .premultipliedFirst)
     }
 
     private static func bounds(of rect: CGRect, under t: CGAffineTransform) -> CGRect {
@@ -631,10 +730,13 @@ public final class CGContext: @unchecked Sendable {
 
     /// Device-space blit used by `drawPDFPage` after applying the CTM to the media box.
     func drawPDFImage(_ image: CGImage, mediaBox: CGRect) {
+        defer { updateExposedInks() }
+        preservedInks = nil
         guard format == .rgba else { return }
         let device = Self.bounds(of: mediaBox, under: state.ctm)
         // PortableImage rows are top-down, matching `makeImage` / `NSBitmapImageRep.colorAt`.
-        drawSwift(image.portableImage, in: device, opacity: Double(state.alpha))
+        drawSwift(image.portableImage, in: device, opacity: Double(state.alpha),
+                  premultiplied: image.alphaInfo == .premultipliedLast || image.alphaInfo == .premultipliedFirst)
     }
 
     /// `opacity` is the caller's own; the context's alpha is applied by the backend from its tracked state.
@@ -672,6 +774,8 @@ public final class CGContext: @unchecked Sendable {
     }
 
     public func endTransparencyLayer() {
+        defer { updateExposedInks() }
+        preservedInks = nil
         canvas?.endLayer()
         restoreGState()
     }
@@ -680,6 +784,12 @@ public final class CGContext: @unchecked Sendable {
 
     public func makeImage() -> CGImage? {
         syncToExternalData()
+        if let inkSpace {
+            guard let inks = currentInks() else { return nil }
+            return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                           space: inkSpace, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                           provider: CGDataProvider(data: inks), intent: state.renderingIntent)
+        }
         if format == .gray || format.isDeep {
             let plane = Array<UInt8>(unsafeUninitializedCapacity: pixelCount) { buf, initializedCount in
                 memcpy(buf.baseAddress!, pixelData, pixelCount)
@@ -759,7 +869,7 @@ public final class CGContext: @unchecked Sendable {
     public typealias SoftwareDraw = (_ image: PortableImage, _ rect: CGRect, _ opacity: Double, _ into: inout PixelBuffer) -> Void
     nonisolated(unsafe) public static var softwareDraw: SoftwareDraw?
 
-    private func drawSwift(_ image: PortableImage, in rect: CGRect, opacity: Double) {
+    private func drawSwift(_ image: PortableImage, in rect: CGRect, opacity: Double, premultiplied: Bool) {
         if let softwareDraw = CGContext.softwareDraw {
             var tempBuffer = self.buffer
             softwareDraw(image, rect, opacity, &tempBuffer)
@@ -799,9 +909,10 @@ public final class CGContext: @unchecked Sendable {
                     pixelData[di] = sr; pixelData[di + 1] = sg; pixelData[di + 2] = sb; pixelData[di + 3] = sa
                 } else {
                     let inv = 1 - a
-                    pixelData[di] = UInt8(Double(pixelData[di]) * inv + Double(sr) * a)
-                    pixelData[di + 1] = UInt8(Double(pixelData[di + 1]) * inv + Double(sg) * a)
-                    pixelData[di + 2] = UInt8(Double(pixelData[di + 2]) * inv + Double(sb) * a)
+                    let sourceFactor = premultiplied ? op : a
+                    pixelData[di] = UInt8(min(255, Double(pixelData[di]) * inv + Double(sr) * sourceFactor))
+                    pixelData[di + 1] = UInt8(min(255, Double(pixelData[di + 1]) * inv + Double(sg) * sourceFactor))
+                    pixelData[di + 2] = UInt8(min(255, Double(pixelData[di + 2]) * inv + Double(sb) * sourceFactor))
                     pixelData[di + 3] = UInt8(min(255, Double(pixelData[di + 3]) * inv + Double(sa) * op))
                 }
             }

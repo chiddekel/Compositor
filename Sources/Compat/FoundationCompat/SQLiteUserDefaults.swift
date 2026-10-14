@@ -4,11 +4,13 @@ import CSQLite
 /// The UserDefaults surface used by the Linux app, backed by a private SQLite database.
 /// Avoids Foundation's property-list writer, which traps on arrays in static Swift builds.
 public final class SQLiteUserDefaults: @unchecked Sendable {
-    public static let standard: SQLiteUserDefaults = {
+    private static var configurationDirectory: URL {
         let config = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
-        let root = config.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }
+        return config.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config")
-        return SQLiteUserDefaults(databaseURL: root.appendingPathComponent("Compositor/preferences.sqlite3")) {
+    }
+    public static let standard: SQLiteUserDefaults = {
+        return SQLiteUserDefaults(databaseURL: configurationDirectory.appendingPathComponent("Compositor/preferences.sqlite3")) {
             // Read only: never call Foundation's broken Linux persistence path.
             Foundation.UserDefaults.standard.dictionaryRepresentation()
         }
@@ -65,6 +67,24 @@ public final class SQLiteUserDefaults: @unchecked Sendable {
         self.databaseURL = databaseURL
         self.legacyValues = legacyValues
         synchronize()
+    }
+
+    /// Named defaults remain separate from the person's standard settings, as Foundation's suites do.
+    public convenience init?(suiteName: String?) {
+        guard let suiteName else {
+            self.init(databaseURL: Self.configurationDirectory.appendingPathComponent("Compositor/preferences.sqlite3")) {
+                Foundation.UserDefaults.standard.dictionaryRepresentation()
+            }
+            return
+        }
+        // A reversible path encoding avoids aliases and traversal even when the suite contains slashes or Unicode.
+        let name = Data(suiteName.utf8).base64EncodedString().replacingOccurrences(of: "/", with: "_")
+        var directory = Self.configurationDirectory.appendingPathComponent("Compositor/suites")
+        let characters = Array(name.isEmpty ? "=" : name)
+        for start in stride(from: 0, to: characters.count, by: 128) {
+            directory.appendPathComponent(String(characters[start..<min(start + 128, characters.count)]))
+        }
+        self.init(databaseURL: directory.appendingPathComponent("preferences.sqlite3"))
     }
 
     deinit { if let database { sqlite3_close(database) } }

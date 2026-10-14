@@ -12,6 +12,12 @@ args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 # (source, generated header, C array name)
 shaders = [
+    ('backends/coreimage/shaders/raster.comp', 'backends/coreimage/shaders/raster_spv.h', 'compositor_raster_spv'),
+    ('backends/coreimage/shaders/raster_fused.comp', 'backends/coreimage/shaders/raster_fused_spv.h', 'compositor_raster_fused_spv'),
+    ('backends/brush/shaders/warp_smudge_packed.comp', 'backends/brush/shaders/warp_smudge_packed_spv.h', 'compositor_smudge_packed_spv'),
+    ('backends/brush/shaders/warp_liquify_packed.comp', 'backends/brush/shaders/warp_liquify_packed_spv.h', 'compositor_liquify_packed_spv'),
+    ('backends/brush/shaders/warp_liquify.comp', 'backends/brush/shaders/warp_liquify_spv.h', 'compositor_liquify_spv'),
+    ('backends/brush/shaders/warp_smudge.comp', 'backends/brush/shaders/warp_smudge_spv.h', 'compositor_smudge_spv'),
     ('backends/brush/shaders/continuous_brush.comp', 'backends/brush/shaders/continuous_brush_spv.h', 'compositor_brush_spv'),
     ('backends/effects/shaders/effects.comp', 'backends/effects/shaders/effects_spv.h', 'compositor_effects_spv'),
     ('linux/graphics/shaders/composite_over.comp', 'linux/graphics/shaders/composite_over_spv.h', 'compositor_composite_spv'),

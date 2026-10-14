@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 /// The questions upstream's importer asks through SwiftUI sheets, answered by the Qt shell instead.
 ///
@@ -74,4 +75,37 @@ nonisolated public func compositorSetWaitPump(_ pump: (@convention(c) (UnsafeMut
 @_cdecl("compositor_flush_preferences")
 nonisolated public func compositorFlushPreferences() {
     UserDefaults.standard.synchronize()
+}
+
+/// The shell's file chooser for upstream's own `NSOpenPanel`s (View › CMYK › Load Profile and the Export As sheet's):
+/// (title, message, extensions separated by commas, allows several, chooses folders, output, capacity) → the number of
+/// paths chosen (0 when cancelled), written into `output` one a line; a negative count needs that capacity.
+public typealias OpenPanelFunction = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32,
+                                                    Int32, UnsafeMutablePointer<CChar>?, Int) -> Int32
+
+@_cdecl("compositor_set_open_panel")
+nonisolated public func compositorSetOpenPanel(_ function: OpenPanelFunction?) {
+    MainActor.assumeIsolated {
+        guard let function else { NSOpenPanel.openHandler = nil; return }
+        NSOpenPanel.openHandler = { panel in
+            let extensions = panel.allowedContentTypes.flatMap { $0.tags[.filenameExtension] ?? [] }.joined(separator: ",")
+            var capacity = 64 * 1024
+            while true {
+                var output = [CChar](repeating: 0, count: capacity)
+                let count = panel.title.withCString { title in
+                    panel.message.withCString { message in
+                        extensions.withCString { types in
+                            function(title, message, types, panel.allowsMultipleSelection ? 1 : 0,
+                                     panel.canChooseDirectories ? 1 : 0, &output, capacity)
+                        }
+                    }
+                }
+                if count < 0 { capacity = Int(-count) + 1; continue }
+                guard count > 0 else { return .cancel }
+                panel.urls = String(cString: output).split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+                panel.url = panel.urls.first
+                return panel.urls.isEmpty ? .cancel : .OK
+            }
+        }
+    }
 }

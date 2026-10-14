@@ -19,7 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def tracked_swift(directory: str) -> set[str]:
     output = subprocess.run(["git", "ls-files", "-z", "--", directory], cwd=ROOT,
                             check=True, capture_output=True).stdout
-    return {path.decode() for path in output.split(b"\0") if path.endswith(b".swift")}
+    paths = {path.decode() for path in output.split(b"\0") if path.endswith(b".swift")}
+    # Newly synchronized upstream files may not be staged yet. They still require complete source/test accounting.
+    reference = subprocess.run(["git", "ls-tree", "-rz", "--name-only", "upstream/main", "--", directory], cwd=ROOT,
+                               check=True, capture_output=True).stdout
+    return paths | {path.decode() for path in reference.split(b"\0") if path.endswith(b".swift")}
 
 
 def audit(description: dict, parity: dict) -> tuple[list[str], dict]:
@@ -121,7 +125,7 @@ def main() -> int:
         print(f"SOURCE COVERAGE FAILED: {len(errors)} findings", file=sys.stderr)
         return 1
     print(f"SOURCE COVERAGE OK: {len(report['sources'])} upstream Swift files {report['counts']}; "
-          f"{report['unchanged_tests']} unchanged test files and {len(report['test_mirrors'])} selector mirror")
+          f"{report['unchanged_tests']} unchanged test files and {len(report['test_mirrors'])} generated test mirrors")
     return 0
 
 
