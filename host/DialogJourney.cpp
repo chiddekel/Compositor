@@ -270,6 +270,149 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                   && pixels() == newCanvas, "new canvas Redo did not restore layer, pixels and unsaved revision");
         qInfo("combo: new canvas -> Undo to welcome -> Redo OK");
 
+        // Import SVG (README): drawn once into pixels by the platform's SVG renderer; opened alone, at its declared size.
+        if (app.arguments().contains("--svg-import-probe")) {
+            const QString path = temporary.filePath("two-halves.svg");
+            QFile file(path);
+            check(file.open(QIODevice::WriteOnly), "SVG fixture open failed");
+            file.write(R"(<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 20 10">)"
+                       R"(<rect x="0" y="0" width="10" height="10" fill="#ff0000"/><rect x="10" y="0" width="10" height="10" fill="#0000ff"/></svg>)");
+            file.close();
+            check(window.importImage(path), "SVG import failed");
+            // Opened as its own document, as upstream opens an SVG with no canvas to fit: at its declared 20x10.
+            pump([&] { const auto state = window.sessionState();
+                       return state.value("width").toInt() == 20 && state.value("height").toInt() == 10 && !state.value("busy").toBool(); },
+                 "SVG did not open at its declared size");
+            QByteArray bytes(20 * 10 * 4, Qt::Uninitialized);
+            check(compositor_session_render(window.sessionHandle(), reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) == bytes.size(),
+                  "SVG document raster unavailable");
+            const QImage shown = QImage(reinterpret_cast<const uchar *>(bytes.constData()), 20, 10, 20 * 4,
+                                        QImage::Format_RGBA8888_Premultiplied).copy().convertToFormat(QImage::Format_RGBA8888);
+            for (int y = 0; y < 10; ++y) for (int x = 0; x < 20; ++x)
+                check(shown.pixelColor(x, y) == (x < 10 ? QColor(255, 0, 0) : QColor(0, 0, 255)), "SVG pixels differ from its two exact halves");
+            check(window.sessionState().value("layers").toArray().size() == 1, "SVG did not open as one layer");
+            qInfo("Qt SVG import OK (Qt SVG renderer, new 20x10 document at the declared size, every pixel of both halves exact, one layer)");
+            return 0;
+        }
+
+        // Upstream's label scrubbing (NumericScrub): dragging a field's label changes its value live; release applies it.
+        if (app.arguments().contains("--scrub-probe")) {
+            QImage source(64, 64, QImage::Format_RGBA8888); source.fill(Qt::transparent);
+            for (int y = 8; y < 40; ++y) for (int x = 8; x < 40; ++x) source.setPixelColor(x, y, Qt::red);
+            const QString path = temporary.filePath("scrub.png");
+            check(source.save(path), "scrub fixture save failed");
+            check(window.importImage(path), "scrub fixture import failed");
+            tool("Move", "move");
+            const auto label = [&]() -> QWidget * {
+                for (auto *widget : window.findChildren<QWidget *>()) {
+                    if (!widget->isVisible() || !widget->property("swiftuiGestureMinimumDistance").isValid()) continue;
+                    auto *text = qobject_cast<QLabel *>(widget);
+                    if (!text) text = widget->findChild<QLabel *>();
+                    if (text && text->text() == "X") return widget;
+                }
+                throw std::runtime_error("scrubbable X label missing");
+            };
+            const auto origin = [&] {
+                const auto target = window.sessionState().value("activeLayerID");
+                for (const auto &value : window.sessionState().value("layers").toArray())
+                    if (value.toObject().value("id") == target)
+                        return value.toObject().value("transform").toObject().value("origin").toArray().at(0).toDouble();
+                throw std::runtime_error("scrub target disappeared");
+            };
+            const auto before = window.sessionState();
+            const QImage original = pixels();
+            check(origin() == 0, "scrub fixture is not at the origin");
+            click(label());
+            check(origin() == 0 && window.sessionState().value("undoName") == before.value("undoName")
+                      && !window.sessionState().value("transforming").toBool(), "a plain click on a scrub label changed the layer");
+            auto *target = label();
+            const QPointF start = target->rect().center();
+            mouse(target, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            // As a real drag: after the press the window's tracker follows the pointer (see the Levels handles).
+            const auto towards = [&](double dx) { return QPointF(window.mapFromGlobal(target->mapToGlobal((start + QPointF(dx, 0)).toPoint()))); };
+            mouse(&window, QEvent::MouseMove, towards(12), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            mouse(&window, QEvent::MouseMove, towards(30), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            pump([&] { return origin() == 30 && window.sessionState().value("transforming").toBool(); },
+                 "dragging the X label did not move the layer live by its translation");
+            check(window.sessionState().value("undoName") == before.value("undoName"), "scrubbing committed before release");
+            mouse(&window, QEvent::MouseButtonRelease, towards(30), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            pump([&] { return !window.sessionState().value("transforming").toBool(); }, "releasing the scrub did not apply it");
+            const QImage moved = pixels();
+            check(origin() == 30 && window.sessionState().value("undoName").toString() == "Transform Layer" && moved != original
+                      && moved.pixelColor(38, 20) == QColor(Qt::red) && moved.pixelColor(8, 20).alpha() == 0,
+                  "scrub release did not apply one exact Transform Layer step");
+            key(canvas, Qt::Key_Z, Qt::ControlModifier);
+            check(origin() == 0 && pixels() == original, "scrub Undo lost the exact source position");
+            key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+            check(origin() == 30 && pixels() == moved, "scrub Redo lost the exact result");
+            qInfo("Qt label scrub OK (Transform X label: click inert, live draft by drag translation, release applies one Transform Layer step, exact Undo/Redo)");
+            return 0;
+        }
+
+        // View › CMYK proofs what the canvas shows through upstream's lookups, on white paper; the document, the export
+        // composite and history keep the document's own colors.
+        if (app.arguments().contains("--cmyk-proof-probe")) {
+            QImage source(64, 64, QImage::Format_RGBA8888);
+            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                source.setPixelColor(x, y, x < 32 ? QColor(0, 0, 255) : QColor(128, 128, 128));
+            const QString path = temporary.filePath("cmyk-proof.png");
+            check(source.save(path), "CMYK proof fixture save failed");
+            check(window.importImage(path), "CMYK proof fixture import failed");
+            tool("Move", "move");
+            const auto toggle = [&](const QString &title, const char *stateKey, bool enabled) {
+                QMenu *view = nullptr;
+                for (auto *action : window.menuBar()->actions()) if (action->text().remove('&') == "View") view = action->menu();
+                check(view, "CMYK View menu missing");
+                view->popup(window.mapToGlobal(QPoint(200, 50))); QApplication::processEvents();
+                QMenu *cmyk = nullptr;
+                for (auto *action : view->actions()) if (action->text().remove('&') == "CMYK") cmyk = action->menu();
+                check(cmyk, "View > CMYK submenu missing");
+                cmyk->popup(window.mapToGlobal(QPoint(420, 80))); QApplication::processEvents();
+                QAction *chosen = nullptr;
+                for (auto *action : cmyk->actions()) if (action->text().remove('&') == title) chosen = action;
+                check(chosen && chosen->isCheckable() && chosen->isEnabled(), "CMYK proof toggle missing or disabled");
+                check(chosen->isChecked() == window.sessionState().value(stateKey).toBool(), "CMYK menu checkmark disagrees with model");
+                if (chosen->isChecked() != enabled) chosen->trigger();
+                cmyk->hide(); view->hide(); QApplication::processEvents();
+                pump([&] { return window.sessionState().value(stateKey).toBool() == enabled; }, "CMYK toggle did not reach model");
+            };
+            const auto frame = [&] { return canvas->grab().toImage().convertToFormat(QImage::Format_RGBA8888); };
+            const auto sample = [&](const QImage &shown, double x, double y) {
+                // Pixel centers: from 800% the pixel grid draws hairlines on the pixel boundaries.
+                return shown.pixelColor((at(x + 0.5, y + 0.5) * canvas->devicePixelRatioF()).toPoint());
+            };
+            const auto near = [](const QColor &a, const QColor &b, int tolerance) {
+                return qAbs(a.red() - b.red()) <= tolerance && qAbs(a.green() - b.green()) <= tolerance && qAbs(a.blue() - b.blue()) <= tolerance;
+            };
+            const QColor blue(0, 0, 255), gray(128, 128, 128);
+            const auto before = window.sessionState();
+            const QImage document = pixels(), off = frame();
+            check(sample(off, 16, 32) == blue && sample(off, 48, 32) == gray, "CMYK fixture is not shown as imported");
+            toggle("Proof Colors", "proofsColors", true);
+            pump([&] { return sample(frame(), 16, 32) != blue; }, "Proof Colors did not change the canvas");
+            const QImage proof = frame();
+            const QColor proofBlue = sample(proof, 16, 32), proofGray = sample(proof, 48, 32);
+            check(proofBlue.blue() < 243 || proofBlue.red() > 12, "Proof Colors did not dull saturated blue");
+            check(near(proofGray, gray, 10), "Proof Colors changed mid gray beyond the profile's own tolerance");
+            toggle("Gamut Warning", "showsGamutWarning", true);
+            pump([&] { return near(sample(frame(), 16, 32), gray, 2); }, "Gamut Warning did not mark unprintable blue gray");
+            check(near(sample(frame(), 48, 32), proofGray, 1), "Gamut Warning changed printable gray over the proof");
+            toggle("Proof Colors", "proofsColors", false);
+            pump([&] { return sample(frame(), 48, 32) == gray; }, "Gamut Warning alone did not show the document's own gray");
+            check(near(sample(frame(), 16, 32), gray, 2), "Gamut Warning alone stopped marking blue");
+            const auto after = window.sessionState();
+            check(pixels() == document && after.value("undoName") == before.value("undoName")
+                      && after.value("canUndo") == before.value("canUndo") && after.value("modified") == before.value("modified")
+                      && after.value("layers") == before.value("layers"),
+                  "CMYK proofing changed the document, export composite or history");
+            toggle("Gamut Warning", "showsGamutWarning", false);
+            pump([&] { return frame() == off; }, "turning CMYK proofing off did not restore the exact canvas");
+            qInfo("Qt CMYK proof OK (visible View > CMYK toggles, proof dulls blue %s and keeps gray %s, gamut warning marks blue, "
+                  "document/export/history untouched, exact frame restored)",
+                  qPrintable(proofBlue.name()), qPrintable(proofGray.name()));
+            return 0;
+        }
+
         if (app.arguments().contains("--transform-fields-probe")) {
             QImage source(64, 64, QImage::Format_RGBA8888); source.fill(Qt::transparent);
             for (int y = 8; y < 40; ++y) for (int x = 8; x < 40; ++x)

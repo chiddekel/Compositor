@@ -11,6 +11,7 @@
 
 import Foundation
 import CoreGraphics
+import CoreImage
 import AppKit
 
 /// Runs `operation` (main-actor, async) to completion from a synchronous call on the main thread.
@@ -188,6 +189,9 @@ private struct State: Encodable {
     let showsGrid: Bool
     /// View > Pixel Grid (800% and above): EditorCanvas.drawPixelGrid.
     let showsPixelGrid: Bool
+    /// View › CMYK › Proof Colors / Gamut Warning: what the canvas display is proofed through (proofForDisplay).
+    let proofsColors: Bool
+    let showsGamutWarning: Bool
     let showsGuides: Bool
     let guides: [GuideState]
     let guideDragging: Bool
@@ -1586,7 +1590,8 @@ final class UpstreamEditor {
             floatingPanels: FloatingPanels.open(in: self),
             showsImporter: s.showsImporter,
             openProjectRequested: openProjectRequested,
-            showsRulers: s.showsRulers, showsGrid: s.showsGrid, showsPixelGrid: s.showsPixelGrid, showsGuides: s.showsGuides,
+            showsRulers: s.showsRulers, showsGrid: s.showsGrid, showsPixelGrid: s.showsPixelGrid,
+            proofsColors: s.proofsColors, showsGamutWarning: s.showsGamutWarning, showsGuides: s.showsGuides,
             guides: s.displayedGuides.map { State.GuideState(vertical: $0.axis == .vertical, position: $0.position) },
             guideDragging: s.guideDrag != nil, canEditGuides: s.canEditGuides,
             snapLines: [s.snapGuides.xs.map { Double($0) }, s.snapGuides.ys.map { Double($0) }],
@@ -1935,6 +1940,32 @@ final class UpstreamEditor {
         return RenderKey(documentID: document?.id, size: document?.size, brushRevision: s.brushRevision, layers: layers,
                          editingTextLayer: s.textDraft?.layerID, shapeDraft: s.shapeDraft, shapeColor: s.foregroundColor,
                          shapeLineWidth: Double(s.shapeLineWidth))
+    }
+
+    /// View › CMYK › Proof Colors / Gamut Warning on the canvas: the displayed pixels (premultiplied RGBA8, top row
+    /// first) on white paper through the proof profile, as upstream's canvas draws them (`EditorCanvas.gpuFrame`). Only
+    /// what the canvas shows: the document, exports and copies keep their own colors. False when neither is on (or no
+    /// profile is chosen), leaving `bytes` as they are.
+    func proofForDisplay(_ bytes: inout [UInt8], width: Int, height: Int) -> Bool {
+        let s = session
+        guard s.proofsColors || s.showsGamutWarning, let profile = s.proofProfile, let lookups = CMYK.proofLookups(profile),
+              width > 0, height > 0, bytes.count >= width * height * 4,
+              let context = try? BrushRaster.context(width: width, height: height, mask: false), let data = context.data
+        else { return false }
+        bytes.withUnsafeBytes { data.copyMemory(from: $0.baseAddress!, byteCount: width * height * 4) }
+        guard let image = context.makeImage() else { return false }
+        let lookup = s.proofsColors ? s.showsGamutWarning ? lookups.warning : lookups.proof : lookups.marked
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        let proofed = CIImage(cgImage: image).composited(over: CIImage(color: .white).cropped(to: rect))
+            .applyingFilter("CIColorCubeWithColorSpace", parameters: [
+                "inputCubeDimension": CMYK.dimension,
+                "inputCubeData": lookup,
+                "inputColorSpace": CGColorSpace(name: CGColorSpace.sRGB)!,
+            ])
+        guard let output = CIContext().createCGImage(proofed, from: rect),
+              let raster = try? Self.rgbaBytes(of: output), raster.width == width, raster.height == height else { return false }
+        bytes.replaceSubrange(0..<(width * height * 4), with: raster.bytes)
+        return true
     }
 
     /// The composite as premultiplied RGBA8 (document size), from upstream's own exporter.

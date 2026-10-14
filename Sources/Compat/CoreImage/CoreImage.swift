@@ -101,6 +101,9 @@ private indirect enum Node {
     case matrix(Node, [[Float]], [Float])
     case colorClamp(Node, [Float], [Float])
     case cube(Node, Int, [Float])
+    /// CIColorCubeWithColorSpace: the lookup reads and writes colors in its own space (linear or sRGB-encoded),
+    /// whatever the context's working space.
+    case cubeInSpace(Node, Int, [Float], linear: Bool)
     /// CIBlendWithMask family: input where the mask is on, background where it is off. `channel` is which part of the
     /// mask decides: 0 red (CIBlendWithRedMask), 3 alpha (CIBlendWithAlphaMask), 4 luminance (CIBlendWithMask).
     case blendMask(Node, Node, Node, Int)
@@ -132,7 +135,7 @@ private indirect enum Node {
         case .variableBlur(let n, _, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
         case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
-        case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _): return n.extent
+        case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _), .cubeInSpace(let n, _, _, _): return n.extent
         case .blendMask(let n, let bg, _, _): return n.extent.union(bg.extent)
         case .curves(let n, _, _), .nearest(let n), .unpremultiply(let n), .maxComponent(let n): return n.extent
         case .alphaOne(let n, let rect): return n.extent.union(rect)
@@ -433,6 +436,10 @@ private indirect enum Node {
             if let result = env.gpu?.render(4, source: input, parameters: lo + hi) { return result }
             return RasterFilters.colorClamp(input, minimum: lo, maximum: hi)
         case .cube(let n, let dim, let data): return RasterFilters.colorCube(n.eval(region, env), dimension: dim, cube: data)
+        case .cubeInSpace(let n, let dim, let data, let linear):
+            var out = RasterFilters.colorCube(n.eval(region, Env(linear: linear, gpu: env.gpu)), dimension: dim, cube: data)
+            if env.linear != linear { Gamma.map(&out, env.linear ? Gamma.toLinear : Gamma.toSRGB) }
+            return out
         case .blendMask(let n, let bg, let mask, let channel):
             let input = n.eval(region, env), background = bg.eval(region, env), coverage = mask.eval(region, env)
             if let result = env.gpu?.render(2, source: input, background: background, mask: coverage, channel: UInt32(channel)) { return result }
@@ -710,7 +717,7 @@ public class CIFilter {
     /// Every name `outputImage` implements; `CIFilter(name:)` is nil (and `applyingFilter` a no-op) for any other.
     public static let supportedNames: Set<String> = [
         "CIAffineTile", "CIBlendWithAlphaMask", "CIBlendWithMask", "CIBlendWithRedMask", "CIBloom",
-        "CIColorBlendMode", "CIColorBurnBlendMode", "CIColorClamp", "CIColorCube", "CIColorCurves",
+        "CIColorBlendMode", "CIColorBurnBlendMode", "CIColorClamp", "CIColorCube", "CIColorCubeWithColorSpace", "CIColorCurves",
         "CIColorDodgeBlendMode", "CIColorMatrix", "CIDarkenBlendMode", "CIDifferenceBlendMode", "CIDivideBlendMode",
         "CIEdgePreserveUpsampleFilter", "CIExclusionBlendMode", "CIGaussianBlur", "CIMaskedVariableBlur", "CIHardLightBlendMode",
         "CIHardMixBlendMode", "CIHueBlendMode", "CILanczosScaleTransform", "CILightenBlendMode",
@@ -787,6 +794,14 @@ public class CIFilter {
             let dim = Int(number("inputCubeDimension", 2))
             let floats = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
             return CIImage(node: .cube(input.node, dim, floats))
+        case "CIColorCubeWithColorSpace":
+            // Upstream's CMYK proof passes sRGB: the table maps encoded colors, as LittleCMS built it.
+            guard let data = inputs["inputCubeData"] as? Data else { return nil }
+            let space = (inputs["inputColorSpace"] as? CGColorSpace)?.name ?? CGColorSpace.sRGB
+            let linear = space == CGColorSpace.linearSRGB || space == CGColorSpace.extendedLinearSRGB
+            let dim = Int(number("inputCubeDimension", 2))
+            let floats = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            return CIImage(node: .cubeInSpace(input.node, dim, floats, linear: linear))
         case "CIBlendWithMask", "CIBlendWithRedMask", "CIBlendWithAlphaMask":
             guard let bg = image(kCIInputBackgroundImageKey), let mask = image(kCIInputMaskImageKey) else { return nil }
             let channel = name == "CIBlendWithRedMask" ? 0 : name == "CIBlendWithAlphaMask" ? 3 : 4

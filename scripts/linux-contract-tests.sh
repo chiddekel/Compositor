@@ -54,6 +54,9 @@ XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBoots
 XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --combo-smoke --hue-range-handles-probe
 env -u XCTestConfigurationFilePath "$SWIFT_BIN/CompositorHostBootstrap" --combo-smoke --image-clipboard-probe
 XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --combo-smoke --transform-fields-probe
+XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --combo-smoke --scrub-probe
+XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --combo-smoke --cmyk-proof-probe
+XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --combo-smoke --svg-import-probe
 XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --preview-smoke
 XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --save-smoke
 XCTestConfigurationFilePath=linux-contract-tests "$SWIFT_BIN/CompositorHostBootstrap" --transform-smoke

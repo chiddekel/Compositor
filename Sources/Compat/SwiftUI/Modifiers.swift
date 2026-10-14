@@ -522,6 +522,9 @@ extension View {
         }
     }
     public func simultaneousGesture<G>(_ gesture: G) -> some View { self }
+    /// A drag alongside the view's own gestures (NumericScrub's label drag): the shell reports it as for `.gesture`,
+    /// and its minimum distance leaves a plain click to the view.
+    public func simultaneousGesture(_ gesture: DragGesture) -> some View { self.gesture(gesture) }
     public func simultaneousGesture(_ gesture: SpatialTapGesture) -> some View {
         modified { node in
             node.modifiers.append(.spatialTapGesture(count: max(1, gesture.count)))

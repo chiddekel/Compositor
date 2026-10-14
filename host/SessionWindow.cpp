@@ -162,6 +162,7 @@ void compositor_set_open_panel(int32_t (*panel)(const char *title, const char *m
 void compositor_set_wait_pump(void (*pump)(void *context), void *context);
 void compositor_flush_preferences(void);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
+int32_t compositor_session_proof_display(uint64_t handle, uint8_t *pixels, int32_t width, int32_t height);
 int32_t compositor_session_warp_continue(uint64_t handle);
 int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
@@ -4330,12 +4331,21 @@ double SessionWindow::desiredDisplayScale() const {
 /// The document composited at `scale` (1: the full composite).
 QImage SessionWindow::renderDisplayImage(double scale) {
     PERF_SCOPE("renderDisplayImage");
-    if (scale >= 1.0) return renderToQImage(m_sessionHandle, docWidth(), docHeight());
+    if (scale >= 1.0) {
+        // View › CMYK proofing changes what the canvas shows, never the composite exports read.
+        const int width = docWidth(), height = docHeight();
+        std::vector<uint8_t> rgba(static_cast<size_t>(width) * height * 4);
+        if (width <= 0 || height <= 0 || compositor_session_render(m_sessionHandle, rgba.data(), rgba.size()) != int64_t(rgba.size()))
+            return QImage();
+        compositor_session_proof_display(m_sessionHandle, rgba.data(), width, height);
+        return straightRGBA(rgba, width, height);
+    }
     int32_t w = 0, h = 0;
     const int64_t size = compositor_session_render_scaled(m_sessionHandle, scale, nullptr, 0, &w, &h);
     if (size <= 0 || w <= 0 || h <= 0) return QImage();
     std::vector<uint8_t> rgba(static_cast<size_t>(size));
     if (compositor_session_render_scaled(m_sessionHandle, scale, rgba.data(), rgba.size(), &w, &h) != size) return QImage();
+    compositor_session_proof_display(m_sessionHandle, rgba.data(), w, h);
     return straightRGBA(rgba, w, h);
 }
 
@@ -4537,6 +4547,7 @@ void SessionWindow::scheduleStrokeRefresh() {
             const int64_t n = [&] { PERF_SCOPE("stroke:renderDirty"); return compositor_session_render_dirty(m_sessionHandle, rect, region.data(), region.size()); }();
             if (n == 0) return;
             if (n > 0 && n == int64_t(rect[4]) * rect[5] * 4 && m_image.format() == QImage::Format_RGBA8888) {
+                compositor_session_proof_display(m_sessionHandle, region.data(), rect[4], rect[5]);
                 const QImage patch = QImage(region.data(), rect[4], rect[5], rect[4] * 4, QImage::Format_RGBA8888_Premultiplied)
                     .convertToFormat(QImage::Format_RGBA8888);
                 {

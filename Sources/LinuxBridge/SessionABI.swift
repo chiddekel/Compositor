@@ -427,6 +427,22 @@ nonisolated public func compositorSessionWarpContinue(_ handle: UInt64) -> Int32
     })
 }
 
+/// Proofs a canvas display buffer in place (`width`×`height` premultiplied RGBA8, top row first) while View › CMYK ›
+/// Proof Colors or Gamut Warning is on. 1 when proofed, 0 when the canvas shows the document's own colors, negative
+/// on bad arguments. The shell calls it on what it shows only, never on exports.
+@_cdecl("compositor_session_proof_display")
+nonisolated public func compositorSessionProofDisplay(_ handle: UInt64, _ pixels: UnsafeMutablePointer<UInt8>?,
+                                                      _ width: Int32, _ height: Int32) -> Int32 {
+    guard let pixels, width > 0, height > 0 else { return -1 }
+    return Int32(withEntry(handle) { entry in
+        let count = Int(width) * Int(height) * 4
+        var bytes = Array(UnsafeBufferPointer(start: pixels, count: count))
+        guard entry.editor.proofForDisplay(&bytes, width: Int(width), height: Int(height)) else { return 0 }
+        bytes.withUnsafeBufferPointer { pixels.update(from: $0.baseAddress!, count: count) }
+        return 1
+    })
+}
+
 @_cdecl("compositor_session_render_dirty")
 nonisolated public func compositorSessionRenderDirty(_ handle: UInt64, _ rect: UnsafeMutablePointer<Int32>?,
                                                      _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
