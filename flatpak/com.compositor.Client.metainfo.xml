@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.2-linux-alpha.1" date="2026-10-14" type="development">
+      <description><p>Compositor 1.5.2: CMYK proof colors and gamut warning on the canvas, CMYK JPEG/TIFF/PDF export and CMYK Photoshop files, 16-bit layers on the canvas at 16 bits, Progressive Blur, Camera Raw section resets and adaptive Shadows, RAW files opening into the Camera Raw Filter, and clearable shortcuts. Typed transform values preview live and number labels scrub again.</p></description>
+    </release>
     <release version="1.4.10-linux-alpha.3" date="2026-10-12" type="development">
       <description><p>16-bit and HDR layers: 16-bit images keep their precision through every edit, EXR and Radiance HDR import with light brighter than white, EXR export, 8/16-bit conversion, paste an image to make a new canvas, and drops anywhere on the tab bar open a new project.</p></description>
     </release>
