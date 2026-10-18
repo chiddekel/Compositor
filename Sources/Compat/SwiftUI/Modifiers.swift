@@ -254,6 +254,7 @@ extension View {
         } else {
             str = "\(tag)"
         }
+        PickerTagValues.record(str, tag)
         return modified { $0.modifiers.append(.tag(str)) }
     }
     public func scrollIndicators(_ visibility: StyleToken, axes: Axis.Set = [.horizontal, .vertical]) -> some View {

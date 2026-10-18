@@ -1367,6 +1367,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     compositor_set_symbol_renderer([](const char *name, int32_t width, int32_t height, double r, double g, double b, double a,
                                       uint8_t *output) -> int32_t {
         const QByteArray svg = lucideIconSVG(QString::fromUtf8(name));
+        if (svg.isEmpty()) swiftUINoteUnresolvedSymbol(QString::fromUtf8(name));
         if (svg.isEmpty() || !output || width <= 0 || height <= 0) return -1;
         QImage image(width, height, QImage::Format_RGBA8888_Premultiplied);
         image.fill(Qt::transparent);
@@ -4238,58 +4239,94 @@ void SessionWindow::setCanvasDropTargetActive(bool active) {
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
-void SessionWindow::ensureMaskAloneBadge() {
-    if (m_maskAloneBadge || !m_canvasWidget) return;
-    m_maskAloneBadge = new QWidget(m_canvasWidget);
-    m_maskAloneBadge->setObjectName(QStringLiteral("maskAloneBadge"));
-    m_maskAloneBadge->setAttribute(Qt::WA_StyledBackground, true);
-    m_maskAloneBadge->setStyleSheet(QStringLiteral(
-        "QWidget#maskAloneBadge {"
+/// One of the pills at the canvas's foot (upstream LayerMaskMenu.swift `CanvasPillView`): a symbol, a title, a detail
+/// (the layer or profile name, truncated past 220 points) and a × that leaves that way of showing the document.
+QWidget *SessionWindow::makeCanvasPill(const QString &name, const QString &symbol, const QString &title, const QString &closeLabel,
+                                       const QString &closeHelp, QLabel **detail, std::function<void()> close) {
+    auto *pill = new QWidget(m_canvasWidget);
+    pill->setObjectName(name);
+    pill->setAttribute(Qt::WA_StyledBackground, true);
+    pill->setStyleSheet(QStringLiteral(
+        "QWidget#%1 {"
         "  background-color: rgba(0, 0, 0, 191);"
         "  border: 1px solid rgba(255, 255, 255, 36);"
         "  border-radius: 13px;"
         "}"
         "QLabel { color: white; background: transparent; }"
         "QToolButton { color: white; background: transparent; border: none; padding: 2px 4px; }"
-        "QToolButton:hover { color: rgba(255, 255, 255, 180); }"));
-    auto *row = new QHBoxLayout(m_maskAloneBadge);
+        "QToolButton:hover { color: rgba(255, 255, 255, 180); }").arg(name));
+    auto *row = new QHBoxLayout(pill);
     row->setContentsMargins(11, 0, 8, 0);
     row->setSpacing(7);
-    auto *icon = new QLabel(m_maskAloneBadge);
-    icon->setPixmap(renderToolVectorIcon(QStringLiteral("rectangle.inset.filled"), 14, Qt::white).pixmap(14, 14));
+    auto *icon = new QLabel(pill);
+    icon->setPixmap(renderToolVectorIcon(symbol, 14, Qt::white).pixmap(14, 14));
     row->addWidget(icon);
-    auto *title = new QLabel(tr("Layer Mask"), m_maskAloneBadge);
-    QFont titleFont = title->font();
+    auto *heading = new QLabel(title, pill);
+    heading->setObjectName(name + QStringLiteral(".title"));
+    QFont titleFont = heading->font();
     titleFont.setPointSize(12);
     titleFont.setWeight(QFont::DemiBold);
-    title->setFont(titleFont);
-    row->addWidget(title);
-    m_maskAloneNameLabel = new QLabel(m_maskAloneBadge);
-    QFont nameFont = m_maskAloneNameLabel->font();
+    heading->setFont(titleFont);
+    row->addWidget(heading);
+    auto *detailLabel = new QLabel(pill);
+    detailLabel->setObjectName(name + QStringLiteral(".detail"));
+    QFont nameFont = detailLabel->font();
     nameFont.setPointSize(12);
-    m_maskAloneNameLabel->setFont(nameFont);
-    m_maskAloneNameLabel->setStyleSheet(QStringLiteral("color: rgba(255, 255, 255, 153);"));
-    m_maskAloneNameLabel->setMaximumWidth(220);
-    row->addWidget(m_maskAloneNameLabel);
-    auto *close = new QToolButton(m_maskAloneBadge);
-    close->setText(QStringLiteral("×"));
-    close->setToolTip(tr("Show the image again (or Option-click the mask thumbnail)"));
-    close->setAutoRaise(true);
-    connect(close, &QToolButton::clicked, this, [this] {
-        sendCommandQuiet({{"action", "clearMaskAlone"}});
-        refreshImage();
-        updateLayersPanel();
-    });
-    row->addWidget(close);
-    m_maskAloneBadge->setFixedHeight(26);
-    m_maskAloneBadge->hide();
+    detailLabel->setFont(nameFont);
+    detailLabel->setStyleSheet(QStringLiteral("color: rgba(255, 255, 255, 153);"));
+    detailLabel->setMaximumWidth(220);
+    // Truncated by design, as upstream's `.byTruncatingTail` name field.
+    detailLabel->setProperty("uiAuditIgnore", true);
+    row->addWidget(detailLabel);
+    if (detail) *detail = detailLabel;
+    auto *closeButton = new QToolButton(pill);
+    closeButton->setObjectName(name + QStringLiteral(".close"));
+    closeButton->setText(QStringLiteral("×"));
+    closeButton->setToolTip(closeHelp);
+    closeButton->setAccessibleName(closeLabel);
+    closeButton->setAutoRaise(true);
+    connect(closeButton, &QToolButton::clicked, this, std::move(close));
+    row->addWidget(closeButton);
+    pill->setFixedHeight(26);
+    pill->hide();
+    return pill;
 }
 
+void SessionWindow::ensureMaskAloneBadge() {
+    if (!m_canvasWidget) return;
+    if (!m_maskAloneBadge)
+        m_maskAloneBadge = makeCanvasPill(QStringLiteral("maskAloneBadge"), QStringLiteral("rectangle.inset.filled"), tr("Layer Mask"),
+            tr("Stop viewing the mask"), tr("Show the image again (or Option-click the mask thumbnail)"), &m_maskAloneNameLabel, [this] {
+                sendCommandQuiet({{"action", "clearMaskAlone"}});
+                refreshImage();
+                updateLayersPanel();
+            });
+    if (!m_proofBadge)
+        m_proofBadge = makeCanvasPill(QStringLiteral("proofBadge"), QStringLiteral("printer"), tr("CMYK Proof"),
+            tr("Stop proofing"), tr("Show the document's own colors again"), &m_proofNameLabel, [this] {
+                sendCommandQuiet({{"action", "stopProofing"}});
+                refreshImage();
+                updateMaskAloneBadge(sessionState());
+            });
+    if (!m_gamutBadge)
+        m_gamutBadge = makeCanvasPill(QStringLiteral("gamutBadge"), QStringLiteral("exclamationmark.triangle"), tr("CMYK Gamut Warning"),
+            tr("Hide the gamut warning"), tr("Stop marking colors the profile can't print"), &m_gamutNameLabel, [this] {
+                sendCommandQuiet({{"action", "hideGamutWarning"}});
+                refreshImage();
+                updateMaskAloneBadge(sessionState());
+            });
+}
+
+/// The canvas pills, as upstream ContentView stacks them at the canvas's foot (8 points apart, 14 above the bottom, clear
+/// of the transform box's rotation handle): CMYK Proof, then Gamut Warning, then the mask shown alone.
 void SessionWindow::updateMaskAloneBadge(const QJsonObject &state) {
     if (!m_canvasWidget) return;
+    const bool document = !state.value("layers").toArray().isEmpty() || state.value("width").toInt() > 0;
     const bool alone = state.value("viewsMaskAlone").toBool(false);
-    if (!alone) {
-        if (m_maskAloneBadge) m_maskAloneBadge->hide();
+    const bool proof = document && state.value("proofsColors").toBool(false);
+    const bool gamut = document && state.value("showsGamutWarning").toBool(false);
+    if (!alone && !proof && !gamut) {
+        for (QWidget *pill : {m_maskAloneBadge, m_proofBadge, m_gamutBadge}) if (pill) pill->hide();
         return;
     }
     ensureMaskAloneBadge();
@@ -4303,14 +4340,24 @@ void SessionWindow::updateMaskAloneBadge(const QJsonObject &state) {
         }
     }
     if (m_maskAloneNameLabel) m_maskAloneNameLabel->setText(name);
-    m_maskAloneBadge->adjustSize();
-    const QSize hint = m_maskAloneBadge->sizeHint();
-    const int w = qMax(hint.width(), m_maskAloneBadge->minimumSizeHint().width());
-    const int h = 26;
-    m_maskAloneBadge->setGeometry((m_canvasWidget->width() - w) / 2,
-                                  m_canvasWidget->height() - h - 14, w, h);
-    m_maskAloneBadge->show();
-    m_maskAloneBadge->raise();
+    const QString profile = state.value("proofProfileName").toString();
+    if (m_proofNameLabel) m_proofNameLabel->setText(profile);
+    if (m_gamutNameLabel) m_gamutNameLabel->setText(profile);
+    QList<QWidget *> shown;
+    for (auto [pill, visible] : {std::pair<QWidget *, bool>{m_proofBadge, proof}, {m_gamutBadge, gamut}, {m_maskAloneBadge, alone}}) {
+        if (!pill) continue;
+        if (visible) shown << pill; else pill->hide();
+    }
+    const int h = 26, spacing = 8;
+    int y = m_canvasWidget->height() - 14 - (int(shown.size()) * h + (int(shown.size()) - 1) * spacing);
+    for (QWidget *pill : shown) {
+        pill->adjustSize();
+        const int w = qMax(pill->sizeHint().width(), pill->minimumSizeHint().width());
+        pill->setGeometry((m_canvasWidget->width() - w) / 2, y, w, h);
+        pill->show();
+        pill->raise();
+        y += h + spacing;
+    }
 }
 
 void SessionWindow::paintEvent(QPaintEvent *event) {

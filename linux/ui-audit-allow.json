@@ -1,0 +1,3 @@
+[
+  {"kind": "emptyButton", "path": "toolbar.header", "reason": "The header's Close/Minimize/Zoom window controls are QAbstractButtons that paint their own traffic-light circles (no text, no icon) — the `makeDot` buttons in host/SessionWindow.cpp (style-sheet circles, 12×12)."}
+]

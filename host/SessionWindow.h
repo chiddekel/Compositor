@@ -306,6 +306,8 @@ public:
     void canvasDropEvent(QDropEvent *event, QWidget *canvas);
     void updateMaskAloneBadge(const QJsonObject &state);
     void ensureMaskAloneBadge();
+    QWidget *makeCanvasPill(const QString &name, const QString &symbol, const QString &title, const QString &closeLabel,
+                            const QString &closeHelp, QLabel **detail, std::function<void()> close);
     void setCanvasDropTargetActive(bool active);
     void paintCanvasDropAccent(QPainter &p, QWidget *canvas);
     QRectF canvasTargetRect() const;
@@ -559,6 +561,10 @@ private:
     QString m_lastRevealedLayerId;
     QWidget *m_maskAloneBadge = nullptr;
     QLabel *m_maskAloneNameLabel = nullptr;
+    QWidget *m_proofBadge = nullptr;      // View › CMYK › Proof Colors pill
+    QLabel *m_proofNameLabel = nullptr;
+    QWidget *m_gamutBadge = nullptr;      // View › CMYK › Gamut Warning pill
+    QLabel *m_gamutNameLabel = nullptr;
     bool m_canvasDropTargetActive = false;
     // Canvas chrome from the session (syncCanvasChrome): rulers, layout grid, guides, snap lines.
     void syncCanvasChrome(const QJsonObject &state);

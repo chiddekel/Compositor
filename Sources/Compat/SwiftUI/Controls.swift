@@ -306,6 +306,14 @@ public struct TextField<Label: View>: View, PrimitiveView {
     }
 }
 
+/// The values `.tag(_:)` was given, by the text the shell sends back for a choice: a Picker whose selection is neither an
+/// enum nor a plain string or number (New Canvas's `CanvasPreset?` presets) gets its chosen value from here.
+public enum PickerTagValues {
+    nonisolated(unsafe) private static var values: [String: AnyHashable] = [:]
+    static func record<V: Hashable>(_ text: String, _ value: V) { values[text] = AnyHashable(value) }
+    static func value<V>(_ text: String, as type: V.Type) -> V? { values[text]?.base as? V }
+}
+
 public struct Picker<Label: View, SelectionValue: Hashable, Content: View>: View, PrimitiveView {
     let label: Label
     let selection: Binding<SelectionValue>
@@ -345,6 +353,10 @@ public struct Picker<Label: View, SelectionValue: Hashable, Content: View>: View
             }
             if let stringVal = str as? SelectionValue {
                 sel.wrappedValue = stringVal
+                return
+            }
+            if let tagged = PickerTagValues.value(str, as: SelectionValue.self) {
+                sel.wrappedValue = tagged
                 return
             }
             if let intVal = Int(str), let iv = intVal as? SelectionValue {

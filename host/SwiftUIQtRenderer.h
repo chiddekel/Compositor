@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 #include <QIcon>
 #include <QColor>
@@ -17,8 +18,15 @@ QString styleSheetImage(const QString &name, const QByteArray &svg);
 /// Parses a color token string (e.g. "accentColor", "rgb:r,g,b,a", hex, etc.)
 QColor parseColorToken(const QString &name);
 
-/// Renders SF Symbol vector icons into a QIcon.
+/// Renders SF Symbol vector icons into a QIcon. `symbol` may carry a badge, `base|badge=name` (a ZStack of two Images in
+/// a label, e.g. Color Range's eyedropper with a plus): the badge is drawn small at the icon's bottom-trailing corner.
 QIcon renderToolVectorIcon(const QString &symbol, int size = 20, const QColor &color = QColor(0xf5, 0xf5, 0xf7));
+
+/// SF Symbol names something asked to draw that have no picture (no Lucide entry), since the last clear. The renderer
+/// and the AppKit symbol callback both record here; `--ui-audit-probe` reports them.
+void swiftUINoteUnresolvedSymbol(const QString &symbol);
+QStringList swiftUIUnresolvedSymbols();
+void swiftUIClearUnresolvedSymbols();
 
 /// Renders `panel` (a name `Sources/LinuxBridge/SwiftUIBridge.swift` recognises, e.g. "NavigationToolHeader")
 /// against the session `sessionHandle` already identifies, as a standalone (unparented) `QWidget` tree. Returns

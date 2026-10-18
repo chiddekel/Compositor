@@ -757,6 +757,13 @@ public:
     QSize sizeHint() const override {
         return QSize(width() > 0 ? width() : 32, height() > 0 ? height() : 32);
     }
+    /// A shape with neither fill nor stroke of its own fills with the foreground style around it, as SwiftUI's do
+    /// (New Canvas's ⋯ is three bare Circles under `.foregroundStyle(.primary)`).
+    void inheritForeground(const QColor &color) {
+        if (m_fillColor.isValid() || (m_strokeWidth > 0 && m_strokeColor.isValid()) || !color.isValid()) return;
+        m_fillColor = color;
+        update();
+    }
 
 protected:
     void paintEvent(QPaintEvent *) override {
@@ -1431,7 +1438,43 @@ static QIcon rotatedIcon(const QIcon &icon, const QSize &size, double degrees) {
     return QIcon(turned);
 }
 
+static QStringList &unresolvedSymbolList() {
+    static QStringList symbols;
+    return symbols;
+}
+void swiftUINoteUnresolvedSymbol(const QString &symbol) {
+    if (!symbol.isEmpty() && !unresolvedSymbolList().contains(symbol)) unresolvedSymbolList().append(symbol);
+}
+QStringList swiftUIUnresolvedSymbols() { return unresolvedSymbolList(); }
+void swiftUIClearUnresolvedSymbols() { unresolvedSymbolList().clear(); }
+
 QIcon renderToolVectorIcon(const QString &symbol, int size, const QColor &color) {
+    // `base|badge=name`: a label's ZStack of a symbol and a small badge symbol (upstream's eyedropper with a plus or
+    // minus, `.font(.system(size: 8))` at `.bottomTrailing`, offset 3, 1): the base at full size, the badge at about
+    // half size in the bottom-trailing corner, over a cut-out so it reads on top of the base's strokes.
+    if (const int bar = symbol.indexOf(QLatin1String("|badge=")); bar >= 0) {
+        const QString base = symbol.left(bar), badge = symbol.mid(bar + 7);
+        const qreal dpr = qApp ? std::max<qreal>(qApp->devicePixelRatio(), 2.0) : 2.0;
+        QPixmap pixmap(QSize(size, size) * dpr);
+        pixmap.setDevicePixelRatio(dpr);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.drawPixmap(QRectF(0, 0, size, size), renderToolVectorIcon(base, size, color).pixmap(QSize(size, size) * dpr),
+                           QRectF(0, 0, size * dpr, size * dpr));
+        const qreal badgeSize = std::max<qreal>(7, size * 0.55);
+        const QRectF corner(size - badgeSize, size - badgeSize, badgeSize, badgeSize);
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::black);
+        painter.drawEllipse(corner.adjusted(-1, -1, 1, 1));
+        painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        const int badgePixels = qRound(badgeSize * dpr);
+        painter.drawPixmap(corner, renderToolVectorIcon(badge, qRound(badgeSize), color).pixmap(badgePixels, badgePixels),
+                           QRectF(0, 0, badgePixels, badgePixels));
+        painter.end();
+        return QIcon(pixmap);
+    }
     // SF Symbols by their upstream names, drawn from Lucide (the open stand-in; host/LucideIcons.h), at the device's
     // resolution; a 1.75-unit stroke on the 24-unit grid sits close to SF's regular weight.
     if (const QByteArray svg = lucideIconSVG(symbol); !svg.isEmpty()) {
@@ -1723,6 +1766,8 @@ QIcon renderToolVectorIcon(const QString &symbol, int size, const QColor &color)
         p.drawLine(5, 5, 15, 15);
         p.drawLine(15, 5, 5, 15);
     } else {
+        // No picture for this name: a placeholder square, recorded so `--ui-audit-probe` reports it.
+        swiftUINoteUnresolvedSymbol(symbol);
         p.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.drawRect(4, 4, 12, 12);
     }
@@ -2027,7 +2072,13 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
             widget->setProperty("offsetX", ox);
             widget->setProperty("offsetY", oy);
         } else if (kind == "fixedSize") {
-            widget->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+            // Only the axes asked for: `.fixedSize(horizontal: false, vertical: true)` lets a text wrap to its width,
+            // and FilterSheet's `.fixedSize(horizontal: false, vertical: !isCameraRaw)` fixes nothing for Camera Raw,
+            // whose column then takes the panel's height instead of floating in its middle.
+            QSizePolicy policy = widget->sizePolicy();
+            if (!bools.contains("horizontal") || bools.value("horizontal").toBool()) policy.setHorizontalPolicy(QSizePolicy::Fixed);
+            if (!bools.contains("vertical") || bools.value("vertical").toBool()) policy.setVerticalPolicy(QSizePolicy::Fixed);
+            widget->setSizePolicy(policy);
         } else if (kind == "help" || kind == "accessibilityLabel") {
             const QString text = strings.value("text").toString();
             if (!text.isEmpty()) {
@@ -2093,6 +2144,7 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 // Symbols take it too, unless one set its own (modifiers apply innermost first, so that one is done).
                 QList<QWidget *> symbols = widget->findChildren<QWidget *>();
                 symbols.prepend(widget);
+                for (QWidget *w : symbols) if (auto *shape = dynamic_cast<SwiftUIShapeWidget *>(w)) shape->inheritForeground(color);
                 for (QWidget *w : symbols) {
                     const QString symbol = w->property("systemIcon").toString();
                     if (symbol.isEmpty() || w->property("tinted").toBool()) continue;
@@ -2154,14 +2206,35 @@ public:
         }
         child->show();
         m_children << child;
+        // A stack is as flexible as its most flexible layer, as SwiftUI sizes a ZStack: a Canvas or a row with a Spacer
+        // makes it take the width it is offered (Camera Raw's histogram spans its column).
+        if (!child->property("positioned").toBool()) {
+            QSizePolicy policy = sizePolicy();
+            if (child->sizePolicy().horizontalPolicy() & QSizePolicy::ExpandFlag) policy.setHorizontalPolicy(QSizePolicy::Expanding);
+            if (child->sizePolicy().verticalPolicy() & QSizePolicy::ExpandFlag) policy.setVerticalPolicy(QSizePolicy::Expanding);
+            setSizePolicy(policy);
+        }
     }
     QSize sizeHint() const override {
         QSize hint(0, 0);
         for (QWidget *w : m_children) if (!w->property("positioned").toBool()) hint = hint.expandedTo(ownSize(w));
         return hint.isEmpty() ? QSize(20, 20) : hint;
     }
+    /// At least as large as each layer's own minimum (a `.frame(height: 110)` graph keeps the stack 110 tall).
+    QSize minimumSizeHint() const override {
+        QSize least(0, 0);
+        for (QWidget *w : m_children) if (!w->property("positioned").toBool()) least = least.expandedTo(w->minimumSize()).expandedTo(w->minimumSizeHint());
+        return least;
+    }
 protected:
-    static QSize ownSize(QWidget *w) { return w->minimumSize() == w->maximumSize() && !w->minimumSize().isEmpty() ? w->minimumSize() : w->sizeHint(); }
+    /// A layer's own size: its fixed size, else its size hint grown to its minimum, with a fixed dimension kept.
+    static QSize ownSize(QWidget *w) {
+        if (w->minimumSize() == w->maximumSize() && !w->minimumSize().isEmpty()) return w->minimumSize();
+        QSize own = w->sizeHint().expandedTo(w->minimumSize());
+        if (w->minimumHeight() > 0 && w->minimumHeight() == w->maximumHeight()) own.setHeight(w->minimumHeight());
+        if (w->minimumWidth() > 0 && w->minimumWidth() == w->maximumWidth()) own.setWidth(w->minimumWidth());
+        return own;
+    }
     void resizeEvent(QResizeEvent *event) override {
         QWidget::resizeEvent(event);
         for (QWidget *w : std::as_const(m_children)) {
@@ -2395,6 +2468,17 @@ public:
     }
     void place() {
         m_content->setGeometry(m_container->rect());
+        // `Text(…).fixedSize().background(GeometryReader { … }).frame(width:)` (FilterSheet's slider titles): SwiftUI sizes
+        // a fixed-size view at its ideal size whatever frame it sits in, so the reader measures the whole title, not the
+        // frame around it. Give the reader the content's own size so the preference it publishes is the natural width.
+        if (m_background->property("geometryReader").toBool()
+            && m_content->sizePolicy().horizontalPolicy() == QSizePolicy::Fixed) {
+            const QSize natural = m_content->sizeHint();
+            m_background->setGeometry(0, 0, natural.width(), qMax(natural.height(), m_container->height()));
+            m_background->lower();
+            m_content->raise();
+            return;
+        }
         const QSize fixed = m_background->minimumSize() == m_background->maximumSize() ? m_background->minimumSize() : QSize();
         const bool fills = !fixed.isValid() && (m_background->sizePolicy().horizontalPolicy() & QSizePolicy::ExpandFlag);
         if (fills || m_alignment == QLatin1String("center") && !fixed.isValid() && !qobject_cast<QLabel *>(m_background)) {
@@ -2956,7 +3040,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             } else if (childKind == "Image") {
                 const QString source = n.value("stringParams").toObject().value("source").toString();
                 if (source.startsWith(QLatin1String("system:"))) {
-                    systemIcon = source.mid(7);
+                    // A second symbol in the label is a badge over the first (a ZStack: eyedropper + plus.circle.fill).
+                    systemIcon = systemIcon.isEmpty() ? source.mid(7) : systemIcon + QLatin1String("|badge=") + source.mid(7);
                     button->setProperty("systemIcon", systemIcon);
                     isToolButton = true;
                 }
@@ -3208,6 +3293,10 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         QObject::connect(field, &QLineEdit::editingFinished, field, [handle, panel] {
             QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
         });
+        // Typed since the field took focus: a refresh then leaves its text alone. Untyped, a focused field still takes
+        // a new value set from elsewhere (New Canvas's preset menu writes the focused Width field), as SwiftUI's does.
+        QObject::connect(field, &QLineEdit::textEdited, field, [field] { field->setProperty("swiftuiTyped", true); });
+        QObject::connect(field, &QLineEdit::editingFinished, field, [field] { field->setProperty("swiftuiTyped", false); });
         field->setStyleSheet("QLineEdit { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 2px 4px; } QLineEdit:focus { border-color: #007aff; }");
         if (handlerKeys.contains(QStringLiteral("focused"))) new TextFieldFocusFilter(field, handle, panel, id);
         // SwiftUI can focus a newly presented field (inline rename), not only observe Qt's focus changes.
@@ -3421,7 +3510,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         } else {
             auto *combo = new QComboBox;
             // macOS pop-up button: the up/down chevron at the right edge says it opens a menu.
-            combo->setStyleSheet("QComboBox { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 3px 22px 3px 8px; min-height: 18px; } "
+            combo->setStyleSheet("QComboBox { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 3px 4px 3px 8px; min-height: 18px; } "
                                  "QComboBox::drop-down { border: none; width: 18px; subcontrol-origin: padding; subcontrol-position: center right; } "
                                  "QComboBox::down-arrow { width: 8px; height: 11px; image: url(" + styleSheetImage(QStringLiteral("popup-chevrons"),
                                      "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='11' viewBox='0 0 8 11'><path fill='none' stroke='#d8d8dc' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1.5 4 L4 1.5 L6.5 4 M1.5 7 L4 9.5 L6.5 7'/></svg>") + "); } "
@@ -3496,22 +3585,33 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         auto *btn = new QPushButton;
         QString textLabel;
         QString systemIcon;
+        QWidget *drawnLabel = nullptr;
         if (!children.isEmpty()) {
             const QJsonObject labelObj = children.first().toObject();
             const QString lkind = labelObj.value("kind").toString();
             if (lkind == "Text") {
                 textLabel = labelObj.value("stringParams").toObject().value("text").toString();
-            } else if (lkind == "Image") {
-                const QString source = labelObj.value("stringParams").toObject().value("source").toString();
-                if (source.startsWith(QLatin1String("system:"))) {
-                    systemIcon = source.mid(7);
-                }
+            } else if (lkind == "Image" && labelObj.value("stringParams").toObject().value("source").toString().startsWith(QLatin1String("system:"))) {
+                systemIcon = labelObj.value("stringParams").toObject().value("source").toString().mid(7);
+            } else if (!lkind.isEmpty() && lkind != QLatin1String("_Empty")) {
+                // Any other label (New Canvas's three drawn dots, a Label, a stack) is drawn as the view it is, inside
+                // the button; the button takes its size and opens the menu.
+                drawnLabel = buildNode(handle, panel, labelObj);
             }
         }
         if (!systemIcon.isEmpty()) {
             QIcon icon = renderToolVectorIcon(systemIcon, 16, QColor(0x8e, 0x8e, 0x93));
             btn->setIcon(icon);
             btn->setIconSize(QSize(16, 16));
+        } else if (drawnLabel) {
+            auto *labelLayout = new QHBoxLayout(btn);
+            labelLayout->setContentsMargins(0, 0, 0, 0);
+            labelLayout->addWidget(drawnLabel);
+            drawnLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+            for (QWidget *inner : drawnLabel->findChildren<QWidget *>()) inner->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+            const QSize size = drawnLabel->sizeHint().expandedTo(drawnLabel->minimumSize()).expandedTo(QSize(16, 16));
+            btn->setMinimumSize(size);
+            btn->setProperty("drawnLabel", true);
         } else {
             btn->setText(textLabel);
         }
@@ -4059,7 +4159,7 @@ static void refreshEditingControlState(QWidget *current, const QJsonObject &root
         if (opacity.contains(id))
             if (auto *effect = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect())) effect->setOpacity(opacity.value(id));
         if (fields.contains(id)) if (auto *field = qobject_cast<QLineEdit *>(widget);
-            field && !field->hasFocus() && field->text() != fields.value(id)) {
+            field && (!field->hasFocus() || !field->property("swiftuiTyped").toBool()) && field->text() != fields.value(id)) {
             const QSignalBlocker block(field);
             field->setText(fields.value(id));
         }
@@ -4117,16 +4217,23 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
         auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
         if (field && current->isAncestorOf(field)) gridField = field;
     }
+    // Focused but not typed in (New Canvas opens with Width focused): its text still follows the model, so a value set
+    // from elsewhere (a preset) shows, as in SwiftUI; the field keeps its focus (updated in place, not rebuilt).
+    QPointer<QLineEdit> untypedField;
+    if (current && !search && !amount && !colorField && !toolField && !gridField && !numericField) {
+        auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+        if (field && current->isAncestorOf(field) && !field->property("swiftuiTyped").toBool()) untypedField = field;
+    }
     // Mid-drag / mid-typing the panel stays as it is (see below), so don't even resolve its tree.
-    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && !search && !amount && !colorField && !toolField && !gridField && !numericField && isBeingManipulated(current)) {
+    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle && !search && !amount && !colorField && !toolField && !gridField && !numericField && !untypedField && isBeingManipulated(current)) {
         repaintCanvases(current);
         return current;
     }
     QByteArray bytes;
     { PERF_SCOPE(QStringLiteral("fetchTree:") + panel); bytes = fetchTreeBytes(sessionHandle, panel); }
     if (bytes.isEmpty()) return nullptr;
-    if ((amount || toolField || gridField || numericField) && current && current->property("swiftUIHandle").toULongLong() == sessionHandle)
-        refreshEditingControlState(current, QJsonDocument::fromJson(bytes).object(), gridField || numericField);
+    if ((amount || toolField || gridField || numericField || untypedField) && current && current->property("swiftUIHandle").toULongLong() == sessionHandle)
+        refreshEditingControlState(current, QJsonDocument::fromJson(bytes).object(), gridField || numericField || untypedField);
     // Same session, same tree: the widgets already show it. Node ids are positional, so its buttons still reach the
     // handlers the fetch just re-registered; canvases fetch their pixels at paint time, so a repaint refreshes them.
     if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle

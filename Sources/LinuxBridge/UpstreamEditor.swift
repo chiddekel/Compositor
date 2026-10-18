@@ -192,6 +192,8 @@ private struct State: Encodable {
     /// View › CMYK › Proof Colors / Gamut Warning: what the canvas display is proofed through (proofForDisplay).
     let proofsColors: Bool
     let showsGamutWarning: Bool
+    /// The proofing profile's name, which the canvas pills show (upstream ProofBadge: `proofProfile?.name ?? ""`).
+    let proofProfileName: String
     let showsGuides: Bool
     let guides: [GuideState]
     let guideDragging: Bool
@@ -267,7 +269,7 @@ final class UpstreamEditor {
     static let supportedActions: Set<String> = [
         "markSaved", "markUnsaved", "new", "addLayer", "addGroup", "groupSelectedLayers", "ungroupLayers", "selectLayer", "deleteLayer", "renameLayer", "setVisible",
         "setOpacity", "setBlendMode", "setSelectedOpacity", "cycleBlendMode", "flipLayer", "flipCanvas", "undo", "redo",
-        "addRevealMask", "addHideMask", "toggleMaskAlone", "clearMaskAlone", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
+        "addRevealMask", "addHideMask", "toggleMaskAlone", "clearMaskAlone", "stopProofing", "hideGamutWarning", "deleteMask", "setMaskEnabled", "setMaskLinked", "moveLayer",
         "selectAll", "deselect", "invertSelection", "loadLayerSelection", "loadMaskSelection", "selectSubject", "featherSelection",
         "setSelectionExpandAmount", "setSelectionMode",
         "colorRangeBegin", "colorRangeSample", "colorRangeUpdate", "colorRangeCommit", "colorRangeCancel",
@@ -504,6 +506,11 @@ final class UpstreamEditor {
             s.toggleMaskAlone(id)
         case "clearMaskAlone":
             s.viewsMaskAlone = false
+        // The × on the canvas's CMYK pills (upstream ProofBadge's close actions).
+        case "stopProofing":
+            s.proofsColors = false
+        case "hideGamutWarning":
+            s.showsGamutWarning = false
         case "deleteMask": s.deleteLayerMask()
         case "setMaskEnabled":
             guard let enabled = command.enabled, let mask = s.activeLayer?.mask else { return fail(-1, "no mask") }
@@ -1598,7 +1605,8 @@ final class UpstreamEditor {
             showsImporter: s.showsImporter,
             openProjectRequested: openProjectRequested,
             showsRulers: s.showsRulers, showsGrid: s.showsGrid, showsPixelGrid: s.showsPixelGrid,
-            proofsColors: s.proofsColors, showsGamutWarning: s.showsGamutWarning, showsGuides: s.showsGuides,
+            proofsColors: s.proofsColors, showsGamutWarning: s.showsGamutWarning,
+            proofProfileName: s.proofProfile?.name ?? "", showsGuides: s.showsGuides,
             guides: s.displayedGuides.map { State.GuideState(vertical: $0.axis == .vertical, position: $0.position) },
             guideDragging: s.guideDrag != nil, canEditGuides: s.canEditGuides,
             snapLines: [s.snapGuides.xs.map { Double($0) }, s.snapGuides.ys.map { Double($0) }],

@@ -214,4 +214,9 @@ public struct GeometryReader<Content: View>: View, PrimitiveView, _GeometryReadi
 /// The sizes the shell reported for GeometryReaders, by place (scope and tree path).
 public enum GeometrySizes {
     nonisolated(unsafe) static var sizes: [String: CGSize] = [:]
+    /// Scopes (panels) a reader reported a new size in since their last resolve. A size changes what the panel's body
+    /// computes beyond the reader itself (a preference read by `onPreferenceChange`, FilterSheet's title column), so
+    /// the host rebuilds the whole panel, not only the reader's content.
+    nonisolated(unsafe) static var changedScopes: Set<String> = []
+    public static func takeChanged(_ scope: String) -> Bool { changedScopes.remove(scope) != nil }
 }

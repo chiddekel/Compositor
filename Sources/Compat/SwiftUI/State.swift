@@ -108,6 +108,7 @@ public enum StateStore {
         guard self.scope == nil else { return false }
         self.scope = scope
         claimed = []
+        ViewResolver.resetNestedPaths()
         PreferenceValues.begin(scope: scope)
         return true
     }

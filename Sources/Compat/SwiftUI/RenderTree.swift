@@ -278,8 +278,18 @@ public enum ViewResolver {
     /// The path of the view being resolved (a reader's place, for its `scrollTo` requests).
     static var currentViewPath: String { currentPath }
 
-    /// A view resolved while another's `body` is being built (an `.overlay`'s content) gets a path under that view.
-    static func nestedPath(_ tag: String) -> String { currentPath + "/" + tag }
+    /// A view resolved while another's `body` is being built (an `.overlay`'s content) gets a path under that view. One
+    /// body can build many: FilterSheet's rows each put a `GeometryReader` in a `.background`, from one helper in one
+    /// body. Each gets its own place by its order in that body, so their sizes and state don't share one key.
+    static func nestedPath(_ tag: String) -> String {
+        let base = currentPath + "/" + tag
+        let index = nestedCounts[base, default: 0]
+        nestedCounts[base] = index + 1
+        return index == 0 ? base : "\(base)#\(index)"
+    }
+    /// Occurrences of each nested place in the resolve under way (reset as each panel resolve begins).
+    nonisolated(unsafe) private static var nestedCounts: [String: Int] = [:]
+    static func resetNestedPaths() { nestedCounts = [:] }
 
     static func resolveList(_ view: any View) -> [RenderNode] { resolveList(view, path: currentPath) }
     /// Every node a view resolves to (a list of siblings, e.g. an app's `.commands`), not just the first.
@@ -290,7 +300,8 @@ public enum ViewResolver {
             return list._viewList.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
         }
         if let reader = view as? any _GeometryReading {
-            let key = "\(StateStore.currentScope ?? "")|\(path)"
+            let scope = StateStore.currentScope ?? ""
+            let key = "\(scope)|\(path)"
             let size = GeometrySizes.sizes[key] ?? .zero
             var node = RenderNode(kind: "GeometryReader")
             node.children = resolveList(reader._content(size: size), path: path + ".0")
@@ -302,7 +313,9 @@ public enum ViewResolver {
                 guard let pair = value as? [Any], pair.count == 2,
                       let w = (pair[0] as? Double) ?? (pair[0] as? Int).map(Double.init),
                       let h = (pair[1] as? Double) ?? (pair[1] as? Int).map(Double.init) else { return }
-                GeometrySizes.sizes[key] = CGSize(width: w, height: h)
+                let reported = CGSize(width: w, height: h)
+                if GeometrySizes.sizes[key] != reported { GeometrySizes.changedScopes.insert(scope) }
+                GeometrySizes.sizes[key] = reported
             }
             return [node]
         }

@@ -44,6 +44,7 @@ check "preview renderer generator" python3 "$ROOT/scripts/gen-preview-renderer.p
 check "Objective-C generator" python3 "$ROOT/scripts/gen-objc-overrides.py" --check
 check "patched overrides generator" python3 "$ROOT/scripts/gen-patched-overrides.py" --check
 check "test mirrors generator" python3 "$ROOT/scripts/gen-linux-test-mirrors.py" --check
+check "SF Symbol icons (every upstream symbol drawn)" python3 "$ROOT/scripts/gen-lucide-icons.py" --check
 # Vulkan shader headers match their .comp sources (effects recolor, brush coverage, composite).
 # REQUIRE_SHADER_CHECK=1 (CI) makes a missing glslangValidator a failure rather than a note.
 if command -v glslangValidator >/dev/null 2>&1; then

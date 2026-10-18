@@ -70,6 +70,9 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
         wire = node.wire()
         if ChangeTracker.lastActionCount == 0 { break }
     }
+    // A GeometryReader reported a new size: whoever fetched this resolve may rebuild only that reader, so tell the
+    // shell the whole panel changed (it rebuilds only if the tree's bytes differ).
+    if GeometrySizes.takeChanged(scope) { DirtyPanels.mark(DirtyPanels.Key(entry: entry.renderScopeID, panel: panel)) }
     return wire
 }
 
