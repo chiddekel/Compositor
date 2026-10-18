@@ -306,6 +306,7 @@ public:
     void canvasDropEvent(QDropEvent *event, QWidget *canvas);
     void updateMaskAloneBadge(const QJsonObject &state);
     void ensureMaskAloneBadge();
+    void scheduleToolRailRefresh();
     QWidget *makeCanvasPill(const QString &name, const QString &symbol, const QString &title, const QString &closeLabel,
                             const QString &closeHelp, QLabel **detail, std::function<void()> close);
     void setCanvasDropTargetActive(bool active);
@@ -561,6 +562,8 @@ private:
     QString m_lastRevealedLayerId;
     QWidget *m_maskAloneBadge = nullptr;
     QLabel *m_maskAloneNameLabel = nullptr;
+    QTimer *m_railRefreshTimer = nullptr;   // coalesces rail refreshes during a canvas drag
+    bool m_railRefreshPending = false;
     QWidget *m_proofBadge = nullptr;      // View › CMYK › Proof Colors pill
     QLabel *m_proofNameLabel = nullptr;
     QWidget *m_gamutBadge = nullptr;      // View › CMYK › Gamut Warning pill

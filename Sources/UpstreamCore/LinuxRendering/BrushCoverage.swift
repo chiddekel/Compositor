@@ -34,6 +34,11 @@ extension BrushCoverageComputing {
     var isThreadSafe: Bool { false }
 }
 
+/// A backend that takes all of one stroke event's tiles at once (same settled and tail segments): one GPU submission.
+protocol BrushCoverageBatching: AnyObject {
+    func renderAll(_ requests: [BrushCoverageRequest]) throws -> [BrushCoverageResult]
+}
+
 /// One instance per stroke: once acceleration fails, that stroke stays on CPU.
 /// The CPU receives the unchanged request, including settled density and tail.
 final class AdaptiveBrushCoverage: BrushCoverageComputing {
@@ -54,6 +59,15 @@ final class AdaptiveBrushCoverage: BrushCoverageComputing {
             catch { self.accelerator = nil; fellBack = true }
         }
         return try cpu.render(request)
+    }
+
+    /// The accelerator's batch when it has one, else nil (the caller renders tile by tile). A GPU failure falls back
+    /// for the rest of the stroke and returns nil, so the caller recomputes these tiles on the CPU.
+    func renderAll(_ requests: [BrushCoverageRequest]) throws -> [BrushCoverageResult]? {
+        guard let batching = accelerator as? BrushCoverageBatching else { return nil }
+        do { return try batching.renderAll(requests) }
+        catch BrushCoverageFailure.invalidInput { throw BrushCoverageFailure.invalidInput }
+        catch { accelerator = nil; fellBack = true; return nil }
     }
 }
 

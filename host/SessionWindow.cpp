@@ -1456,7 +1456,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
             // A working stroke changes session state too. Keep the main-queue pump on the
             // same partial-render path as pointer events; release refreshes the panels.
             if (painting) scheduleStrokeRefresh();
-            else { refreshImage(); updateToolRail(); }
+            else { refreshImage(); scheduleToolRailRefresh(); }
         }
         updateFloatingPanels();
         showSessionAlert();
@@ -4192,6 +4192,7 @@ void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas)
         flushPendingDrag();
         m_upstreamCanvasDrag = false;
         sendUpstreamCanvasMouse(2, event, 1);
+        if (m_railRefreshPending) scheduleToolRailRefresh();   // what the drag changed in the rail, now
         return;
     }
     m_currentPoint = documentPoint(event->position());
@@ -8032,8 +8033,31 @@ void SessionWindow::retireRenderedPanel(QWidget *panel) {
     panel->deleteLater();
 }
 
+/// The rail after a session change. A Move or selection drag changes the session every frame, and the rail (tools and
+/// swatches, ~15 ms to resolve) seldom changes with it: mid-drag it catches up at most every 150 ms (an eyedropper drag's
+/// swatch still follows), and once more when the drag ends.
+void SessionWindow::scheduleToolRailRefresh() {
+    if (!m_upstreamCanvasDrag) {
+        if (m_railRefreshTimer) m_railRefreshTimer->stop();
+        updateToolRail();
+        return;
+    }
+    if (!m_railRefreshTimer) {
+        m_railRefreshTimer = new QTimer(this);
+        m_railRefreshTimer->setSingleShot(true);
+        m_railRefreshTimer->setInterval(150);
+        connect(m_railRefreshTimer, &QTimer::timeout, this, [this] {
+            updateToolRail();
+            if (m_upstreamCanvasDrag) m_railRefreshPending = true;   // changes after this one wait for the drag's end
+        });
+    }
+    m_railRefreshPending = true;
+    if (!m_railRefreshTimer->isActive()) m_railRefreshTimer->start();
+}
+
 void SessionWindow::updateToolRail() {
     PERF_SCOPE("updateToolRail");
+    m_railRefreshPending = false;
     if (m_sessionHandle == 0 || !m_toolsBar) return;
     if (!m_swiftUIToolRailContainer) {
         m_swiftUIToolRailContainer = new QWidget(m_toolsBar);

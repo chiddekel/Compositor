@@ -51,7 +51,10 @@ final class MetalBrushCoverage {
         }
         // A wide dab touches several tiles: on the CPU kernel they are computed side by side, one per core.
         var computed = [Result<BrushCoverageResult, Error>?](repeating: nil, count: requests.count)
-        if computer.isThreadSafe, requests.count > 1 {
+        // On the GPU, every tile in one submission and one wait, as upstream's Metal encoder does.
+        if let adaptive = computer as? AdaptiveBrushCoverage, let batch = try adaptive.renderAll(requests) {
+            computed = batch.map { .success($0) }
+        } else if computer.isThreadSafe, requests.count > 1 {
             let backend = computer
             computed.withUnsafeMutableBufferPointer { out in
                 nonisolated(unsafe) let out = out

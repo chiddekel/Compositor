@@ -22,7 +22,10 @@ struct Buffer {
         if (buffer) vkDestroyBuffer(device,buffer,nullptr);
         if (memory) vkFreeMemory(device,memory,nullptr);
     }
-    void create(VkDevice dev, VkPhysicalDevice physical, VkDeviceSize bytes) {
+    /// `readback`: the CPU reads the buffer after the GPU writes it (density, preview). Then host-cached memory is
+    /// chosen, as VulkanSmudge's is: reading write-combined memory back is many times slower, which made a wide soft
+    /// brush on the GPU slower than the CPU kernel.
+    void create(VkDevice dev, VkPhysicalDevice physical, VkDeviceSize bytes, bool readback = false) {
         device = dev;
         VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         info.size=bytes; info.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; info.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
@@ -30,11 +33,14 @@ struct Buffer {
         VkMemoryRequirements requirements{}; vkGetBufferMemoryRequirements(device,buffer,&requirements);
         VkPhysicalDeviceMemoryProperties properties{}; vkGetPhysicalDeviceMemoryProperties(physical,&properties);
         uint32_t type = UINT32_MAX;
+        int best = -1;
         for (uint32_t i=0;i<properties.memoryTypeCount;++i) {
             const auto flags=properties.memoryTypes[i].propertyFlags;
             if ((requirements.memoryTypeBits&(1u<<i)) && (flags&VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-                type=i;
-                if (flags&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) break;
+                const int score=readback
+                    ? ((flags&VK_MEMORY_PROPERTY_HOST_CACHED_BIT)?16:0)+((flags&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)?4:0)
+                    : ((flags&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)?8:0);
+                if (score>best) { type=i; best=score; }
             }
         }
         if (type==UINT32_MAX) throw std::runtime_error("No host-visible Vulkan memory");
@@ -66,6 +72,13 @@ struct CompositorVulkanBrush {
     VkDescriptorSetLayout descriptorLayout=VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool=VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet=VK_NULL_HANDLE;
+    // One stroke event's tiles go in one submission, as upstream's Metal encoder takes them all: a descriptor set per
+    // tile slot over slices of the batch buffers (permanent, preview), segments shared.
+    static constexpr uint32_t batchSlots=16;
+    static constexpr VkDeviceSize tileBytes=256*256*4;
+    std::array<VkDescriptorSet,batchSlots> batchSets{};
+    std::array<std::unique_ptr<Buffer>,2> batchBuffers;
+    bool batchReady=false;
     VkPipelineLayout pipelineLayout=VK_NULL_HANDLE;
     VkPipeline pipeline=VK_NULL_HANDLE;
     VkShaderModule shader=VK_NULL_HANDLE;
@@ -86,6 +99,7 @@ struct CompositorVulkanBrush {
         if (descriptorPool) vkDestroyDescriptorPool(device,descriptorPool,nullptr);
         if (descriptorLayout) vkDestroyDescriptorSetLayout(device,descriptorLayout,nullptr);
         for (auto &buffer: buffers) buffer.reset();
+        for (auto &buffer: batchBuffers) buffer.reset();
         if (device) vkDestroyDevice(device,nullptr);
         if (instance) vkDestroyInstance(instance,nullptr);
     }
@@ -138,9 +152,9 @@ struct CompositorVulkanBrush {
         compute.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT; compute.stage.module=shader; compute.stage.pName="main";
         compute.layout=pipelineLayout;
         check(vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&compute,nullptr,&pipeline));
-        VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,3};
+        VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,3*(1+batchSlots)};
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        poolInfo.maxSets=1; poolInfo.poolSizeCount=1; poolInfo.pPoolSizes=&poolSize;
+        poolInfo.maxSets=1+batchSlots; poolInfo.poolSizeCount=1; poolInfo.pPoolSizes=&poolSize;
         check(vkCreateDescriptorPool(device,&poolInfo,nullptr,&descriptorPool));
         VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocate.descriptorPool=descriptorPool; allocate.descriptorSetCount=1; allocate.pSetLayouts=&descriptorLayout;
@@ -148,7 +162,7 @@ struct CompositorVulkanBrush {
         const VkDeviceSize sizes[3]={256*256*4,256*256*4,2048*16};
         VkDescriptorBufferInfo bufferInfo[3]{}; VkWriteDescriptorSet writes[3]{};
         for (uint32_t i=0;i<3;++i) {
-            buffers[i]=std::make_unique<Buffer>(); buffers[i]->create(device,chosen,sizes[i]);
+            buffers[i]=std::make_unique<Buffer>(); buffers[i]->create(device,chosen,sizes[i],i<2);
             bufferInfo[i]={buffers[i]->buffer,0,sizes[i]};
             writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet=descriptorSet; writes[i].dstBinding=i;
             writes[i].descriptorCount=1; writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[i].pBufferInfo=&bufferInfo[i];
@@ -161,6 +175,59 @@ struct CompositorVulkanBrush {
         commandAllocate.commandPool=commandPool; commandAllocate.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; commandAllocate.commandBufferCount=1;
         check(vkAllocateCommandBuffers(device,&commandAllocate,&command));
         VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; check(vkCreateFence(device,&fenceInfo,nullptr,&fence));
+        // Batch slots: only when slices of one buffer can be bound at tile offsets on this device.
+        if (tileBytes%std::max<VkDeviceSize>(1,properties.limits.minStorageBufferOffsetAlignment)==0) {
+            for (auto &buffer: batchBuffers) { buffer=std::make_unique<Buffer>(); buffer->create(device,chosen,tileBytes*batchSlots,true); }
+            std::array<VkDescriptorSetLayout,batchSlots> layouts; layouts.fill(descriptorLayout);
+            VkDescriptorSetAllocateInfo batchAllocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            batchAllocate.descriptorPool=descriptorPool; batchAllocate.descriptorSetCount=batchSlots; batchAllocate.pSetLayouts=layouts.data();
+            check(vkAllocateDescriptorSets(device,&batchAllocate,batchSets.data()));
+            for (uint32_t slot=0;slot<batchSlots;++slot) {
+                VkDescriptorBufferInfo info[3]{{batchBuffers[0]->buffer,slot*tileBytes,tileBytes},
+                                               {batchBuffers[1]->buffer,slot*tileBytes,tileBytes},{buffers[2]->buffer,0,2048*16}};
+                VkWriteDescriptorSet slotWrites[3]{};
+                for (uint32_t i=0;i<3;++i) {
+                    slotWrites[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; slotWrites[i].dstSet=batchSets[slot]; slotWrites[i].dstBinding=i;
+                    slotWrites[i].descriptorCount=1; slotWrites[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; slotWrites[i].pBufferInfo=&info[i];
+                }
+                vkUpdateDescriptorSets(device,3,slotWrites,0,nullptr);
+            }
+            batchReady=true;
+        }
+    }
+    /// Up to `batchSlots` tiles sharing one segment list, in one command buffer and one fence wait.
+    void renderBatch(const CompositorBrushTileJob *jobs,size_t count,const CompositorBrushSegment *segments,size_t segmentCount) {
+        auto *permanent=static_cast<char *>(batchBuffers[0]->mapped);
+        for (size_t t=0;t<count;++t) std::memcpy(permanent+t*tileBytes,jobs[t].permanent,jobs[t].pixel_count*sizeof(float));
+        if (segmentCount) std::memcpy(buffers[2]->mapped,segments,segmentCount*sizeof(CompositorBrushSegment));
+        batchBuffers[0]->flush(); buffers[2]->flush();
+        check(vkResetFences(device,1,&fence)); check(vkResetCommandBuffer(command,0));
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vkBeginCommandBuffer(command,&begin));
+        VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; upload.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;
+        upload.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&upload,0,nullptr,0,nullptr);
+        vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);
+        // Tiles write disjoint slices, so their dispatches need no barriers between them.
+        for (size_t t=0;t<count;++t) {
+            vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipelineLayout,0,1,&batchSets[t],0,nullptr);
+            vkCmdPushConstants(command,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,64,&jobs[t].uniforms);
+            vkCmdDispatch(command,(jobs[t].uniforms.width+15)/16,(jobs[t].uniforms.height+15)/16,1);
+        }
+        VkMemoryBarrier download{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; download.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT; download.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&download,0,nullptr,0,nullptr);
+        check(vkEndCommandBuffer(command));
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount=1; submit.pCommandBuffers=&command;
+        check(vkQueueSubmit(queue,1,&submit,fence));
+        check(vkWaitForFences(device,1,&fence,VK_TRUE,UINT64_MAX));
+        batchBuffers[0]->invalidate(); batchBuffers[1]->invalidate();
+        const auto *preview=static_cast<const char *>(batchBuffers[1]->mapped);
+        for (size_t t=0;t<count;++t) {
+            const size_t pixels=jobs[t].pixel_count;
+            std::memcpy(jobs[t].next,permanent+t*tileBytes,pixels*sizeof(float));
+            const auto *values=reinterpret_cast<const uint32_t *>(preview+t*tileBytes);
+            for (size_t i=0;i<pixels;++i) jobs[t].preview[i]=static_cast<uint8_t>(std::min(values[i],255u));
+        }
     }
     void render(const CompositorBrushUniforms &u,const CompositorBrushSegment *segments,
                 const float *permanent,size_t pixels,float *next,uint8_t *preview) {
@@ -203,6 +270,25 @@ extern "C" int compositor_vulkan_brush_render(CompositorVulkanBrush *context,con
     if (!context->usable) return -2;
     try { context->render(*u,segments,permanent,pixels,next,preview); return 0; }
     catch (...) { context->usable=false; return -2; }
+}
+extern "C" int compositor_vulkan_brush_render_tiles(CompositorVulkanBrush *context,const CompositorBrushTileJob *jobs,
+    size_t count,const CompositorBrushSegment *segments,size_t segment_count) {
+    if (!jobs || !count) return -1;
+    for (size_t t=0;t<count;++t)
+        if (!validBrush(&jobs[t].uniforms,segments,segment_count,jobs[t].permanent,jobs[t].pixel_count,jobs[t].next,jobs[t].preview)) return -1;
+    if (!context) return -2;
+    std::lock_guard<std::mutex> guard(context->lock);
+    if (!context->usable) return -2;
+    try {
+        if (!context->batchReady) {
+            for (size_t t=0;t<count;++t)
+                context->render(jobs[t].uniforms,segments,jobs[t].permanent,jobs[t].pixel_count,jobs[t].next,jobs[t].preview);
+            return 0;
+        }
+        for (size_t first=0;first<count;first+=CompositorVulkanBrush::batchSlots)
+            context->renderBatch(jobs+first,std::min<size_t>(CompositorVulkanBrush::batchSlots,count-first),segments,segment_count);
+        return 0;
+    } catch (...) { context->usable=false; return -2; }
 }
 extern "C" const char *compositor_vulkan_brush_device(CompositorVulkanBrush *c) { return c?c->properties.deviceName:"unavailable"; }
 extern "C" uint32_t compositor_vulkan_brush_device_type(CompositorVulkanBrush *c) { return c?c->properties.deviceType:0; }

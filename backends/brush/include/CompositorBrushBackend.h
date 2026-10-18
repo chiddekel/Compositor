@@ -33,6 +33,18 @@ int compositor_vulkan_brush_render(CompositorVulkanBrush *context,
     const CompositorBrushUniforms *uniforms,
     const CompositorBrushSegment *segments, size_t segment_count,
     const float *permanent, size_t pixel_count, float *next, uint8_t *preview);
+// One tile of a batch: the same arguments as compositor_vulkan_brush_render's, per tile.
+typedef struct {
+    CompositorBrushUniforms uniforms;
+    const float *permanent;
+    size_t pixel_count;
+    float *next;
+    uint8_t *preview;
+} CompositorBrushTileJob;
+// Every tile of one stroke event (sharing one segment list) in one GPU submission and one wait, as upstream's Metal
+// encoder takes them. Validates every tile first (-1 writes nothing); after -2 the outputs must not be used.
+int compositor_vulkan_brush_render_tiles(CompositorVulkanBrush *context, const CompositorBrushTileJob *jobs,
+    size_t count, const CompositorBrushSegment *segments, size_t segment_count);
 // Immutable diagnostics, valid until context destruction.
 const char *compositor_vulkan_brush_device(CompositorVulkanBrush *context);
 uint32_t compositor_vulkan_brush_device_type(CompositorVulkanBrush *context);
