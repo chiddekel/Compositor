@@ -21,6 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The runner's source-coverage audit lists upstream/main's Compositor tree.
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/robbietilton/Compositor.git
+          git fetch upstream main
+
       - name: Install the manifest's SDK and extension dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
