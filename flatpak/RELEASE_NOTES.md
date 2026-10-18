@@ -1,3 +1,20 @@
+Compositor 1.5.3-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+
+- Linux: adaptations and parity fixes for upstream 1.5.3
+- Merge upstream 1.5.3 into GNU_Linux
+- Publish update feed for Compositor 1.5.3
+- Version 1.5.3
+- Accelerate large Camera Raw previews with verified Metal lookup
+- Reduce Camera Raw scope sampling and benchmark preview latency
+- Keep Camera Raw previews at native resolution during adjustments
+- Update zoom cursors immediately when drag direction changes
+- Add middle-mouse dragging to scroll the layer list
+- Disable smooth corners when rectangle radius is zero
+- Add smooth rectangle corners and simplify shape controls
+- Remove temporary proof benchmark test committed by mistake
+
+Previous release notes:
+
 Compositor 1.5.2-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 Catches up with Compositor 1.5, 1.5.1 and 1.5.2:

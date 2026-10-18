@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.3-linux-alpha.1" date="2026-10-18" type="development">
+      <description><p>Linux: adaptations and parity fixes for upstream 1.5.3; Merge upstream 1.5.3 into GNU_Linux; Publish update feed for Compositor 1.5.3; Version 1.5.3; Accelerate large Camera Raw previews with verified Metal lookup; Reduce Camera Raw scope sampling and benchmark preview latency; Keep Camera Raw previews at native resolution during adjustments; Update zoom cursors immediately when drag direction changes; Add middle-mouse dragging to scroll the layer list; Disable smooth corners when rectangle radius is zero; Add smooth rectangle corners and simplify shape controls; Remove temporary proof benchmark test committed by mistake</p></description>
+    </release>
     <release version="1.5.2-linux-alpha.1" date="2026-10-14" type="development">
       <description><p>Compositor 1.5.2: CMYK proof colors and gamut warning on the canvas, CMYK JPEG/TIFF/PDF export and CMYK Photoshop files, 16-bit layers on the canvas at 16 bits, Progressive Blur, Camera Raw section resets and adaptive Shadows, RAW files opening into the Camera Raw Filter, and clearable shortcuts. Typed transform values preview live and number labels scrub again.</p></description>
     </release>
