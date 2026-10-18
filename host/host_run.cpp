@@ -53,6 +53,7 @@
 #include <QDockWidget>
 #include <QMenuBar>
 #include <QMenu>
+#include <QTabBar>
 #include <QComboBox>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -207,12 +208,25 @@ extern "C" int compositor_host_run(int argc, char **argv) {
         if (arg.startsWith(QLatin1Char('-'))) continue;
         startupFiles.append(arg);
     }
+    if (window.hasAutosaveRecovery()) window.recoverAutosave();
     window.openStartupFiles(startupFiles);
     if (qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty() && !QCoreApplication::arguments().filter(QStringLiteral("-smoke")).size())
         window.restoreWindowPlacement();
     window.show();
     if (openNewCanvas) window.newCanvasTab();
     if (!qEnvironmentVariable("COMPOSITOR_GRAB_PATH").isEmpty()) {
+        // Capture startup state before optional commands or saves, for normal-entry acceptance checks.
+        const QString statePath = qEnvironmentVariable("COMPOSITOR_GRAB_STATE_PATH");
+        if (!statePath.isEmpty()) {
+            auto state = window.sessionState();
+            state.insert("windowTitle", window.windowTitle());
+            QJsonArray titles;
+            if (auto *tabs = window.findChild<QTabBar *>("header.documentTabs"))
+                for (int i = 0; i < tabs->count(); ++i) titles.append(tabs->tabText(i));
+            state.insert("tabs", titles);
+            QFile file(statePath);
+            if (file.open(QIODevice::WriteOnly)) file.write(QJsonDocument(state).toJson(QJsonDocument::Compact));
+        }
         // COMPOSITOR_GRAB_SIZE=WxH: the window at that size first (e.g. tall enough to show the whole tool rail).
         if (const QStringList wh = qEnvironmentVariable("COMPOSITOR_GRAB_SIZE").split(QLatin1Char('x')); wh.size() == 2) {
             window.resize(wh[0].toInt(), wh[1].toInt());

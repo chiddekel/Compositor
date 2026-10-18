@@ -97,7 +97,7 @@ metrics (GuideTests excluded).
 | About, version | ✅ | |
 | Check for Updates | 🟡 | Flatpak instead of Sparkle |
 | Quit / close with unsaved changes | ✅ | alert sheet flow (TypeToolTests close/quit) |
-| Hide / Hide Others / Show All | n/a | window-manager business |
+| Hide / Hide Others / Show All | 🟡 | Adapted 2026-10-16: Hide minimizes; Hide Others/Show All on X11 window managers, disabled on Wayland (see the current inventory) |
 | Floating panels (Levels, Curves, Hue/Sat, Filters, Effects, Colour picker) | ✅ | Qt tool windows (FloatingPanelTests, ColorPickerTests excluded) |
 
 ## 9. Platform integration — the gaps

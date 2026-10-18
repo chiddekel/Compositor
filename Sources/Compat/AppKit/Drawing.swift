@@ -103,6 +103,7 @@ extension NSImage {
         let copy = NSImage(size: size)
         copy.symbolName = symbolName
         copy.symbolColor = configuration.paletteColors.first ?? symbolColor
+        copy.accessibilityDescription = accessibilityDescription
         return copy
     }
 }

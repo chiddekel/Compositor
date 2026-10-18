@@ -33,6 +33,29 @@ struct LivePreviewTests {
         Array(bytes[(y * 64 + x) * 4..<(y * 64 + x + 1) * 4])
     }
 
+    @Test func distortionCornersInvalidateTheCachedComposite() throws {
+        let e = try editor()
+        let s = e.session
+        let original = try e.renderRGBA().bytes
+        let key = e.renderKey()
+        let revision = s.history.currentRevision
+        s.beginTransform()
+        s.beginDistort()
+        var corners = try #require(s.transformEdit?.corners)
+        corners[0] = CGPoint(x: 8, y: 10)
+        s.previewCorners(corners)
+        let first = e.renderKey()
+        #expect(first != key, "Qt must retire the original cached frame when a distortion corner moves")
+        #expect(try e.renderRGBA().bytes != original)
+        corners[0].x += 4
+        s.previewCorners(corners)
+        #expect(e.renderKey() != first, "Later pointer samples must retire the previous distortion preview")
+        #expect(s.history.currentRevision == revision)
+        s.cancelTransform()
+        #expect(e.renderKey() == key)
+        #expect(try e.renderRGBA().bytes == original)
+    }
+
     @Test(arguments: LayerBlendMode.allCases)
     func blendMenuPreviewMatchesCommitWithoutEditingSource(mode: LayerBlendMode) throws {
         let e = try editor()

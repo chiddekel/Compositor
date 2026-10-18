@@ -82,6 +82,7 @@ open class NSImage: @unchecked Sendable {
     public convenience init?(systemSymbolName: String, accessibilityDescription: String?) {
         self.init(size: CGSize(width: 16, height: 16))
         symbolName = systemSymbolName
+        self.accessibilityDescription = accessibilityDescription
     }
     /// A symbol rasterized for `pixels` (the host's rendering), in its configured color (black otherwise).
     func symbolImage(pixels: CGSize) -> CGImage? {

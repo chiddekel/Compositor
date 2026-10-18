@@ -9,6 +9,7 @@
 #include <QClipboard>
 #include <QImage>
 #include <QMimeData>
+#include <QPointer>
 #include <QUrl>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +22,7 @@ namespace systemclipboard {
 
 inline int64_t &externalChanges() { static int64_t count = 0; return count; }
 inline bool &writing() { static bool flag = false; return flag; }
+inline QPointer<QMimeData> &lastWrite() { static QPointer<QMimeData> mime; return mime; }
 
 inline QString mimeFor(const QString &type) {
     if (type == QLatin1String("public.png")) return QStringLiteral("image/png");
@@ -56,7 +58,9 @@ inline QByteArray bytesFor(const QString &type) {
 
 inline void install() {
     QObject::connect(QApplication::clipboard(), &QClipboard::dataChanged, QApplication::clipboard(), [] {
-        if (!writing()) ++externalChanges();
+        // Wayland can acknowledge our own selection after setMimeData returns. Keep its
+        // original change count, but still count replacement data from Qt text editors.
+        if (!writing() && (!lastWrite() || QApplication::clipboard()->mimeData() != lastWrite().data())) ++externalChanges();
     });
     compositor_set_system_clipboard(
         [](int32_t count, const char *const *types, const uint8_t *const *data, const intptr_t *lengths) {
@@ -70,6 +74,7 @@ inline void install() {
                 if (type == QLatin1String("public.utf8-plain-text")) mime->setText(QString::fromUtf8(bytes));
             }
             writing() = true;
+            lastWrite() = mime;
             QApplication::clipboard()->setMimeData(mime);
             writing() = false;
         },

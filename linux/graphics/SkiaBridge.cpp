@@ -21,6 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <array>
 #include <iostream>
 #include <vector>
@@ -32,6 +34,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkSurface.h"
 #include "include/core/SkImage.h"
+#include "include/core/SkData.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkBlendMode.h"
@@ -55,6 +58,7 @@
 #include <skia/core/SkCanvas.h>
 #include <skia/core/SkSurface.h>
 #include <skia/core/SkImage.h>
+#include <skia/core/SkData.h>
 #include <skia/core/SkPixmap.h>
 #include <skia/core/SkPaint.h>
 #include <skia/core/SkBlendMode.h>
@@ -892,6 +896,64 @@ static SkSamplingOptions map_cg_sampling(int quality) {
     }
 }
 
+// Premultiplied area average of `img` to w x h (each output pixel weights every source pixel it covers).
+// Source rows are read in chunks, so only the horizontally reduced rows are held in floating point.
+static sk_sp<SkImage> comp_area_resample(const sk_sp<SkImage> &img, int w, int h) {
+    const int sw = img->width(), sh = img->height();
+    const SkImageInfo rowInfo = SkImageInfo::Make(sw, 1, kRGBA_F32_SkColorType, kPremul_SkAlphaType, img->refColorSpace());
+    const double fx = double(sw) / w, fy = double(sh) / h;
+    std::vector<float> wide(size_t(w) * sh * 4, 0.0f);
+    constexpr int chunk = 64;
+    std::vector<float> rows(size_t(sw) * chunk * 4);
+    for (int y0 = 0; y0 < sh; y0 += chunk) {
+        const int count = std::min(chunk, sh - y0);
+        if (!img->readPixels(nullptr, rowInfo.makeWH(sw, count), rows.data(), size_t(sw) * 16, 0, y0)) return nullptr;
+        for (int r = 0; r < count; r++) {
+            const float *src = rows.data() + size_t(r) * sw * 4;
+            float *dst = wide.data() + (size_t(y0 + r) * w) * 4;
+            for (int x = 0; x < w; x++) {
+                const double a = x * fx, b = (x + 1) * fx;
+                double acc[4] = {0, 0, 0, 0};
+                for (int s = int(a); s < sw && s < b; s++) {
+                    const double weight = std::min<double>(b, s + 1) - std::max<double>(a, s);
+                    for (int c = 0; c < 4; c++) acc[c] += weight * src[size_t(s) * 4 + c];
+                }
+                for (int c = 0; c < 4; c++) dst[size_t(x) * 4 + c] = float(acc[c] / fx);
+            }
+        }
+    }
+    const SkImageInfo outInfo = SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType, img->refColorSpace());
+    sk_sp<SkData> data = SkData::MakeUninitialized(size_t(w) * h * 16);
+    float *out = static_cast<float *>(data->writable_data());
+    for (int y = 0; y < h; y++) {
+        const double a = y * fy, b = (y + 1) * fy;
+        float *dst = out + size_t(y) * w * 4;
+        std::fill(dst, dst + size_t(w) * 4, 0.0f);
+        for (int s = int(a); s < sh && s < b; s++) {
+            const float weight = float((std::min<double>(b, s + 1) - std::max<double>(a, s)) / fy);
+            const float *src = wide.data() + size_t(s) * w * 4;
+            for (int i = 0; i < w * 4; i++) dst[i] += weight * src[i];
+        }
+    }
+    return SkImages::RasterFromData(outInfo, std::move(data), size_t(w) * 16);
+}
+
+// Core Graphics' high quality averages every covered source pixel when minifying; a cubic kernel alone
+// reads only a 4x4 neighbourhood, so large reductions alias and shift tone. Axes reduced 2x or more are
+// area-averaged to their device-space length first (rotation included); the cubic pass then runs at about 1:1.
+static sk_sp<SkImage> comp_prefilter_minified(sk_sp<SkImage> img, const SkMatrix &ctm, float dw, float dh) {
+    if (ctm.hasPerspective()) return img;
+    const float sx = std::hypot(ctm.getScaleX(), ctm.getSkewY()), sy = std::hypot(ctm.getSkewX(), ctm.getScaleY());
+    const float tw = std::fabs(dw) * sx, th = std::fabs(dh) * sy;
+    if (!(tw > 0) || !(th > 0) || !std::isfinite(tw) || !std::isfinite(th)) return img;
+    int w = img->width(), h = img->height();
+    if (w < 2 * tw && h < 2 * th) return img;
+    const int nw = w >= 2 * tw ? std::max(1, int(std::lround(tw))) : w;
+    const int nh = h >= 2 * th ? std::max(1, int(std::lround(th))) : h;
+    sk_sp<SkImage> averaged = comp_area_resample(img, nw, nh);
+    return averaged ? averaged : img;
+}
+
 struct CompCanvasState {
     float alpha = 1.0f;
     SkBlendMode blendMode = SkBlendMode::kSrcOver;
@@ -1254,6 +1316,8 @@ void compositor_canvas_draw_image_rect_ex(CompCanvas *canvas, const uint8_t *src
     paint.setAntiAlias(canvas->current_state().antialias);
 
     SkSamplingOptions sampling = (cg_sampling_quality >= 0) ? map_cg_sampling(cg_sampling_quality) : canvas->current_state().sampling;
+    if (sampling.useCubic) img = comp_prefilter_minified(img, canvas->canvas->getTotalMatrix(), dw, dh);
+    if (!img) return;
     canvas->canvas->drawImageRect(img, SkRect::MakeXYWH(dx, dy, dw, dh), sampling, &paint);
 #else
     (void)canvas; (void)src_pixels; (void)src_w; (void)src_h; (void)src_stride; (void)src_format; (void)dx; (void)dy; (void)dw; (void)dh; (void)opacity; (void)cg_blend_mode; (void)cg_sampling_quality;

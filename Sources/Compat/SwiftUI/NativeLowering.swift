@@ -21,7 +21,10 @@ import Observation
     /// Set by a host that draws resolved trees itself, around its resolves.
     nonisolated(unsafe) public static var isActive = false
 
-    private struct Hosted { let type: ObjectIdentifier; let view: NSView; let state: AnyObject }
+    private struct Hosted {
+        let type: ObjectIdentifier; let view: NSView; let state: AnyObject; let source: any _NativeViewSource
+        @MainActor func dismantle() { source._dismantleNativeView(view, state: state); view.removeFromSuperview() }
+    }
     private static var hosted: [String: Hosted] = [:]
 
     /// Bumped when the user acts on a lowered control: the trees that showed one resolve again (AppKit state such as a
@@ -39,9 +42,9 @@ import Observation
         let key = "\(StateStore.currentScope ?? "")|\(path)"
         var entry = hosted[key]
         if entry?.type != source._nativeTypeID {
-            entry?.view.removeFromSuperview()
+            entry?.dismantle()
             let made = source._makeNativeView()
-            entry = Hosted(type: source._nativeTypeID, view: made.view, state: made.state)
+            entry = Hosted(type: source._nativeTypeID, view: made.view, state: made.state, source: source)
             hosted[key] = entry
             // In a window, as SwiftUI's hosting puts it: first-responder logic (a recorder taking the keys) has one.
             window(for: StateStore.currentScope ?? "").contentView?.addSubview(made.view)
@@ -64,7 +67,7 @@ import Observation
 
     /// Forgets the views made under `scope` (a panel closed for good).
     public static func discard(scope: String) {
-        for key in hosted.keys where key.hasPrefix(scope + "|") { hosted.removeValue(forKey: key)?.view.removeFromSuperview() }
+        for key in hosted.keys where key.hasPrefix(scope + "|") { hosted.removeValue(forKey: key)?.dismantle() }
         windows.removeValue(forKey: scope)
     }
 
@@ -572,6 +575,7 @@ extension NSHostingView: _AnyHostingView {
 
     private weak var root: NSView?
     private var pressed: NSView?
+    private weak var middlePressed: NSView?
     private var session: NSDraggingSession?
     private var dropTarget: NSTableView?
     private var dropOperation: NSDragOperation = []
@@ -589,13 +593,15 @@ extension NSHostingView: _AnyHostingView {
         (root.window as? LoweringWindow)?.pointer = windowPoint
         NSEvent.modifierFlags = flags
         func event(_ type: NSEvent.EventType) -> NSEvent {
-            NSEvent.mouseEvent(with: type, location: windowPoint, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+            let value = NSEvent.mouseEvent(with: type, location: windowPoint, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
                                windowNumber: root.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)!
+            if [.otherMouseDown, .otherMouseDragged, .otherMouseUp].contains(type) { value.buttonNumber = 2 }
+            return value
         }
         // A view tracking the press (waiting in nextEvent) gets the rest of it from its queue.
         if let window = root.window, window.isTrackingEvents, type == "drag" || type == "up" {
             window.postEvent(event(type == "up" ? .leftMouseUp : .leftMouseDragged), atStart: false)
-            if type == "up" { NSEvent.pressedMouseButtons = 0 }
+            if type == "up" { NSEvent.pressedMouseButtons &= ~1 }
             return
         }
         NativeLowering.act {
@@ -605,6 +611,21 @@ extension NSHostingView: _AnyHostingView {
             case "up": up(event(.leftMouseUp), at: local, in: root,
                           externalOperation: dict["externalLayerCopy"] as? Bool == true ? .copy : [])
             case "rightDown": rightDown(event(.rightMouseDown), at: local, in: root)
+            case "middleDown":
+                let value = event(.otherMouseDown)
+                dispatch(value) {
+                    NSEvent.pressedMouseButtons |= 4
+                    middlePressed = target(at: local, in: root)
+                    middlePressed?.otherMouseDown(with: value)
+                }
+            case "middleDrag":
+                let value = event(.otherMouseDragged)
+                dispatch(value) { middlePressed?.otherMouseDragged(with: value) }
+            case "middleUp":
+                let value = event(.otherMouseUp)
+                NSEvent.pressedMouseButtons &= ~4
+                dispatch(value) { middlePressed?.otherMouseUp(with: value) }
+                middlePressed = nil
             case "move": hover(event(.mouseMoved), at: local, in: root, exited: false)
             case "exit": hover(event(.mouseMoved), at: local, in: root, exited: true)
             default: break
@@ -624,18 +645,19 @@ extension NSHostingView: _AnyHostingView {
     }
 
     private func down(_ event: NSEvent, at local: CGPoint, in root: NSView) {
-        let view = target(at: local, in: root)
-        pressed = view
-        NSEvent.pressedMouseButtons = 1
         let before = NSDraggingSession.current
         dispatch(event) {
+            // Hit testing can inspect currentEvent to distinguish mask clicks from middle-button scrolling.
+            NSEvent.pressedMouseButtons |= 1
+            let view = target(at: local, in: root)
+            pressed = view
             if view.acceptsFirstResponder, view.window?.firstResponder !== view { view.window?.makeFirstResponder(view) }
             view.mouseDown(with: event)
         }
         // The press started a drag (a row, an effect, a mask): the rest of it is the drag's. A tracking loop that took
         // the release itself has finished the press.
         if let current = NSDraggingSession.current, current !== before { session = current; pressed = nil }
-        else if NSEvent.pressedMouseButtons == 0 { pressed = nil }
+        else if NSEvent.pressedMouseButtons & 1 == 0 { pressed = nil }
         // What the tracking loop left queued: the drag it started takes it, as AppKit's drag session takes the events
         // after the one that began it; with no drag, the press is over and it goes.
         guard let window = root.window else { return }
@@ -653,6 +675,7 @@ extension NSHostingView: _AnyHostingView {
             if dropTarget !== table { dropTarget?.showsDropIndicator = false; dropTarget?.setDropRow(-1, dropOperation: .above) }
             dropTarget = table
             guard let table else { dropOperation = []; return }
+            _ = table.autoscroll(with: event)
             let info = CompatDraggingInfo(session: session, location: event.locationInWindow, window: root.window)
             info.draggingSourceOperationMask = session.sourceOperationMask.intersection(event.modifierFlags.contains(.option) ? .copy : .every)
             dropOperation = table.validateDrop(info, at: table.convert(event.locationInWindow, from: nil)).operation
@@ -664,7 +687,7 @@ extension NSHostingView: _AnyHostingView {
     }
 
     private func up(_ event: NSEvent, at local: CGPoint, in root: NSView, externalOperation: NSDragOperation = []) {
-        NSEvent.pressedMouseButtons = 0
+        NSEvent.pressedMouseButtons &= ~1
         if let session {
             self.session = nil
             var operation = externalOperation
@@ -699,8 +722,8 @@ extension NSHostingView: _AnyHostingView {
     }
 
     private func rightDown(_ event: NSEvent, at local: CGPoint, in root: NSView) {
-        var view: NSView? = target(at: local, in: root)
         dispatch(event) {
+            var view: NSView? = target(at: local, in: root)
             // As AppKit's: the view under the pointer, or the nearest one above it, gives the menu.
             while let current = view {
                 if let menu = current.menu(for: event) {

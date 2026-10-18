@@ -39,7 +39,7 @@
     public override func layout() { layoutHostedViews() }
 
     /// The `NSViewRepresentable`s in the tree, by tree position: made once, then re-framed and updated every layout.
-    private var hosted: [String: (type: ObjectIdentifier, view: NSView, state: AnyObject)] = [:]
+    private var hosted: [String: (type: ObjectIdentifier, view: NSView, state: AnyObject, source: any _NativeViewSource)] = [:]
     private var relayoutDepth = 0
 
     private func layoutHostedViews() {
@@ -58,9 +58,9 @@
             live.insert(placement.path)
             var entry = hosted[placement.path]
             if entry?.type != placement.source._nativeTypeID {
-                entry?.view.removeFromSuperview()
+                if let old = entry { old.source._dismantleNativeView(old.view, state: old.state); old.view.removeFromSuperview() }
                 let made = placement.source._makeNativeView()
-                entry = (placement.source._nativeTypeID, made.view, made.state)
+                entry = (placement.source._nativeTypeID, made.view, made.state, placement.source)
                 addSubview(made.view)
                 hosted[placement.path] = entry
                 created = true
@@ -72,6 +72,7 @@
             placement.source._updateNativeView(entry.view, state: entry.state)
         }
         for (path, entry) in hosted where !live.contains(path) {
+            entry.source._dismantleNativeView(entry.view, state: entry.state)
             entry.view.removeFromSuperview()
             hosted.removeValue(forKey: path)
         }
@@ -277,6 +278,8 @@ public struct ProposedViewSize: Equatable, Sendable {
     func _makeNativeView() -> (view: NSView, state: AnyObject)
     func _updateNativeView(_ view: NSView, state: AnyObject)
     func _sizeThatFits(_ proposal: ProposedViewSize, view: NSView, state: AnyObject) -> CGSize?
+    /// `dismantleNSView`, when a hosted view leaves the tree: representables release delegates and end previews there.
+    func _dismantleNativeView(_ view: NSView, state: AnyObject)
 }
 final class _CoordinatorBox<Value> { let value: Value; init(_ value: Value) { self.value = value } }
 extension NSViewRepresentable {
@@ -288,6 +291,10 @@ extension NSViewRepresentable {
     public func _updateNativeView(_ view: NSView, state: AnyObject) {
         guard let view = view as? NSViewType, let box = state as? _CoordinatorBox<Coordinator> else { return }
         updateNSView(view, context: Context(coordinator: box.value))
+    }
+    public func _dismantleNativeView(_ view: NSView, state: AnyObject) {
+        guard let view = view as? NSViewType, let box = state as? _CoordinatorBox<Coordinator> else { return }
+        Self.dismantleNSView(view, coordinator: box.value)
     }
     public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? { nil }
     public func _sizeThatFits(_ proposal: ProposedViewSize, view: NSView, state: AnyObject) -> CGSize? {

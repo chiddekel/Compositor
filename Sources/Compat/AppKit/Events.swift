@@ -145,6 +145,11 @@ public final class NSEvent: @unchecked Sendable {
                                   windowNumber: Int, context: AnyObject?, eventNumber: Int, clickCount: Int, pressure: Float) -> NSEvent? {
         let e = NSEvent(type: type, location: location, modifierFlags: modifierFlags, timestamp: timestamp, windowNumber: windowNumber)
         e.clickCount = clickCount; e.pressure = pressure
+        switch type {
+        case .rightMouseDown, .rightMouseDragged, .rightMouseUp: e.buttonNumber = 1
+        case .otherMouseDown, .otherMouseDragged, .otherMouseUp: e.buttonNumber = 2
+        default: break
+        }
         return e
     }
 

@@ -12,6 +12,7 @@ args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 # (source, generated header, C array name)
 shaders = [
+    ('backends/cameraraw/shaders/lookup.comp', 'backends/cameraraw/shaders/lookup_spv.h', 'compositor_camera_raw_lookup_spv'),
     ('backends/coreimage/shaders/raster.comp', 'backends/coreimage/shaders/raster_spv.h', 'compositor_raster_spv'),
     ('backends/coreimage/shaders/raster_fused.comp', 'backends/coreimage/shaders/raster_fused_spv.h', 'compositor_raster_fused_spv'),
     ('backends/brush/shaders/warp_smudge_packed.comp', 'backends/brush/shaders/warp_smudge_packed_spv.h', 'compositor_smudge_packed_spv'),

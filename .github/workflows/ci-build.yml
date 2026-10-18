@@ -41,7 +41,7 @@ jobs:
 
       - name: Build dependency modules inside the merged manifest's SDK
         run: |
-          flatpak-builder --user --force-clean --disable-rofiles-fuse --jobs=2 --stop-at=compositor \
+          flatpak-builder --user --force-clean --disable-rofiles-fuse --jobs="$(nproc)" --stop-at=compositor \
             build-ci-sdk com.compositor.Client.yaml
 
       - name: Cache SwiftPM build

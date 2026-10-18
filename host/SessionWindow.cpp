@@ -8,7 +8,9 @@
 #include "compositor_host_run.h"
 #include "PerfTrace.h"
 #include "ProjectPackageLimits.h"
+#include "NativeFilePanels.h"
 #include "LocalFilePath.h"
+#include "OtherApplications.h"
 #if defined(COMPOSITOR_HAS_OPENEXR)
 #include <OpenEXR/ImfInputFile.h>
 #include <OpenEXR/ImfHeader.h>
@@ -145,6 +147,8 @@ int32_t compositor_app_menu_perform(const char *path);
 int32_t compositor_command_palette_perform(uint64_t handle, const char *id);
 void compositor_set_native_text_action_handler(int32_t (*handler)(const char *));
 int64_t compositor_take_shell_requests(uint8_t *output, size_t capacity);
+int64_t compositor_take_session_shell_requests(uint64_t handle, uint8_t *output, size_t capacity);
+int32_t compositor_session_app_menu_perform(uint64_t handle, const char *path);
 int64_t compositor_popup_menu_items(uint8_t *output, size_t capacity);
 void compositor_set_touch_targets(int32_t on);
 void compositor_register_event_pump(int32_t (*pump)(void));
@@ -153,19 +157,21 @@ void compositor_popup_menu_choose(int32_t index);
 int32_t compositor_session_viewport_update(uint64_t handle, int32_t op, double a, double b, double c);
 typedef int32_t (*compositor_conversion_prompt)(const uint8_t *json, size_t length);
 void compositor_set_sheet_presenter(void (*presenter)(void *context, const char *panel), void *context);
+void compositor_set_session_sheet_presenter(void (*presenter)(uint64_t handle, const char *panel));
 void compositor_pump_main(void);
 void compositor_session_raw_develop_cancel(uint64_t handle);
 void compositor_set_conversion_prompt(compositor_conversion_prompt prompt);
 // Upstream's own NSOpenPanels (View › CMYK › Load Profile, Export As's Load Profile), answered by a Qt file dialog.
-void compositor_set_open_panel(int32_t (*panel)(const char *title, const char *message, const char *extensions, int32_t multiple,
-                                                int32_t folders, char *output, size_t capacity));
+void compositor_set_session_file_panel(int64_t (*panel)(uint64_t, const char *, uint8_t *, size_t));
 void compositor_set_wait_pump(void (*pump)(void *context), void *context);
+void compositor_set_session_wait_pump(void (*pump)(uint64_t handle));
 void compositor_flush_preferences(void);
 int64_t compositor_session_render_dirty(uint64_t handle, int32_t *rect, uint8_t *output, size_t capacity);
 int32_t compositor_session_proof_display(uint64_t handle, uint8_t *pixels, int32_t width, int32_t height);
 int32_t compositor_session_warp_continue(uint64_t handle);
 int64_t compositor_session_render_scaled(uint64_t handle, double scale, uint8_t *output, size_t capacity, int32_t *width, int32_t *height);
 int64_t compositor_session_state(uint64_t handle, uint8_t *output, size_t capacity);
+int64_t compositor_session_is_modified(uint64_t handle);
 int64_t compositor_session_export_manifest(uint64_t handle, uint8_t *output, size_t capacity);
 uint64_t compositor_save_capture(uint64_t handle);
 int64_t compositor_save_export_manifest(uint64_t token, uint8_t *output, size_t capacity);
@@ -176,9 +182,10 @@ int32_t compositor_save_mark_saved(uint64_t token);
 void compositor_save_release(uint64_t token);
 int32_t compositor_save_write_package(uint64_t token, const char *path, int32_t include_preview);
 int32_t compositor_session_load_package(uint64_t handle, const char *path, int32_t *width, int32_t *height);
+int32_t compositor_session_load_recovery(uint64_t handle, const char *path, int32_t *width, int32_t *height);
 void compositor_project_save_state(uint64_t handle, int32_t saving);
 void compositor_project_did_save(uint64_t handle, const char *path);
-void compositor_set_alert_presenter(int32_t (*presenter)(const char *, const char *, const char *));
+void compositor_set_session_alert_presenter(int32_t (*presenter)(uint64_t, const char *, const char *, const char *));
 int32_t compositor_session_import_manifest(uint64_t handle, const uint8_t *json, size_t count);
 int64_t compositor_session_export_layer(uint64_t handle, const uint8_t *layer_id, size_t layer_id_count,
                                         int32_t mask, uint8_t *output, size_t capacity,
@@ -621,12 +628,8 @@ bool SessionWindow::switchToDocumentTab(int index) {
 }
 
 bool SessionWindow::isDocumentModified(uint64_t handle) const {
-    if (handle == 0) return false;
-    const int64_t size = compositor_session_state(handle, nullptr, 0);
-    if (size <= 0 || size > 4 * 1024 * 1024) return false;
-    QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
-    if (compositor_session_state(handle, reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return false;
-    return QJsonDocument::fromJson(bytes).object().value("modified").toBool(false);
+    // The tab strip asks for every tab on each repaint: the flag alone, not the whole encoded session state.
+    return handle != 0 && compositor_session_is_modified(handle) == 1;
 }
 
 namespace {
@@ -805,6 +808,16 @@ void SessionWindow::closeDocumentTab(int index) {
 
 bool SessionWindow::event(QEvent *event) {
     const bool handled = QMainWindow::event(event);
+    if (m_sessionHandle != 0) {
+        // Wayland can report NoState after a minimize request; activation restores the tools.
+        if (event->type() == QEvent::WindowStateChange && isMinimized()) {
+            m_panelsSuppressedByMinimization = true;
+            updateFloatingPanels();
+        } else if (event->type() == QEvent::WindowActivate && !isMinimized() && m_panelsSuppressedByMinimization) {
+            m_panelsSuppressedByMinimization = false;
+            updateFloatingPanels();
+        }
+    }
     // Each Qt window keeps its own displayed tab; upstream menus use the current workspace tab.
     if (event->type() == QEvent::WindowActivate && m_sessionHandle != 0
         && compositor_workspace_select_tab(m_sessionHandle) == 0) syncAppMenus();
@@ -952,13 +965,11 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     if (isSmokeTest) {
         initDemoDocument();
         setBrushColor(QColor(255, 0, 0));
-    } else {
-        // Upstream starts with an empty tab: the New Canvas sheet in the canvas (ContentView's welcome), no document.
-        setBrushColor(QColor(0, 0, 0));
     }
 
+    // Bootstrap can attach another window to an existing workspace tab. Its session already owns the tool and
+    // palette; constructing a shell must not reset them or cancel its current edit.
     actMove->setChecked(true);
-    setTool(Tool::Move);
 
     m_layersDock = new QDockWidget(tr("Layers"), this);
     auto *dock = m_layersDock;
@@ -1287,8 +1298,12 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
 
     connect(m_opacity, &QSlider::valueChanged, this, &SessionWindow::setOpacityFromSlider);
     connect(m_blend, &QComboBox::currentIndexChanged, this, &SessionWindow::setBlendModeFromCombo);
-    connect(m_visibleCheck, &QCheckBox::toggled, this, [this](bool on) { if (setLayerFlag("setVisible", on)) refreshImage(); });
+    connect(m_visibleCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_syncingLayers) return;
+        if (setLayerFlag("setVisible", on)) refreshImage();
+    });
     connect(m_maskCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_syncingLayers) return;
         if (sendCommand({{"action", "setMaskEnabled"}, {"enabled", on}})) refreshImage();
     });
     setupHeaderBar();
@@ -1366,41 +1381,27 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     });
 
     // Upstream sheets that open mid-command (RAW Develop during an import) are shown by the shell.
-    compositor_set_open_panel([](const char *title, const char *message, const char *extensions, int32_t multiple,
-                                 int32_t folders, char *output, size_t capacity) -> int32_t {
-        QStringList patterns;
-        for (const QString &ext : QString::fromUtf8(extensions ? extensions : "").split(QLatin1Char(','), Qt::SkipEmptyParts))
-            patterns << QStringLiteral("*.") + ext;
-        const QString filter = patterns.isEmpty() ? QString() : QObject::tr("Files (%1)").arg(patterns.join(QLatin1Char(' ')));
-        // Qt's dialog has no message line: the caption carries it, as the macOS panel shows it above the files.
-        QString caption = QString::fromUtf8(message ? message : "");
-        if (caption.isEmpty()) caption = QString::fromUtf8(title ? title : "");
-        QStringList chosen;
-        if (folders) { const QString dir = QFileDialog::getExistingDirectory(QApplication::activeWindow(), caption); if (!dir.isEmpty()) chosen << dir; }
-        else if (multiple) chosen = QFileDialog::getOpenFileNames(QApplication::activeWindow(), caption, QDir::homePath(), filter);
-        else { const QString file = QFileDialog::getOpenFileName(QApplication::activeWindow(), caption, QDir::homePath(), filter); if (!file.isEmpty()) chosen << file; }
-        if (chosen.isEmpty()) return 0;
-        const QByteArray joined = chosen.join(QLatin1Char('\n')).toUtf8();
-        if (size_t(joined.size()) + 1 > capacity) return -int32_t(joined.size() + 1);
-        memcpy(output, joined.constData(), size_t(joined.size()));
-        output[joined.size()] = 0;
-        return int32_t(chosen.size());
+    compositor_set_session_file_panel([](uint64_t handle, const char *descriptor, uint8_t *output, size_t capacity) -> int64_t {
+        QWidget *owner = handle ? windowForSession(handle) : QApplication::activeWindow();
+        return nativefilepanels::present(owner, handle, descriptor, output, capacity);
     });
-    compositor_set_sheet_presenter([](void *context, const char *panel) {
-        static_cast<SessionWindow *>(context)->presentSwiftUISheet(QString::fromUtf8(panel));
-    }, this);
+    compositor_set_session_sheet_presenter([](uint64_t handle, const char *panel) {
+        if (auto *window = windowForSession(handle)) window->presentSwiftUISheet(QString::fromUtf8(panel), handle);
+    });
 
     // Long commands (RAW develop, big Photoshop files) keep the window painting, with a busy cursor and a status line.
-    compositor_set_wait_pump([](void *context) { static_cast<SessionWindow *>(context)->pumpWhileBusy(); }, this);
+    compositor_set_session_wait_pump([](uint64_t handle) { if (auto *window = windowForSession(handle)) window->pumpWhileBusy(); });
 
     // Swift's main queue has no other pump under Qt's event loop: upstream async work started from a panel
     // (previews, Task {} in button actions) runs here, and whatever it changed shows.
     // AppKit tracking loops (NSWindow.nextEvent) wait on Qt's event loop.
     compositor_register_event_pump(compositor_host_pump_events);
-    compositor_set_alert_presenter([](const char *title, const char *detail, const char *buttons) -> int32_t {
+    compositor_set_session_alert_presenter([](uint64_t handle, const char *title, const char *detail, const char *buttons) -> int32_t {
         const auto choices = QJsonDocument::fromJson(QByteArray(buttons ? buttons : "")).array();
         if (choices.isEmpty()) return -1;
-        QMessageBox alert(QApplication::activeWindow());
+        QWidget *owner = handle ? windowForSession(handle) : QApplication::activeWindow();
+        if (handle && !owner) return -1;
+        QMessageBox alert(owner);
         alert.setText(QString::fromUtf8(title ? title : ""));
         alert.setInformativeText(QString::fromUtf8(detail ? detail : ""));
         QList<QAbstractButton *> actions;
@@ -1463,6 +1464,8 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         syncDistortFromSession();
         if (wasDistorting != !m_distortCorners.isEmpty() && m_canvasWidget) m_canvasWidget->update();
     });
+    syncToolFromSession();
+    syncPaletteFromSession();
     m_mainPumpTimer->start();
 }
 
@@ -1818,7 +1821,9 @@ void SessionWindow::updateFloatingPanelsPass() {
             entry.window->layout()->addWidget(next);
             next->show();
         }
-        if (!entry.window->isVisible()) entry.window->show();
+        // Hiding keeps the pending edit alive; closing would cancel it.
+        const bool showPanel = isVisible() && !isMinimized() && !m_panelsSuppressedByMinimization;
+        if (entry.window->isVisible() != showPanel) entry.window->setVisible(showPanel);
         m_floatingPanels.insert(panel, entry);
     }
     syncDockedFloatingPanels();
@@ -1852,9 +1857,15 @@ void SessionWindow::moveEvent(QMoveEvent *event) {
 
 /// Shows an upstream SwiftUI sheet panel (RAW Develop) modally, the way the macOS app shows it as a sheet: rendered
 /// and re-rendered from the session, its buttons calling upstream's own code, closed when upstream closes it.
-void SessionWindow::presentSwiftUISheet(const QString &panel) {
-    if (m_sessionHandle == 0) return;
-    const uint64_t handle = m_sessionHandle;
+SessionWindow *SessionWindow::windowForSession(uint64_t handle) {
+    for (auto *widget : QApplication::topLevelWidgets()) if (auto *window = qobject_cast<SessionWindow *>(widget))
+        for (const auto &document : window->m_documents) if (document.handle == handle) return window;
+    return nullptr;
+}
+
+void SessionWindow::presentSwiftUISheet(const QString &panel, uint64_t handle) {
+    if (handle == 0) handle = m_sessionHandle;
+    if (handle == 0) return;
     QDialog dialog(this);
     dialog.setObjectName(QStringLiteral("swiftUISheet.") + panel);
     dialog.setWindowTitle(panel == QLatin1String("PSDConversionSheet") ? tr("Import Photoshop File")
@@ -1878,7 +1889,13 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
             current->show();
         }
     };
-    auto isOpen = [&] { return sessionState().value("sheets").toArray().contains(panel); };
+    auto isOpen = [&] {
+        const auto size = compositor_session_state(handle, nullptr, 0);
+        if (size <= 0 || size > 4 * 1024 * 1024) return false;
+        QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
+        if (compositor_session_state(handle, reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return false;
+        return QJsonDocument::fromJson(bytes).object().value("sheets").toArray().contains(panel);
+    };
     render();
     if (!current) { compositor_session_raw_develop_cancel(handle); return; }
     QTimer tick;
@@ -1913,6 +1930,11 @@ void SessionWindow::presentSwiftUISheet(const QString &panel) {
     }
     if (dialog.exec() != QDialog::Accepted && isOpen()) compositor_session_raw_develop_cancel(handle);
     tick.stop();
+    // A closed sheet leaves SwiftUI's hierarchy; its next presentation needs fresh @State.
+    if (!isOpen()) {
+        const QByteArray name = panel.toUtf8();
+        compositor_session_render_tree(handle, name.constData(), nullptr, 0);
+    }
     if (current) retireRenderedPanel(current);
 }
 
@@ -2153,6 +2175,7 @@ void SessionWindow::pickBackgroundColor() {
 }
 
 void SessionWindow::keyPressEvent(QKeyEvent *event) {
+    swiftUITraceWindowKey(this, m_sessionHandle, event->key(), chordBits(event->modifiers()));
     // HeldModifiers (options bar Auto Select / aspect lock): every key press updates the chord bits.
     compositor_modifiers_changed(chordBits(event->modifiers()));
     if (event->key() == Qt::Key_Shift || event->key() == Qt::Key_Control || event->key() == Qt::Key_Alt
@@ -2183,6 +2206,7 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
         refreshLayers();
         updateLayersPanel();
         if (m_canvasWidget) m_canvasWidget->update();
+        refreshCanvasCursor(chordBits(event->modifiers()));
         event->accept();
         return;
     }
@@ -2213,6 +2237,7 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
             updateLayersPanel();
             updateOptionsBar();
             if (m_canvasWidget) m_canvasWidget->update();
+            refreshCanvasCursor(chordBits(event->modifiers()));
             event->accept();
             return;
         }
@@ -2431,6 +2456,7 @@ void SessionWindow::keyReleaseEvent(QKeyEvent *event) {
         event->accept();
         return;
     }
+    refreshCanvasCursor(bits);
     QMainWindow::keyReleaseEvent(event);
 }
 
@@ -2604,6 +2630,8 @@ void SessionWindow::syncAppMenus() {
             && o.value("key").toString() == QLatin1String("t")) {
             action->setEnabled(true);
         }
+        // Hide Others needs a window manager that lets a client hide other applications (X11; not Wayland).
+        if (title == QLatin1String("Hide Others") && !OtherApplications::canHideOthers()) action->setEnabled(false);
         if (o.contains("checked")) action->setChecked(o.value("checked").toBool());
         // Only when it differs: setting a shortcut re-registers it with the window's shortcut map.
         const QKeySequence shortcut = o.contains("key") ? appMenuSequence(o.value("key").toString(), o.value("modifiers").toInt()) : QKeySequence();
@@ -2672,7 +2700,7 @@ void SessionWindow::performAppMenu(const QString &path) {
     if (compositor_workspace_select_tab(m_sessionHandle) != 0) return;
     syncAppMenus();
     const QByteArray utf8 = path.toUtf8();
-    compositor_app_menu_perform(utf8.constData());
+    compositor_session_app_menu_perform(m_sessionHandle, utf8.constData());
     refreshAfterMenuAction();
 }
 
@@ -2810,10 +2838,10 @@ void SessionWindow::exportAsWithUpstream(const QString &startFormat) {
 
 /// Upstream ProjectController calls and system items the menus made (ShellProjects on the Swift side).
 void SessionWindow::handleShellRequests() {
-    const int64_t size = compositor_take_shell_requests(nullptr, 0);
+    const int64_t size = compositor_take_session_shell_requests(m_sessionHandle, nullptr, 0);
     if (size <= 2) return;
     QByteArray bytes(static_cast<qsizetype>(size), Qt::Uninitialized);
-    if (compositor_take_shell_requests(reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return;
+    if (compositor_take_session_shell_requests(m_sessionHandle, reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != size) return;
     auto trigger = [this](const char *name) {
         for (QAction *action : findChildren<QAction *>())
             if (action->objectName() == QLatin1String(name)) { action->trigger(); return; }
@@ -2859,6 +2887,17 @@ void SessionWindow::handleShellRequests() {
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://chiddekel.github.io/Compositor/")));
         }
         else if (request == QLatin1String("quit")) close();
+        else if (request == QLatin1String("hide")) {
+            // Minimized project windows remain available in the desktop's task switcher.
+            for (auto *widget : QApplication::topLevelWidgets())
+                if (auto *project = qobject_cast<SessionWindow *>(widget); project && project->isVisible())
+                    project->showMinimized();
+        }
+        else if (request == QLatin1String("hideOthers")) {
+            if (!OtherApplications::canHideOthers()) qWarning("Hide Others: this window system lets no client hide other applications");
+            else qInfo("Hide Others: %d window(s) of other applications hidden", OtherApplications::hideOthers());
+        }
+        else if (request == QLatin1String("showAll")) qInfo("Show All: %d window(s) of other applications shown", OtherApplications::showAll());
         else if (request == QLatin1String("minimize")) showMinimized();
         else if (request == QLatin1String("zoom")) { if (isMaximized()) showNormal(); else showMaximized(); }
         else if (request == QLatin1String("fullScreen")) { if (isFullScreen()) showNormal(); else showFullScreen(); }
@@ -3994,18 +4033,8 @@ bool SessionWindow::routesToUpstreamCanvas() const {
     }
 }
 
-/// A pointer event for the hosted CanvasView, then the shell catches up with what it changed.
-void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount, bool refresh) {
-    PERF_SCOPE(kind == 3 ? "canvasMouse:hover" : kind == 1 ? "canvasMouse:drag" : "canvasMouse:press/release");
-    { PERF_SCOPE("canvasMouse:syncViewport"); syncViewportGeometry(); }
-    Qt::KeyboardModifiers mods = event->modifiers();
-    if (m_suppressCanvasCommand) mods &= ~Qt::ControlModifier;
-    const int cursor = [&] { PERF_SCOPE("canvasMouse:upstream");
-        return compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
-                                       chordBits(mods), clickCount); }();
-    // A burst delivers every sample to the tool, then updates the shell once at its final position.
-    if (!refresh) return;
-    // Upstream's cursor for what is under the pointer (a custom picture — a selection tool's — shows as a crosshair).
+void SessionWindow::applyCanvasCursor(int cursor) {
+    // Install the upstream cursor, including custom pictures for selection tools, sampling and zoom.
     static const Qt::CursorShape shapes[] = {Qt::ArrowCursor, Qt::IBeamCursor, Qt::CrossCursor, Qt::OpenHandCursor,
         Qt::ClosedHandCursor, Qt::PointingHandCursor, Qt::SizeHorCursor, Qt::SizeVerCursor, Qt::SizeFDiagCursor,
         Qt::SizeBDiagCursor, Qt::CrossCursor};
@@ -4031,6 +4060,20 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
         if (m_canvasWidget && cursor >= 0 && cursor <= 10 && m_canvasWidget->cursor().shape() != shapes[cursor])
             m_canvasWidget->setCursor(shapes[cursor]);
     }
+}
+
+/// A pointer event for the hosted CanvasView, then the shell catches up with what it changed.
+void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount, bool refresh) {
+    PERF_SCOPE(kind == 3 ? "canvasMouse:hover" : kind == 1 ? "canvasMouse:drag" : "canvasMouse:press/release");
+    { PERF_SCOPE("canvasMouse:syncViewport"); syncViewportGeometry(); }
+    Qt::KeyboardModifiers mods = event->modifiers();
+    if (m_suppressCanvasCommand) mods &= ~Qt::ControlModifier;
+    const int cursor = [&] { PERF_SCOPE("canvasMouse:upstream");
+        return compositor_canvas_mouse(m_sessionHandle, kind, event->position().x(), event->position().y(),
+                                       chordBits(mods), clickCount); }();
+    // A burst delivers every sample to the tool, then updates the shell once at its final position.
+    if (!refresh) return;
+    applyCanvasCursor(cursor);
     if (kind == 3) { updateInvalidOverlay(); return; }
     { PERF_SCOPE("canvasMouse:pump"); compositor_pump_main(); }
     // Mid-stroke, only the area the brush changed is re-rendered and repainted (as EditorCanvas redraws its dirty
@@ -4059,14 +4102,28 @@ void SessionWindow::sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int cl
     if (m_canvasWidget) m_canvasWidget->update();
 }
 
+void SessionWindow::refreshCanvasCursor(int modifierBits) {
+    if (!m_canvasWidget || !m_hasDocument || m_upstreamCanvasDrag || m_middleDrag || m_painting
+        || m_colorPickerOpen || m_pixelSampler) return;
+    const auto stored = m_canvasWidget->property("canvasPointerGlobal");
+    if (!stored.isValid() && !m_canvasWidget->underMouse()) return;
+    const QPointF global = stored.isValid() ? stored.toPointF() : QPointF(QCursor::pos());
+    const QPointF point = m_canvasWidget->mapFromGlobal(global);
+    syncViewportGeometry();
+    if (m_suppressCanvasCommand) modifierBits &= ~1;
+    applyCanvasCursor(compositor_canvas_mouse(m_sessionHandle, 3, point.x(), point.y(), modifierBits, 0));
+    updateInvalidOverlay();
+}
+
 void SessionWindow::canvasMousePressEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (m_canvasWidget) m_canvasWidget->setProperty("canvasPointerGlobal", event->globalPosition());
     // The middle button pans from any tool, and with Ctrl (⌘) or Meta (⌃) held zooms, as in Blender: upstream's
     // CanvasView.otherMouse* handles it (EditorCanvas, 1.4.9). Never while a left-button drag is in progress.
     if (event->button() == Qt::MiddleButton && m_sessionHandle != 0 && !m_image.isNull() && !m_upstreamCanvasDrag && !m_painting) {
         m_middleDrag = true;
         syncViewportGeometry();
-        compositor_canvas_mouse(m_sessionHandle, 5, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1);
+        applyCanvasCursor(compositor_canvas_mouse(m_sessionHandle, 5, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1));
         return;
     }
     if (event->button() == Qt::LeftButton && routesToUpstreamCanvas()) {
@@ -4091,8 +4148,9 @@ void SessionWindow::flushPendingDrag() {
 
 void SessionWindow::canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (m_canvasWidget) m_canvasWidget->setProperty("canvasPointerGlobal", event->globalPosition());
     if (m_middleDrag) {
-        compositor_canvas_mouse(m_sessionHandle, 6, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1);
+        applyCanvasCursor(compositor_canvas_mouse(m_sessionHandle, 6, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1));
         refreshImage();
         if (m_canvasWidget) m_canvasWidget->update();
         return;
@@ -4121,9 +4179,10 @@ bool SessionWindow::isBrushStrokeActive() const {
 
 void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
+    if (m_canvasWidget) m_canvasWidget->setProperty("canvasPointerGlobal", event->globalPosition());
     if (m_middleDrag && event->button() == Qt::MiddleButton) {
         m_middleDrag = false;
-        compositor_canvas_mouse(m_sessionHandle, 7, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1);
+        applyCanvasCursor(compositor_canvas_mouse(m_sessionHandle, 7, event->position().x(), event->position().y(), chordBits(event->modifiers()), 1));
         refreshImage();
         if (m_canvasWidget) m_canvasWidget->update();
         return;
@@ -5003,6 +5062,7 @@ void SessionWindow::applyToolLocally(Tool tool) {
     updateToolRail();
     updateStatusTelemetry();
     if (m_canvasWidget) m_canvasWidget->update();
+    refreshCanvasCursor(chordBits(QApplication::keyboardModifiers()));
 }
 
 void SessionWindow::requestTool(Tool tool) {
@@ -5774,9 +5834,15 @@ void removeRecovery(const QString &directory, const QString &documentID) {
 bool SessionWindow::startProjectSave(const QString &requestedPath, bool autosave,
                                      std::function<void(bool)> completion, bool markSaved, uint64_t sourceHandle) {
     const uint64_t handle = sourceHandle ? sourceHandle : m_sessionHandle;
-    if (!handle || m_commandDepth > 0 || requestedPath.isEmpty()) return false;
+    if (!handle || m_commandDepth > 0 || requestedPath.isEmpty()) {
+        if (!autosave) qWarning("project save: refused (no session=%d, command depth=%d, empty path=%d)",
+            int(!handle), m_commandDepth, int(requestedPath.isEmpty()));
+        return false;
+    }
     const QString path = QFileInfo(requestedPath).absoluteFilePath();
     if (m_savingDocuments.contains(handle) || savingPaths().contains(path)) {
+        if (!autosave) qWarning("project save: already in progress (document=%d, destination=%d)",
+            int(m_savingDocuments.contains(handle)), int(savingPaths().contains(path)));
         if (!autosave) statusBar()->showMessage(tr("A save is already in progress."), 3000);
         return false;
     }
@@ -5871,7 +5937,7 @@ bool SessionWindow::writeProjectPackage(const QString &path) {
 
 // IO milestone: Load project from .compositor package
 // (replaces macOS ProjectStore.load with FileWrapper/NSFileCoordinator).
-bool SessionWindow::readProjectPackage(const QString &path) {
+bool SessionWindow::readProjectPackage(const QString &path, bool recovery) {
     if (m_sessionHandle == 0) return false;
 
     QDir dir(path);
@@ -5945,7 +6011,8 @@ bool SessionWindow::readProjectPackage(const QString &path) {
     QImageReader::setAllocationLimit(static_cast<int>((compositor_project_max_surface_pixels() * 16 + 1048575) / 1048576));
     int32_t width = 0, height = 0;
     const QByteArray packagePath = QFileInfo(path).absoluteFilePath().toUtf8();
-    if (compositor_session_load_package(replacement, packagePath.constData(), &width, &height) != 0
+    const auto loadPackage = recovery ? compositor_session_load_recovery : compositor_session_load_package;
+    if (loadPackage(replacement, packagePath.constData(), &width, &height) != 0
         || width <= 0 || height <= 0) {
         compositor_workspace_close_tab(replacement);
         return false;
@@ -6014,7 +6081,11 @@ bool SessionWindow::performAutosave() {
 bool SessionWindow::recoverAutosave() {
     if (!hasAutosaveRecovery()) return false;
     const QString packagePath = autosaveDirectory() + "/autosave.comp";
-    if (!readProjectPackage(packagePath)) return false;
+    if (!readProjectPackage(packagePath, true)) {
+        m_platform.notifier->warn(tr("Recovery failed"),
+            tr("The autosaved project could not be opened. Its recovery files have been kept at %1.").arg(packagePath));
+        return false;
+    }
     // Recovery is not a user save destination. Keep it until a real save succeeds.
     sendCommand({{"action", "markUnsaved"}});
     if (m_activeDocumentIndex >= 0 && m_activeDocumentIndex < static_cast<int>(m_documents.size())) {

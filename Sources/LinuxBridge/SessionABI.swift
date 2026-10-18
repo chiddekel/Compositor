@@ -13,6 +13,10 @@ import AppKit
 // (a Qt-visible tree of the same session's panels, not a separate one) rather than duplicating it.
 final class Entry {
     let editor: UpstreamEditor
+    /// Panel caches outlive individual resolves; allocator addresses cannot identify their owner safely.
+    let renderScopeID = UUID()
+    var renderedPanels: Set<String> = []
+    func panelScope(_ panel: String) -> String { "\(renderScopeID)|\(panel)" }
     var rendered: (bytes: [UInt8], width: Int, height: Int)?
     /// What `rendered` was made from, and a counter that moves whenever a new render differs.
     var renderedKey: UpstreamEditor.RenderKey?
@@ -81,11 +85,14 @@ final class Entry {
 
     init(editor: UpstreamEditor = UpstreamEditor()) {
         self.editor = editor
+        DirtyPanels.register(renderScopeID)
         let saved = (UserDefaults.standard.object(forKey: "layersPanelWidth") as? NSNumber)?.doubleValue ?? 252
         if saved.isFinite {
             layersPanelWidth = min(LayersPanel.widths.upperBound, max(LayersPanel.widths.lowerBound, saved))
         }
     }
+
+    deinit { DirtyPanels.discard(renderScopeID) }
 }
 
 enum Sessions {
@@ -284,16 +291,27 @@ nonisolated public func compositorWorkspaceSettle() -> Int32 {
     }))
 }
 
+private enum BridgeMainQueue {
+    static let key: DispatchSpecificKey<Bool> = {
+        let key = DispatchSpecificKey<Bool>()
+        DispatchQueue.main.setSpecific(key: key, value: true)
+        return key
+    }()
+}
+
 /// Runs `body` on the main actor from a C entry point (which the shell calls on the main thread).
 func onMain<Result>(_ body: @MainActor () -> Result) -> Result {
-    if Thread.isMainThread { return MainActor.assumeIsolated(body) }
+    // Linux can drain the main queue on a worker; a nested callback must not synchronously dispatch there again.
+    if Thread.isMainThread || DispatchQueue.getSpecific(key: BridgeMainQueue.key) == true {
+        return MainActor.assumeIsolated(body)
+    }
     return DispatchQueue.main.sync { MainActor.assumeIsolated(body) }
 }
 
 func withEntry(_ handle: UInt64, _ body: @MainActor (Entry) -> Int64) -> Int64 {
     onMain {
         guard let entry = Sessions.entries[handle] else { return -6 }
-        return body(entry)
+        return ShellProjects.$requestOwner.withValue(handle) { body(entry) }
     }
 }
 
@@ -320,6 +338,14 @@ nonisolated public func compositorSessionClose(_ handle: UInt64) {
 }
 
 @MainActor private func releaseSessionHandle(_ handle: UInt64) {
+    ShellProjects.$requestOwner.withValue(handle) {
+        releaseOwnedSessionHandle(handle)
+    }
+}
+
+@MainActor private func releaseOwnedSessionHandle(_ handle: UInt64) {
+    PopUpMenus.cancel(for: handle)
+    ShellProjects.pending.removeAll { $0.handle == handle }
     let canvas = UpstreamCanvases.canvases.removeValue(forKey: handle)
     guard let entry = Sessions.entries.removeValue(forKey: handle) else {
         canvas?.window.close()
@@ -335,6 +361,7 @@ nonisolated public func compositorSessionClose(_ handle: UInt64) {
     } else if let canvas, controller.window === canvas.window {
         controller.window = remaining.keys.compactMap { UpstreamCanvases.canvases[$0]?.window }.first
     }
+    discardRenderedPanels(handle, entry: entry)
     canvas?.window.close()
 }
 
@@ -369,6 +396,13 @@ nonisolated public func compositorSessionImportRGBA(_ handle: UInt64, _ pixels: 
         if code == 0 { entry.rendered = nil }
         return Int64(code)
     })
+}
+
+/// The document's unsaved-changes flag alone (the `modified` field of `compositor_session_state`): the tab strip asks
+/// for every tab on each repaint, so it must not encode the whole session state. 1 modified, 0 clean, negative error.
+@_cdecl("compositor_session_is_modified")
+nonisolated public func compositorSessionIsModified(_ handle: UInt64) -> Int64 {
+    withEntry(handle) { entry in entry.editor.session.history.isModified ? 1 : 0 }
 }
 
 @_cdecl("compositor_session_state")
@@ -677,6 +711,19 @@ nonisolated public func compositorSessionImportLayer(_ handle: UInt64, _ layerID
 @_cdecl("compositor_session_load_package")
 nonisolated public func compositorSessionLoadPackage(_ handle: UInt64, _ path: UnsafePointer<CChar>?,
                                                     _ width: UnsafeMutablePointer<Int32>?, _ height: UnsafeMutablePointer<Int32>?) -> Int32 {
+    loadProjectPackage(handle, path, width, height, recovery: false)
+}
+
+/// Recovery imports committed content without making the autosave package a save destination.
+@_cdecl("compositor_session_load_recovery")
+nonisolated public func compositorSessionLoadRecovery(_ handle: UInt64, _ path: UnsafePointer<CChar>?,
+                                                     _ width: UnsafeMutablePointer<Int32>?, _ height: UnsafeMutablePointer<Int32>?) -> Int32 {
+    loadProjectPackage(handle, path, width, height, recovery: true)
+}
+
+nonisolated private func loadProjectPackage(_ handle: UInt64, _ path: UnsafePointer<CChar>?,
+                                           _ width: UnsafeMutablePointer<Int32>?, _ height: UnsafeMutablePointer<Int32>?,
+                                           recovery: Bool) -> Int32 {
     guard let path else { return -1 }
     let string = String(cString: path)
     guard string.hasPrefix("/") else { return -1 }
@@ -690,7 +737,12 @@ nonisolated public func compositorSessionLoadPackage(_ handle: UInt64, _ path: U
         let result = entry.editor.importProjectSnapshot(snapshot)
         if result == 0 {
             entry.rendered = nil
-            bindNativeProject(handle, entry, url: url, digest: loaded.1)
+            if recovery {
+                entry.editor.nativeProjects.stopWatchingProject()
+                entry.editor.session.projectURL = nil
+            } else {
+                bindNativeProject(handle, entry, url: url, digest: loaded.1)
+            }
         }
         return Int64(result)
     }
@@ -729,17 +781,43 @@ nonisolated public func compositorProjectDidSave(_ handle: UInt64, _ path: Unsaf
 }
 
 public typealias NativeAlertPresenter = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32
+public typealias NativeSessionAlertPresenter = @convention(c) (UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32
 
 @_cdecl("compositor_set_alert_presenter")
 nonisolated public func compositorSetAlertPresenter(_ presenter: NativeAlertPresenter?) {
     onMain {
         guard let presenter else { NSAlert.handler = nil; return }
+        NSAlert.handler = { alert in presentNativeAlert(alert) { presenter($0, $1, $2) } }
+    }
+}
+
+@MainActor private func presentNativeAlert(_ alert: NSAlert,
+    presenter: (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32) -> NSApplication.ModalResponse {
+    guard let data = try? JSONEncoder().encode(alert.buttonTitles), let buttons = String(data: data, encoding: .utf8) else { return .cancel }
+    let index = alert.messageText.withCString { title in
+        alert.informativeText.withCString { detail in buttons.withCString { presenter(title, detail, $0) } }
+    }
+    return index >= 0 ? NSApplication.ModalResponse(rawValue: 1000 + Int(index)) ?? .cancel : .cancel
+}
+
+@_cdecl("compositor_set_session_alert_presenter")
+nonisolated public func compositorSetSessionAlertPresenter(_ presenter: NativeSessionAlertPresenter?) {
+    onMain {
+        guard let presenter else { NSAlert.handler = nil; return }
         NSAlert.handler = { alert in
-            guard let data = try? JSONEncoder().encode(alert.buttonTitles), let buttons = String(data: data, encoding: .utf8) else { return .cancel }
-            let index = alert.messageText.withCString { title in
-                alert.informativeText.withCString { detail in buttons.withCString { presenter(title, detail, $0) } }
-            }
-            return index >= 0 ? NSApplication.ModalResponse(rawValue: 1000 + Int(index)) ?? .cancel : .cancel
+            guard let handle = nativePresentationOwner(alert.presentationWindow) else { return .cancel }
+            return presentNativeAlert(alert) { presenter(handle, $0, $1, $2) }
         }
     }
+}
+
+/// Explicit window, then dispatch owner; zero denotes an application-level presentation, nil a closed owner.
+@MainActor func nativePresentationOwner(_ window: NSWindow?) -> UInt64? {
+    if let window {
+        guard let owner = UpstreamCanvases.canvases.first(where: { $0.value.window === window })?.key,
+              Sessions.entries[owner] != nil else { return nil }
+        return owner
+    }
+    if let owner = ShellProjects.requestOwner { return Sessions.entries[owner] != nil ? owner : nil }
+    return 0
 }

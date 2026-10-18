@@ -1,5 +1,1866 @@
 # Upstream test baseline (unmodified `CompositorTests` on Linux)
 
+## Current-tree contract, resampling and Hide Others, 2026-10-16
+
+Evidence for this section lives under `.build/evidence/` in the checkout. At about 09:35 an external cleanup
+removed nearly every `/tmp/compositor-*` log and build cache that earlier sections cite, and emptied
+`build-flatpak/`; those paths no longer exist. The SDK dependency modules were rebuilt from the manifest
+(`.build/evidence/rebuild-sdk.{log,exit}`, exit 0). The earlier ECI CMYK fixture had no other copy, so CMYK
+runs use Ghostscript's `default_cmyk.icc` installed as `Generic CMYK Profile.icc` (a fixture, not Apple's profile).
+
+- **Clean complete run (run 6), after the code-level audit fixes:** exit 0 with integrity exit 0 in 18 minutes
+  (`.build/evidence/full-contract-run6-clean.log`, `-integrity.log`): 1,122 framework tests (148 XCTest, 974
+  Swift Testing including `RepresentableDismantleTests`) and all 33 native journeys including the newly gated
+  `--package-smoke`.
+- **Clean complete run (run 5) of the installed runner:** exit 0 with integrity exit 0 in 17 minutes
+  (`.build/evidence/full-contract-run5-clean.log`, `.build/evidence/full-contract-run5-integrity.log`): 1,120
+  framework tests (148 XCTest including `FileSystemObjectSourceTests`, 972 Swift Testing), all 32 native journeys
+  (`--wand-repeat` 834 s, formerly 2,429 s), RAW lens, text backend, six group rotations, Grid settings, thumbnailer,
+  source coverage and the Skia bridge. Earlier runs on the way: run 3 failed only `--transform-smoke` (inotify
+  exhaustion, fixed by sharing one instance); run 4 deadlocked with parallel Swift Testing and was reverted.
+- **Framework:** all 1,119 tests pass (147 XCTest, 972 Swift Testing) on the current tree, including the
+  high-quality minification change (`.build/evidence/full-contract.log`).
+- **Skia bridge:** `test_skia_bridge` adds direct, scaled, rotated and half-alpha 10x reductions of period-5
+  stripes, which must equal their 102 area mean. The previous bridge fails all four (128, 128, 0 and 64 against
+  51); the current bridge passes ("SkiaBridge smoke OK").
+- **Hide Others / Show All:** under Xvfb with mutter as the X11 window manager, `--app-visibility-probe
+  --hide-others-probe` hides a separate client's shown window, leaves its user-minimized window and both project
+  windows/documents unchanged, and Show All restores exactly the hidden one
+  (`.build/evidence/hide-others-x11-pass.log`, exit 0). The first attempt failed because mutter reports ICCCM
+  WM_STATE Iconic for windows it shows; hidden state now follows EWMH `_NET_WM_STATE_HIDDEN`.
+- **Native journeys:** 31 of 32 pass with three running at a time; `--tab-smoke` failed under that load
+  ("multiple native rows did not reach the destination": its drag is released by a 20 ms timer and checked at
+  once) and passes alone with the same build (`.build/evidence/tab-rerun.{log,exit}`, exit 0). The runner now
+  runs `--tab-smoke` and `--preview-smoke` alone after the parallel batch. Because the run stopped at that gate,
+  the trailing RAW lens, text backend, six group-rotation and Grid settings controls/restart checks ran
+  separately against the same build and pass (`.build/evidence/contract-tail.{log,exit}`, exit 0).
+- **Integrity:** required-shader protected-tree and ledger checks pass, before and after installing the new
+  runner (`.build/evidence/full-contract-integrity.log`, `.build/evidence/integrity-new-runner.{log,exit}`).
+- **Runner:** job counts follow cores, available memory and cgroup limits (build `min(cores, MiB/1536)`, native
+  journeys `min(cores/2, MiB/2048)`); a 4-core, 16 GiB GitHub runner builds with 4 jobs and runs two journeys at
+  a time. Each journey gets its own XDG copy and prints its whole log on completion; failures add `::error`
+  annotations on Actions. The parallel/solo/annotation logic passes a stub harness inside the SDK.
+- **Hide under X11:** the unchanged offscreen Hide checks fail under mutter ("project windows did not restore
+  after Hide") because they assert one event pass after `showNormal()`, while a window manager restores
+  asynchronously; an external poller shows Hide itself iconifies both windows
+  (`.build/evidence/hide-x11-existing{,-states}.log`). `--hide-others-probe` hides through the visible menu from
+  each window, waits for the manager's restore and passes with exact document isolation
+  (`.build/evidence/hide-others-x11-pass.log`).
+
+## Home-key viewport synchronization, 2026-10-16
+
+The file-panel follow-up's preview failure now has an isolated boundary diagnosis.
+A private renderer logs both states immediately after delivering Home: Qt's
+visible scrollbar is still **863**, while the freshly resolved AppKit model
+reports **scrollY 0**. The subsequent window-coordinate layer clicks miss the
+viewport. This reproduces the original failure without attributing it to pending
+AppKit reveals: the model has already moved correctly. Session 16899 exits 1;
+see `/tmp/compositor-home-scroll-diagnostic-native.log`, lines 77–78, and
+`/tmp/compositor-home-scroll-diagnostic-linked.exit`. The initial private link
+attempt omitted SwiftPM's renamed main-symbol alias and failed to link; its
+separate build log and exit remain preserved.
+
+The Qt AppKit widget already synchronizes its enclosing scroll area after mouse
+tracking. Keyboard dispatch now uses that same synchronization before returning,
+so a following pointer event sees the viewport the model just selected. The
+existing native preview adds a Home assertion before `processEvents`; periodic
+panel refresh cannot hide the mismatch. The unchanged-renderer regression build
+fails exactly at that assertion (`/tmp/compositor-home-scroll-before-native.log`,
+line 77; `.exit` = 1). The fixed renderer passes the native preview journey on
+offscreen Qt, including the previously failing Home, Command-click disjoint
+selection and multi-row drag sequence (`/tmp/compositor-home-scroll-fixed-native.log`,
+39 OK lines), plus the tab, dialog, image-clipboard and protected-upstream
+integrity runs (`/tmp/compositor-home-scroll-fixed-{tabs,dialog,clipboard,integrity}.log`;
+`/tmp/compositor-home-scroll-fixed.exit` = 0). The same preview journey also
+passes on a private Weston/Xvfb Wayland session with the app in the Flatpak SDK
+(`/tmp/compositor-home-scroll-wayland-input-native.log`, 39 OK lines;
+`/tmp/compositor-home-scroll-wayland-{host,input}.exit` = 0). Both private
+executables link immutable framework objects. Full file-panel session 83638
+predates this fix and was interrupted; the current-tree full contract is
+`/tmp/compositor-home-scroll-full-contract.log`.
+
+## Owned Open/Save panels and project-package selection, 2026-10-16
+
+The next native audit reproduces two missing behaviors with private temporary
+projects. NSOpenPanel's explicit first-window sheet appears on the second active
+window. NSSavePanel and the actual ProjectController Save As flow show no chooser
+and return Cancel. Session 81798 exits 1; all three cases are recorded in
+`/tmp/compositor-file-panel-before-native.log` (modes 0, 1 and 2).
+
+NSSavePanel now retains its requested presentation window weakly during the
+callback, including inherited NSOpenPanel presentations. The session-aware
+file-panel callback shares live-owner resolution with alerts, retains legacy
+Open registration, and implements both Open and Save. JSON transports panel
+options and returned paths without splitting Unicode/newline filenames.
+Negative response sizes retry a cached native selection instead of reopening
+the chooser. Closed owners and invalid replies cancel. The Qt adapter preserves
+file types, title/message, suggested name, creation permission, selection mode,
+project-package folder opening and confirmed replacement of an existing package.
+
+The initial focused build (52965) compiles in 555.90 seconds but exits 1 with two
+assertion issues: this app's exported project type has no filename-extension
+tags. The fix registers `.comp` once when the desktop panel adapter is installed,
+matching Config/Info.plist, rather than weakening the package assertions.
+Session 54985 then passes 12 XCTest + 23 Swift Testing cases in seven suites
+(35 focused checks; 375.96-second rebuild) and integrity. The subsequent Save-label
+widget rebuild also passes those 35 checks and integrity in session 71401
+(40.00-second build, exit 0). Logs use
+`/tmp/compositor-file-panel-{fixed,types-fixed,widget-fixed}-{tests,integrity}.log`.
+The original failing `.exit` remains 1; the latter two are 0.
+
+The permanent Qt-only `CompositorCore.NativeFilePanels` CTest drives actual
+filename inputs and dialog buttons: Open/Save/Cancel, Unicode, short-buffer
+single presentation, package-folder opening, replacement confirmation, the
+Save label for a package and automatic `.comp` suffix. CTest and direct execution
+pass in session 91094 (exit 0), logs:
+`/tmp/compositor-file-panel-ctest-final-{native,direct,build,configure}.log`.
+Early private-driver attempts are retained; they clicked a disabled Open button,
+left a stale preset filename or blocked their own timer inside the nested
+replacement question. The corrected driver waits for enabled acceptance,
+commits the visible filename and queues its click outside that inspector slot.
+A label assertion additionally catches Qt's directory Open label; a package-only
+widget hook keeps the action Save. The failed configuration without the SDK
+compiler PATH and failed label-check wrappers remain separate evidence.
+
+Full regression session 12628 exits 0: all 147 XCTest + 972 Swift Testing cases
+pass (1,119 total; 162 suites, 109.224 seconds), followed by native preview,
+tabs, normal-startup dialogs, image clipboard/replacement and required integrity.
+Logs: `/tmp/compositor-file-panel-regression-{framework,preview,tabs,dialog,clipboard,integrity}.log`.
+
+The actual producer fixture passes 14 native cases in session 88294 (exit 0):
+both window directions for Open/Save/Save As Cancel, exact Cancel isolation,
+accepted single/multiple Unicode files and directory paths, ProjectController
+Save As and replacement, package reopen with exact rendered pixels/layer records,
+and reuse after the newer window closes. Log:
+`/tmp/compositor-file-panel-native-reopen-verified-native.log`.
+Earlier fixture failures remain: its windows initially aliased one tab and its
+manual controller call omitted the real public tab-selection boundary; the
+corrected fixture uses distinct projects and that boundary. Its first reopen
+oracle retained the old file URL while changing canvas size, so upstream
+correctly selected that already-open edited project. Clearing that binding
+before reopening exercises actual loading into a new workspace tab. The tests
+retain exact pixel/record comparisons rather than accepting the wrong 16×16 tab.
+
+Upstream's workspace Open also selects multiple `.comp` packages. A local Qt
+probe confirms real multiple directory-row selection (session 33437, exit 0),
+and the adapter now enables it for package/folder multiselection. Focused rebuilds
+89390 and 53037 pass all 35 checks and integrity; expanded CTest sessions 1552 and
+61200 pass seven visible chooser scenarios, including actual selection of two
+package directory rows. Their logs use `/tmp/compositor-file-panel-{multi,final}-fixed-*`
+and `/tmp/compositor-file-panel-ctest-{multi,complete}-*`; all corresponding `.exit`
+files are 0. Empty captions receive normal Open/Save defaults.
+
+The final producer fixture passes 16 cases in session 10817 (exit 0), including
+Save As in both windows and opening two distinct saved projects, one with black
+pixels and one white. Both loaded workspace tabs retain their own exact pixels
+and layer records. Native Wayland repeats all 16 cases in session 1793 (exit 0)
+and checks each chooser's native transient parent. Logs:
+`/tmp/compositor-file-panel-native-complete-native.log` and
+`/tmp/compositor-file-panel-wayland-native.log`. The Wayland wrapper's `.exit` is 0;
+both owned Weston/Xvfb servers exit 0 afterward and the socket lock is absent.
+This verifies Qt-hosted native Wayland dialogs, not a physical desktop portal.
+
+A later native-only regression wrapper, session 94792, exits 1 in preview's
+Command-click disjoint-selection check. Its trace shows Home key 115 delivered
+to the current session-9 table, but the Qt viewport still has offset 863; intended
+rows 2/8 map to window Y -474/-150, outside the visible viewport, with no hit
+widget. This is retained in
+`/tmp/compositor-file-panel-native-regression-preview.log`; it is not relabeled
+passing or attributed to file-panel changes. The Home/queued-scroll interaction
+needs an isolated reproduction. Remaining tabs/dialog/clipboard/integrity phases
+pass separately in session 59759 (exit 0), prefix
+`/tmp/compositor-file-panel-native-regression-resume-*`. This includes native
+multi-window tabs, normal-startup save/reopen dialogs, clipboard replacement and
+protected-upstream integrity. The preview failure remains open; the earlier
+complete regression 12628 remains a recorded pass within its build scope.
+
+The canonical runner now includes the permanent chooser test: **37 gates**, 34
+host commands plus three standalone gates. It was replaced atomically so the
+three already-running 36-gate scripts retain their original contents and scope
+(45852 alert, 61973 teardown/clipboard, 25384 entry/popup). They predate this
+file-panel work. The fresh current 37-gate run is session 83638, scratch
+`/tmp/compositor-file-panel-build`, module cache `/tmp/compositor-file-panel-module-cache`.
+Logs: `/tmp/compositor-file-panel-full-contract.{log,exit}` and companion integrity
+log (pending). Its framework phase has passed all 147 XCTest + 972 Swift
+Testing cases (1,119 total; 162 suites, 109.106 seconds); the chooser component
+also passes in this run. Native gates are still running, so the complete contract
+is not yet a pass.
+
+Two older runs have now terminated. Alert-build session 45852 completes all 36
+gates and protected-upstream integrity (exit 0), including 147 XCTest + 966 Swift
+Testing cases (1,113 total; 161 suites, 117.308 seconds). Its logs are
+`/tmp/compositor-alert-owner-full-contract{,-integrity}.log` and `.exit`.
+Entry/popup session 25384 exits 139 in `--transform-smoke` after its external
+package-corruption recovery marker. The Swift runtime could not suspend threads
+or produce a usable backtrace; preserve
+`/tmp/compositor-entry-owner-full-contract.log` and `.exit`. That binary predates
+clipboard, teardown, alert and file-panel fixes; this crash is not attributed to
+any one of them or claimed resolved. Teardown session 61973 remains pending.
+Earlier sections' running-state statements describe their recorded checkpoints;
+these terminal results supersede those states.
+
+Physical desktop portals, broader chooser/window combinations,
+the observed Home/scroll issue and Mac acceptance remain open.
+
+## Native alert window ownership, 2026-10-16
+
+The application-callback audit finds that HeldModifiers refreshes modifier state
+on activation/menu-end and RecentProjects refreshes its URL list on activation;
+these traced observers do not dispatch project shell requests. A separate alert
+boundary loses an explicit project window. Upstream's ProjectController and
+external-change prompt use `NSAlert.beginSheetModal(for:)`, but the compatibility
+handler discards that window and Qt always parents its message box to the active
+window.
+
+The native two-window reproduction fails in session 10802 (exit 1): a real
+`beginSheetModal(for:)` requested for handle 1 while handle 2 is active creates a
+visible QMessageBox parented to the second window. Cancel returns the correct
+button response. `/tmp/compositor-alert-owner-before-native.log` records
+`actual parent is first false actual parent is second true`. The private fixture
+links immutable existing application objects and does not rebuild either active
+contract executable. It tests the actual NSAlert/Qt path with an upstream-style
+explicit sheet window, not an invocation of ProjectController's private method.
+
+`NSAlert` now exposes its temporary weak presentation window to native handlers
+and restores it afterward. A new session-aware alert presenter maps that window
+to its live session; synchronous modal alerts use their explicit request owner,
+and unowned application alerts use handle 0. Closed or unresolvable explicit
+owners cancel instead of falling back to the active window. Qt parents project
+alerts to the corresponding live SessionWindow. The legacy presenter remains
+available with unchanged response encoding. Four new bridge tests cover both
+window directions, modal/application alerts, closed owners and legacy clearing.
+
+The real unsaved ProjectController close path also displays its alert on the
+wrong window, then exposes a second failure: refreshLayers sets checkboxes while
+`m_syncingLayers` is true, but the visibility/mask callbacks dispatch commands
+without checking that flag. GDB traces the nested command waits from
+QCheckBox::toggled through setLayerFlag/sendCommand/awaitOnMain, below
+QDialog::exec and ProjectController.confirmReplacement. Diagnostic logs are
+`/tmp/compositor-alert-controller-before-{native,gdb-main,gdb-full}.log`.
+The fixture remains live until explicitly terminated after stack capture
+(session 85744, exit 143); that is not a completed passing or normal assertion
+result. The two checkbox callbacks now honor the existing synchronization flag,
+so displaying model values does not feed commands back into a modal operation.
+
+The first isolated build (54292) exits 1 because copied Clang PCMs embed the old
+module-cache path; `/tmp/compositor-alert-owner-fixed-tests.log` retains that
+build-environment failure. A fresh module cache at
+`/tmp/compositor-alert-owner-module-cache` and separate scratch directory
+`/tmp/compositor-alert-owner-build` resolve it. Session 7169 exits 0 after a
+566.03-second build, with 12 XCTest + 17 Swift Testing tests passing (29 focused
+checks, six Swift Testing suites) and integrity. After that build is terminal,
+the checkbox-guard rebuild and the same 29 checks plus integrity pass in session
+31538 (40.41-second build, exit 0). Logs:
+`/tmp/compositor-alert-owner-{cache,guard}-fixed-{tests,integrity}.log` and `.exit`.
+
+The extended native ProjectController close fixture uses the guarded build for
+both background-window directions and older-window reuse after newer close,
+checking Cancel and document/history isolation. Session 91888,
+`/tmp/compositor-alert-owner-native-fixed-{native,build}.log` and `.exit` (0).
+All three cases pass: both background-window directions and the original window
+after the second closes, with actual unsaved ProjectController close prompts,
+correct Qt parents, Cancel and exact checked document/history fields. The
+fixture now exercises the real producer, extending the initial direct NSAlert
+reproduction. Native Wayland repeats all three real close-prompt cases and also
+requires the message box's QWindow transientParent to be the expected native
+window. Session 83228 exits 0, with three correct-parent records and its final
+acceptance marker in `/tmp/compositor-alert-owner-wayland-native.log`;
+`/tmp/compositor-alert-owner-wayland.exit` is 0. The private input-capable
+Weston/Xvfb servers are stopped afterward; their sessions exit 0 and the socket
+lock is absent. This verifies native Wayland parenting, not physical input.
+
+Full framework/preview/tabs/dialog/clipboard regression completes in session
+51706 with exit 0: 147 XCTest + 966 Swift Testing cases pass (1,113 total;
+161 suites, 116.623 seconds), all four native journeys pass and required
+integrity passes. Logs:
+`/tmp/compositor-alert-owner-regression-{framework,preview,tabs,dialog,clipboard,integrity}.log`
+and `.exit` (0).
+
+A fresh complete 36-gate contract starts only after those build/fixture/regression
+sessions are terminal: session 45852, scratch `/tmp/compositor-alert-owner-build`,
+module-cache arguments pointing at `/tmp/compositor-alert-owner-module-cache`.
+Logs: `/tmp/compositor-alert-owner-full-contract.{log,exit}` and companion
+integrity log (pending). The older full contracts remain running (61973,
+teardown/clipboard build; 25384, entry/popup build) and predate the alert fixes.
+Broader background-operation/dialog combinations and physical/Mac acceptance
+remain open.
+
+## Close-time lifecycle request ownership, 2026-10-16
+
+The teardown audit confirms a failure beyond popup cancellation. A registered
+`ChangeTracker` disappearance callback belongs to closing handle 1, but the
+C-ABI close invoked under caller 2 runs it as handle 2. Both its immediate Save
+and deferred Export request then target the surviving handle. The isolated
+fixture uses the real lifecycle registry, panel scope, C ABI and queue, linked
+to immutable existing objects without rebuilding either active contract binary.
+The noncrashing reproduction exits 1 in session 59312:
+`/tmp/compositor-close-owner-before-safe-native.log` records
+`closing=1 survivor=2 observed=Optional(2) restored=Optional(2)` and the two
+incorrectly attributed queued requests. The initial trapping fixture (session
+51390, exit 132) is retained separately and is not a passing test.
+
+`releaseSessionHandle` now binds the closing handle while its complete owned
+teardown runs: popup completion, queue removal, controller/project/tab cleanup,
+panel disappearance/state disposal and canvas close. A disappearance callback
+runs after entry removal; its immediate and inherited deferred requests retain
+the closed owner and are rejected instead of falling back to another window.
+The caller's task-local context is restored afterward. The regression in
+`ShellRequestOwnershipTests.swift` checks that behavior and survivor retention.
+This exercises a supported lifecycle callback boundary; it does not claim an
+existing upstream disappearance callback currently invokes Save/Export.
+
+The fresh clipboard contract (session 84680) stops with exit 1 because its test
+source was edited while Swift compiled it, before execution of the new test.
+`/tmp/compositor-wayland-clipboard-full-contract.log` explicitly reports
+`ShellRequestOwnershipTests.swift` modified during build. That wrapper/result is
+retained; it is not a product regression or a completed contract. Source files
+are held unchanged during the replacement focused build, session 47641.
+It exits 0 after a 331.39-second release rebuild: all four native lifetime XCTest
+cases and 13 Swift Testing cases in five suites pass, including the new lifecycle
+regression (17 focused tests total). Required integrity also passes. Logs:
+`/tmp/compositor-close-owner-fixed-{tests,integrity}.log` and
+`/tmp/compositor-close-owner-fixed.exit` (0).
+
+Full framework and native regression completes in session 54499 with exit 0,
+using the resulting executable without rebuilding it. All 147 XCTest + 962
+Swift Testing tests pass (1,109 total; 160 suites, 121.218 seconds). Native
+preview, tabs, normal-startup dialogs and image clipboard/replacement journeys
+also pass, including exact records/pixels and Undo/Redo; required integrity
+passes. Its `-framework.log`, `-preview.log`, `-tabs.log`, `-dialog.log`,
+`-clipboard.log` and `-integrity.log` share the
+`/tmp/compositor-close-owner-regression` prefix; its `.exit` is 0.
+
+After that wrapper is terminal, a fresh complete 36-gate canonical run starts
+as session 61973 in `/tmp/compositor-crash-recovery-build`. Source files remain
+unchanged during its build. Logs are
+`/tmp/compositor-close-owner-full-contract.{log,exit}` and its companion
+integrity log. No final result is available.
+The older entry/popup contract remains session 25384; the last complete contract
+is session 87491 (36 gates / 1,103 tests), which predates entry/popup, clipboard
+and this teardown fix. Broader direct app-level producers, reentrant lifecycle
+combinations, physical desktop delivery and Mac comparison remain open.
+
+## Native Wayland seat and clipboard ownership, 2026-10-16
+
+The unchanged entry/popup executable passes the full native Wayland preview and
+normal-startup dialog journey when Weston uses its X11 input backend over a
+private Xvfb display. Rename-editor Copy/Paste, layer focus/accessibility,
+keyboard/tool input, mask/pixel/text edits and Undo/Redo pass. Both
+`/tmp/compositor-wayland-input-{preview,dialog}.exit` are 0. Logs use the same
+prefix. This resolves the earlier seatless compositor's preview limitation;
+it does not certify physical input or desktop interapplication delivery.
+
+A separate normal-system-pasteboard image journey exposes a real Wayland
+ownership defect: selected PNG pixels match, but Paste centers the 20×20 image
+at [22,22] instead of retaining [12,12]. The diagnostic records a synchronous
+own-write notification with external count 1, followed by an asynchronous
+notification while Qt still owns the clipboard, increasing the count to 2.
+Upstream therefore rejects its retained pixel clipboard and treats the same
+image as external. Both the original run and diagnostic exit 1:
+`/tmp/compositor-wayland-input-image-clipboard.log` and
+`/tmp/compositor-wayland-clipboard-diagnostic-native.log`.
+
+`host/SystemClipboard.h` tracks the written MIME object with `QPointer` so a
+later notification for that same object keeps the original change count.
+Replacement data, including writes from Qt editors, still invalidates the
+cached selection. The native image journey adds a replacement-image oracle:
+centered 6×8 green pixels, exact source records, and Undo/Redo. A private
+executable rebuilds both host translation units without relinking either live
+full-contract executable. The real Wayland image journey now passes Copy, Copy
+Merged and Cut, retained crop origin/dimensions, every pixel and Undo/Redo, plus
+the replacement-image oracle. `/tmp/compositor-wayland-clipboard-input.exit`
+is 0; its `-native.log` contains all four acceptance markers.
+
+Intermediate fixed builds expose a separate test-input limitation: Paste is
+enabled, but the compositor dismisses a popup opened without a fresh real input
+serial. A diagnostic records enabled=true/visible=false. Native popup sync alone
+does not solve it, and that experimental driver change is removed. The final
+private Wayland driver requests a real Shift press/release from a host-side
+`xdotool` worker targeting only the owned Xvfb window before each menu. Seven
+input requests complete and the worker exits 0. This hook remains under `/tmp`;
+the repository driver retains actual menu visibility/enabled assertions and
+adds failure diagnostics. No application input or clipboard assertion is
+bypassed. The unmodified repository driver also passes independently offscreen, including
+all three image choices and replacement-image invalidation. The same fixed
+executable passes the full Wayland preview and normal-startup dialog journey.
+`/tmp/compositor-wayland-clipboard-final.exit` is 0; companion logs are
+`-native.log`, `-preview.log` and `-dialog.log`. Required protected-source,
+generator, shader and ledger integrity passes in
+`/tmp/compositor-wayland-clipboard-integrity.log`. The input worker and both
+owned servers are stopped after testing; the Wayland socket lock is absent.
+
+The older 36-gate contract finishes in session 87491 with exit 0: all 147 XCTest +
+956 Swift Testing tests (1,103 total; 159 suites, 105.804 seconds), all 34
+host-native commands, both standalone gates and required integrity. Logs:
+`/tmp/compositor-deep-size-full-contract.{log,exit}` and its `-integrity.log`.
+This is the latest complete canonical checkpoint, covering the menu/deep-sizing
+build. It predates common-entry/popup and clipboard corrections. Session 25384
+still runs the entry/popup build and also predates this clipboard fix.
+
+After confirming session 87491 is terminal, the fresh complete current-source
+contract starts as session 84680 in its released `/tmp/compositor-crash-recovery-build`.
+Logs: `/tmp/compositor-wayland-clipboard-full-contract.{log,exit}` and companion
+integrity log. It is pending. The existing canonical image gate exercises the
+extended probe after this fresh build. Physical input, external applications and Mac
+comparison remain separate open acceptance scopes.
+
+## SwiftUI/AppKit entry ownership and popup lifetime, 2026-10-16
+
+The remaining input-entry audit reproduces failures beyond menu/palette dispatch.
+A SwiftUI action queues an unowned request instead of its supplied session.
+Closing a session leaves its popup callable, and replacing/dismissing a popup
+runs completion under another caller's context. The three isolated reproductions
+fail with five assertion issues in
+`/tmp/compositor-entry-owner-before-safe-tests.log` (wrapper exit 1). Real
+`NSMenu.popUp`, selector targets and close delegates exercise the popup lifecycle;
+targets/delegates are retained through the assertions despite their weak menu
+references.
+
+Nested entry also crashes before ownership assertions. The SDK GDB trace in
+`/tmp/compositor-entry-owner-reentry-gdb.log` stops at
+`__DISPATCH_WAIT_FOR_QUEUE__`, called from `onMain` → `withEntry` → SwiftUI action
+dispatch while already on the main queue. On Linux that queue can run on a worker
+with `Thread.isMainThread == false`. The debugger wrapper's exit 0 is diagnostic,
+not a passing test. The initial and broader crashing runs are retained in
+`/tmp/compositor-entry-owner-before-tests.log` and
+`/tmp/compositor-entry-owner-before-all-tests.log`. This fixes the main-actor ABI
+entry limitation avoided with detached callers in the earlier checkpoint below.
+
+`SessionABI.swift` now recognizes the main dispatch queue with the same queue-key
+pattern already used by the notification helper. `withEntry` binds the supplied
+handle for its whole callback and restores the caller afterward; nested drops
+and deferred tasks retain their own correct owner. `AppMenus.swift` captures a
+popup's presentation owner and uses it for validation, choice, replacement,
+dismissal and completion. Closing its owner cancels that popup before removing
+queued work; a later choice cannot invoke the stale target. These changes affect
+two production files. Tests are in `ShellRequestOwnershipTests.swift` and the new
+`PopUpRequestOwnershipTests.swift`.
+
+All 12 focused tests in five suites pass in
+`/tmp/compositor-entry-owner-fixed-tests.log` (0.066 seconds), including the
+existing nested/disabled popup, button-event and sheet-binding/dismissal tests.
+`/tmp/compositor-entry-owner-fixed.exit` is 0 and required protected-source/
+generator/shader/ledger integrity passes in its companion integrity log.
+
+The full framework phase passes 147 XCTest + 961 Swift Testing tests (1,108
+total; 160 suites, 112.477 seconds) in
+`/tmp/compositor-entry-owner-regression-framework.log`. Its wrapper stops at Grid
+Settings with disabled OK after rapidly typed valid values (session 79142, exit
+1). The diagnostic driver confirms visible 24/3/75 with the previous invalid
+hint; dumping render trees shows the model reaching the correct values and
+makes the full journey pass. The modal redraw runs every 16 ms. The driver now
+waits for actual enabled OK and the valid hint before confirming; its fresh
+release-build controls pass in session 58208. The direct restart attempt in that
+wrapper incorrectly retains XCTest defaults isolation, so it exits 1. The
+repository's normal-startup `test_grid_settings` helper clears that flag and
+passes controls plus actual separate-process persistence, with required
+integrity (session 18926, `/tmp/compositor-entry-owner-grid-complete.exit` is 0).
+Logs: `/tmp/compositor-entry-owner-grid-{verified,complete}-*.log`.
+Evidence: `/tmp/compositor-entry-owner-{regression-grid,grid-diagnostic-native,grid-tree}.log`.
+The other six native journeys and required integrity pass in the resumed
+wrapper, session 11153, exit 0:
+`/tmp/compositor-entry-owner-regression-{canvas,visibility,preview,transform,dialog,sizing,integrity}.log`.
+The original failing wrapper is retained rather than relabeled successful.
+
+Native Wayland passes all 24 sizing/ownership markers using a private executable
+copy. Preview then fails at rename-editor Copy: Qt reports
+`Can't set clipboard contents with no wl_seats available`. The private headless
+Weston compositor is stopped and its socket lock is absent. The wrapper (session 36075) exits 1; this is not counted
+as a passing Wayland preview/clipboard check. Logs:
+`/tmp/compositor-entry-owner-wayland-{sizing,preview}.log`. The current 36-gate
+contract is running in session 25384 using `/tmp/compositor-mask-load-build`:
+`/tmp/compositor-entry-owner-full-contract.{log,exit}` and companion integrity
+log; no final result is available. The earlier 36-gate session 87491 remains
+running in `/tmp/compositor-crash-recovery-build` on the preceding menu/deep-sizing
+build and does not cover this entry/popup fix.
+Direct app-level/`onMain`-only callbacks and teardown beyond popup cancellation
+still need an ownership audit; broader platform and physical/Mac acceptance
+remain open. The 90-row inventory and historical 70-row accounting are unchanged.
+
+## Session-owned menu requests and deep sizing, 2026-10-16
+
+Extending row 57 to native 16-bit/HDR sizing exposes a real two-window routing
+defect. The first window's timer drains a global Image Size request intended for
+the second window, while the global sheet presenter retains the second window.
+The command waits indefinitely for a sheet on the wrong session. The original
+probe is stopped with exit 130 after diagnosis, not counted as passing:
+`/tmp/compositor-deep-size-before-native.log` and the symbolized/main/owner-values
+backtraces under `/tmp/compositor-deep-size-`. The owner-values trace confirms
+different requesting and presenting windows with the presentation guard false.
+
+Requests now carry a session handle and each Qt window drains only its displayed
+session's queue. Closing a handle drops its pending requests. Sheet presentation
+and long-operation repainting resolve the live owning window from the session,
+including the explicit session when rendering and checking sheet lifetime.
+An intermediate scoped-queue correction exposes a second race: an asynchronous
+menu task queues Image Size for session 5 instead of its dispatch owner 1.
+`/tmp/compositor-deep-size-task-owner-before-native.log` retains that failure.
+Task-local ownership alone still allows an intermittent wrong owner when sampled
+from global selection: workspace bootstrap can register several handles for the
+same tab, and a first-match lookup can select another window's alias. The
+identical executable passes one profile and fails another (`/tmp/compositor-deep-size-owned{,-prototype}-native.log`). Qt now passes
+its handle explicitly through `compositor_session_app_menu_perform`; the task
+retains that dispatch owner through deferral. Menu and palette actions share
+this ownership context. Generated command-palette/canvas-only overrides and their
+generator/patch sources use the same enqueue path.
+
+All 41 focused tests pass (original ImageSizeTests/DeepLayerTests plus three new
+ownership tests). The first unit driver called the foreign-thread C ABI directly
+from Swift Testing's main actor and crashed before assertions; its output is
+retained in `/tmp/compositor-deep-size-unit-entry-before-build.log`. Matching the
+existing detached-thread bridge-test convention corrects that harness error.
+The final focused wrapper and required integrity exit 0 in
+`/tmp/compositor-deep-size-bound.exit` and
+`/tmp/compositor-deep-size-bound-{build,native,integrity}.log`.
+
+Two independent offscreen profiles pass all 24 native markers. Native Wayland
+passes the same 24 plus four Hide cases; its private headless compositor is
+stopped afterwards. Logs: `/tmp/compositor-deep-size-bound-prototype-native.log`,
+`/tmp/compositor-deep-size-wayland-{native,visibility}.log`; wrapper exits are 0.
+The original 17 RGBA8 checks remain, with six additional deep checks and a window
+ownership check. Both 16-bit PNG and HDR EXR fixtures contain transparent,
+partial-alpha and opaque pixels. Print-only DPI edits retain saved source
+channels; Nearest 2× resampling matches an independent every-channel oracle
+(16-bit tolerance 2; float tolerance 0.008 for codec/half-float rounding), including
+Undo/Redo and saved-package reopen. Canvas crop/re-expansion retains those deep
+assets and verifies saved dimensions, center translation and separate Undo steps.
+The older window is exercised while each newer window lives and after newer
+window destruction. Other sampling algorithms, masked/grouped/transformed deep
+sizing combinations and physical/Mac acceptance remain open.
+
+The full framework/six-native regression wrapper exits 0 in session 34499:
+147 XCTest + 956 Swift Testing tests (1,103 total; 159 suites, 105.055 seconds),
+Grid, Canvas Size, Hide, preview, transform/save/reopen, dialog and required
+integrity all pass. Logs:
+`/tmp/compositor-deep-size-regression-{framework,grid,canvas,visibility,preview,transform,dialog,integrity}.log`;
+`/tmp/compositor-deep-size-regression.exit` is 0.
+
+The current 36-gate full contract is running in session 87491 using
+`/tmp/compositor-crash-recovery-build`:
+`/tmp/compositor-deep-size-full-contract.{log,exit}` and companion integrity log.
+It has no final result yet. The preceding 35-gate session 66977 has now completed
+with exit 0: all 1,100 framework tests, all 33 host-native commands and two
+standalone gates, required backends/coverage and integrity pass in
+`/tmp/compositor-canvas-size-full-contract.{log,exit}` and companion integrity
+log. That build includes numeric-field/Canvas Size and Hide/popup fixes, but
+predates Image Size/deep-sizing probes and this ownership correction. The earlier
+34-gate session 94463 also completed with exit 0 and required integrity. Older
+sections retain descriptions from their checkpoints; this section gives the
+latest full-run state.
+
+## Image Size visible units, resampling and print dimensions, 2026-10-16
+
+Historical row 57 now has direct native Image Size acceptance in
+`host/ImageSizeJourney.h`, dispatched by `--image-size-controls-probe`.
+The actual Image menu opens the upstream sheet over an opaque patterned 64×48
+RGBA8 source at 100 DPI. All checks pass in
+`/tmp/compositor-image-size-native.log`; wrapper session 79035 exits 0 and
+`/tmp/compositor-image-size-native.exit` is 0:
+
+- Six print-only edits: Inches/Centimeters × Width/Height/Resolution. Turning
+  Resample off filters the picker to those two units, hides Sampling and disables
+  aspect-lock editing. Entering a print dimension refreshes Resolution while
+  focus/text/cursor remain intact. Committing 200 DPI retains every source pixel,
+  layer record and canvas dimension, with exact single Undo/Redo.
+- Eight resampling cases: Pixels/Percent/Inches/Centimeters × locked/unlocked
+  aspect. Nearest sampling produces uniform 2× or horizontal-only 2× output;
+  an independent integer-coordinate oracle checks every pixel, retained target
+  identity and exact single Undo/Redo.
+- Two print-unit DPI resizes retain the displayed print dimensions while
+  doubling pixel dimensions. Exact nearest pixels, committed DPI and Undo/Redo
+  pass independently of the dimension-entry path.
+- Cancel retains original pixels/state, reopening restores default Resample,
+  Pixels and original DPI, and 9,601 DPI disables Resize while still focused.
+
+The first attempt opened the units popup before the asynchronous Resample
+refresh finished, preserving the old popup's items. Its failure is retained in
+`/tmp/compositor-image-size-picker-initial-native.log`. Waiting for the two-item
+picker before opening it makes the check pass; no production change is needed.
+The passing probe extends the existing numeric-field correction. It is compiled
+and linked to `/tmp/compositor-image-size-native/CompositorHostBootstrap` using
+read-only existing Swift/host objects, with only DialogJourney replaced in an
+isolated object list. Neither executable used by the running full contracts is
+rebuilt or replaced.
+
+The same 17 acceptance cases also pass on Qt's native Wayland backend using a
+private headless Weston compositor (`/tmp/compositor-image-size-wayland.log`,
+wrapper session 36214 exit 0; `/tmp/compositor-image-size-wayland.exit` is 0).
+The owned compositor is stopped afterwards and its socket lock is absent.
+Missing decoration icons and the headless GDK keyboard-seat warning remain
+nonfatal environment messages; physical hardware/input acceptance is separate.
+
+Required protected-source/generator/shader/ledger integrity passes in
+`/tmp/compositor-image-size-integrity.log` (exit 0). The current 35-gate full run,
+session 66977, passes its framework phase: 147 XCTest + 953 Swift Testing tests
+(1,100 total; 158 suites, 107.387 seconds), including all three original
+ImageSizeTests. Its native phases remain running and it predates this added
+probe. The older 34-gate session 94463 now exits 0, including all native gates
+and required integrity. Its framework phase passed 1,100 tests (104.472 seconds
+for Swift Testing); that build predates the numeric-field correction. Evidence:
+`/tmp/compositor-hide-panels-full-contract.{log,exit}` and the companion integrity
+log. The canonical runner
+now contains 36 gates, including this separately passing Image Size probe;
+a complete 36-gate run has not yet finished. These new native cases cover opaque
+RGBA8 and Nearest sampling; other sampling algorithms, alpha/deep/HDR sizing
+combinations and physical/Mac acceptance still need direct native evidence.
+
+## Canvas Size live fields, units and anchors, 2026-10-16
+
+Historical row 57 now has direct native Canvas Size evidence. The actual Image
+menu opens the upstream sheet over a patterned 64×48 RGBA8 image at 100 DPI,
+with half-alpha and opaque pixels. The corrected asynchronous presentation
+probe reproduces enabled OK after typing invalid width 0 while retaining focus:
+`/tmp/compositor-canvas-size-before-native.log`, wrapper exit 1. The first probe
+did not wait for the menu's async task; that harness-only failure is retained
+in `/tmp/compositor-canvas-size-initial-task-wait-native.log`.
+
+The renderer now recognizes its value-backed numeric fields during editing and
+refreshes enabled state, validation text and other bound fields without replacing
+the focused field. Sibling updates block Qt signals; the active text, focus and
+cursor remain exact. Initial construction and sibling updates share the existing
+numeric formatting policy. The native probe verifies invalid 0/30001, valid
+recovery, live size/warning text, locked-ratio Height updates, relative dimensions
+and exact draft/Cancel isolation. Upstream deliberately disables history use
+during a project sheet; document/history content is checked while open and full
+Undo/Redo readiness after Cancel. A first overstrict readiness assertion is
+retained in `/tmp/compositor-canvas-size-modal-readiness-before-native.log`.
+
+All four original `CanvasSizeTests` pass. All 36 combinations of Pixels/Percent/
+Inches/Centimeters and nine anchors pass visible picker, field and anchor-button
+paths. Independent all-pixel translations use odd expansion deltas 31×17 and
+floor the half-delta for center anchors; one Undo/Redo restores exact pixels and
+records. Nine additional cases crop by 11 pixels, then expand by 13: all source
+pixels outside the cropped canvas reappear at independently calculated offsets,
+with separate Undo steps and retained identity. Evidence:
+`/tmp/compositor-canvas-size-fixed-{build,native,integrity}.log`;
+`/tmp/compositor-canvas-size-fixed.exit` is 0.
+
+The shared renderer follow-up passes Grid controls/forced popup refresh/restart,
+eight transform-field cases, label scrubbing, native dialog and preview journeys,
+147 XCTest + 953 Swift Testing tests (1,100 total; 158 suites, 107.588 seconds)
+and required protected-source/generator/shader/ledger integrity. A final four-case
+native Wayland Hide check on this same numeric-field build also passes in
+`/tmp/compositor-canvas-size-wayland-native.log` (wrapper exit 0); the private
+headless Weston compositor is stopped afterwards. Logs for the other phases use
+`/tmp/compositor-canvas-size-regression-`; framework and resumed-wrapper exit
+markers are 0. The initial dialog check incorrectly enabled XCTest pasteboard
+isolation while expecting the system clipboard; its output is retained in
+`/tmp/compositor-canvas-size-dialog-test-isolation-before.log`. Removing that
+flag makes the dialog and subsequent phases pass. Passing Grid/transform/scrub
+phases are retained rather than repeated by the resume script.
+
+The canonical runner now has 35 gates (33 host-native commands and two standalone
+probes). Its current full run is session 66977:
+`/tmp/compositor-canvas-size-full-contract.{log,exit}`, using
+`/tmp/compositor-mask-load-build`. Session 94463 remains an earlier 34-gate run
+using `/tmp/compositor-crash-recovery-build`; it predates this numeric-field
+production change and the Canvas probe. Image Size unit/no-resample controls,
+HDR sizing combinations and physical/Mac acceptance remain unverified by this
+RGBA8 Canvas Size probe.
+
+## Keyboard popup ownership during refresh, 2026-10-16
+
+The expanded Hide checks pass offscreen and under native Wayland, but their
+regression wrapper stops at Grid Settings' first picker:
+`/tmp/compositor-hide-panels-activation-grid.log` (wrapper exit 1). The missing
+popup is not counted as a passing Grid check.
+
+The strengthened Grid driver opens the actual combo popup, releases its mouse
+grab for keyboard navigation, and forces the same panel refresh used by the
+modal timer. Before the correction, refresh returns a replacement root while
+the popup is still visible: `/tmp/compositor-grid-popup-before-native.log`,
+wrapper exit 1. The old manipulation guard covers sliders, buttons, mouse
+grabs and text focus, but not an open combo view without a grab. It now retains
+the owning panel while any of its combo views is visible. The probe also uses
+QPointer across focus, opening and event dispatch rather than retaining a raw
+combo pointer.
+
+The corrected source passes in session 48896:
+`/tmp/compositor-grid-popup-fixed-{build,grid,native,wayland,clear,preview,framework,integrity}.log`.
+All 14 original guide tests, forced popup refresh/navigation, separate-process
+persistence, four Hide cases on each backend, eight Clear cases and the native
+preview journey pass. The full framework suite passes 147 XCTest + 953 Swift
+Testing tests (1,100 total; 158 Swift Testing suites, 104.499 seconds), and required
+protected-source/generator/shader/ledger integrity passes. Both phase and wrapper
+exit markers are 0: `/tmp/compositor-grid-popup-fixed{,-framework}.exit`.
+A fresh 34-gate contract is running in session 94463 at
+`/tmp/compositor-hide-panels-full-contract.{log,exit}` using the same corrected
+Swift scratch build. Its complete combined result remains pending.
+
+## Floating tools across minimization and activation, 2026-10-16
+
+The expanded `--app-visibility-probe` opens the actual Gaussian Blur editor,
+types Radius 3 and hides both project windows. Normal and maximized owners must
+keep the panel unexposed across refresh ticks, then restore the same panel,
+value and exact preview through activation. Cancel must restore the committed
+image with exact layer/history/target/palette isolation in both projects.
+
+Before the correction, the floating panel remains exposed in both Qt offscreen
+and native Wayland: `/tmp/compositor-hide-panels-before-native.log` and
+`/tmp/compositor-hide-panels-wayland-before-native.log` (each wrapper exit 1).
+The periodic refresh unconditionally showed any open-but-hidden panel. Gating
+it on the owner's visible/minimized flags fixes offscreen: all four Hide cases,
+Grid/Clear, the native preview journey, all 1,100 framework tests (953 Swift
+Testing in 158 suites, 104.671 seconds, plus 147 XCTest) and required integrity
+pass in `/tmp/compositor-hide-panels-fixed-*.log` (wrapper exit 0).
+
+Native Wayland reveals a second problem: the owner becomes `WindowNoState` and
+the panel is remapped about 40 ms after Hide. Diagnostics and protocol evidence:
+`/tmp/compositor-hide-panels-wayland-{diagnostic,trace}-native.log`. GDB's Qt
+platform-state trace in
+`/tmp/compositor-hide-panels-wayland-platform-stack-native.log` shows a queued
+`NoState` callback issued by `QWaylandWindow::handleWindowStatesChanged` inside
+`QWindow::setWindowStates`/`QWidget::showMinimized`; the public QWidget setter
+trace does not contain a later user restoration. The GDB wrapper's own exit
+code is diagnostic only; its inferior fails the visibility assertion. A
+snapshot guard around panel hiding also fails and is removed.
+
+The current correction retains panel suppression from the minimize state change
+until the project is activated again, rather than trusting the later Wayland
+state bits. It hides the panel without closing its model or canceling its edit.
+The probe explicitly activates the restored project. All four native Hide cases
+pass on each backend in `/tmp/compositor-hide-panels-activation-{native,wayland}.log`
+(session 45469). Its wrapper exits 1 at the Grid popup failure described above;
+later regression phases are not reached in that run. After the popup correction,
+the complete focused regression set passes in session 48896 (wrapper exit 0),
+including both-backend Hide checks, native preview, all 1,100 framework tests and
+required integrity. The private Weston compositor is stopped after testing.
+
+Wayland uses a private Weston 14.0.1 headless compositor, its desktop shell and
+the SDK's actual `libqwayland.so` platform plugin. This is window-lifecycle
+evidence; physical input, a desktop task-switcher click and Mac comparison
+remain unverified. The last complete combined contract is the earlier 32-gate
+session 10792 (exit 0); the canonical runner now has 34 gates and includes the
+expanded Hide probe.
+
+## Application Hide host request, 2026-10-16
+
+The AppKit empty-method audit found an unconnected user action: upstream's
+visible Hide Compositor calls `NSApp.hide`, but no host installed its existing
+`hideHandler`. The corrected before-fix native probe times out after choosing
+the enabled action with a ready editor:
+`/tmp/compositor-app-visibility-before-native.log` (wrapper exit 1).
+The first prototype missed the application menu's padded caption; its routing
+failure is retained separately in
+`/tmp/compositor-app-visibility-menu-match-before-native.log`. The probe now
+uses the visible menu's stable `appMenu.Compositor` object name.
+
+`AppMenus.commands` now installs the hide callback, and Qt handles its queued
+request by minimizing all visible `SessionWindow` project windows. Minimization
+keeps them available to the desktop task switcher. The native probe passes from
+both originating windows, with different unsaved images: both windows minimize
+and restore, retaining exact pixels, layer records, targets, palette, tool,
+selection presence and Undo/Redo state. Evidence:
+`/tmp/compositor-app-visibility-fixed-native.log`. The original popup-menu test,
+Grid Settings controls/separate-process restart and all eight Clear cases also
+pass in `/tmp/compositor-app-visibility-fixed-{build,grid,clear}.log`.
+The corrected build passes 147 XCTest + 953 Swift Testing tests (1,100 total;
+158 Swift Testing suites, 109.725 seconds) in
+`/tmp/compositor-app-visibility-fixed-framework.log`, phase exit 0. Required
+protected-source/generator/shader/ledger integrity passes in
+`/tmp/compositor-app-visibility-fixed-integrity.log`; the wrapper exits 0 in
+`/tmp/compositor-app-visibility-fixed.exit` (session 49829).
+
+At the Hide/popup checkpoint, the runner had 34 gates: 32 host-native commands
+and two standalone probes. Session 10792 exits 0 with its earlier 32-gate script and pre-Hide-fix binary;
+that completed checkpoint cannot certify this later production correction. This native probe
+initially tested ordinary Qt restoration; the later section above adds normal/
+maximized floating-panel and native Wayland checks. Actual desktop task-switcher
+delivery and Mac appearance remain unverified. The separate
+cross-application Hide Others/Show All compatibility methods remain empty and
+are not certified by this application-window fix.
+
+## Visible Clear Selection Pixels, 2026-10-16
+
+Historical row 33 now has direct visible Edit-menu coverage. The new
+`--selection-clear-probe` passes eight cases: rectangle/ellipse, alpha 255/128,
+and image/mask targets. Clear is disabled without a selection. Independent
+rectangle/ellipse equations verify transparent interiors and unchanged exteriors;
+ellipse checks omit the antialias boundary (normalized squared radius 0.75–1.3).
+Alpha never increases anywhere. Target, selection presence, mask-target state
+and palette stay unchanged; one Undo/Redo restores exact complete composites
+and layer records. On masks, the background is explicitly black; disabling the
+edited mask restores the original image exactly.
+
+All 19 original `SelectionEditTests` pass in
+`/tmp/compositor-selection-clear-build.log`. All eight native cases pass in
+`/tmp/compositor-selection-clear-native.log`; required protected-source/generator/
+shader/ledger integrity passes in `/tmp/compositor-selection-clear-integrity.log`.
+The wrapper exits 0 in `/tmp/compositor-selection-clear.exit`. This adds acceptance
+coverage; no application behavior changes are needed.
+
+The first probe selected the shell's hidden legacy Edit menu and failed at its
+mask action. Diagnostics showed a ready editor, active selection and enabled,
+linked mask in `/tmp/compositor-selection-clear-mask-menu-before-native.log`.
+The corrected probe explicitly requires a visible top-level menu and visible
+action; all eight cases then pass. The earlier refusal is a harness-routing
+failure, not evidence of an application defect.
+
+At the Clear checkpoint, adding this probe expanded the runner to 31 host-native
+commands plus two standalone gates (33 total); the later Hide gate makes 34. Completed session 10792 passes its earlier
+32-gate script and executable (exit 0); this additional probe passes separately using
+`/tmp/compositor-crash-recovery-build`. Transformed/HDR combinations, independent
+antialias-edge equations and physical/Mac delivery remain unverified.
+
+## Grid Settings validation and modal state lifetime, 2026-10-16
+
+The new `test_grid_settings` driver launches an isolated native controls probe
+and then a separate process against the same preferences profile. It removes
+the XCTest preference-suppression flag. The View menu action opens the real
+upstream sheet; actual field/picker/button events cover spacing, subdivisions,
+color, style, opacity, invalid-range/relative-limit recovery, Cancel/OK, Restore
+Defaults Cancel/OK, reopen and persistence. Source pixels, layer records, target,
+history and palette remain exact.
+
+Two application defects are reproduced. Under GDB, invalid spacing leaves OK
+enabled while the field retains focus: `/tmp/compositor-grid-settings-before-gdb.log`.
+The Qt panel refresh gate freezes the whole Grid Settings panel during typing.
+It now refreshes enabled state and the validation hint's text, warning style and
+wrapping in place, retaining the field, text, focus and cursor. Other panel
+editing refresh behavior is retained.
+
+After that correction, opening 3 shows canceled spacing **32** instead of the
+committed **24**: `/tmp/compositor-grid-settings-stale-reopen-before-native.log`.
+The retained profile's SQLite preferences contain spacing 24 and subdivisions 3.
+The modal close path never resolved the closed panel, leaving its SwiftUI @State
+cache alive. It now resolves a closed sheet before retiring its widgets, matching
+the existing floating-panel cleanup and giving the next presentation fresh state.
+
+All 14 original `GuideTests` pass, and both native controls and separate-process
+persistence pass in `/tmp/compositor-grid-settings-{build,native}.log`. Required
+protected-source/generator/shader/ledger integrity passes in
+`/tmp/compositor-grid-settings-integrity.log`; `/tmp/compositor-grid-settings.exit`
+is 0. The corrected build also passes the full framework suite: 147 XCTest +
+953 Swift Testing (1,100 total; 158 suites, 107.552 seconds) in
+`/tmp/compositor-grid-settings-full-framework.log`, phase exit 0. Native
+transform-field, preview, save and transform regression checks all pass in
+`/tmp/compositor-grid-settings-regression-*.log`; the wrapper exits 0 in
+`/tmp/compositor-grid-settings-regression.exit` (session 24273).
+
+Supplemental normal-startup canvas captures also pass five pixel checks:
+grid off, Lines at 25% and 75%, Dashed Lines and Dots at 75%. Independent interior
+color markers calibrate document coordinates. Major lines match spacing 24,
+subdivision lines match spacing 8, and the major-line channel change triples
+from 48 to 144 with opacity. Dashed and dotted styles have distinct gaps;
+269,360 off-grid pixels per capture remain exact. Evidence is in
+`/tmp/compositor-grid-render/verification.json` and the adjacent PNG captures.
+The initial measurement included the canvas border; interior markers correct
+that measurement without widening the two-pixel grid exclusion band. This is
+seeded-preference startup rendering, not live-modal timing or Mac appearance
+acceptance.
+
+The initial synthetic controls run crashed with SIGSEGV; GDB reached the concrete
+validation failure instead. Test event targets now use QPointer across key
+dispatch, with explicit popup-lifetime checks. The specific original crash is
+not conclusively attributed; later complete grid controls/persistence pass.
+The existing full contract (session 87013) retains its pre-grid-fix executable
+and earlier 30-command scope. It exits 0, including all native commands and
+required integrity, but cannot validate these later production fixes. The new
+full contract exits 0 in session 10792 using the corrected executable and all
+32 gates: 30 host-native commands plus standalone group rotation and grid settings.
+All 1,100 framework tests pass (147 XCTest + 953 Swift Testing in 158 suites,
+103.415 seconds), as do native backends, eleven source-coverage checks and required
+protected-source/generator/shader/ledger integrity. This checkpoint precedes the
+later Hide corrections.
+Its log and final exit marker are
+`/tmp/compositor-grid-settings-full-contract.{log,exit}`.
+
+## Selected-layer and folder rotation bridge, 2026-10-16
+
+Historical row 19 had native movement/scaling coverage but no rotation-specific
+group evidence. The standalone CMake target `test_group_rotation` now launches
+the normal Swift host for six cases: selected layers or a folder at +90°, -90°
+and 180°. Two opaque patterned assets have unequal sizes/origins (8×12 at 8,12;
+6×10 at 34,20), so their shared center (24,21) differs from both individual
+centers. Independent integer pixel mappings verify every pixel of the committed
+and Redo composites; Before, Cancel and a single Undo match the original exactly.
+An unselected third asset stays fixed. Original leaf IDs remain selectable and
+SHA-256 hashes of the source manifest/assets remain unchanged.
+
+The repository target builds and all six cases pass in
+`/tmp/compositor-group-rotation-cmake-{build,native}.log`; required protected-source,
+generator, shader and ledger integrity passes in
+`/tmp/compositor-group-rotation-integrity.log`. The wrapper exits 0 in
+`/tmp/compositor-group-rotation-cmake.exit`. This uses the existing executable in
+`/tmp/compositor-crash-recovery-build`; it does not rebuild or alter the host used
+by the active full contract. The fixture uses the existing v11 format; no format
+change is introduced.
+
+The canonical runner now builds and invokes this standalone probe after its 30
+host-native commands. The completed session 87013 retained its earlier
+script inode and 30-command scope; this new companion gate is verified separately
+above. Grouping and transform commands use the real application bridge. Pointer
+rotation delivery, continuous/non-quarter-turn angles and nested/masked/HDR
+combinations remain unverified.
+
+## Autosave coordination in native package assertions, 2026-10-16
+
+The earlier combined run failed an effects-control package save without logging
+its refusal reason. Two isolated reruns then passed all 54 cases; neither pass
+establishes that historical failure's cause. The new deterministic
+`--effects-autosave-overlap` check proves an actual race in the previous harness:
+start an autosave, then attempt the immediate explicit package save before its
+queued completion. The explicit save refuses with `document=1, destination=0`
+and writes no destination. Waiting for the actual autosave completion makes
+the same explicit save succeed with the existing exact pixels/parameters checks.
+
+The native combination harness now waits for pending saves before its modern
+adjustment, effect-control and effect Color Picker package assertions. The
+natural autosave timer remains enabled. Application save/refusal behavior is
+unchanged; a read-only current-tab progress query and refusal diagnostics make
+the coordination observable. The contract's effects phase includes the forced
+overlap, retaining all 54 independent pixel cases and existing history/isolation
+checks.
+
+All seven focused save tests, the forced overlap and 54 effects cases, the native
+async save/reopen/startup journey, and required source/generator/shader/ledger
+integrity pass in `/tmp/compositor-effects-autosave-overlap{,-build,-save,-integrity}.log`;
+the script exits 0. The subsequent shared-helper refactor passes
+a fresh complete canonical contract, session 87013:
+`/tmp/compositor-autosave-coordination-contract.{log,exit}`. It uses all 30 native
+commands, full framework tests, native backends and source-coverage checks.
+`COMPOSITOR_CONTRACT_SWIFT_BUILD=/tmp/compositor-crash-recovery-build` now selects
+the same build directory for both the framework tests and native executable;
+the default remains the project's `.build`. No `--skip-build` is used in this run.
+This fresh run now passes its backend/codec/font/thumbnailer and eleven source-coverage
+checks, then all 147 XCTest + 953 Swift Testing tests (1,100 total; 158 Swift
+Testing suites, 104.121 seconds). All 30 native commands and required integrity
+also pass. The wrapper exits 0; integrity is recorded in
+`/tmp/compositor-autosave-coordination-contract-integrity.log`. This complete
+combined checkpoint precedes the Grid Settings production fixes above.
+
+## Actual process-crash recovery at normal startup, 2026-10-16
+
+The new `--autosave-crash-probe` kills an isolated writer process after a
+completed snapshot and launches the normal application without smoke flags.
+The previous implementation fails: the snapshot survives the confirmed
+SIGKILL/CrashExit boundary, but startup opens an empty document. Evidence:
+`/tmp/compositor-crash-recovery-before-native.log` (exit 1). Startup had no call
+to recovery; the existing helper also bound the recovery package as a normal
+project URL/watcher despite clearing the Qt save path.
+
+Startup now recovers before opening explicit input files. A separate C bridge
+entry point shares the validated package loader but leaves recovery unbound.
+An invalid recovery package is kept and its path is reported. The normal loader
+retains its existing save destination and watcher behavior. No protected
+upstream source or project format changes are required.
+
+The release executable passes both committed-edit and pending-gradient cases
+in `/tmp/compositor-crash-recovery-release-native.log` (exit 0). Each crosses
+a real process kill, then verifies exact recovered composite pixels and layer
+records/IDs, unsaved state, no restored gradient draft, explicit startup image
+isolation with the recovered tab retained, exact saved source PNG pixels/IDs,
+recovery cleanup after a real save and a clean subsequent launch. The writer
+also checks that autosave preserves its live draft, target and history. The
+Linux contract runner includes this probe. All seven `ProjectSaveSnapshotTests`
+methods pass, including both normal/recovery loader cases, in
+`/tmp/compositor-crash-recovery-framework.log` (exit 0). The rebuilt executable
+also passes the crash probe in `/tmp/compositor-crash-recovery-after-native.log`
+and the existing async save, same/cross-window reopen and multi-file startup
+journeys in `/tmp/compositor-crash-recovery-save-native.log`. Required protected
+source, generator, shader and ledger integrity passes in
+`/tmp/compositor-crash-recovery-integrity.log`. The entire verification script
+exits 0 (`/tmp/compositor-crash-recovery-check.exit`). The fresh complete framework
+run passes 147 XCTest + 953 Swift Testing tests (1,100 total; 158 Swift Testing
+suites, 106.009 seconds) in `/tmp/compositor-crash-recovery-full-framework.log`
+with exit 0. The earlier combined Invert run has now failed an effects-control
+package save as recorded below; a full combined checkpoint remains open.
+The isolated rerun passes all 54 effect-control cases with exit 0 in
+`/tmp/compositor-effects-save-repro.{log,exit}`. That pass does not establish
+the earlier failure's cause. Diagnostic-only changes now log early explicit-save
+refusal reasons and the failing effect case/kind/alpha variant. Their build
+and all seven focused save tests pass in
+`/tmp/compositor-effects-save-diagnostics-build.log`. All 54 native effects
+cases and the async save/reopen/startup journey also pass in
+`/tmp/compositor-effects-save-diagnostics{,-save}.log`, script exit 0. The
+deterministic `--effects-autosave-overlap` check passes with exit 0 in
+`/tmp/compositor-effects-autosave-overlap{,-build,-save}.log` (session 85816, terminal).
+It starts an autosave, verifies that the previous immediate explicit-save
+sequence refuses, then waits for the actual completion before checking the
+explicit package. The effects harness also waits for natural timer saves; the
+contract runner includes the forced overlap. This does not change application
+save/refusal behavior. The initial diagnostic build caught a local variable-name
+collision; it was renamed, with the compiler output preserved in
+`/tmp/compositor-effects-save-diagnostics-name-collision.log`.
+
+The initial normal-load regression expectation distinguished a file URL from
+the same directory URL with a trailing slash. Declaring the expected package
+as a directory fixes that harness error; its initial two issues are preserved
+in `/tmp/compositor-crash-recovery-url-expectation-failure.log`. Other draft
+kinds, multiple recovery slots and installed desktop acceptance remain unverified.
+
+## Invert editor refusal and pending-gradient preservation, 2026-10-16
+
+The prior six-kind acceptance covered Invert creation, but not requesting its
+nonexistent editor. The new `AdjustmentEditorLifecycleTests` reproduces a real
+session lock: default-target and explicit-ID requests return success, retain
+`adjustmentEditingID`/`adjustmentOriginal`, disable layer editing and prevent
+the next Exposure editor from opening. Both parameter cases fail with sixteen
+issues in `/tmp/compositor-invert-editor-before.log`. A third case also proves
+that requesting an inactive Invert adjustment commits an unrelated pending
+gradient before locking the session. The expanded before-fix run fails two
+test methods / three cases with 22 issues in
+`/tmp/compositor-invert-editor-gradient-before.log`.
+
+The bridge now checks the target's existing `isEditable` property before setting
+any edit state, and checks it before resolving a pending gradient. The generated
+Edit Adjustment menu applies the same property. Its generator requires exactly
+one recognized upstream gate, so source drift fails generation rather than
+silently dropping the adaptation. Original upstream files remain unchanged;
+the parity manifest documents the generated menu correction. The existing
+modern native probe now checks disabled Invert Edit and a refused bridge request
+with exact pixels, records, target, history and switchability.
+
+The complete framework run passes 147 XCTest + 952 Swift Testing tests
+(1,099 total; 158 Swift Testing suites, 112.915 seconds) in
+`/tmp/compositor-invert-editor-framework.log`, with phase exit 0. Both new
+methods / all three cases pass. The modern native phase also exits 0 in
+`/tmp/compositor-invert-editor-modern-native.exit`; all six kind markers,
+including the new Invert refusal, are in
+`/tmp/compositor-invert-editor-native-contract.log`. Required Vulkan hardware
+and the shipped subject model are enabled. Native backend/codec/font/thumbnailer
+and all eleven evaluated-source coverage checks exit 0 in
+`/tmp/compositor-invert-editor-backends-coverage.log`. Required protected-source,
+generator, shader and ledger integrity exits 0 in
+`/tmp/compositor-invert-editor-integrity.log`.
+
+The new runner `/tmp/compositor-invert-editor-contract.sh` runs all 29 configured
+native commands from the current contract, with the modern adjustment phase
+first. It has now terminated with exit 1 (session 74583): after the modern,
+combination, Levels and Curves phases, the effects-control phase reports
+`effect controls project save failed` after its opaque cases. The log does
+not identify which early save refusal guard fired. This remains unresolved;
+a passing focused recovery journey does not close that combined-run failure. The earlier `/tmp/compositor-layer-autoscroll-resume.sh` run (session
+23268) has now exited 0: 1,097 framework tests and every configured native journey,
+including all 26 nesting cases, pass. It uses the previous executable and cannot
+verify this later production fix. Require the new runner's final `.exit` result before recording
+a complete combined checkpoint. Wider adjustment combinations and physical/Mac
+acceptance remain open.
+
+## All current adjustment-layer kinds: native controls and persistence, 2026-10-16
+
+`--combo-smoke --modern-adjustment-probe` passes six cases in
+`/tmp/compositor-modern-adjustment-native.log` (exit 0 in its `.exit` file):
+Gaussian Blur Radius 1.5, Motion Blur Angle 90, Add Noise Amount 55,
+Black & White Reds 80, Color Balance Midtones Yellow / Blue 60, and Invert.
+Together with the historical six-kind native journey, this covers creation of
+all twelve current `AdjustmentKind` cases and reopening all eleven editable
+kinds. The five newer editors pass actual window-pointer thumbnail double-clicks
+and the visible Edit Adjustment menu, live numeric changes, Cancel/OK, exact
+pixel/record/identity Undo/Redo and saved numeric parameters. Invert creates no
+editor and passes independent RGB-complement and exact-alpha checks.
+
+Every case independently reads all saved source PNG channels, retaining the
+original multicolor RGBA8 fixture, and loads the written package with the exact
+accepted composite. `writeProjectPackage` does not bind the package path, so
+these distinct paths go through package reading rather than selecting a cached
+open tab. The release build passes in
+`/tmp/compositor-modern-adjustment-build.log` (106.27 seconds). Required source,
+generator, shader and ledger integrity exits 0 in
+`/tmp/compositor-modern-adjustment-integrity.log`. The contract runner includes
+the probe; shell syntax and diff checks pass.
+
+Three harness assumptions were corrected without production changes. Accepting
+resolved optional defaults can record an Edit step after the New Adjustment
+step; both checkpoints now have separate exact Undo/Redo checks. The diagnostic
+log is `/tmp/compositor-modern-adjustment-history-before.log`. An initial
+synchronous pointer sequence could not deliver its release while the table
+tracked the press; the deep stack identifies `NSWindow.nextEvent` beneath the
+probe's press call in `/tmp/compositor-modern-adjustment-pointer-deep-stack.log`.
+The full click/double-click sequence now queues each release, as real event
+delivery does. Finally, Qt's `Black && White` text must retain its literal
+ampersand when decoding menu labels; the old lookup failure is retained in
+`/tmp/compositor-modern-adjustment-ampersand-before.log`.
+
+The earlier full contract has now exited 0 on its previous script and executable;
+it did not include this new probe or the thumbnail-modifier addition below.
+The Invert-corrected runner includes both, but stopped on the effects-control
+package-save failure recorded above before reaching these later probe commands. Wider parameters, masked/transformed/HDR stacks and
+physical/Mac appearance remain unverified.
+
+## Thumbnail selection modifiers, 2026-10-16
+
+The new `--combo-smoke --thumbnail-selection-probe` passes twelve actual Qt
+window-pointer cases: layer-image, layer-mask and folder-mask thumbnails, each
+with Ctrl, Ctrl+Shift, Ctrl+Alt and Ctrl+Shift+Alt. Independent rectangular
+set equations verify every pixel of Replace, Add and Subtract coverage,
+including Alt's precedence over Shift. Image loading ignores the attached
+mask; mask loading selects its dark regions even outside source opacity.
+Each gesture preserves source pixels, layer records, active layer and the
+immediate mask/pixel edit target. Reversible fills on a separate layer prove
+the original selection after Undo and the loaded selection after Redo;
+fill Undo/Redo restores exact pixels and records. Both layer and folder
+mask proofs keep their destination outside masked folders.
+
+The first probe incorrectly compared the second gesture's edit target with
+the state before its temporary coverage-proof layer was added. Diagnostics in
+`/tmp/compositor-thumbnail-selection-stale-target-before.log` show identical
+pixels, records and active layer, with only the mask target changing. Unchanged
+upstream `EditorSession.restore` deliberately retains a mask target only when
+Undo stays on the same layer; adding/removing the proof layer clears it. The
+probe now snapshots the edit target immediately before each gesture. Pixel,
+record, selection and history expectations are unchanged. No production fix
+was needed.
+
+The isolated release build passes in
+`/tmp/compositor-thumbnail-selection-build.log` (95.15 seconds), and the native
+log `/tmp/compositor-thumbnail-selection-native.log` contains all twelve pass
+markers with exit 0 in its `.exit` file. The probe uses a separate scratch build
+and settings profile with required Vulkan hardware. The first scratch-build
+attempt failed because copied precompiled modules embed their original cache
+path; moving aside that copied cache allowed the independent build to finish.
+`scripts/linux-contract-tests.sh` now includes the probe; shell syntax passes.
+Required protected-source/generator/shader/ledger integrity also exits 0 in
+`/tmp/compositor-thumbnail-selection-integrity.log`, and `git diff --check` passes.
+The runner file was replaced atomically so the earlier contract retained
+its original script and executable. That run now exits 0 as described below;
+it does not include this new test-only probe. Transformed/HDR/partial-alpha
+variants and physical/Mac input remain unverified.
+
+
+## Collapsed folders, cross-folder drags and autoscroll investigation, 2026-10-15
+
+The nesting probe expands from eleven to 26 cases. The additions use actual
+folder-disclosure clicks, collapsed sources/targets, cross-folder multi-selection
+with different inherited opacities, and stationary-pointer scrolling to an
+offscreen folder in both directions, for Move and Copy. Existing exact
+record/parent/ID/order, independent translucent pixel and Undo/Redo checks remain.
+The scrolling cases require reaching the opposite edge of a 24-spacer viewport
+while holding one pointer position, with no document change before the final drop.
+
+The first expanded run passes the original eleven cases, then fails because the
+folder disclosure is absent from accessibility
+(`/tmp/compositor-layer-nesting-expanded-before-native.log`). The compatibility
+NSImage symbol initializer discarded its accessibilityDescription argument; its
+color-configuration copy also dropped the field. The new native symbol regression
+fails on original and configured images before the fix, reporting nil metadata
+and no named button in NativeLowering's accessibility snapshot (two argument
+cases, six issues in `/tmp/compositor-symbol-accessibility-isolated-before-build.log`).
+The compatibility image creation/configuration paths now retain the description.
+The focused framework and expanded native acceptance run passes in
+`/tmp/compositor-layer-nesting-both-edges-build.log` (4 XCTest + 84 Swift Testing
+tests, 88 total) and `/tmp/compositor-layer-nesting-both-edges-native.log`
+(all 26 cases), with exit 0 in its `.exit` file.
+The initial test-wrapper build required an explicit preconcurrency view
+conformance under Swift 6; that setup error is distinct from the reproduced
+missing symbol metadata.
+
+The first stationary-pointer case then reproduces an actual scrolling defect:
+the offset stays at 973 of 973 after the pointer leaves the top of the viewport
+(`/tmp/compositor-layer-nesting-live-viewport-native.log`). The native row's
+initial mouseDown tracking has returned, stopping the Qt repeat timer, and the
+compatibility drag-session path never calls table autoscroll. The host now keeps
+edge repeats alive while a layer drag session exists, synchronizes native scroll
+offsets after drag delivery, and stops on release or retired sessions. The
+compatibility router autoscrolls before calculating drop validation coordinates.
+The unchanged held-pointer assertion passes upward and downward for Move/Copy;
+no extra pointer moves drive the scrolling.
+
+Two harness lifetime issues were corrected separately: viewport readiness must
+query the current Qt scroll area, and polling must reacquire it after panel
+replacement. GDB identifies the latter crash in the probe's QAbstractSlider::value
+call (`/tmp/compositor-layer-nesting-autoscroll-gdb.log`), not in production
+scrolling. Exact model, pixel, selection and history assertions remain in place.
+The original full combined contract under
+`/tmp/compositor-layer-autoscroll-contract.sh` stopped during Wand repetition 5
+without an exit file. On October 16, host process inspection found no remaining
+runner or native test process; that log is incomplete and is not a passing
+combined checkpoint. The same contract was restarted in the existing Flatpak
+SDK as `/tmp/compositor-layer-autoscroll-resume.sh`, preserving the original log.
+Required protected-source/generator/shader/ledger integrity passes in
+`/tmp/compositor-layer-autoscroll-resume-integrity.log`. The restarted framework
+run passes 147 XCTest and 950 Swift Testing cases (1,097 total; the latter in
+157 suites, 114.146 seconds). Every configured native journey, all 26 nesting/
+copy cases, required Vulkan hardware and the backend/coverage checks also pass.
+`/tmp/compositor-layer-autoscroll-resume.exit` is 0. This is a complete combined
+checkpoint before the later Invert correction and the two additional probe
+commands. The current corrected build's framework/modern-native phases pass
+above; its later effects-control package-save phase failed as recorded above.
+
+## Native layer nesting and Alt-drag copies, 2026-10-15
+
+Historical row 5 now uses `--combo-smoke --layer-nesting-probe`. Eleven actual
+window-pointer cases cover single/multiple rows moved or Alt-copied into a
+folder, nested-folder moves/copies, a folder copied while a descendant is also
+selected (carried once), move/copy refusal into its own descendant, moving a row
+back out above its folder, and Alt pressed after drag initiation. New IDs and
+exact descendant-parent remapping, displayed root order, original-record
+isolation, copied appearance/geometry, target selection and exact one-step
+hierarchy/ID/pixel Undo/Redo are checked. Independent source-over equations use
+disjoint red/blue layers at 50% opacity, with another 50% on nested outer folders,
+so duplicates have a distinct, independently checked composite alpha.
+
+The initial native run passes nine cases but fails the move-out setup in
+`/tmp/compositor-layer-nesting-ready-native.log`. Failure-only Qt route and native
+pointer/scroll diagnostics reproduce the same failure in
+`/tmp/compositor-layer-nesting-traced-native.log`: both points hit the current
+session's table, but the press returns without entering native drag tracking.
+A direct C ABI accessibility snapshot, which does not resolve the panel first,
+shows the native coordinator still has only the original `input` row while the
+model has the renamed red/blue rows and destination folder
+(`/tmp/compositor-layer-nesting-native-rows-native.log`). Qt accessibility and
+keys synchronize the coordinator before input; pointer presses did not.
+
+The production host now resolves the native panel before ordinary left/right
+press hit-testing, with a lifetime guard and without refreshing inside an active
+AppKit tracking loop. Middle-button tracking remains on its existing path.
+The unchanged regression still sees the stale `input` cache immediately before
+press, then succeeds through normal pointer dispatch. All eleven cases pass in
+`/tmp/compositor-layer-nesting-press-sync-native.log`, with exit 0. Its focused
+build log passes 4 lifecycle XCTest + 83 Swift Testing cases (87 total), including
+original group/layer/appearance suites. The initial QJsonArray reverse-iterator
+compile failure was a harness API error, corrected to indexed traversal.
+
+The complete framework/native contract with the pointer correction and preceding
+effect-control addition passes in `/tmp/compositor-layer-nesting-contract.log`,
+with exit 0 in its `.exit` file: 147 XCTest + 949 Swift Testing tests (1,096 total),
+all configured native journeys, required Vulkan hardware and source-coverage
+checks. The native log includes all eleven nesting cases, 54 effect-control
+cases, 16 disjoint rounds and 66 snap cases, plus full preview, save/recovery,
+transform, tab, RAW lens and text journeys. Protected-source/generator/shader/
+ledger integrity passes in `/tmp/compositor-layer-nesting-integrity.log` against
+`365b574`. Coverage accounts for all 156 upstream Swift files (128 unchanged,
+20 generated, 6 replaced, 2 platform) and 89 upstream test files (87 unchanged,
+2 mirrors), with zero errors. Qt stylesheet, Fontconfig and offscreen portal/
+D-Bus diagnostics remain in the log; these runs do not prove desktop delivery.
+Masks/clipping/effects/HDR combinations, collapsed/scrolling targets, cross-folder
+multi-selection and physical/Mac drag delivery remain unverified. This reproduces
+a specific stale-row press failure; the exact historical intermittent mask and
+Command-click failures remain unattributed.
+
+## Native layer-effect numeric controls, 2026-10-15
+
+Historical row 14's numeric/position-control gap is exercised by
+`--combo-smoke --effects-controls-probe`. The expanded grid has 54 cases:
+27 parameters on opaque and half-alpha red rectangles. Stroke covers Size 2/6,
+Inside/Outside and Opacity 50/100, plus manually entered Size 50 on each side
+(the displayed slider ends at 20). Drop/Inner Shadow cover angles −90/0/90/180,
+Distance 8, Blur 0 and an additional Blur 4 case, at Opacity 50. Color Overlay
+covers Opacity 0/25/100. Outer/Inner Glow cover Size 2/8 at Opacity 50.
+
+Independent all-pixel equations use square dilation/erosion, directional offsets,
+source-over/source-atop compositing and a normalized separable discrete Gaussian
+with sigma half the Blur/Glow Size. Premultiplied RGB/alpha differences must stay
+within 4/255; inner shadows/glows and overlay preserve alpha exactly. The source
+has opaque upper and 128/255-alpha lower halves, so the soft variants exercise
+effect compositing within translucent pixels as well as outside the shape.
+
+Every case uses the visible fx menu, Stroke position buttons and numeric fields.
+Cancel restores exact source pixels with upstream's compensating Cancel history
+step; OK retains the preview. Undo/Redo of the final opacity edit restores exact
+checkpoints. Layer identity/geometry, target and palette remain unchanged. Saved
+parameters are checked, and the saved source PNG must have zero pixel differences from the
+original raster plus an sRGB tag. The initial 25 opaque cases pass in
+`/tmp/compositor-effects-controls-native.log`; all 36 focused framework tests
+pass in its companion build log. The final expanded grid passes all 54 cases in
+`/tmp/compositor-effects-controls-eroded-native.log`; all 36 focused tests pass
+again in `/tmp/compositor-effects-controls-eroded-build.log`.
+`/tmp/compositor-effects-controls-eroded.exit` is 0. Required protected-source,
+generator, shader and ledger integrity passes in
+`/tmp/compositor-effects-controls-integrity.log`; shell syntax and diff whitespace
+checks pass. The contract runner now includes the new probe. This is a test-only
+follow-up: application effect code is unchanged, and the previous complete
+1,096-test/native contract predates this probe. Extreme values, effect stacks,
+selections/masks/transforms/HDR, continuous pointer controls and physical/Mac
+appearance remain unverified.
+
+Early harness failures are retained separately. The saved PNG/raw-raster QImage
+comparison failed solely on metadata: dimensions matched, zero pixels/channels
+differed, the PNG was tagged sRGB and raw readback was untagged
+(`/tmp/compositor-effects-controls-source-trace-ready-native.log`). The assertion
+now checks exact channels and the sRGB tag separately. A second oracle error
+used QRect containment on an over-eroded rectangle: a small standalone Qt probe
+shows Width −84, invalid, yet `contains(20,20)` is true. The oracle now requires
+valid positive erosion bounds, matching an empty shape. Neither issue changed
+application rendering or weakened the pixel tolerance.
+
+## Native panel session ownership investigation, 2026-10-15
+
+A repeated create/render/close regression reproduces stale native table ownership:
+31 of 32 reopened Layers panels expose no row with the current session's unique
+name in `/tmp/compositor-native-session-lifetime-main-thread-before-build.log`.
+The old scope was a hash of the bridge entry's allocator address. Close removed
+the handle without discarding `NativeLowering`, `StateStore` or `ChangeTracker`,
+allowing a reused address to select the old coordinator and its cleared document.
+
+The bridge now gives each entry a UUID scope and discards all rendered panel
+scopes, handlers, pending tree/accessibility snapshots and dirty notifications on
+close. Locked live-entry tracking rejects observation callbacks after closure.
+Shared-document handles retain separate panel scopes; closing one preserves the
+other handle's document and native rows. The scope/close fix passes the 32-session
+reopen, alias ownership and late-invalidation tests in
+`/tmp/compositor-native-session-lifetime-async-after-build.log`.
+
+That run still fails the asynchronous weak-session release assertion. Source
+inspection identifies a second cycle: `arrowSteps` stores the view's change
+closure in its `@State` stepper, and that captured view owns the stepper. The Linux
+ContentView patch now clears its value/change callbacks on disappearance, after
+stopping the key monitor. The generated output passes `--check`. All four
+lifecycle tests, including weak session release, pass in `/tmp/compositor-native-session-lifetime-cycle-after-build.log`
+with exit 0. Four complete preview runs (one with optional input tracing), all
+16 disjoint-selection rounds across two windows, and the focused mask-scroll/
+replacement probe pass in `/tmp/compositor-session-lifetime-native-*.log`.
+Required source/generator/shader integrity passes; the script exit is 0. The
+combined native/framework contract also passes with exit 0 in
+`/tmp/compositor-session-lifetime-contract.exit`: 147 XCTest + 949 Swift Testing
+tests (1,096 total), all configured native journeys and required Vulkan hardware.
+`/tmp/compositor-session-lifetime-integrity.log` passes protected-source, generator,
+shader and ledger checks against `365b574`. Evaluated-target coverage accounts
+for all 156 upstream Swift files (128 unchanged, 20 generated, 6 replaced,
+2 platform) and 89 upstream test files (87 unchanged, 2 mirrors), with zero errors.
+The full native run includes 42 filter and 30 Image adjustment cases, 20 Levels
+handle cases, four Curves channels, 24 Hue range-handle cases, 66 transform-snap
+cases, all six historical adjustment re-editors, the 16-round two-window disjoint
+probe and the complete preview, save/recovery, transform, tab, RAW lens and text
+journeys. Qt stylesheet, portal/D-Bus and Fontconfig diagnostics remain in the
+offscreen log; physical desktop delivery is not established by these passes.
+
+Earlier synchronous lifetime assertions could also retain canceled Swift tasks
+by blocking their executor; the final lifetime test is asynchronous and closes
+through the process-main-thread C ABI. Those setup failures are not attributed
+to product behavior. Ten unmodified complete preview repetitions had passed
+before the stale-owner regression was added, but a subsequent preview failed
+waiting for a current mask thumbnail (`/tmp/compositor-input-target-traces-preview-1.log`).
+The old intermittent mask and Command-click failures are not yet conclusively
+linked to the reproduced ownership defect. Failure-only Qt hit/scroll/session
+and native accessibility diagnostics preserve their original assertions.
+
+## Native Exposure, Gradient Map and Grain controls, 2026-10-15
+
+Historical row 50 now uses `--combo-smoke --image-adjustment-controls-probe`,
+sharing the filter-control harness while opening the visible Image menu. Its
+30 cases split equally between whole-image and pointer-selected edits. The
+selection's exact coverage is proven by a reversible all-pixel fill. Every case
+checks Preview Off/On, Cancel/OK, source/target/palette/history isolation and
+exact pixel/record Undo/Redo. Default Exposure and zero Grain instead require
+unchanged pixels/records/history on OK, matching upstream's identity policy.
+
+Exposure covers identity, ±1 stop, Offset ±0.05, Gamma 0.5/2 and a combined
+0.5-stop/0.02-offset/1.4-gamma edit. Every nontransparent selected component is
+checked against independent sRGB decode, linear-light exposure/offset/gamma and
+sRGB encode equations within 3/255; alpha and all outside pixels stay exact.
+Gradient Map covers red/blue defaults and custom Shadows `204060` / Highlights
+`E0C0A0`, each with Reverse off/on. Both visible swatches open the app's color
+picker: Hex submission, displayed RGB, live parent preview and picker Cancel/OK
+are checked. Pixels follow independently calculated luminance interpolation
+within 3/255, with exact alpha/outside pixels and palette isolation.
+
+Grain covers Amount 0/20/40, with same-seed parameter checks inside each nonzero
+edit: Size 1→4 must reduce normalized neighbor-difference energy; Roughness
+0→100 must add finer detail, and 50 must interpolate the same two patterns within
+3/255. Doubling Amount must double deviations within 4/255, zero restores exact
+source pixels, and restoring Amount must restore the exact pattern. Neutral
+channels, alpha, transparent/outside pixels and strength bounds are checked.
+Identity cases also drive Home/End on all six Exposure/Grain sliders, including
+logarithmic Gamma/Size, checking range endpoints in their model-backed numeric
+fields before restoring the original values.
+
+All 18 original tests in `ImageAdjustmentTests`, `AdjustmentLayerTests` and
+`AdjustmentEditorTests` pass. The first complete 30-case native run passes in
+`/tmp/compositor-image-adjustments-live-fields-native.log`; it predates the slider
+endpoint additions. Earlier logs preserve harness failures: Hex is a draft
+until submit/focus loss, and the picker can rebuild its widget while retaining
+the visible Hex text/focus/cursor. The final harness reacquires that live field
+and verifies RGB after submission, rather than asserting identity of a retired
+widget. No production adjustment implementation or focus behavior changed.
+The final expanded grid, including slider endpoints, passes all 30 cases in
+each of `/tmp/compositor-image-adjustments-verified-native-{1,2,3}.log` (90
+executions). Its focused rebuild passes all 18 tests again in
+`/tmp/compositor-image-adjustments-verified-build.log`.
+The related 42 filter cases pass in
+`/tmp/compositor-image-adjustments-verified-filters.log`, the complete preview
+passes in `/tmp/compositor-image-adjustments-verified-preview.log`, and required
+protected-source/generator/shader integrity passes. The combined run terminates
+with status 0 in `/tmp/compositor-image-adjustments-verified.exit`.
+The contract runner includes the new probe. Transformed/masked/HDR combinations,
+larger images, continuous slider/pointer gestures and physical/Mac appearance
+remain unverified. The earlier full-framework checkpoint is not rerun for these
+test-only changes; exact native follow-up scope is recorded separately.
+
+## Native filter controls and Motion Blur spread, 2026-10-15
+
+Historical row 52's Motion Blur, Add Noise and Lens Correction sheets are driven
+by `--combo-smoke --filter-controls-probe` through the visible upstream Filter
+menu. The grid has 42 cases, 21 whole-image and 21 with a pointer-drawn selection:
+Motion Blur at −45/0/45/90 degrees and Distance 12/24; Uniform/Gaussian noise,
+color/monochromatic, Amount 10/40; lens distortion −60/−20/0/20/60. The selected
+rectangle's coverage is proven by a reversible all-pixel blue fill, rather than
+assuming bounds from a state field. Motion's selection edge cuts its streak.
+
+The initial native attempts found harness errors: legacy menu object IDs do not
+identify the displayed upstream actions; zero lens distortion intentionally
+closes without an undo step; the state ABI exposes selection presence rather
+than bounds; and selection transforms are deliberately unavailable during a
+filter. Those expectations were corrected against source and observable pixels,
+without changing production behavior. The old logs remain in
+`/tmp/compositor-filter-controls-{first,menu,identity,verified}-*.log`.
+
+Review then found a production spread error that direction-only checks missed.
+Upstream calibrates Motion Blur's Distance to radius `d / sqrt(12)`, describing
+radius as the Gaussian-like standard deviation. Compat instead sampled uniformly
+over ±radius. The independent floating-point impulse-moment regression fails
+all 12 radius/angle combinations in `/tmp/compositor-motion-spread-before-build.log`:
+radius 4 gives variance 6.6667 instead of 16, and radius 8 gives 24 instead of 64.
+The compatibility kernel now normalizes Gaussian line weights through three
+standard deviations, uses those weights in SIMD and boundary sampling, and
+expands the reported extent and regional input margin accordingly. Protected
+upstream code is unchanged. The scalar comparison follows the corrected weighted
+convolution; independent impulse moments enforce the actual spread requirement.
+Native acceptance also checks absolute Distance calibration, not just direction
+and the ratio between two distances.
+
+The corrected focused run passes all 12 impulse-moment combinations, the scalar
+comparison across fractional/large radii, and the default 1920×1080 performance
+guard: approximately 13.2/15.3/14.3 ms for 0/45/90 degrees in
+`/tmp/compositor-filter-controls-spread-fixed-build.log`. Those are raw raster
+kernel timings, not end-to-end UI latency. The full follow-up
+`/tmp/compositor-motion-spread-final-build.log` passes 143 XCTest + 949 Swift
+Testing tests in 156 suites (1,092 total), including a new regional/full-render
+equivalence test sampling a source two standard deviations away. Required
+source/generator/shader integrity also passes; combined terminal status
+`/tmp/compositor-motion-spread-final.exit` is 0. This is a full framework run,
+not a repeated complete native contract run.
+
+Noise checks mean/variance, uniform bounds, Gaussian tails, mono/color channels,
+exact alpha/transparent pixels and a stable seed across Preview Off/On. Its
+random-seed, 768-sample selected case uses a 30% variance envelope (about six
+Gaussian sampling standard errors). Lens pixels use an independent inverse
+radial map with bilinear premultiplied samples, within 2/255 per component.
+Each case checks Preview, Cancel/OK, source/target/history isolation and exact
+pixel/record Undo/Redo; zero lens distortion instead requires history-free OK.
+An earlier corrected-kernel native attempt passed 40 cases, then stopped because
+the canvas had not acquired focus for a history key after a sheet closed. The
+harness now waits up to five seconds for the visible main canvas to own focus;
+the exact pixel/record assertions remain unchanged. All 42 cases pass in each
+of `/tmp/compositor-filter-controls-focus-ready-native-{1,2,3}.log` (126 case
+executions). The final focused rebuild also passes 16 XCTest + 14 Swift Testing
+tests, including both new regressions. This is test-target readiness, not a
+production focus fix or an explanation of the older intermittent input failures.
+The complete preview also passes in
+`/tmp/compositor-filter-controls-focus-ready-preview.log`, followed by required
+source/generator/shader integrity; combined terminal status
+`/tmp/compositor-filter-controls-focus-ready.exit` is 0.
+The contract runner includes the probe. Mac kernel/appearance comparison,
+extreme values, transformed/masked/HDR combinations and physical input remain
+unverified.
+
+## Window initialization and native disjoint selection, 2026-10-15
+
+The focused `--combo-smoke --layer-disjoint-probe` reproduces a second-window
+failure in `/tmp/compositor-disjoint-layer-route-native.log` (exit 1). Round zero
+passes Command/Shift clicks and Shift arrows. After constructing and closing a
+second window, Shift-Up leaves rows {2,6,7,8} selected instead of {2,5,6,7,8}.
+Pointer/key traces show delivery to the current session's table, and temporary
+Swift instrumentation confirms its root/window and first responder are valid.
+The table's session tool changes from Brush to Move during window construction;
+upstream correctly routes the arrow to its Move-tool nudge path.
+
+`compositor_workspace_bootstrap` registers another handle for the current tab's
+session. The Qt constructor used to send `selectTool(Move)` and set its foreground
+to black before opening a new tab. It now reads the existing tool/palette after
+building the controls. Temporary Swift instrumentation is removed. The native
+probe retains exact Command/Shift-click and expanding/contracting Shift-arrow
+assertions, repeats 16 rounds with eight second-window lifecycles, and checks
+tool/palette retention, pixels and history. The contract runner includes it.
+
+The first full verification stopped before native checks with nine CMYK issues
+because this isolated data directory lacked the ICC fixture. Its 141 XCTest
+tests passed; the failed log is `/tmp/compositor-disjoint-window-fixed-build.log`.
+Installing the existing ECI-derived Generic CMYK fixture resolves that setup
+error without changing application code or expectations. The corrected
+`/tmp/compositor-disjoint-window-verified-build.log` passes 141 XCTest + 949 Swift
+Testing tests in 156 suites (1,090 total), with required Vulkan CI/warp hardware
+and the subject model. All 16 native rounds pass in
+`/tmp/compositor-disjoint-window-verified-native.log`.
+
+Three complete previews also pass in
+`/tmp/compositor-disjoint-window-verified-preview-{1,2,3}.log`. Required protected
+upstream/generator/shader integrity passes in
+`/tmp/compositor-disjoint-window-verified-integrity.log`; the combined run exits
+0 in `/tmp/compositor-disjoint-window-verified.exit`. This is a full framework
+run and targeted native follow-up, not a repeated complete contract run.
+
+Tab/window, asynchronous save and transform journeys also pass in
+`/tmp/compositor-disjoint-window-{tab,save,transform}.log`, with combined terminal
+status 0 in `/tmp/compositor-disjoint-window-journeys.exit`. They cover two-window
+tab transfers, existing-project reopen, asynchronous save/tab switching and
+pending-transform save plus 16-bit/HDR package/photo imports.
+
+This explains the focused Shift-Up failure. It does not establish the cause of
+the earlier intermittent Command-click or valid-target mask failures. Those
+remain open until independently reproduced and explained.
+
+## Distortion cache correction and native group transforms, 2026-10-15
+
+The native `--transform-gestures-probe` initially timed out because the shared
+ordinary-drag helper waits for not-busy, while distortion intentionally stays
+busy until Apply/Cancel. The draft-aware event sequence then exposed a production
+failure: `/tmp/compositor-transform-gestures-diagnostic-native.log` maps pixel
+(0,0) to source (-13.1799,-16.0384), but it remains opaque red. Draft corners are
+correct at [(8,10),(64,0),(64,64),(0,64)]. `displayedSnapshot` supplies warped
+pixels, but the C ABI reused its original composite because `RenderKey` omitted
+corners. The key now includes `transformEdit.corners`; the ordinary layer
+transform and original asset identities remain unchanged during a distortion.
+`LivePreviewTests.distortionCornersInvalidateTheCachedComposite` covers the
+first and later corner updates, no draft history, and Cancel key/pixel restoration.
+
+The fixed host completes `/tmp/compositor-transform-gestures-early-native.log`
+with terminal exit 0: six corner/edge/Shift-axis cases cover Cancel/Apply,
+persistent draft isolation, independent Qt perspective interior/exterior checks
+away from interpolation boundaries, exact preview/committed pixels, retained
+target and exact Undo/Redo. Four additional cases move/half-scale selected
+layers and a folder through actual canvas pointers, retaining child geometry,
+nearest-sampled pixel equations, hierarchy/target and an untouched unselected
+layer. Selected-layer state is fixture setup; the visible footer creates the
+folder. The contract runner includes the probe.
+
+Required protected-source/generator/shader integrity passes in
+`/tmp/compositor-transform-gestures-integrity.log`. All 33 focused tests in five
+suites pass in `/tmp/compositor-transform-gestures-fixed-build.log`, including
+the new cache regression. Its native companion also completes with exit 0 for
+all ten cases. The first full contract attempt exits 1 in
+`/tmp/compositor-transform-gestures-full-contract.log`: five CMYK issues came from
+the fresh data directory's missing ECI fixture, and 19 hardware-CI issues came
+from omitting `COMPOSITOR_COREIMAGE_BACKEND=vulkan` while requiring it. Its 141
+XCTest tests pass, and the new cache regression passes. No test expectations or
+application behavior were changed to address those setup failures. The existing
+ECI fixture is copied into a fresh isolated data directory, and the corrected
+required-hardware run passes 141 XCTest + 926 Swift Testing tests and all six
+native Wand rounds in `/tmp/compositor-transform-gestures-verified-full-contract.log`.
+It was deliberately stopped (terminal process exit 143) during later native
+journeys after live upstream moved to 1.5.3. It is not a complete contract pass;
+the full gate moves to the merged tree. Prior full checkpoints do not cover
+this production cache change. Folded distortions, group rotation, nested/
+hidden/masked/HDR cases and physical/Mac acceptance remain open.
+
+## Verified follow-up: selection-outline movement, 2026-10-15
+
+At GNU_Linux `11d0564` plus this test-only follow-up, the release build and all
+19 original SelectionEditTests pass in `/tmp/compositor-selection-outline-build.log`.
+The same SDK command then runs `--combo-smoke --selection-outline-probe` to
+terminal exit 0 in `/tmp/compositor-selection-outline-native.log`.
+The probe selects Rectangle/New through visible controls and routes pointer drags
+and platform keys through Qt. All four directions at 1 px and Shift+10 px, a
+7,-5 drag and a -25,0 drag partly outside the canvas pass. Reversible blue fills
+over an existing red source check every pixel of translated/clipped coverage.
+Each move preserves exact source pixels, layer records and active target and
+records one Move Selection operation; Undo/Redo restore exact coverage.
+The contract runner includes the new probe. No production implementation change
+was needed. Shell syntax and protected-upstream integrity pass, with integrity
+evidence in `/tmp/compositor-selection-outline-integrity.log`.
+The complete checkpoint below predates this test-only follow-up; it was not
+repeated. Other shapes/tools, feathering, fractional drags and physical/Mac input
+remain unverified.
+
+## Upstream 1.5.3 integration in progress, 2026-10-15
+
+A live remote check returned `365b5745eda537f984f3d5bed1e53c361dbc9c91`.
+Nine commits after `43d691b` are merged into GNU_Linux as `94cf71e`.
+The sole conflict in `docs/project-format.md` retains the Linux descriptions
+and accepts upstream's v14 schema. A binary diff comparison before adapter
+regeneration proves all eight previously uncommitted files were preserved.
+Their backup is `/tmp/compositor-before-upstream-2026-10-15.patch`.
+
+Generated adapters now include upstream's shape-smoothing state, middle-button
+layer handling and v14 validation. The first build detects the new Swift file
+in the C-kernel target; Linux packaging now excludes it there and replaces the
+Metal lookup with a Vulkan adapter. The next build identifies the missing
+`CGMutablePath.addArc` and `NSClipView.constrainBoundsRect` compatibility APIs.
+Those APIs and native middle-button routing are implemented. The compatibility
+build linked the host but was stopped before test execution to include the
+identified Linux draft-smoothing correction and isolate acceptance settings.
+The first focused build detects a missing explicit `CompositorKernels` import
+in the new Linux test. The early native attempt selects the wrong enclosing
+scroll area; it now uses the existing named Layers viewport and settling gate.
+Both are harness corrections. The focused release build passes 10 XCTest and
+64 Swift Testing tests in `/tmp/compositor-upstream-153-focused-fixed-build.log`.
+These include unchanged Camera Raw tests covering all 16,777,216 opaque RGB
+values across five profiles, alpha/padded rows and native-resolution previews.
+The new acceptance suite checks draft/
+commit smoothing, explicit hardware submissions with odd padded rows and
+buffer recreation, and clip constraints. The native probe checks live middle
+scrolling, coordinate continuity, release/boundary behavior and visible shape controls.
+The padded-row kernel checks pass in `/tmp/compositor-upstream-153-kernel-contract.log`,
+including refusal of undersized rows for lookup and repair.
+Protected-source, generator and shader checks passed in the first integrity
+attempt; its only failure was the expanded ledger's missing evidence mappings.
+The populated ledger and complete integrity checks pass in
+`/tmp/compositor-upstream-153-integrity.log`: 47 commits, 37 code commits.
+
+The first middle-scroll harness retained a deleted viewport after a normal
+panel refresh; the debugger confirms `QAbstractSlider::value` at that stale
+pointer. Re-querying the named Layers viewport fixes the harness. The next
+native run exposes a production defect: the model has radius 12 and an enabled
+Smooth Corners toggle, while Qt retains the old disabled toggle during field
+focus. `/tmp/compositor-upstream-153-shape-diagnostic-native.log` records both
+states. The renderer now refreshes dependent control state in place while
+retaining the focused ToolHeaders field, using the existing selection-amount
+validation mechanism.
+
+The corrected release build passes all three Linux acceptance tests in
+`/tmp/compositor-upstream-153-controls-fixed-build.log`, including two actual
+AMD Radeon Graphics (RADV RENOIR) submissions and buffer recreation. Its native
+companion `/tmp/compositor-upstream-153-controls-fixed-native.log` completes the
+middle-scroll journey and both circular/smoothed shape journeys, with exact
+Undo/Redo and preview/commit checks. Upstream sources/assertions remain unchanged.
+The optional unchanged upstream GPU performance benchmark passes (exit 0,
+158.871 seconds) in `/tmp/compositor-upstream-153-gpu-benchmark.log`, with exact
+CPU/GPU pixels for every workload through 48 MP and required direct GPU calls.
+[Linux measurements](camera-raw-linux-performance.md) retain all samples and
+the limited preview gains, including the mixed workload's lack of improvement.
+The complete required-hardware merged-tree run passes 141 XCTest + 945 Swift
+Testing tests in 155 suites (1,086 framework tests) in
+`/tmp/compositor-upstream-153-full-contract.log`. All 11 source-coverage checks
+pass: 156 upstream Swift files (128 unchanged, 20 generated, six replaced,
+two platform) and 89 upstream test files (87 unchanged, two generated mirrors).
+The native phase has passed all six repeated Wand rounds, the main combination
+journey, Levels/Curves/Hue handle probes, selection-outline movement, all ten
+distortion/group-transform cases, the 1.5.3 Layers/Shape probes (including retained
+Radius field/focus/cursor), and transform numeric/scrub controls. Proofing and
+SVG import also pass. The full runner then exits 1 during the preview journey:
+the mixed-font save assertion still hardcodes manifest version 13. Upstream
+1.5.3 writes 14. The assertion now requires 14 separately from the unchanged
+font-run equality check, retaining both schema and metadata requirements. Its
+terminal `.exit` file records 1; this is not a full contract pass.
+
+The test-only `--zoom-cursor-probe` now reproduces a production failure in
+`/tmp/compositor-zoom-cursor-before-native.log` (terminal exit 1). Both left-button
+Zoom cases pass, including Alt release/click and direction reversals. The first
+middle-button reversal fails to change its native picture above the starting
+point. Static tracing confirms that all three middle-button handlers discard
+`compositor_canvas_mouse`'s returned cursor, whereas left-button handlers apply it.
+`SessionWindow::applyCanvasCursor` supplies the same existing cursor/picture
+logic to both paths. The first fixed isolated run passes both left-button and
+both Ctrl/Meta middle-zoom cases, then exposes a second defect:
+`/tmp/compositor-zoom-cursor-fixed-native.log` exits 1 because plain pan release
+retains the grabbing cursor. Upstream relies on cursor-rectangle invalidation;
+that AppKit compatibility hook is empty. The canvas bridge already restores
+cursor rectangles on left release; it now does so on middle release as well.
+The static Compositor target builds successfully (218.78 seconds), but the next
+isolated link fails: its old bootstrap object expects an AppKit initializer that
+the non-testing rebuild no longer exports. The build graph distinguishes the
+bootstrap module from its executable. A coherent module-only bootstrap rebuild
+completes in 75.58 seconds, followed by an isolated link and probe in
+`/tmp/compositor-zoom-cursor-coherent-native.log` (terminal exit 0): both left Zoom
+cases, both Ctrl/Meta middle-zoom reversals and plain middle pan from Move/Brush
+pass, including native cursor pictures, release restoration, viewport equations
+and exact source/history isolation. The module build log is
+`/tmp/compositor-zoom-cursor-bootstrap-build.log`; the earlier link failure is in
+`/tmp/compositor-zoom-cursor-restored-build.log`.
+
+The isolated SDK builds replay the compile/link arguments in SwiftPM's
+`.build/release.yaml`, replacing only the selected host objects and executable
+output under `/tmp/compositor-zoom-isolated`. The build helper is
+`/tmp/compositor-zoom-isolated-build.py`. Later module-only SwiftPM builds update
+static objects without linking the baseline executable. Its checksum is pinned
+in `/tmp/compositor-upstream-153-baseline-binary.sha256` and verified before the
+isolated link. That full-run binary predates this cursor follow-up, and the runner
+script remained unchanged during that execution. It now includes the new cursor
+probe. The standard release test-product rebuild passes all 12 original
+Cursor/MiddleButton tests in two suites, all six native cursor cases and the
+three 1.5.3 Layers/Shape cases in the `cursor-final-` logs. Its preview phase
+exits 1 at `Shift-click left stale mask coverage`, before reaching the corrected
+font-save assertion. The earlier full binary passed this point. Save/transform/
+tab/RAW/text phases were not reached. The terminal status is
+`/tmp/compositor-upstream-153-cursor-final.exit` = 1.
+
+The existing exact mask assertions are extracted into `--preview-smoke
+--mask-toggle-probe` and remain called at the original point in the complete
+preview. Failure diagnostics compare layer state, rendered alpha,
+table geometry and Layers scroll position. No production mask fix is made:
+`RenderKey` already includes the mask-enabled flag. Focused and full-context
+diagnostic runs both pass (terminal exit 0) in
+`/tmp/compositor-mask-toggle-diagnostic-{focused,context}.log`. The context run
+also passes the corrected v14 exact font/color-run save and reopen assertions.
+That diagnostic included an extra pre-click state read, so it does not close
+the intermittent mask failure. With that read removed, the focused probe and
+three complete preview repetitions pass under `/tmp/compositor-mask-toggle-repeat-*`
+(combined terminal status `/tmp/compositor-mask-toggle-repeat.exit` = 0).
+Separate save/transform/tab/RAW/text journeys also pass in
+`/tmp/compositor-upstream-153-document-final-*.log` (combined exit 0).
+
+The fresh complete contract checkpoint passes in
+`/tmp/compositor-upstream-153-final-contract.log` (terminal exit 0):
+141 XCTest + 945 Swift Testing tests in 155 suites, all 11 source-coverage
+checks and every native journey. Required-shader/protected-source/generator
+integrity passes in `/tmp/compositor-upstream-153-cursor-final-integrity.log`.
+This checkpoint predates the following hover/keyboard and pointer-router fixes.
+The earlier intermittent mask failure remains unexplained; successful repeats
+do not establish its cause.
+
+The stricter keyboard cursor probe first rejects the default arrow on Zoom
+hover, then detects a retained Zoom picture after switching to Hand without
+moving the pointer. The bridge now applies cursor rectangles on ordinary
+hover while preserving Move/selection tools' position-specific cursors.
+The host refreshes the displayed cursor at the recorded pointer position after
+tool/key changes, outside active gestures and sampling. The normal package
+rebuild passes Hand/Zoom shape, picture and hotspot checks before stationary
+hover in `/tmp/compositor-native-followup-keyboard-cursor.log`; all six existing
+Zoom/middle-pan cases and all three Layers/Shape cases pass in adjacent logs.
+The contract runner now includes `--keyboard-cursor-probe`.
+
+A separate deterministic routing regression supplies an outer middle-release
+event before a Shift-click on the actual upstream mask thumbnail. It fails
+before the fix in `/tmp/compositor-native-event-context-before.log`: left-button
+hit testing reads that outer event and redirects the click to the table.
+Hit testing now runs inside the incoming event's dispatch scope. All three
+`NativeMaskGeometryTests` pass in `/tmp/compositor-native-event-context-fixed.log`,
+including exact mask toggling, outer-event restoration and one-step Undo/Redo.
+This proves a distinct event-context defect; it does not establish the trigger
+of the earlier intermittent native failure.
+
+The complete rerun including both follow-ups passes with terminal exit 0 in
+`/tmp/compositor-upstream-153-event-cursor-contract.log`: 141 XCTest + 946 Swift
+Testing tests in 155 suites (1,087 total), all 11 coverage checks and every
+native journey. Both mask Shift-click cases, all six Wand rounds, both cursor
+probes, 1.5.3 Layers/Shape controls, preview/save/transform/tab/RAW-lens/text
+journeys pass. Required-shader/protected-source/generator integrity passes in
+`/tmp/compositor-upstream-153-event-cursor-integrity.log`. The script and terminal
+status are `/tmp/compositor-upstream-153-event-cursor-contract.{sh,exit}`.
+These checks close the regression gate for this implementation checkpoint;
+they do not close broader API, feature-combination or physical/Mac acceptance.
+
+### Right-click hit-test event context follow-up
+
+The next audit finds the same dispatch-order defect in `PointerRouter.rightDown`:
+it selects the hit-test target before installing the incoming right-click.
+`NativePointerContextTests.rightClickHitTestingAndMenuUseTheIncomingEvent`
+reproduces six failures in `/tmp/compositor-right-click-context-before.log`:
+an outer middle release causes the table menu to be chosen instead of the child
+menu, and hit testing sees the wrong type, modifiers, location and event identity.
+The first test-harness builds needed required coder initializers and the existing
+Swift-5-mode LinuxOverrideTests target for native-view protocol conformance.
+
+Moving the hit-test call inside dispatch fixes all six failures. Five focused
+tests across NativePointerContextTests, NativeMaskGeometryTests and PopUpMenuTests
+pass in `/tmp/compositor-right-click-context-fixed.log`. They verify incoming
+right-click identity through hit testing/menu lookup/presentation and restoration
+of the enclosing event, along with the earlier mask and nested-popup regressions.
+Protected-source/generator/shader integrity passes in
+`/tmp/compositor-right-click-context-integrity.log`. The earlier complete contract
+checkpoint predates this fix. Its follow-up verification terminates with exit 0
+in `/tmp/compositor-right-click-context-regression.exit`: 141 XCTest + 947 Swift
+Testing tests in 156 suites (1,088 total), the complete native preview, all three
+1.5.3 Layers/Shape cases, six Zoom/pan cases and both Hand/Zoom keyboard cases.
+Logs are `/tmp/compositor-right-click-context-{full-tests,preview,upstream-153,zoom-cursor,keyboard-cursor}.log`.
+The script is `/tmp/compositor-right-click-context-regression.sh`. It does not
+repeat the entire native combination/save/transform/tab/RAW-lens/text contract;
+those remain evidence from the prior complete checkpoint.
+
+### Pointer button identity and overlapping presses
+
+`NativePointerContextTests` now reproduces two additional defects before the
+fix in `/tmp/compositor-pointer-buttons-before.log` (exit 1): right-click menu
+events report button 0 instead of 1, and overlapping left/middle presses report
+`[4, 1, 0, 0, 0, 4, 4, 1, 5, 5, 0]` instead of the expected
+`[4, 5, 4, 4, 0, 4, 0, 1, 5, 1, 0]`. Left press/release replace the whole mask;
+middle release clears its bit after its callback. The compatibility mouse-event
+factory now sets right/other identities, left transitions preserve other bits,
+and middle release clears its bit before dispatch.
+
+The tracking-loop regression additionally sends release through the actual
+`NSWindow.nextEvent` pump. A consumed left release preserves the held middle
+button and clears the left target; a duplicate release has no target to notify.
+The first focused fix passes 19 tests. The stronger hit-test assertion then
+fails in `/tmp/compositor-pointer-hit-buttons-before.log`: callbacks see correct
+state, but hit testing still sees `[0, 4, 0, 0, 1]`. Moving press-bit updates
+before left/middle hit testing fixes that separate ordering edge. All 19 tests
+in five suites pass in `/tmp/compositor-pointer-hit-buttons-fixed.log`, covering
+pointer context, masks, popups and original Cursor/MiddleButton suites.
+
+Required-shader/protected-source/generator integrity passes in
+`/tmp/compositor-pointer-buttons-integrity.log`. The regression script
+`/tmp/compositor-pointer-buttons-regression.sh` terminates with exit 0:
+141 XCTest + 949 Swift Testing tests in 156 suites (1,090 total), complete native
+preview, all three 1.5.3 Layers/Shape cases, six Zoom/pan cases and both keyboard
+cursor cases pass. Logs are `/tmp/compositor-pointer-buttons-{full-tests,preview,upstream-153,zoom-cursor,keyboard-cursor}.log`;
+the terminal status is `/tmp/compositor-pointer-buttons-regression.exit`.
+The older complete contract checkpoint predates these changes. Its broader
+combination/save/transform/tab/RAW-lens/text phases were not repeated for this
+follow-up. Physical multi-button input and broader native API acceptance remain
+open; this does not explain the earlier intermittent mask failure.
+
+### Transform snapping native acceptance
+
+Historical feature row 20 previously had only core resize/guide evidence. The
+new `--transform-snap-probe` supplies 66 native cases: 33 on each axis, comprising
+move gestures, side-handle resize and a proportional corner. Two opaque source
+fixtures and explicit coordinates provide independent geometry and pixel
+oracles. Initial imports, placements and guide creation are fixture commands;
+the View menus, Zoom field, aspect/sampling controls and transform pointer
+gestures use visible native Qt controls.
+
+The 24-case initial move run passes in
+`/tmp/compositor-transform-snap-before-native.log`. The 33-case horizontal
+move/resize extension passes in `/tmp/compositor-transform-snap-resize-native.log`.
+The completed two-axis version passes all 66 cases in
+`/tmp/compositor-transform-snap-both-axes-native.log` (terminal status
+`/tmp/compositor-transform-snap-both-axes.exit` = 0). Its release build also passes
+all 17 original ResizeSnapTests/GuideTests in
+`/tmp/compositor-transform-snap-both-axes-build.log`.
+
+Cases cover canvas/other-layer edges and centers, visible guides, Snap/Snap To/
+Show toggles, hidden/disabled targets, global Snap off and Meta mapped to
+upstream Control suppression. Scale is checked at 1/2/4 screen points per
+document pixel; three pixels snap at six screen points but not twelve, while
+two pixels still snap at eight. Live preview preserves history and the saved
+state. Release commits exact preview pixels and clears alignment targets;
+interior snap-line strips also change visibly on release. One Undo returns to
+the exact saved pixels/records/unmodified state and Redo restores the commit.
+Unselected records and active target remain exact.
+
+The existing upstream implementation supplies this behavior; no production
+snapping code changes. The contract runner now includes the probe. Required
+integrity passes in `/tmp/compositor-transform-snap-integrity.log`. Related
+native transform gestures (ten cases) and numeric fields (eight cases) pass in
+`/tmp/compositor-transform-snap-related-{transform-gestures,transform-fields}.log`.
+The complete preview then reproduces the earlier intermittent mask failure;
+`/tmp/compositor-transform-snap-regression.exit` is 1. Its failure-only diagnostics
+show a single-layer model with the mask still enabled, a clicked table height
+of 1,350 and two Layers scroll areas at offsets 432 and 0. The clicked table may
+still represent the old many-layer viewport. Direct hit/visibility diagnostics
+and a focused scroll-then-replace probe are being tested before any production
+fix; exact mask alpha/Undo/Redo assertions remain unchanged. The earlier complete
+contract and 1,090-test framework checkpoint predate this test-only addition.
+Competing targets/grid, rotated/masked/group/HDR combinations and physical/Mac
+acceptance remain open.
+
+The first visible-target diagnostic passes three focused scroll/replacement
+runs and one complete preview (`/tmp/compositor-mask-visible-target-before.exit`
+= 0). Subsequent complete-context repeats reproduce the mask alpha failure in
+run 1 while runs 2/3 pass. Crucially, the failing click is in the viewport, the
+table is already 252×485 at offset 0, and table/current project handles both
+equal 12. The diagnostic also lists many-row scroll areas elsewhere in the
+widget tree, so their geometry alone did not identify the clicked table. Logs are
+`/tmp/compositor-mask-visible-target-context-{1,2,3}.log`; the combined status is 1.
+This rules out a clipped/wrong-project click for that occurrence. A direct native
+accessibility snapshot now checks that the mask thumbnail exists at the click
+point without Qt accessibility's explicit tree refresh. That diagnostic is
+tested under `/tmp/compositor-mask-row-before.sh`; no production mask fix is
+claimed. The focused run and complete-context run 1 pass. Run 2 fails earlier at
+`native Command-click did not create disjoint selection`, before the mask checks.
+Run 3 conclusively rejects an invalid synthetic click: the table is scrolled by
+863 pixels and row zero maps to global y = -582, outside the viewport. Individual
+logs/statuses are `/tmp/compositor-mask-row-before-context-{1,2,3}.{log,exit}`;
+the combined status is 1.
+
+The mask harness now waits up to five seconds for a table belonging to the
+active project, a click point in the visible viewport with the expected Qt hit
+target, and a native `Select mask:` thumbnail at that point. It queries the
+existing native snapshot without Qt accessibility's explicit tree fetch, though
+the snapshot can request layout. The exact alpha 0→255, Undo and Redo assertions
+remain unchanged. This corrects the verified invalid-target synchronization
+gap; it is not a production mask fix or proof of every earlier failure's cause.
+Focused scroll/replacement and all three complete previews pass through
+`/tmp/compositor-mask-visible-ready.sh` (terminal exit 0). The release build
+passes three NativeMaskGeometryTests. Logs are
+`/tmp/compositor-mask-visible-ready-{build,focused,context-1,context-2,context-3}.log`;
+each context's `.exit` is 0. Final required integrity also passes in
+`/tmp/compositor-transform-snap-final-integrity.log`. These are scoped follow-up
+results, not a repeated complete contract run. The independent Command-click
+failure and the cause of the earlier visible/current-project mask failure
+remain open; successful repetitions do not prove their causes.
+
 ## Verified follow-up: image clipboard through the Qt desktop bridge, 2026-10-14
 
 The new `--image-clipboard-probe` uses actual Edit menu actions and a pointer

@@ -134,7 +134,7 @@ private indirect enum Node {
         case .gaussian(let n, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .variableBlur(let n, _, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
-        case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r), dy: -ceil(r))
+        case .motion(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .cube(let n, _, _), .cubeInSpace(let n, _, _, _): return n.extent
         case .blendMask(let n, let bg, _, _): return n.extent.union(bg.extent)
         case .curves(let n, _, _), .nearest(let n), .unpremultiply(let n), .maxComponent(let n): return n.extent
@@ -425,7 +425,7 @@ private indirect enum Node {
             let blurred = RasterFilters.gaussian(n.eval(region.insetBy(dx: -pad, dy: -pad), env), sigma: radius, output: region)
             return RasterFilters.bloom(source, blurred: blurred, intensity: Float(intensity))
         case .motion(let n, let radius, let angle):
-            let pad = ceil(radius) + 1
+            let pad = ceil(radius * 3) + 1
             return RasterFilters.motionBlur(n.eval(region.insetBy(dx: -pad, dy: -pad), env), radius: radius, angle: angle, output: region)
         case .matrix(let n, let rows, let bias):
             let input = n.eval(region, env)

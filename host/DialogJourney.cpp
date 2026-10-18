@@ -8,9 +8,17 @@
 #include "SystemClipboard.h"
 #include "ImageImportDialog.h"
 #include "RawControlJourney.h"
+#include "AutosaveJourney.h"
+#include "GridSettingsJourney.h"
+#include "CanvasSizeJourney.h"
+#include "ImageSizeJourney.h"
+#include "OtherApplications.h"
 #include "compositor_host_run.h"
 #include "interfaces/IPlatformServices.h"
 #include <QAction>
+#include <QScopeGuard>
+#include <csignal>
+#include <sys/wait.h>
 #include <QApplication>
 #include <QAccessible>
 #include <QClipboard>
@@ -25,6 +33,7 @@
 #include <QStyleFactory>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QColorSpace>
 #include <QDialogButtonBox>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
@@ -62,6 +71,7 @@
 #include <QFile>
 #include <QDir>
 #include <QTimer>
+#include <QWindow>
 #include <QTabBar>
 #include <QEventLoop>
 #include <QElapsedTimer>
@@ -70,12 +80,15 @@
 #include <QDataStream>
 #include <QUuid>
 #include <QThread>
+#include <memory>
+#include <utility>
 #include <QStatusBar>
 #include <QTouchEvent>
 #include <QTabletEvent>
 #include <QPointingDevice>
 #include <QtTest/qtestkeyboard.h>
 #include <stdexcept>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 
@@ -94,12 +107,20 @@ extern "C" int64_t compositor_current_layer_drag(uint8_t *output, size_t capacit
 extern "C" int32_t compositor_workspace_layer_drop_allowed(uint64_t destination, const uint8_t *bytes, size_t count, int32_t modifiers);
 extern "C" void compositor_set_native_text_action_handler(int32_t (*handler)(const char *));
 extern "C" int64_t compositor_session_render(uint64_t, uint8_t *, size_t);
+extern "C" int64_t compositor_session_render_tree(uint64_t, const char *, uint8_t *, size_t);
+extern "C" int64_t compositor_session_accessibility_tree(uint64_t, const char *, const char *, uint8_t *, size_t);
+extern "C" int32_t compositor_session_viewport(uint64_t, double *);
 extern "C" int32_t compositor_install_subject_model(void);
 
 /// Tool combinations through the visible Qt rail, canvas events and inline text editor.
 extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
     installJourneyUI(app);
+    if (app.arguments().contains("--autosave-crash-writer")) return autosavejourney::writer(app);
+    if (app.arguments().contains("--autosave-crash-probe")) return autosavejourney::run(app);
+    if (app.arguments().contains("--grid-settings-probe")) return gridsettingsjourney::run(app);
+    if (app.arguments().contains("--canvas-size-controls-probe")) return canvassizejourney::run(app);
+    if (app.arguments().contains("--image-size-controls-probe")) return imagesizejourney::run(app);
     try {
         const auto check = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
         QTemporaryDir temporary;
@@ -121,6 +142,11 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                     << "gradientLine=" << state.value("gradientLine").toArray();
                 throw std::runtime_error(message);
             }
+        };
+        const auto writeProjectPackage = [&](const QString &path) {
+            // The real autosave timer uses the same per-document save guard.
+            pump([&] { return !window.isProjectSaveInProgress(); }, "autosave did not finish before package verification");
+            return window.writeProjectPackage(path);
         };
         const auto command = [&](QJsonObject value) {
             check(window.sendCommand(value), "combination setup command failed");
@@ -223,6 +249,2296 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
             pump([&] { return window.sessionState().value("gradientLine").toArray().isEmpty()
                               && !window.sessionState().value("busy").toBool(); }, "Return did not commit the pending gradient");
         };
+
+        if (app.arguments().contains("--app-visibility-probe")) {
+            reset();
+            command({{"action", "renameLayer"}, {"name", "First unsaved image"}});
+            SessionWindow other; other.resize(1000, 800); other.show();
+            QImage blue(64, 64, QImage::Format_RGBA8888); blue.fill(QColor(20, 80, 200));
+            const QString path = temporary.filePath("visibility-other.png");
+            check(blue.save(path) && other.importImage(path), "visibility second document import failed");
+            check(other.sendCommand({{"action", "renameLayer"}, {"name", "Second unsaved image"}}), "visibility second edit failed");
+            const auto firstBefore = window.sessionState(), secondBefore = other.sessionState();
+            const auto read = [&](SessionWindow &owner, const QString &name) {
+                const QString output = temporary.filePath(name + ".png");
+                check(owner.exportPNG(output), "visibility raster export failed");
+                QImage image(output); check(image.size() == QSize(64, 64), "visibility raster dimensions changed");
+                return image.convertToFormat(QImage::Format_RGBA8888);
+            };
+            const QImage firstPixels = read(window, "first-before"), secondPixels = read(other, "second-before");
+            const auto isolated = [&](SessionWindow &owner, const QJsonObject &before, const QImage &original, const QString &name) {
+                const auto state = owner.sessionState();
+                for (const char *field : {"width", "height", "layers", "activeLayerID", "modified", "canUndo", "canRedo",
+                                          "undoName", "redoName", "foregroundColor", "backgroundColor", "tool", "hasSelection"})
+                    check(state.value(field) == before.value(field), "application visibility changed document or editing state");
+                check(read(owner, name) == original, "application visibility changed pixels");
+            };
+            const auto hideApplication = [&](SessionWindow &owner) {
+                QAction *hide = nullptr;
+                for (auto *top : owner.menuBar()->actions()) if (top->isVisible() && top->menu()
+                    && top->menu()->objectName() == "appMenu.Compositor") {
+                    emit top->menu()->aboutToShow();
+                    for (auto *action : top->menu()->actions())
+                        if (action->isVisible() && action->text().remove('&') == "Hide Compositor") hide = action;
+                }
+                check(hide && hide->isEnabled(), "visible Hide Compositor action missing or disabled"); hide->trigger();
+            };
+            const auto appMenuAction = [&](SessionWindow &owner, const QString &title) {
+                QAction *found = nullptr;
+                for (auto *top : owner.menuBar()->actions()) if (top->isVisible() && top->menu()
+                    && top->menu()->objectName() == "appMenu.Compositor") {
+                    emit top->menu()->aboutToShow();
+                    for (auto *action : top->menu()->actions())
+                        if (action->isVisible() && action->text().remove('&') == title) found = action;
+                }
+                check(found, "visible application-menu action missing");
+                return found;
+            };
+            window.showNormal(); other.showNormal();
+            QApplication::setActiveWindow(&window); window.activateWindow(); QApplication::processEvents();
+            if (!OtherApplications::canHideOthers()) {
+                // No window manager lets this client hide other applications (Wayland, offscreen): Hide Others is
+                // disabled rather than silently doing nothing, and Show All leaves every project window as it was.
+                check(!appMenuAction(window, "Hide Others")->isEnabled(), "Hide Others enabled without a window manager that supports it");
+                QAction *showAll = appMenuAction(window, "Show All");
+                check(showAll->isEnabled(), "Show All disabled"); showAll->trigger();
+                QElapsedTimer settle; settle.start();
+                while (settle.elapsed() < 200) QApplication::processEvents(QEventLoop::AllEvents, 10);
+                check(window.isVisible() && other.isVisible() && !window.isMinimized() && !other.isMinimized(),
+                    "Show All changed project windows");
+                isolated(window, firstBefore, firstPixels, "first-show-all");
+                isolated(other, secondBefore, secondPixels, "second-show-all");
+                qInfo("Qt Hide Others/Show All OK (no client window management: Hide Others disabled, Show All leaves both windows and documents unchanged)");
+            }
+#if defined(COMPOSITOR_HAS_XCB_APPLICATIONS)
+            else {
+                // A separate X11 client process with one shown window and one its user minimized.
+                xcb_connection_t *c = OtherApplications::connection();
+                int ready[2]; check(::pipe(ready) == 0, "foreign client pipe failed");
+                const pid_t child = ::fork();
+                check(child >= 0, "foreign client fork failed");
+                if (child == 0) {
+                    ::close(ready[0]);
+                    xcb_connection_t *foreign = xcb_connect(nullptr, nullptr);
+                    if (xcb_connection_has_error(foreign)) _exit(2);
+                    const xcb_screen_t *screen = xcb_setup_roots_iterator(xcb_get_setup(foreign)).data;
+                    const auto intern = [&](const char *name) { return OtherApplications::atom(foreign, name); };
+                    const uint32_t pid = uint32_t(getpid());
+                    xcb_window_t windows[2];
+                    for (int i = 0; i < 2; i++) {
+                        windows[i] = xcb_generate_id(foreign);
+                        const uint32_t background = i ? 0x2050c0 : 0xc05020;
+                        xcb_create_window(foreign, XCB_COPY_FROM_PARENT, windows[i], screen->root, 40 + 260 * i, 40, 220, 160, 0,
+                            XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL, &background);
+                        const char *title = i ? "Foreign minimized" : "Foreign shown";
+                        xcb_change_property(foreign, XCB_PROP_MODE_REPLACE, windows[i], XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, strlen(title), title);
+                        xcb_change_property(foreign, XCB_PROP_MODE_REPLACE, windows[i], intern("_NET_WM_PID"), XCB_ATOM_CARDINAL, 32, 1, &pid);
+                        xcb_map_window(foreign, windows[i]);
+                    }
+                    xcb_flush(foreign);
+                    for (int attempt = 0; attempt < 400; attempt++) {
+                        if (OtherApplications::property32(foreign, screen->root, "_NET_CLIENT_LIST").contains(windows[1])) break;
+                        usleep(10000);
+                    }
+                    xcb_client_message_event_t iconify{};
+                    iconify.response_type = XCB_CLIENT_MESSAGE; iconify.format = 32; iconify.window = windows[1];
+                    iconify.type = intern("WM_CHANGE_STATE"); iconify.data.data32[0] = 3;
+                    xcb_send_event(foreign, 0, screen->root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                        reinterpret_cast<const char *>(&iconify));
+                    xcb_flush(foreign);
+                    const uint32_t ids[2] = {windows[0], windows[1]};
+                    if (::write(ready[1], ids, sizeof ids) != sizeof ids) _exit(3);
+                    for (;;) { xcb_generic_event_t *event = xcb_wait_for_event(foreign); if (!event) _exit(0); free(event); }
+                }
+                ::close(ready[1]);
+                const auto stopChild = qScopeGuard([&] { ::kill(child, SIGTERM); ::waitpid(child, nullptr, 0); });
+                uint32_t ids[2] = {0, 0};
+                check(::read(ready[0], ids, sizeof ids) == sizeof ids, "foreign client did not create its windows");
+                ::close(ready[0]);
+                const auto iconic = [&](uint32_t id) { return OtherApplications::isIconic(c, id); };
+                const auto managed = [&](uint32_t id) { return OtherApplications::otherClientWindows(c).contains(id); };
+                pump([&] { return managed(ids[0]) && managed(ids[1]) && !iconic(ids[0]) && iconic(ids[1]); },
+                    "foreign client windows were not managed as shown and user-minimized");
+                for (QWidget *top : QApplication::topLevelWidgets())
+                    if (top->windowHandle()) check(!managed(uint32_t(top->winId())), "Hide Others counts a Compositor window as another application");
+                QAction *hideOthers = appMenuAction(window, "Hide Others");
+                check(hideOthers->isEnabled(), "Hide Others disabled under an X11 window manager");
+                hideOthers->trigger();
+                pump([&] { return iconic(ids[0]); }, "Hide Others did not hide the other application's window");
+                check(iconic(ids[1]), "Hide Others changed the user-minimized window");
+                check(window.isVisible() && other.isVisible() && !window.isMinimized() && !other.isMinimized(),
+                    "Hide Others hid a Compositor project window");
+                isolated(window, firstBefore, firstPixels, "first-hide-others");
+                isolated(other, secondBefore, secondPixels, "second-hide-others");
+                appMenuAction(window, "Show All")->trigger();
+                pump([&] { return !iconic(ids[0]); }, "Show All did not show the hidden application's window");
+                QElapsedTimer settle; settle.start();
+                while (settle.elapsed() < 300) QApplication::processEvents(QEventLoop::AllEvents, 10);
+                check(iconic(ids[1]), "Show All restored a window the user minimized");
+                check(window.isVisible() && other.isVisible() && !window.isMinimized() && !other.isMinimized(),
+                    "Show All changed project windows");
+                isolated(window, firstBefore, firstPixels, "first-show-all");
+                isolated(other, secondBefore, secondPixels, "second-show-all");
+                qInfo("Qt Hide Others/Show All OK (X11 window manager: separate client hidden and shown again, its user-minimized window and both project windows/documents unchanged)");
+            }
+#endif
+            if (app.arguments().contains("--hide-others-probe")) {
+                // A window manager restores (and reports) asynchronously: Hide Compositor through the visible menu,
+                // restore as the task switcher would, and wait for the manager before checking windows/documents.
+                for (SessionWindow *owner : {&window, &other}) {
+                    QApplication::setActiveWindow(owner); owner->activateWindow(); QApplication::processEvents();
+                    hideApplication(*owner);
+                    pump([&] { return window.isMinimized() && other.isMinimized(); }, "Hide Compositor did not minimize every project window");
+                    window.showNormal(); other.showNormal();
+                    pump([&] { return window.isVisible() && other.isVisible() && !window.isMinimized() && !other.isMinimized(); },
+                        "window manager did not restore project windows after Hide");
+                    isolated(window, firstBefore, firstPixels, "first-x11-restored");
+                    isolated(other, secondBefore, secondPixels, "second-x11-restored");
+                    qInfo("Qt application Hide under window manager OK (origin=%s, both windows minimized and restored, exact document isolation)",
+                        owner == &window ? "first" : "second");
+                }
+                return 0;
+            }
+            for (SessionWindow *owner : {&window, &other}) {
+                window.showNormal(); other.showNormal();
+                QApplication::setActiveWindow(owner); owner->activateWindow(); QApplication::processEvents();
+                hideApplication(*owner);
+                pump([&] { return window.isMinimized() && other.isMinimized(); }, "Hide Compositor did not minimize every project window");
+                isolated(window, firstBefore, firstPixels, "first-minimized");
+                isolated(other, secondBefore, secondPixels, "second-minimized");
+                window.showNormal(); other.showNormal(); QApplication::processEvents();
+                check(window.isVisible() && other.isVisible() && !window.isMinimized() && !other.isMinimized(),
+                    "project windows did not restore after Hide");
+                isolated(window, firstBefore, firstPixels, "first-restored");
+                isolated(other, secondBefore, secondPixels, "second-restored");
+                qInfo("Qt application Hide OK (origin=%s, two windows minimize/restore, exact pixels/layers/target/palette/tool/selection/history isolation)",
+                    owner == &window ? "first" : "second");
+            }
+            for (bool maximized : {false, true}) {
+                if (maximized) window.showMaximized(); else window.showNormal();
+                QApplication::setActiveWindow(&window); window.activateWindow(); QApplication::processEvents();
+                command({{"action", "openFilter"}, {"kind", "Gaussian Blur"}});
+                QPointer<QDialog> panel;
+                pump([&] {
+                    panel = window.findChild<QDialog *>("floatingPanel.FilterSheet");
+                    return panel && panel->isVisible() && panel->windowHandle() && panel->windowHandle()->isExposed();
+                }, "Hide fixture did not expose its real filter panel");
+                const auto radius = [&]() -> QLineEdit * {
+                    if (panel) for (auto *field : panel->findChildren<QLineEdit *>())
+                        if (field->isVisible() && (field->accessibleName() == "Radius" || field->placeholderText() == "Radius")) return field;
+                    throw std::runtime_error("Hide filter radius field missing");
+                };
+                radius()->setFocus(); radius()->selectAll(); radius()->insert("3"); radius()->clearFocus();
+                pump([&] { return !window.sessionState().value("filterPreviewRendering").toBool(); }, "Hide filter preview did not settle");
+                const auto draft = window.sessionState(); const QImage preview = pixels();
+                check(radius()->text().toDouble() == 3, "Hide filter fixture lost its edited radius");
+                hideApplication(window);
+                pump([&] { return window.isMinimized() && other.isMinimized(); }, "Hide with a filter did not minimize project windows");
+                pump([&] { return panel && panel->windowHandle() && !panel->windowHandle()->isExposed(); },
+                    "Hide left the floating filter panel exposed");
+                QElapsedTimer hidden; hidden.start();
+                while (hidden.elapsed() < 350) {
+                    QApplication::processEvents(QEventLoop::AllEvents, 10); QThread::msleep(1);
+                    if (!panel || panel->windowHandle()->isExposed())
+                        qWarning() << "Hide panel resurfaced at" << hidden.elapsed() << "ms; project state" << window.windowState()
+                            << "project visible" << window.isVisible() << "panel visible" << (panel && panel->isVisible())
+                            << "surface visible" << (panel && panel->windowHandle()->isVisible());
+                    check(panel && !panel->windowHandle()->isExposed(), "floating filter resurfaced while its project was minimized");
+                }
+                isolated(window, draft, preview, "draft-hidden");
+                window.setWindowState(window.windowState() & ~Qt::WindowMinimized);
+                other.setWindowState(other.windowState() & ~Qt::WindowMinimized);
+                window.show(); other.show();
+                QApplication::setActiveWindow(nullptr);
+                window.activateWindow(); QApplication::setActiveWindow(&window);
+                pump([&] { return !window.isMinimized() && !other.isMinimized() && panel && panel->isVisible()
+                    && panel->windowHandle() && panel->windowHandle()->isExposed(); }, "restored project did not expose its filter panel");
+                check(window.isMaximized() == maximized, "Hide/restore lost the maximized window state");
+                check(window.findChild<QDialog *>("floatingPanel.FilterSheet") == panel && radius()->text().toDouble() == 3,
+                    "Hide/restore recreated the filter panel or lost its draft value");
+                isolated(window, draft, preview, "draft-restored");
+                QPushButton *cancel = nullptr;
+                for (auto *button : panel->findChildren<QPushButton *>()) if (button->isVisible() && button->text() == "Cancel") cancel = button;
+                click(cancel);
+                pump([&] { return window.sessionState().value("floatingPanels").toArray().isEmpty(); }, "restored filter Cancel did not close its panel");
+                isolated(window, firstBefore, firstPixels, "first-after-filter");
+                isolated(other, secondBefore, secondPixels, "second-after-filter");
+                qInfo("Qt application Hide panel OK (maximized=%d platform=%s, hidden across refresh ticks, same edited panel/preview restored, Cancel and exact document/history isolation)",
+                    int(maximized), qPrintable(QGuiApplication::platformName()));
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--selection-clear-probe")) {
+            const auto clearAction = [&]() -> QAction * {
+                for (auto *top : window.menuBar()->actions()) if (top->isVisible() && top->text().remove('&') == "Edit" && top->menu()) {
+                    emit top->menu()->aboutToShow();
+                    for (auto *action : top->menu()->actions())
+                        if (action->isVisible() && action->text().remove('&') == "Clear Selection Pixels") return action;
+                }
+                throw std::runtime_error("visible Clear Selection Pixels action missing");
+            };
+            for (bool mask : {false, true}) for (bool ellipse : {false, true}) for (int alpha : {255, 128}) {
+                QImage fixture(64, 64, QImage::Format_RGBA8888);
+                fixture.fill(QColor(192, 64, 32, alpha));
+                const QString input = temporary.filePath("clear-source.png");
+                check(fixture.save(input) && window.importImage(input), "clear fixture import failed");
+                command({{"action", "setShowsTransformControls"}, {"enabled", false}});
+                if (mask) {
+                    command({{"action", "addRevealMask"}});
+                    command({{"action", "setMaskSelected"}, {"enabled", true}});
+                    command({{"action", "setPaletteColor"}, {"kind", "background"},
+                        {"parameters", QJsonObject{{"red", 0}, {"green", 0}, {"blue", 0}}}});
+                }
+                check(!clearAction()->isEnabled(), "Clear without a selection was enabled");
+                command({{"action", ellipse ? "selectEllipse" : "selectRectangle"},
+                    {"x", 16}, {"y", 20}, {"width", 24}, {"height", 16}});
+                const auto before = window.sessionState(); const QImage original = pixels();
+                if (!before.value("hasSelection").toBool() || !clearAction()->isEnabled()) {
+                    QJsonObject diagnostic;
+                    for (const char *name : {"activeLayerHasMask", "activeLayerID", "busy", "canSwitch", "hasSelection",
+                                             "isMaskSelected", "layers", "transforming", "undoName"}) diagnostic[name] = before.value(name);
+                    qWarning().noquote() << "Clear setup state:" << QJsonDocument(diagnostic).toJson(QJsonDocument::Compact);
+                }
+                check(before.value("hasSelection").toBool() && clearAction()->isEnabled(), "selected Clear action was disabled");
+                clearAction()->trigger();
+                pump([&] { return !window.sessionState().value("busy").toBool()
+                    && window.sessionState().value("undoName") != before.value("undoName"); }, "visible Clear did not finish");
+                const auto after = window.sessionState(); const QImage cleared = pixels();
+                int interior = 0, exterior = 0;
+                for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                    const double dx = (x + .5 - 28) / 12, dy = (y + .5 - 28) / 8;
+                    const double radius = dx * dx + dy * dy;
+                    const bool inside = ellipse ? radius < .75 : QRect(16, 20, 24, 16).contains(x, y);
+                    const bool outside = ellipse ? radius > 1.3 : !QRect(16, 20, 24, 16).contains(x, y);
+                    if (inside) { ++interior; check(cleared.pixelColor(x, y).alpha() == 0, "Clear left selected interior pixels"); }
+                    if (outside) { ++exterior; check(cleared.pixelColor(x, y) == original.pixelColor(x, y), "Clear changed pixels outside selection"); }
+                    check(cleared.pixelColor(x, y).alpha() <= original.pixelColor(x, y).alpha(), "Clear increased alpha");
+                }
+                check(interior > 100 && exterior > 3000, "Clear oracle did not cover interior and exterior");
+                for (const char *name : {"activeLayerID", "hasSelection", "isMaskSelected", "foregroundColor", "backgroundColor"})
+                    check(after.value(name) == before.value(name), "Clear changed selection, target or palette");
+                check(after.value("layers").toArray().size() == before.value("layers").toArray().size(), "Clear deleted a layer");
+                command({{"action", "undo"}});
+                check(pixels() == original && window.sessionState().value("layers") == before.value("layers"),
+                    "single Clear Undo did not restore exact pixels and records");
+                command({{"action", "redo"}});
+                check(pixels() == cleared && window.sessionState().value("layers") == after.value("layers"),
+                    "single Clear Redo did not restore exact pixels and records");
+                if (mask) {
+                    command({{"action", "setMaskSelected"}, {"enabled", false}});
+                    command({{"action", "setMaskEnabled"}, {"enabled", false}});
+                    check(pixels() == original, "mask Clear altered source image pixels");
+                }
+                qInfo("Qt visible selection Clear OK (mask=%d ellipse=%d alpha=%d; disabled without selection, independent interior/exterior coverage, target/palette isolation and exact single Undo/Redo)",
+                    int(mask), int(ellipse), alpha);
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--modern-adjustment-probe")) {
+            struct Entry { QString kind, field, savedField; double value; int occurrence = 0; };
+            const QList<Entry> entries{{"Gaussian Blur", "Radius", "blurRadius", 1.5},
+                {"Motion Blur", "Angle", "motionAngle", 90}, {"Add Noise", "Amount", "noiseAmount", 55},
+                {"Black & White", "Reds", "blackWhiteSettings", 80},
+                {"Color Balance", "Yellow / Blue", "colorBalanceSettings", 60, 1}, {"Invert", "", "", 0}};
+            QImage image(64, 64, QImage::Format_RGBA8888); image.fill(Qt::transparent);
+            for (int y = 12; y < 48; ++y) for (int x = 12; x < 48; ++x)
+                image.setPixelColor(x, y, QColor(40 + (x * 7) % 180, 30 + (y * 5) % 180, 20 + ((x + y) * 3) % 180));
+            const QString path = temporary.filePath("modern-adjustment.png");
+            check(image.save(path), "modern adjustment fixture save failed");
+            const auto panel = [&]() -> QDialog * {
+                for (auto *top : QApplication::topLevelWidgets())
+                    if (auto *dialog = qobject_cast<QDialog *>(top); dialog && dialog->isVisible()
+                        && dialog->objectName() == "floatingPanel.FilterSheet") return dialog;
+                return nullptr;
+            };
+            const auto finish = [&](const QString &title) {
+                QPushButton *button = nullptr;
+                if (panel()) for (auto *candidate : panel()->findChildren<QPushButton *>())
+                    if (candidate->isVisible() && candidate->text() == title) button = candidate;
+                click(button); pump([&] { return !panel(); }, "modern adjustment sheet did not close");
+                QApplication::setActiveWindow(&window); QApplication::processEvents();
+            };
+            const auto menuTitle = [](QAction *action) {
+                const auto text = action->text(); QString label;
+                for (qsizetype i = 0; i < text.size(); ++i) {
+                    if (text[i] != '&') label += text[i];
+                    else if (i + 1 < text.size() && text[i + 1] == '&') { label += '&'; ++i; }
+                }
+                return label;
+            };
+            const auto menuAction = [&](const QString &title, bool create, bool enabled = true) {
+                QMenu *root = nullptr;
+                for (auto *action : window.menuBar()->actions()) if (menuTitle(action) == "Layer") root = action->menu();
+                check(root, "modern adjustment Layer menu missing");
+                root->popup(window.mapToGlobal(QPoint(200, 50))); QApplication::processEvents();
+                QMenu *menu = root;
+                if (create) {
+                    menu = nullptr;
+                    for (auto *action : root->actions()) if (menuTitle(action) == "New Adjustment Layer") menu = action->menu();
+                    check(menu, "modern adjustment creation submenu missing");
+                    menu->popup(window.mapToGlobal(QPoint(400, 50))); QApplication::processEvents();
+                }
+                QAction *chosen = nullptr;
+                for (auto *action : menu->actions()) if (menuTitle(action) == title) chosen = action;
+                if (!chosen) {
+                    QStringList titles; for (auto *action : menu->actions()) titles.append(action->text());
+                    qWarning() << "modern adjustment menu missing" << title << titles;
+                }
+                check(menu->isVisible() && chosen && chosen->isEnabled() == enabled, "modern adjustment menu action unavailable");
+                if (enabled) chosen->trigger();
+                menu->hide(); root->hide(); QApplication::processEvents();
+            };
+            for (const auto &entry : entries) {
+                const bool editable = entry.kind != "Invert";
+                check(window.importImage(path), "modern adjustment fixture import failed");
+                command({{"action", "setShowsTransformControls"}, {"enabled", false}});
+                const auto sourceState = window.sessionState(); const QImage source = pixels();
+                menuAction(entry.kind + (editable ? QString::fromUtf8("…") : QString()), true);
+                if (editable) pump([&] { return panel(); }, "modern adjustment creation did not open its sheet");
+                else check(!panel(), "Invert unexpectedly opened an editor");
+                const auto created = window.sessionState(); const QImage createdPixels = pixels();
+                if (editable) finish("OK");
+                const auto baseline = window.sessionState(); const QImage original = pixels();
+                const auto adjustmentID = baseline.value("activeLayerID");
+                check(baseline.value("layers").toArray().size() == 2
+                    && baseline.value("layers").toArray().first() == sourceState.value("layers").toArray().first(),
+                    "modern adjustment creation changed source identity or layer count");
+                const QString creationHistory = "New " + entry.kind + " Adjustment", editHistory = "Edit " + entry.kind + " Adjustment";
+                const bool acceptedDefaults = baseline.value("undoName").toString() == editHistory;
+                check(created.value("undoName").toString() == creationHistory
+                    && (baseline.value("undoName").toString() == creationHistory || (editable && acceptedDefaults)),
+                    "modern adjustment creation recorded an unexpected history step");
+                // Accepting the editor can materialize optional default settings in its own Edit step.
+                if (acceptedDefaults) {
+                    command({{"action", "undo"}});
+                    check(pixels() == createdPixels && window.sessionState().value("layers") == created.value("layers")
+                        && window.sessionState().value("undoName").toString() == creationHistory,
+                        "modern adjustment default-settings Undo lost its creation checkpoint");
+                }
+                command({{"action", "undo"}});
+                if (pixels() != source || window.sessionState().value("layers") != sourceState.value("layers"))
+                    qWarning() << "modern adjustment creation Undo" << entry.kind << "source/baseline/current undo"
+                        << sourceState.value("undoName") << baseline.value("undoName") << window.sessionState().value("undoName")
+                        << "source/current layer counts" << sourceState.value("layers").toArray().size()
+                        << window.sessionState().value("layers").toArray().size() << "same pixels" << (pixels() == source);
+                check(pixels() == source && window.sessionState().value("layers") == sourceState.value("layers"),
+                    "modern adjustment creation Undo lost source pixels or records");
+                command({{"action", "redo"}});
+                check(pixels() == createdPixels && window.sessionState().value("layers") == created.value("layers"),
+                    "modern adjustment creation Redo lost its original checkpoint");
+                if (acceptedDefaults) command({{"action", "redo"}});
+                check(pixels() == original && window.sessionState().value("layers") == baseline.value("layers"),
+                    "modern adjustment creation Redo lost exact composite or identity");
+                QImage accepted = original;
+                if (editable) {
+                    QWidget *table = nullptr;
+                    for (auto *candidate : window.findChildren<QWidget *>())
+                        if (candidate->isVisible() && candidate->property("appKitView").toBool()
+                            && candidate->property("appKitSession").toULongLong() == window.sessionHandle()
+                            && candidate->property("appKitNode").toString().startsWith("LayersPanel|")) table = candidate;
+                    check(table, "modern adjustment thumbnail missing");
+                    const QPoint point = table->mapTo(&window, QPoint(60, 26));
+                    for (auto type : {QEvent::MouseButtonPress, QEvent::MouseButtonDblClick}) {
+                        // Native table presses track synchronously; deliver each release from the event queue.
+                        QTimer::singleShot(0, &window, [&, point] {
+                            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(point), QPointF(window.mapToGlobal(point)),
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                            QApplication::sendEvent(window.windowHandle(), &release);
+                        });
+                        QMouseEvent event(type, QPointF(point), QPointF(window.mapToGlobal(point)), Qt::LeftButton,
+                            Qt::LeftButton, Qt::NoModifier);
+                        QApplication::sendEvent(window.windowHandle(), &event);
+                    }
+                    pump([&] { return panel(); }, "modern adjustment thumbnail did not reopen its sheet");
+                    const auto edit = [&] {
+                        QList<QLineEdit *> fields;
+                        for (auto *candidate : panel()->findChildren<QLineEdit *>())
+                            if (candidate->isVisible() && candidate->placeholderText() == entry.field) fields.append(candidate);
+                        check(fields.size() > entry.occurrence && fields[entry.occurrence]->isEnabled(),
+                            "modern adjustment numeric field missing");
+                        auto *field = fields[entry.occurrence]; field->setFocus(); field->selectAll(); field->insert(QString::number(entry.value));
+                        QApplication::processEvents();
+                        pump([&] { return !window.sessionState().value("filterPreviewRendering").toBool() && pixels() != original; },
+                            "modern adjustment numeric edit did not update its composite");
+                        check(window.sessionState().value("layers").toArray().first() == sourceState.value("layers").toArray().first()
+                            && window.sessionState().value("activeLayerID") == adjustmentID,
+                            "modern adjustment preview changed its source or edit target");
+                    };
+                    edit(); finish("Cancel");
+                    check(pixels() == original && window.sessionState().value("layers") == baseline.value("layers")
+                        && window.sessionState().value("undoName") == baseline.value("undoName"),
+                        "modern adjustment Cancel changed source, identity or history");
+                    menuAction(QString::fromUtf8("Edit Adjustment…"), false);
+                    pump([&] { return panel(); }, "modern adjustment Edit menu did not reopen its sheet");
+                    edit(); accepted = pixels(); finish("OK");
+                    check(pixels() == accepted && window.sessionState().value("activeLayerID") == adjustmentID,
+                        "modern adjustment OK lost the completed preview or target");
+                    command({{"action", "undo"}});
+                    check(pixels() == original && window.sessionState().value("layers") == baseline.value("layers"),
+                        "modern adjustment edit Undo lost its original composite or identity");
+                    command({{"action", "redo"}});
+                    check(pixels() == accepted && window.sessionState().value("activeLayerID") == adjustmentID,
+                        "modern adjustment edit Redo lost exact pixels or target");
+                } else for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                    const auto before = source.pixelColor(x, y), after = accepted.pixelColor(x, y);
+                    check(after.alpha() == before.alpha(), "Invert adjustment changed source alpha");
+                    if (before.alpha()) check(std::abs(before.red() + after.red() - 255) <= 1
+                        && std::abs(before.green() + after.green() - 255) <= 1 && std::abs(before.blue() + after.blue() - 255) <= 1,
+                        "Invert adjustment disagrees with independent channel complements");
+                }
+                if (!editable) {
+                    const auto idle = window.sessionState();
+                    check(idle.value("canSwitch").toBool(), "Invert left the project blocked without an editor");
+                    menuAction(QString::fromUtf8("Edit Adjustment…"), false, false);
+                    check(!window.sendCommand({{"action", "beginAdjustmentEditing"}, {"layerID", adjustmentID}}),
+                        "Invert bridge request was accepted despite having no editable settings");
+                    const auto afterRefusal = window.sessionState();
+                    for (const char *key : {"layers", "activeLayerID", "undoName", "redoName", "canUndo", "canRedo", "modified", "canSwitch"})
+                        check(afterRefusal.value(key) == idle.value(key), "Invert editor refusal changed the document or blocked editing");
+                    check(pixels() == accepted, "Invert editor refusal changed the composite");
+                }
+                const QString project = temporary.filePath(entry.kind + ".comp");
+                check(writeProjectPackage(project), "modern adjustment package write failed");
+                QFile manifest(project + "/manifest.json"); check(manifest.open(QIODevice::ReadOnly), "modern adjustment manifest missing");
+                const auto records = QJsonDocument::fromJson(manifest.readAll()).object().value("layers").toArray();
+                check(records.size() == 2, "modern adjustment package lost its source or adjustment");
+                const auto saved = records.last().toObject().value("adjustment").toObject();
+                check(saved.value("kind").toString() == entry.kind, "modern adjustment package saved the wrong kind");
+                if (editable) {
+                    auto value = saved.value(entry.savedField);
+                    if (entry.kind == "Black & White") value = value.toObject().value("reds");
+                    if (entry.kind == "Color Balance") value = value.toObject().value("midYellowBlue");
+                    check(value.isDouble() && std::abs(value.toDouble() - entry.value) < 0.00001,
+                        "modern adjustment package did not retain the visible numeric edit");
+                }
+                const QImage savedSource(project + "/images/" + records.first().toObject().value("imageFile").toString());
+                check(savedSource.size() == image.size(), "modern adjustment source PNG missing");
+                for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                    check(savedSource.pixelColor(x, y) == image.pixelColor(x, y), "modern adjustment changed saved source PNG channels");
+                check(window.loadProject(project) && pixels() == accepted,
+                    "modern adjustment package reopen lost its exact composite");
+                qInfo("Qt modern adjustment OK (%s, visible creation, %s, exact creation/edit Undo/Redo, saved parameters/source PNG and reopened composite)",
+                    qPrintable(entry.kind), editable ? "thumbnail/Edit menu, numeric preview and Cancel/OK"
+                        : "no editor, disabled Edit menu, refused bridge request and independent channel complements");
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--thumbnail-selection-probe")) {
+            const QRect ink(12, 16, 24, 24), reveal(20, 12, 24, 24), initial(8, 28, 32, 20);
+            QImage image(64, 64, QImage::Format_RGBA8888); image.fill(Qt::transparent);
+            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                if (ink.contains(x, y)) image.setPixelColor(x, y, QColor(180, 40, 60));
+            const QString path = temporary.filePath("thumbnail-selection.png");
+            check(image.save(path), "thumbnail selection fixture save failed");
+            const auto table = [&]() -> QWidget * {
+                for (auto *candidate : window.findChildren<QWidget *>())
+                    if (candidate->isVisible() && candidate->property("appKitView").toBool()
+                        && candidate->property("appKitSession").toULongLong() == window.sessionHandle()
+                        && candidate->property("appKitNode").toString().startsWith("LayersPanel|")) return candidate;
+                throw std::runtime_error("thumbnail selection table missing");
+            };
+            for (int target = 0; target < 3; ++target) for (int mode = 0; mode < 4; ++mode) {
+                const bool mask = target != 0, folder = target == 2;
+                check(window.importImage(path), "thumbnail selection fixture import failed");
+                command({{"action", "setShowsTransformControls"}, {"enabled", false}});
+                if (folder) command({{"action", "groupSelectedLayers"}});
+                command({{"action", "selectRectangle"}, {"x", reveal.x()}, {"y", reveal.y()},
+                         {"width", reveal.width()}, {"height", reveal.height()}});
+                command({{"action", "addRevealMask"}});
+                check(window.sessionState().value("activeLayerHasMask").toBool(), "thumbnail selection mask setup failed");
+                const auto original = pixels();
+                command({{"action", "selectRectangle"}, {"x", initial.x()}, {"y", initial.y()},
+                         {"width", initial.width()}, {"height", initial.height()}});
+                const auto before = window.sessionState();
+                const QString history = mask ? "Load Mask Selection" : "Load Layer Selection";
+                Qt::KeyboardModifiers modifiers = Qt::ControlModifier;
+                if (mode == 1 || mode == 3) modifiers |= Qt::ShiftModifier;
+                if (mode >= 2) modifiers |= Qt::AltModifier;
+                const auto load = [&] {
+                    const auto gestureBefore = window.sessionState();
+                    const QPoint point = table()->mapTo(&window, QPoint(mask ? 108 : 60, 26));
+                    for (auto type : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+                        QMouseEvent event(type, QPointF(point), QPointF(window.mapToGlobal(point)), Qt::LeftButton,
+                            type == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton, modifiers);
+                        QApplication::sendEvent(window.windowHandle(), &event);
+                    }
+                    QApplication::processEvents();
+                    const auto after = window.sessionState();
+                    check(after.value("hasSelection").toBool() && after.value("undoName").toString() == history,
+                          "thumbnail modifier gesture did not load a selection");
+                    const bool samePixels = pixels() == original;
+                    if (after.value("layers") != gestureBefore.value("layers") || !samePixels
+                        || after.value("activeLayerID") != gestureBefore.value("activeLayerID")
+                        || after.value("isMaskSelected") != gestureBefore.value("isMaskSelected"))
+                        qWarning() << "thumbnail selection isolation" << target << mode
+                            << "pixels" << samePixels << "records" << (after.value("layers") == gestureBefore.value("layers"))
+                            << "active before/after" << gestureBefore.value("activeLayerID") << after.value("activeLayerID")
+                            << "mask target before/after" << gestureBefore.value("isMaskSelected") << after.value("isMaskSelected");
+                    check(after.value("layers") == gestureBefore.value("layers") && samePixels
+                        && after.value("activeLayerID") == gestureBefore.value("activeLayerID")
+                        && after.value("isMaskSelected") == gestureBefore.value("isMaskSelected"),
+                        "thumbnail selection changed source pixels, records or edit target");
+                };
+                const auto prove = [&](bool loaded) {
+                    const auto prior = window.sessionState();
+                    command({{"action", "addLayer"}});
+                    bool nested = false;
+                    const auto destination = window.sessionState().value("activeLayerID");
+                    for (const auto &value : window.sessionState().value("layers").toArray()) {
+                        const auto record = value.toObject();
+                        if (record.value("id") == destination) nested = !record.value("parentID").toString().isEmpty();
+                    }
+                    if (nested) command({{"action", "moveActiveLayerOutOfGroup"}});
+                    command({{"action", "setPaletteColor"}, {"kind", "foreground"},
+                        {"parameters", QJsonObject{{"red", 0}, {"green", 0}, {"blue", 1}}}});
+                    const auto unpainted = window.sessionState();
+                    command({{"action", "fillForeground"}});
+                    const auto filled = pixels(); const auto painted = window.sessionState();
+                    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                        const bool old = initial.contains(x, y), incoming = mask ? !reveal.contains(x, y) : ink.contains(x, y);
+                        const bool selected = !loaded ? old : mode == 0 ? incoming : mode == 1 ? old || incoming : old && !incoming;
+                        if (filled.pixelColor(x, y) != (selected ? QColor(Qt::blue) : original.pixelColor(x, y))) {
+                            qWarning() << "thumbnail selection pixel mismatch" << target << mode << loaded << x << y
+                                << filled.pixelColor(x, y) << "selected" << selected;
+                            check(false, "thumbnail selection disagrees with independent union/difference coverage");
+                        }
+                    }
+                    command({{"action", "undo"}});
+                    check(pixels() == original && window.sessionState().value("layers") == unpainted.value("layers"),
+                          "thumbnail selection fill Undo changed original pixels or records");
+                    command({{"action", "redo"}});
+                    check(pixels() == filled && window.sessionState().value("layers") == painted.value("layers"),
+                          "thumbnail selection fill Redo lost exact coverage or records");
+                    command({{"action", "undo"}});
+                    if (nested) command({{"action", "undo"}});
+                    command({{"action", "undo"}});
+                    check(pixels() == original && window.sessionState().value("layers") == prior.value("layers")
+                        && window.sessionState().value("undoName") == prior.value("undoName"),
+                        "thumbnail selection coverage proof did not restore the source and history");
+                };
+                load(); command({{"action", "undo"}});
+                check(window.sessionState().value("undoName") == before.value("undoName"),
+                      "thumbnail selection Undo did not restore the prior history step");
+                prove(false);
+                // Painting the Undo proof consumes Redo. Repeat the same gesture to check its Undo/Redo pair.
+                load(); command({{"action", "undo"}}); command({{"action", "redo"}});
+                prove(true);
+                qInfo("Qt thumbnail selection OK (target=%d mode=%d, actual Ctrl/Shift/Alt pointer, subtract precedence, independent all-pixel coverage, source/target isolation and Undo/Redo)", target, mode);
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--layer-nesting-probe")) {
+            struct DragCase { bool copy = false, multiple = false, folder = false, descendant = false, refused = false, moveOut = false, lateAlt = false;
+                bool collapsedSource = false, collapsedTarget = false, crossFolders = false, scrolling = false, scrollDown = false; };
+            QList<DragCase> cases{{}, {false, true}, {true}, {true, true}, {false, false, true},
+                {true, false, true}, {true, false, true, true}, {false, false, true, false, true},
+                {true, false, true, false, true}, {false, false, false, false, false, true},
+                {true, false, false, false, false, false, true}};
+            for (bool copy : {false, true}) {
+                for (bool multiple : {false, true}) { DragCase entry; entry.copy = copy; entry.multiple = multiple; entry.collapsedTarget = true; cases.append(entry); }
+                DragCase folded; folded.copy = copy; folded.folder = true; folded.collapsedSource = true; cases.append(folded);
+                for (bool target : {false, true}) { DragCase entry; entry.copy = copy; entry.multiple = true; entry.crossFolders = true; entry.collapsedTarget = target; cases.append(entry); }
+                DragCase scrolling; scrolling.copy = copy; scrolling.scrolling = true; cases.append(scrolling);
+            }
+            DragCase bothFolded; bothFolded.copy = bothFolded.folder = bothFolded.collapsedSource = bothFolded.collapsedTarget = true; cases.append(bothFolded);
+            for (bool copy : {false, true}) { DragCase entry; entry.copy = copy; entry.scrolling = entry.scrollDown = true; cases.append(entry); }
+            QSet<QString> collapsed;
+            const auto layers = [&] { return window.sessionState().value("layers").toArray(); };
+            const auto byID = [&](const QJsonArray &records) {
+                QMap<QString, QJsonObject> result;
+                for (const auto &value : records) result.insert(value.toObject().value("id").toString(), value.toObject());
+                return result;
+            };
+            const auto panelIDs = [&](const QJsonArray &records) {
+                QStringList result;
+                std::function<void(QString)> visit = [&](QString parent) {
+                    for (qsizetype i = records.size(); i-- > 0;) {
+                        const auto record = records[i].toObject();
+                        if (record.value("parentID").toString() != parent) continue;
+                        const auto id = record.value("id").toString(); result.append(id);
+                        if (record.value("isGroup").toBool() && !collapsed.contains(id)) visit(id);
+                    }
+                };
+                visit(QString()); return result;
+            };
+            const auto table = [&]() -> QWidget * {
+                for (auto *candidate : window.findChildren<QWidget *>())
+                    if (candidate->isVisible() && candidate->property("appKitView").toBool()
+                        && candidate->property("appKitSession").toULongLong() == window.sessionHandle()
+                        && candidate->property("appKitNode").toString().startsWith("LayersPanel|")) return candidate;
+                throw std::runtime_error("current native nesting table missing");
+            };
+            const auto selectedIDs = [&] {
+                const auto ids = panelIDs(layers());
+                auto *accessible = QAccessible::queryAccessibleInterface(table());
+                check(accessible, "nesting table accessibility missing");
+                QSet<QString> selected; int row = 0;
+                for (int i = 0; i < accessible->childCount(); ++i) {
+                    auto *child = accessible->child(i);
+                    if (!child || child->role() != QAccessible::ListItem) continue;
+                    check(row < ids.size(), "nesting accessibility has extra rows");
+                    if (child->state().selected) selected.insert(ids[row]);
+                    ++row;
+                }
+                check(row == ids.size(), "nesting accessibility lost an expanded row"); return selected;
+            };
+            const auto collapse = [&](const QString &id) {
+                const int row = panelIDs(layers()).indexOf(id); check(row >= 0, "folder disclosure row missing");
+                auto *accessible = QAccessible::queryAccessibleInterface(table()); check(accessible, "folder disclosure accessibility missing");
+                QAccessibleInterface *item = nullptr; int index = 0;
+                for (int i = 0; i < accessible->childCount(); ++i) {
+                    auto *child = accessible->child(i);
+                    if (child && child->role() == QAccessible::ListItem && index++ == row) { item = child; break; }
+                }
+                QAccessibleInterface *disclosure = nullptr;
+                std::function<void(QAccessibleInterface *)> find = [&](QAccessibleInterface *node) {
+                    if (!node) return;
+                    if (node->text(QAccessible::Name) == "Expand or collapse folder") disclosure = node;
+                    for (int i = 0; i < node->childCount(); ++i) find(node->child(i));
+                };
+                find(item); check(disclosure && !disclosure->state().disabled, "visible folder disclosure missing");
+                const QPoint point = window.mapFromGlobal(disclosure->rect().center());
+                const auto send = [&](QEvent::Type type, Qt::MouseButtons held) {
+                    QMouseEvent event(type, QPointF(point), QPointF(window.mapToGlobal(point)), Qt::LeftButton, held, Qt::NoModifier);
+                    QApplication::sendEvent(window.windowHandle(), &event);
+                };
+                QTimer::singleShot(0, &window, [&] { send(QEvent::MouseButtonRelease, Qt::NoButton); });
+                send(QEvent::MouseButtonPress, Qt::LeftButton); QApplication::processEvents();
+                collapsed.insert(id);
+            };
+            QString lastPointerRoute;
+            const auto pointerDrag = [&](const QString &source, const QString &target, bool above, Qt::KeyboardModifiers initial, Qt::KeyboardModifiers final, bool autoscroll = false, bool down = false) {
+                const auto ids = panelIDs(layers()); const int from = ids.indexOf(source), to = ids.indexOf(target);
+                check(from >= 0 && to >= 0, "nesting drag row identity missing");
+                const auto viewport = [&]() -> QScrollArea * {
+                    for (auto *parent = table()->parentWidget(); parent; parent = parent->parentWidget())
+                        if (auto *scroll = qobject_cast<QScrollArea *>(parent)) return scroll;
+                    return nullptr;
+                };
+                QPointer<QScrollArea> area = viewport();
+                check(area, "nesting viewport missing");
+                if (autoscroll) {
+                    try {
+                        pump([&] { area = viewport(); return area && area->verticalScrollBar()->maximum() > 500; }, "nesting offscreen fixture is not scrollable");
+                    } catch (...) {
+                        qWarning() << "nesting viewport current model rows/table geometry" << ids.size() << table()->geometry();
+                        for (auto *scroll : window.findChildren<QScrollArea *>())
+                            if (scroll->isVisible()) qWarning() << "nesting viewport candidate" << scroll << scroll->property("appKitScrollNode")
+                                << scroll->geometry() << scroll->widget()->size() << scroll->verticalScrollBar()->maximum();
+                        qWarning().noquote() << "nesting viewport trace" << swiftUIScrollTrace();
+                        throw;
+                    }
+                    area->verticalScrollBar()->setValue(down ? 0 : area->verticalScrollBar()->maximum()); QApplication::processEvents();
+                    pump([&] {
+                        area = viewport();
+                        if (!area) return false;
+                        area->verticalScrollBar()->setValue(down ? 0 : area->verticalScrollBar()->maximum());
+                        return area->viewport()->rect().contains(area->viewport()->mapFromGlobal(table()->mapToGlobal(QPoint(140, from * 54 + 26))));
+                    }, "scrolling drag source did not become reachable in the live viewport");
+                }
+                const QPoint start = table()->mapTo(&window, QPoint(140, from * 54 + 26));
+                QPoint end = table()->mapTo(&window, QPoint(140, to * 54 + (above ? 2 : 26)));
+                lastPointerRoute = QString("session=%1 rows=%2/%3 start=%4,%5 end=%6,%7 table=%8 startHit=%9 endHit=%10")
+                    .arg(window.sessionHandle()).arg(from).arg(to).arg(start.x()).arg(start.y()).arg(end.x()).arg(end.y())
+                    .arg(quintptr(table()), 0, 16).arg(quintptr(window.childAt(start)), 0, 16).arg(quintptr(window.childAt(end)), 0, 16);
+                const auto send = [&](QEvent::Type type, QPoint point, Qt::MouseButton button, Qt::MouseButtons held, Qt::KeyboardModifiers flags) {
+                    QMouseEvent event(type, QPointF(point), QPointF(window.mapToGlobal(point)), button, held, flags);
+                    QApplication::sendEvent(window.windowHandle(), &event);
+                };
+                QTimer::singleShot(0, &window, [&] { send(QEvent::MouseMove, start + QPoint(4, 0), Qt::NoButton, Qt::LeftButton, initial); });
+                send(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton, initial);
+                if (autoscroll) {
+                    area = viewport(); check(area, "scrolling drag viewport disappeared after press");
+                    const auto before = window.sessionState(); const QImage original = pixels();
+                    const int beforeScroll = area->verticalScrollBar()->value();
+                    const QPoint outside = area->viewport()->mapTo(&window, QPoint(140, down ? area->viewport()->height() + 40 : -40));
+                    send(QEvent::MouseMove, outside, Qt::NoButton, Qt::LeftButton, final);
+                    try {
+                        // Keep the pointer stationary: the native drag timer must reveal the offscreen target.
+                        pump([&] { area = viewport(); return area && area->verticalScrollBar()->value() == (down ? area->verticalScrollBar()->maximum() : 0); }, "held layer drag did not autoscroll to its offscreen folder");
+                    } catch (...) {
+                        qWarning() << "layer autoscroll before/after/max" << beforeScroll << (area ? area->verticalScrollBar()->value() : -1)
+                            << (area ? area->verticalScrollBar()->maximum() : -1);
+                        qWarning().noquote() << "layer autoscroll pointer trace" << swiftUIPointerTrace();
+                        send(QEvent::MouseButtonRelease, outside, Qt::LeftButton, Qt::NoButton, final);
+                        throw;
+                    }
+                    check(layers() == before.value("layers").toArray() && pixels() == original
+                        && window.sessionState().value("undoName") == before.value("undoName"), "layer autoscroll edited the document before drop");
+                    end = table()->mapTo(&window, QPoint(140, to * 54 + (above ? 2 : 26)));
+                }
+                send(QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton, final);
+                send(QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton, final);
+                QApplication::processEvents();
+            };
+            const auto pixelOracle = [&](const QJsonArray &records) {
+                const auto map = byID(records); const QImage actual = pixels();
+                for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                    double alpha = 0; int red = 0, blue = 0;
+                    for (const auto &record : map) {
+                        if (record.value("isGroup").toBool()) continue;
+                        if (!record.value("name").toString().startsWith("Drag red") && !record.value("name").toString().startsWith("Drag blue")) continue;
+                        const bool isRed = record.value("name").toString().startsWith("Drag red");
+                        const QRect rect(isRed ? 16 : 32, 16, 16, 16);
+                        if (!rect.contains(x, y)) continue;
+                        double opacity = record.value("opacity").toDouble(1);
+                        auto parent = record.value("parentID").toString(); int depth = 0;
+                        while (!parent.isEmpty()) {
+                            check(map.contains(parent) && ++depth < 64, "drag produced a missing/cyclic parent");
+                            opacity *= map[parent].value("opacity").toDouble(1);
+                            parent = map[parent].value("parentID").toString();
+                        }
+                        alpha = opacity + alpha * (1 - opacity);
+                        if (isRed) red = 255; else blue = 255;
+                    }
+                    const auto color = actual.pixelColor(x, y);
+                    check(std::abs(color.alpha() - qRound(alpha * 255)) <= 2, "layer drag composite disagrees with independent source-over alpha");
+                    if (color.alpha()) check(color.red() == red && color.green() == 0 && color.blue() == blue,
+                        "layer drag changed source colors or geometry");
+                }
+            };
+            for (int caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
+                const auto entry = cases[caseIndex]; collapsed.clear(); reset();
+                command({{"action", "renameLayer"}, {"name", "Drag red"}});
+                command({{"action", "setOpacity"}, {"value", 0.5}});
+                const QString red = window.sessionState().value("activeLayerID").toString();
+                QImage blueImage(64, 64, QImage::Format_RGBA8888); blueImage.fill(Qt::transparent);
+                for (int y = 16; y < 32; ++y) for (int x = 32; x < 48; ++x) blueImage.setPixelColor(x, y, Qt::blue);
+                const QString path = temporary.filePath("drag-blue.png"); check(blueImage.save(path), "nesting blue fixture save failed");
+                command({{"action", "importFiles"}, {"paths", QJsonArray{path}}});
+                command({{"action", "renameLayer"}, {"name", "Drag blue"}});
+                command({{"action", "setOpacity"}, {"value", 0.5}});
+                const QString blue = window.sessionState().value("activeLayerID").toString();
+                command({{"action", "addGroup"}});
+                command({{"action", "renameLayer"}, {"name", "Destination"}});
+                const QString destination = window.sessionState().value("activeLayerID").toString();
+                if (entry.collapsedTarget) {
+                    command({{"action", "addLayer"}}); command({{"action", "renameLayer"}, {"name", "Destination placeholder"}});
+                    collapse(destination);
+                }
+                QString source = red, inner;
+                if (entry.crossFolders) for (const auto &id : {red, blue}) {
+                    command({{"action", "selectLayer"}, {"layerID", id}}); command({{"action", "groupSelectedLayers"}});
+                    command({{"action", "renameLayer"}, {"name", id == red ? "Red source folder" : "Blue source folder"}});
+                    command({{"action", "setOpacity"}, {"value", id == red ? 0.5 : 0.75}});
+                }
+                if (entry.folder) {
+                    command({{"action", "selectLayer"}, {"layerID", red}});
+                    command({{"action", "selectLayer"}, {"layerID", blue}, {"enabled", true}});
+                    command({{"action", "groupSelectedLayers"}});
+                    command({{"action", "renameLayer"}, {"name", "Inner source"}});
+                    inner = window.sessionState().value("activeLayerID").toString();
+                    command({{"action", "groupSelectedLayers"}});
+                    command({{"action", "renameLayer"}, {"name", "Outer source"}});
+                    command({{"action", "setOpacity"}, {"value", 0.5}});
+                    source = window.sessionState().value("activeLayerID").toString();
+                    if (entry.collapsedSource) collapse(source);
+                }
+                if (entry.scrolling) {
+                    if (entry.scrollDown) {
+                        command({{"action", "selectLayer"}, {"layerID", destination}});
+                        command({{"action", "moveActiveLayer"}, {"value", -1}});
+                        command({{"action", "moveActiveLayer"}, {"value", -1}});
+                    }
+                    command({{"action", "selectLayer"}, {"layerID", red}});
+                    for (int i = 0; i < 24; ++i) {
+                        command({{"action", "addLayer"}}); command({{"action", "renameLayer"}, {"name", QString("Spacer %1").arg(i)}});
+                    }
+                    if (entry.scrollDown) source = blue;
+                }
+                command({{"action", "selectLayer"}, {"layerID", source}});
+                if (entry.multiple || entry.descendant)
+                    command({{"action", "selectLayer"}, {"layerID", entry.multiple ? blue : red}, {"enabled", true}});
+                QSet<QString> roots{source}; if (entry.multiple) roots.insert(blue);
+                if (entry.moveOut) {
+                    const auto setupBefore = layers();
+                    // Read the existing native tree directly: Qt accessibility would first resolve the panel,
+                    // hiding a stale coordinator. This snapshot may lay out cells but does not update its rows.
+                    const QString location = table()->property("appKitNode").toString(); const int split = location.indexOf('|');
+                    const QByteArray nativePanel = location.left(split).toUtf8(), nativeNode = location.mid(split + 1).toUtf8();
+                    const auto length = compositor_session_accessibility_tree(window.sessionHandle(), nativePanel.constData(), nativeNode.constData(), nullptr, 0);
+                    QByteArray nativeBytes(qMax<int64_t>(0, length), Qt::Uninitialized);
+                    if (length > 0) compositor_session_accessibility_tree(window.sessionHandle(), nativePanel.constData(), nativeNode.constData(),
+                        reinterpret_cast<uint8_t *>(nativeBytes.data()), nativeBytes.size());
+                    const auto nativeRows = QJsonDocument::fromJson(nativeBytes).object().value("children").toArray();
+                    QStringList nativeNames; for (const auto &row : nativeRows) nativeNames.append(row.toObject().value("label").toString());
+                    qInfo() << "move-out setup native cached row names/model rows" << nativeNames << panelIDs(setupBefore);
+                    pointerDrag(source, destination, false, Qt::NoModifier, Qt::NoModifier);
+                    if (byID(layers())[source].value("parentID").toString() != destination) {
+                        qWarning().noquote() << "move-out setup pointer route" << lastPointerRoute;
+                        qWarning() << "move-out setup source/target/before/after" << source << destination << setupBefore << layers();
+                        qWarning().noquote() << "move-out setup pointer trace" << swiftUIPointerTrace();
+                        qWarning().noquote() << "move-out setup scroll trace" << swiftUIScrollTrace();
+                    }
+                    check(byID(layers())[source].value("parentID").toString() == destination, "move-out setup did not nest its source");
+                }
+                const auto beforeState = window.sessionState(); const auto before = layers();
+                const auto originals = byID(before); const QImage beforePixels = pixels(); pixelOracle(before);
+                const auto beforeSelection = selectedIDs();
+                check(beforeSelection.contains(source), "source row not selected before nesting drag");
+                QStringList expectedOrder;
+                for (const auto &id : panelIDs(before)) if (roots.contains(id)) expectedOrder.append(id);
+                const Qt::KeyboardModifiers initial = entry.copy && !entry.lateAlt ? Qt::AltModifier : Qt::NoModifier;
+                pointerDrag(source, entry.refused ? inner : destination, entry.moveOut, initial, entry.copy ? Qt::AltModifier : Qt::NoModifier, entry.scrolling, entry.scrollDown);
+                if (!entry.refused) collapsed.remove(destination);
+                const auto after = layers(); const auto result = byID(after); const QImage afterPixels = pixels();
+                check(result.size() == after.size(), "layer drag produced duplicate record IDs");
+                if (entry.refused) {
+                    check(after == before && afterPixels == beforePixels, "folder drop into its descendant changed the document");
+                    for (const char *name : {"undoName", "redoName", "canUndo", "canRedo", "modified"})
+                        check(window.sessionState().value(name) == beforeState.value(name), "refused descendant drag changed history");
+                    check(selectedIDs() == beforeSelection, "refused descendant drag changed selection");
+                } else {
+                    QMap<QString, QString> copies;
+                    for (auto i = result.cbegin(); i != result.cend(); ++i) if (!originals.contains(i.key())) {
+                        const auto name = i.value().value("name").toString(); QString match;
+                        for (auto j = originals.cbegin(); j != originals.cend(); ++j)
+                            if (name == j.value().value("name").toString() + (roots.contains(j.key()) ? " copy" : "")) match = j.key();
+                        check(!match.isEmpty() && !copies.contains(match), "drag copy duplicated an unknown or already copied source");
+                        copies.insert(match, i.key());
+                    }
+                    check(copies.size() == (entry.copy ? (entry.folder ? 4 : roots.size()) : 0), "Alt drag did not copy the selected roots/subtree exactly once");
+                    check(result.size() == originals.size() + copies.size(), "layer drag lost a source or duplicated a record identity");
+                    for (auto i = originals.cbegin(); i != originals.cend(); ++i) {
+                        auto expected = i.value();
+                        if (!entry.copy && roots.contains(i.key())) {
+                            if (entry.moveOut) expected.remove("parentID"); else expected.insert("parentID", destination);
+                        }
+                        check(result.value(i.key()) == expected, "layer drag changed an unselected/source record or wrong parent");
+                    }
+                    for (auto i = copies.cbegin(); i != copies.cend(); ++i) {
+                        if (collapsed.contains(i.key())) collapsed.insert(i.value());
+                        auto expected = originals.value(i.key()); expected.insert("id", i.value());
+                        if (roots.contains(i.key())) { expected.insert("name", expected.value("name").toString() + " copy"); expected.insert("parentID", destination); }
+                        else expected.insert("parentID", copies.value(expected.value("parentID").toString()));
+                        check(result.value(i.value()) == expected, "folder drag copy lost appearance/geometry or descendant parent remapping");
+                    }
+                    QStringList placed;
+                    for (const auto &id : panelIDs(after)) if ((entry.copy && copies.values().contains(id) && roots.contains(copies.key(id)))
+                        || (!entry.copy && roots.contains(id))) placed.append(entry.copy ? copies.key(id) : id);
+                    check(placed == expectedOrder, "multi-row drag changed the selected roots' displayed order");
+                    if (!entry.copy) check(selectedIDs() == roots, "move drag lost its selected roots");
+                    else {
+                        const auto active = window.sessionState().value("activeLayerID").toString();
+                        check(copies.values().contains(active), "Alt drag did not select a copied layer");
+                        check(selectedIDs().contains(active), "Alt drag's copied selection or collapsed subtree differs from the visible list");
+                    }
+                    pixelOracle(after);
+                    const QString history = (entry.copy ? "Duplicate Layer" : "Move Layer") + QString(roots.size() > 1 ? "s" : "");
+                    check(window.sessionState().value("undoName").toString() == history, "layer drag did not create the upstream grouped history step");
+                    command({{"action", "undo"}});
+                    check(layers() == before && pixels() == beforePixels, "layer drag did not undo its exact hierarchy/IDs/pixels in one step");
+                    command({{"action", "redo"}});
+                    check(layers() == after && pixels() == afterPixels, "layer drag did not redo its exact hierarchy/IDs/pixels in one step");
+                }
+                qInfo("Qt layer nesting OK (case=%d copy=%d multiple=%d folder=%d selected-descendant=%d refused=%d move-out=%d late-Alt=%d collapsed-source=%d collapsed-target=%d cross-folders=%d scrolling=%d scroll-down=%d; actual pointer, exact records/parents, pixel oracle, source isolation and Undo/Redo)",
+                    caseIndex, int(entry.copy), int(entry.multiple), int(entry.folder), int(entry.descendant), int(entry.refused), int(entry.moveOut), int(entry.lateAlt),
+                    int(entry.collapsedSource), int(entry.collapsedTarget), int(entry.crossFolders), int(entry.scrolling), int(entry.scrollDown));
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--effects-controls-probe")) {
+            struct EffectCase { QString title, name; int size = 0, angle = 0, distance = 0, blur = 0, opacity = 50; bool inside = false; };
+            QList<EffectCase> cases;
+            for (bool inside : {false, true}) for (int size : {2, 6}) for (int opacity : {50, 100})
+                cases.append({"Stroke", "stroke", size, 0, 0, 0, opacity, inside});
+            for (bool inside : {false, true}) cases.append({"Stroke", "stroke", 50, 0, 0, 0, 50, inside});
+            for (const auto &kind : QList<QPair<QString, QString>>{{"Drop Shadow", "shadow"}, {"Inner Shadow", "innerShadow"}}) {
+                for (int angle : {-90, 0, 90, 180}) cases.append({kind.first, kind.second, 0, angle, 8});
+                cases.append({kind.first, kind.second, 0, 90, 8, 4});
+            }
+            for (int opacity : {0, 25, 100}) cases.append({"Color Overlay", "colorOverlay", 0, 0, 0, 0, opacity});
+            for (const auto &kind : QList<QPair<QString, QString>>{{"Outer Glow", "outerGlow"}, {"Inner Glow", "innerGlow"}})
+                for (int size : {2, 8}) cases.append({kind.first, kind.second, size});
+            const QRect shape(16, 16, 16, 16);
+            const auto panel = [&]() -> QDialog * {
+                auto *dialog = window.findChild<QDialog *>("floatingPanel.EffectsSheet");
+                return dialog && dialog->isVisible() ? dialog : nullptr;
+            };
+            const auto finish = [&](const QString &title) {
+                QPushButton *button = nullptr;
+                if (panel()) for (auto *candidate : panel()->findChildren<QPushButton *>())
+                    if (candidate->isVisible() && candidate->text() == title) button = candidate;
+                check(button, "visible effects finish button missing"); click(button);
+                pump([&] { return !panel(); }, "effects sheet did not close");
+            };
+            const auto number = [&](const QString &title, double value) {
+                QPointer<QLineEdit> field;
+                if (panel()) for (auto *candidate : panel()->findChildren<QLineEdit *>())
+                    if (candidate->isVisible() && candidate->placeholderText() == title) field = candidate;
+                check(field, "visible effect numeric field missing");
+                QApplication::setActiveWindow(panel()); field->setFocus(); field->selectAll(); field->insert(QString::number(value));
+                QApplication::processEvents();
+                check(field && field->hasFocus() && field->text().toDouble() == value, "effect numeric edit lost text/focus");
+                field->clearFocus(); QApplication::processEvents();
+            };
+            const auto open = [&](const EffectCase &entry) {
+                QPushButton *button = nullptr;
+                for (auto *candidate : window.findChildren<QPushButton *>())
+                    if (candidate->isVisible() && candidate->accessibleName() == "Layer effects") button = candidate;
+                check(button && button->isEnabled() && button->menu(), "visible effects menu unavailable");
+                QApplication::setActiveWindow(&window);
+                auto *menu = button->menu(); menu->popup(button->mapToGlobal(QPoint(0, button->height())));
+                QApplication::processEvents(); QAction *action = nullptr;
+                for (auto *candidate : menu->actions()) if (candidate->text() == entry.title + QString::fromUtf8("…")) action = candidate;
+                check(menu->isVisible() && action && action->isEnabled(), "visible effect creation action missing");
+                action->trigger(); menu->hide(); QApplication::processEvents();
+                pump([&] { return panel(); }, "effects menu did not open its sheet");
+            };
+            const auto configure = [&](const EffectCase &entry) {
+                if (entry.name == "stroke" || entry.name.endsWith("Glow")) number("Size", entry.size);
+                if (entry.name == "stroke") {
+                    QPushButton *choice = nullptr;
+                    for (auto *candidate : panel()->findChildren<QPushButton *>())
+                        if (candidate->isVisible() && candidate->text() == (entry.inside ? "Inside" : "Outside")) choice = candidate;
+                    check(choice, "visible stroke position missing"); click(choice);
+                }
+                if (entry.name == "shadow" || entry.name == "innerShadow") {
+                    number("Angle", entry.angle); number("Distance", entry.distance); number("Blur", entry.blur);
+                }
+                number("Opacity", entry.opacity == 100 ? 50 : 100);
+            };
+            // A separable, normalized discrete Gaussian on the known rectangle, independent of all app renderers.
+            const auto sourceAlpha = [&](int x, int y, bool soft) {
+                return shape.contains(x, y) ? (soft && y >= 24 ? 128.0 / 255 : 1.0) : 0.0;
+            };
+            const auto coverage = [&](int x, int y, int dx, int dy, double sigma, bool soft) {
+                if (sigma <= 0) return sourceAlpha(x - dx, y - dy, soft);
+                const int radius = int(std::ceil(3 * sigma));
+                const auto axis = [&](int coordinate, int minimum, int maximum) {
+                    double sum = 0, weight = 0;
+                    for (int offset = -radius; offset <= radius; ++offset) {
+                        const double w = std::exp(-double(offset * offset) / (2 * sigma * sigma)); weight += w;
+                        if (coordinate + offset >= minimum && coordinate + offset <= maximum) sum += w;
+                    }
+                    return sum / weight;
+                };
+                const double vertical = soft ? axis(y - dy, 16, 23) + (128.0 / 255) * axis(y - dy, 24, 31)
+                    : axis(y - dy, shape.top(), shape.bottom());
+                return axis(x - dx, shape.left(), shape.right()) * vertical;
+            };
+            const auto oracle = [&](const EffectCase &entry, const QImage &actual, bool soft) {
+                const double opacity = entry.opacity / 100.0;
+                const int dx = qRound(-std::cos(entry.angle * M_PI / 180) * entry.distance);
+                const int dy = qRound(std::sin(entry.angle * M_PI / 180) * entry.distance);
+                double largest = 0;
+                for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                    const double source = sourceAlpha(x, y, soft);
+                    double alpha = source, red = source, green = 0, blue = 0;
+                    if (entry.name == "stroke") {
+                        double extreme = 0;
+                        if (entry.inside) {
+                            const QRect eroded = shape.adjusted(entry.size, entry.size, -entry.size, -entry.size);
+                            // QRect::contains normalizes negative extents; an over-eroded shape is empty.
+                            if (eroded.isValid() && eroded.contains(x, y))
+                                extreme = soft && y + entry.size >= 24 ? 128.0 / 255 : 1;
+                        } else {
+                            if (shape.adjusted(-entry.size, -entry.size, entry.size, entry.size).contains(x, y)) extreme = soft ? 128.0 / 255 : 1;
+                            if (soft && QRect(16, 16, 16, 8).adjusted(-entry.size, -entry.size, entry.size, entry.size).contains(x, y)) extreme = 1;
+                        }
+                        const double ring = opacity * (entry.inside ? source - extreme : extreme - source);
+                        alpha = source + ring * (1 - source);
+                        if (entry.inside) red = source * (1 - ring);
+                    } else if (entry.name == "shadow") {
+                        alpha = source + opacity * coverage(x, y, dx, dy, entry.blur / 2.0, soft) * (1 - source);
+                    } else if (entry.name == "innerShadow") {
+                        red = source * (1 - opacity * (1 - coverage(x, y, dx, dy, entry.blur / 2.0, soft)));
+                    } else if (entry.name == "colorOverlay") {
+                        red = source * (1 - opacity);
+                    } else if (entry.name == "outerGlow") {
+                        green = blue = opacity * coverage(x, y, 0, 0, entry.size / 2.0, soft) * (1 - source) * (1 - source);
+                        red = alpha = source + green;
+                    } else if (entry.name == "innerGlow") {
+                        green = blue = source * opacity * (1 - coverage(x, y, 0, 0, entry.size / 2.0, soft));
+                    }
+                    const auto color = actual.pixelColor(x, y);
+                    const double a = color.alphaF();
+                    const double difference = std::max({std::abs(a - alpha), std::abs(color.redF() * a - red),
+                        std::abs(color.greenF() * a - green), std::abs(color.blueF() * a - blue)});
+                    largest = std::max(largest, difference);
+                    if (entry.name == "innerShadow" || entry.name == "innerGlow" || entry.name == "colorOverlay")
+                        check(color.alpha() == qRound(source * 255), "inside effect changed source alpha");
+                }
+                if (largest > 4.0 / 255) qWarning() << "effect oracle mismatch" << entry.title << entry.size << entry.angle << entry.blur << largest;
+                check(largest <= 4.0 / 255, "effect numeric controls disagree with independent pixel equations");
+            };
+            int index = 0;
+            for (bool soft : {false, true}) for (const auto &entry : cases) {
+                QImage sourceFixture = fixture;
+                if (soft) for (int y = 24; y < 32; ++y) for (int x = 16; x < 32; ++x)
+                    sourceFixture.setPixelColor(x, y, QColor(255, 0, 0, 128));
+                const QString path = temporary.filePath("effect-source.png");
+                check(sourceFixture.save(path) && window.importImage(path), "effect source fixture import failed");
+                command({{"action", "setShowsTransformControls"}, {"enabled", false}});
+                command({{"action", "setPaletteColor"}, {"kind", "background"},
+                    {"parameters", QJsonObject{{"red", 0}, {"green", 0}, {"blue", 0}}}});
+                const auto sourceState = window.sessionState(); const QImage source = pixels();
+                const auto isolated = [&] {
+                    const auto state = window.sessionState();
+                    for (const char *name : {"layers", "activeLayerID", "foregroundColor", "backgroundColor"})
+                        check(state.value(name) == sourceState.value(name), "effect edited source records/target/palette");
+                };
+                open(entry); configure(entry); number("Opacity", entry.opacity);
+                oracle(entry, pixels(), soft); isolated(); finish("Cancel");
+                check(pixels() == source, "effect Cancel did not restore exact source pixels"); isolated();
+                check(window.sessionState().value("undoName").toString() == "Cancel " + entry.title,
+                    "effect Cancel did not follow upstream's compensating history policy");
+                open(entry); configure(entry);
+                const auto checkpoint = window.sessionState(); const QImage beforeLast = pixels();
+                number("Opacity", entry.opacity);
+                const auto edited = window.sessionState(); const QImage preview = pixels(); oracle(entry, preview, soft); isolated();
+                finish("OK"); check(pixels() == preview, "effect OK lost its live preview");
+                const auto history = [&](Qt::KeyboardModifiers modifiers) {
+                    QApplication::setActiveWindow(&window); canvas->setFocus(); QApplication::processEvents();
+                    key(canvas, Qt::Key_Z, modifiers); QApplication::processEvents();
+                };
+                history(Qt::ControlModifier);
+                check(pixels() == beforeLast && window.sessionState().value("layers") == checkpoint.value("layers")
+                    && window.sessionState().value("undoName") == checkpoint.value("undoName"), "effect numeric Undo lost its exact checkpoint");
+                history(Qt::ControlModifier | Qt::ShiftModifier);
+                check(pixels() == preview && window.sessionState().value("layers") == edited.value("layers"), "effect numeric Redo lost exact pixels/records");
+                isolated();
+                const QString project = temporary.filePath(QString("effects-controls-%1.comp").arg(index++));
+                std::shared_ptr<std::pair<bool, bool>> overlappingAutosave;
+                if (index == 1 && app.arguments().contains("--effects-autosave-overlap")) {
+                    overlappingAutosave = std::make_shared<std::pair<bool, bool>>(false, false);
+                    check(window.startProjectSave(window.autosaveDirectory() + "/autosave.comp", true,
+                        [overlappingAutosave](bool ok) { overlappingAutosave->first = true; overlappingAutosave->second = ok; }),
+                        "effect autosave overlap did not start");
+                    check(window.isProjectSaveInProgress() && !window.writeProjectPackage(project),
+                        "effect overlapping explicit save did not refuse while autosave was pending");
+                    check(!QFileInfo::exists(project), "refused effect save wrote a destination");
+                    qInfo("Qt effects autosave overlap reproduced (pending autosave refuses immediate explicit package save)");
+                }
+                const bool packageSaved = writeProjectPackage(project);
+                if (overlappingAutosave)
+                    check(overlappingAutosave->first && overlappingAutosave->second, "overlapping effect autosave failed");
+                if (!packageSaved) qWarning("effect controls package save failed (case=%d, kind=%s, soft=%d)",
+                    index - 1, qPrintable(entry.title), int(soft));
+                check(packageSaved, "effect controls project save failed");
+                QFile file(project + "/manifest.json"); check(file.open(QIODevice::ReadOnly), "effect controls saved manifest missing");
+                const auto records = QJsonDocument::fromJson(file.readAll()).object().value("layers").toArray();
+                check(records.size() == 1, "effect controls changed saved layer count");
+                const QImage savedSource(project + "/images/" + records.first().toObject().value("imageFile").toString());
+                int differences = 0, largest = 0;
+                if (savedSource.size() == source.size()) for (int y = 0; y < source.height(); ++y) for (int x = 0; x < source.width(); ++x) {
+                    const auto a = savedSource.pixelColor(x, y), b = source.pixelColor(x, y);
+                    if (a != b) ++differences;
+                    largest = std::max({largest, std::abs(a.red() - b.red()), std::abs(a.green() - b.green()),
+                        std::abs(a.blue() - b.blue()), std::abs(a.alpha() - b.alpha())});
+                }
+                if (savedSource.isNull() || savedSource.size() != source.size() || differences) {
+                    qWarning() << "effect saved source mismatch" << savedSource.size() << source.size()
+                        << savedSource.format() << source.format() << "different pixels/largest channel" << differences << largest
+                        << "saved color space" << savedSource.colorSpace() << "source color space" << source.colorSpace();
+                }
+                // The encoded source has an ICC tag; raw compositor readback is untagged. Compare channels,
+                // then verify the saved working space separately rather than comparing QImage metadata.
+                check(!savedSource.isNull() && savedSource.size() == source.size() && differences == 0,
+                    "non-destructive effect changed the saved source image pixels");
+                check(savedSource.colorSpace() == QColorSpace(QColorSpace::SRgb), "effect source PNG lost its sRGB tag");
+                const auto saved = records.first().toObject().value("effects").toObject().value(entry.name).toObject();
+                check(std::abs(saved.value("opacity").toDouble(-1) - entry.opacity / 100.0) < 1e-9, "effect controls saved wrong opacity");
+                if (entry.name == "stroke" || entry.name.endsWith("Glow"))
+                    check(saved.value("size").toInt(-1) == entry.size, "effect controls saved wrong size");
+                if (entry.name == "stroke") check(saved.value("inside").toBool() == entry.inside, "effect controls saved wrong position");
+                if (entry.name == "shadow" || entry.name == "innerShadow")
+                    check(saved.value("angle").toInt(-999) == entry.angle && saved.value("distance").toInt(-1) == entry.distance
+                        && saved.value("blur").toInt(-1) == entry.blur, "effect controls saved wrong shadow geometry");
+                qInfo("Qt effects controls OK (%s, size=%d inside=%d angle=%d distance=%d blur=%d opacity=%d soft=%d; independent pixels, Cancel/OK, source/palette isolation, numeric Undo/Redo and saved parameters/source PNG)",
+                    qPrintable(entry.title), entry.size, int(entry.inside), entry.angle, entry.distance, entry.blur, entry.opacity, int(soft));
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--filter-controls-probe") || app.arguments().contains("--image-adjustment-controls-probe")) {
+            const bool adjustments = app.arguments().contains("--image-adjustment-controls-probe");
+            const QRect selectedArea(32, 16, 24, 32);
+            const auto historyKey = [&](Qt::KeyboardModifiers modifiers) {
+                // A sheet's deferred destruction can restore focus after it is already hidden. Deliver history
+                // keys only after the visible main canvas owns focus, as an actual click/key sequence would.
+                QApplication::setActiveWindow(&window); canvas->setFocus(); QApplication::processEvents();
+                pump([&] {
+                    QApplication::setActiveWindow(&window); canvas->setFocus();
+                    return QApplication::activeWindow() == &window && QApplication::focusWidget() == canvas;
+                }, "filter history canvas did not acquire focus after closing its sheet");
+                key(canvas, Qt::Key_Z, modifiers);
+            };
+            const auto panel = [&]() -> QDialog * {
+                auto *value = window.findChild<QDialog *>("floatingPanel.FilterSheet");
+                return value && value->isVisible() ? value : nullptr;
+            };
+            const auto button = [&](const QString &title) -> QPushButton * {
+                if (auto *dialog = panel()) for (auto *value : dialog->findChildren<QPushButton *>())
+                    if (value->isVisible() && value->text() == title) return value;
+                throw std::runtime_error("visible filter button missing");
+            };
+            const auto toggle = [&](const QString &title) -> QCheckBox * {
+                if (auto *dialog = panel()) for (auto *value : dialog->findChildren<QCheckBox *>())
+                    if (value->isVisible() && value->text() == title) return value;
+                throw std::runtime_error("visible filter toggle missing");
+            };
+            const auto settled = [&] {
+                pump([&] { return panel() && !window.sessionState().value("filterPreviewRendering").toBool(); },
+                     "filter controls preview did not settle");
+            };
+            const auto number = [&](const QString &title, double value) {
+                QPointer<QLineEdit> field;
+                for (auto *candidate : panel()->findChildren<QLineEdit *>())
+                    if (candidate->isVisible() && candidate->placeholderText() == title) field = candidate;
+                check(field, "visible filter numeric field missing");
+                QApplication::setActiveWindow(panel()); field->setFocus(); field->selectAll(); field->insert(QString::number(value));
+                QApplication::processEvents();
+                check(field && field->hasFocus() && field->text().toDouble() == value, "filter edit lost its field/value/focus");
+                field->clearFocus(); QApplication::processEvents(); settled();
+            };
+            const auto sliderRange = [&](const QString &title, double minimum, double maximum, double restore) {
+                const auto field = [&]() -> QLineEdit * {
+                    if (panel()) for (auto *candidate : panel()->findChildren<QLineEdit *>())
+                        if (candidate->isVisible() && candidate->placeholderText() == title) return candidate;
+                    throw std::runtime_error("adjustment slider's numeric field missing");
+                };
+                for (bool last : {false, true}) {
+                    QSlider *slider = nullptr;
+                    for (auto *row = field()->parentWidget(); row && row != panel(); row = row->parentWidget()) {
+                        const auto sliders = row->findChildren<QSlider *>();
+                        if (sliders.size() == 1) { slider = sliders.first(); break; }
+                    }
+                    check(slider && slider->isVisible(), "visible adjustment slider missing");
+                    QApplication::setActiveWindow(panel()); slider->setFocus(); QApplication::processEvents();
+                    QTest::sendKeyEvent(QTest::Click, panel()->windowHandle(), last ? Qt::Key_End : Qt::Key_Home, QString(), Qt::NoModifier);
+                    QApplication::processEvents();
+                    if (auto *focus = QApplication::focusWidget(); focus && panel()->isAncestorOf(focus)) focus->clearFocus();
+                    QApplication::processEvents(); settled();
+                    pump([&] { return std::abs(field()->text().toDouble() - (last ? maximum : minimum)) < 0.00001; },
+                         "adjustment slider endpoint did not update its model/numeric field");
+                }
+                number(title, restore);
+            };
+            const auto open = [&](const QString &kind) {
+                QMenu *menu = nullptr;
+                for (auto *action : window.menuBar()->actions()) if (action->text().remove('&') == (adjustments ? "Image" : "Filter")) menu = action->menu();
+                check(menu, "visible filter/adjustment menu missing");
+                QApplication::setActiveWindow(&window); menu->popup(window.mapToGlobal(QPoint(250, 50))); QApplication::processEvents();
+                QAction *chosen = nullptr;
+                for (auto *action : menu->actions()) if (action->text().remove('&') == kind + QString::fromUtf8("…")) chosen = action;
+                check(menu->isVisible() && chosen && chosen->isEnabled(), "visible filter menu action unavailable");
+                chosen->trigger(); menu->hide(); QApplication::processEvents();
+                pump([&] { return panel(); }, "filter controls sheet did not open"); settled();
+            };
+            struct Case {
+                QString kind; double amount, angle = 0; bool gaussian = false, monochromatic = false;
+                double offset = 0, gamma = 1; bool reversed = false, customColors = false;
+            };
+            QList<Case> cases;
+            if (adjustments) {
+                for (const auto &values : QList<QList<double>>{{0, 0, 1}, {1, 0, 1}, {-1, 0, 1}, {0, 0.05, 1},
+                         {0, -0.05, 1}, {0, 0, 2}, {0, 0, 0.5}, {0.5, 0.02, 1.4}}) {
+                    Case entry{"Exposure", values[0]}; entry.offset = values[1]; entry.gamma = values[2]; cases.append(entry);
+                }
+                for (bool custom : {false, true}) for (bool reversed : {false, true}) {
+                    Case entry{"Gradient Map", 0}; entry.customColors = custom; entry.reversed = reversed; cases.append(entry);
+                }
+                for (int amount : {0, 20, 40}) cases.append({"Grain", double(amount)});
+            } else {
+                for (int angle : {-45, 0, 45, 90}) for (int distance : {12, 24}) cases.append({"Motion Blur", double(distance), double(angle)});
+                for (bool gaussian : {false, true}) for (bool mono : {false, true}) for (int amount : {10, 40})
+                    cases.append({"Add Noise", double(amount), 0, gaussian, mono});
+                for (int distortion : {-60, -20, 0, 20, 60}) cases.append({"Lens Correction", double(distortion)});
+            }
+            if (app.arguments().contains("--gradient-map-colors-only"))
+                for (qsizetype i = cases.size(); i-- > 0;)
+                    if (cases[i].kind != "Gradient Map" || !cases[i].customColors) cases.removeAt(i);
+            QMap<int, double> shortMotionVariance;
+            QMap<int, QImage> fullMotion;
+            for (bool limited : {false, true}) for (const auto &entry : cases) {
+                QImage fixture(64, 64, QImage::Format_RGBA8888); fixture.fill(Qt::transparent);
+                if (entry.kind == "Motion Blur") fixture.setPixelColor(32, 31, Qt::white);
+                else for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                    if (entry.kind == "Add Noise" || entry.kind == "Grain") {
+                        if (x >= 8 && x < 56 && y >= 8 && y < 56) fixture.setPixelColor(x, y, QColor(128, 128, 128, y < 32 ? 255 : 128));
+                    } else if (!(x >= 28 && x < 36 && y >= 28 && y < 36)) {
+                        fixture.setPixelColor(x, y, QColor(32 + x * 3, 32 + y * 3, (x / 8 + y / 8) % 2 ? 192 : 64, y < 32 ? 255 : 128));
+                    }
+                }
+                const QString path = temporary.filePath("filter-controls.png");
+                check(fixture.save(path) && window.importImage(path), "filter controls fixture import failed");
+                command({{"action", "setShowsTransformControls"}, {"enabled", false}});
+                command({{"action", "deselect"}});
+                if (limited) {
+                    tool("Marquee", "marquee");
+                    for (const QString &title : {QString("Rectangle"), QString("New")}) {
+                        QPushButton *choice = nullptr;
+                        for (auto *picker : window.findChildren<QWidget *>("segmentedPicker"))
+                            for (auto *candidate : picker->findChildren<QPushButton *>())
+                                if (candidate->isVisible() && candidate->text() == title) choice = candidate;
+                        click(choice);
+                    }
+                    drag(at(32, 16), at(56, 48));
+                    check(window.sessionState().value("hasSelection").toBool(), "filter pointer selection missing");
+                    // The state ABI exposes selection presence, not its bounds. Prove the actual coverage by filling
+                    // and undoing, so a missing or differently shaped selection cannot pass as the expected rectangle.
+                    const QImage source = pixels(); const auto state = window.sessionState();
+                    command({{"action", "setPaletteColor"}, {"kind", "foreground"},
+                             {"parameters", QJsonObject{{"red", 0}, {"green", 0}, {"blue", 1}}}});
+                    command({{"action", "fillForeground"}}); const QImage filled = pixels();
+                    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                        check(filled.pixelColor(x, y) == (selectedArea.contains(x, y) ? QColor(Qt::blue) : source.pixelColor(x, y)),
+                              "filter pointer selection coverage differs from its rectangle oracle");
+                    historyKey(Qt::ControlModifier);
+                    check(pixels() == source && window.sessionState().value("layers") == state.value("layers")
+                              && window.sessionState().value("undoName") == state.value("undoName"), "selection coverage proof did not restore source/history");
+                }
+                if (entry.kind == "Gradient Map") {
+                    command({{"action", "setPaletteColor"}, {"kind", "foreground"},
+                             {"parameters", QJsonObject{{"red", 1}, {"green", 0}, {"blue", 0}}}});
+                    command({{"action", "setPaletteColor"}, {"kind", "background"},
+                             {"parameters", QJsonObject{{"red", 0}, {"green", 0}, {"blue", 1}}}});
+                }
+                const QImage original = pixels(); const auto before = window.sessionState();
+                const auto grainEnergy = [&](const QImage &image) {
+                    double sum = 0, squares = 0, differences = 0; int count = 0, pairs = 0;
+                    for (int y = 8; y < 32; ++y) for (int x = 8; x < 56; ++x) {
+                        if (limited && !selectedArea.contains(x, y)) continue;
+                        const double value = image.pixelColor(x, y).red() - original.pixelColor(x, y).red();
+                        sum += value; squares += value * value; ++count;
+                        if (x + 1 < 56 && (!limited || selectedArea.contains(x + 1, y))) {
+                            const double next = image.pixelColor(x + 1, y).red() - original.pixelColor(x + 1, y).red();
+                            differences += (value - next) * (value - next); ++pairs;
+                        }
+                    }
+                    const double variance = squares / count - std::pow(sum / count, 2);
+                    check(variance > 0.1 && pairs > 0, "grain energy fixture has no variation");
+                    return differences / pairs / variance;
+                };
+                const auto configure = [&] {
+                    open(entry.kind);
+                    if (entry.kind == "Exposure") {
+                        number("Exposure", entry.amount); number("Offset", entry.offset); number("Gamma", entry.gamma);
+                        if (entry.amount == 0 && entry.offset == 0 && entry.gamma == 1) {
+                            sliderRange("Exposure", -20, 20, 0); sliderRange("Offset", -0.5, 0.5, 0); sliderRange("Gamma", 0.01, 9.99, 1);
+                        }
+                    } else if (entry.kind == "Gradient Map") {
+                        if (entry.customColors) for (const auto &end : QList<QPair<QString, QString>>{{"Shadows color", "204060"}, {"Highlights color", "E0C0A0"}}) {
+                            const auto picker = [&]() -> QDialog * {
+                                auto *value = window.findChild<QDialog *>("floatingPanel.ColorPickerSheet");
+                                return value && value->isVisible() ? value : nullptr;
+                            };
+                            const QImage prior = pixels();
+                            for (bool commit : {false, true}) {
+                                QPushButton *swatch = nullptr;
+                                for (auto *value : panel()->findChildren<QPushButton *>())
+                                    if (value->isVisible() && value->accessibleName() == end.first) swatch = value;
+                                QApplication::setActiveWindow(panel()); click(swatch); pump([&] { return picker(); }, "Gradient Map color picker missing");
+                                const auto colorField = [&](const QString &title) -> QLineEdit * {
+                                    if (picker()) for (auto *value : picker()->findChildren<QLineEdit *>())
+                                        if (value->isVisible() && value->placeholderText() == title) return value;
+                                    throw std::runtime_error("Gradient Map color field missing");
+                                };
+                                auto *hex = colorField("Hex");
+                                QApplication::setActiveWindow(picker()); hex->setFocus(); hex->selectAll(); hex->insert(end.second);
+                                QApplication::processEvents();
+                                pump([&] { return picker() && colorField("Hex")->hasFocus() && colorField("Hex")->text() == end.second; },
+                                     "Gradient Map Hex draft lost its text or focus");
+                                check(colorField("Hex")->cursorPosition() == end.second.size(), "Gradient Map Hex refresh moved the cursor");
+                                // Hex is a draft until focus leaves (or Return submits); keep the picker open for live preview.
+                                colorField("Hex")->clearFocus(); QApplication::processEvents(); settled();
+                                const QColor expected("#" + end.second);
+                                pump([&] { return std::abs(colorField("R")->text().toInt() - expected.red()) <= 1
+                                    && std::abs(colorField("G")->text().toInt() - expected.green()) <= 1
+                                    && std::abs(colorField("B")->text().toInt() - expected.blue()) <= 1; }, "Gradient Map Hex did not update RGB");
+                                pump([&] { return pixels() != prior; }, "Gradient Map endpoint did not preview its color");
+                                QPushButton *finish = nullptr;
+                                for (auto *value : picker()->findChildren<QPushButton *>())
+                                    if (value->isVisible() && value->text() == (commit ? "OK" : "Cancel")) finish = value;
+                                click(finish); pump([&] { return !picker(); }, "Gradient Map color picker did not close"); settled();
+                                if (!commit) pump([&] { return pixels() == prior; }, "Gradient Map color Cancel lost its previous preview");
+                            }
+                        }
+                        if (toggle("Reverse")->isChecked() != entry.reversed) click(toggle("Reverse")); settled();
+                    } else if (entry.kind == "Grain") {
+                        number("Amount", entry.amount); number("Size", 1.5); number("Roughness", 50);
+                        if (entry.amount == 0) {
+                            sliderRange("Amount", 0, 100, 0); sliderRange("Size", 0.5, 20, 1.5); sliderRange("Roughness", 0, 100, 50);
+                        }
+                        if (entry.amount > 0) {
+                            number("Size", 1); number("Roughness", 0); const double fineEnergy = grainEnergy(pixels());
+                            number("Size", 4); const QImage smooth = pixels(); const double smoothEnergy = grainEnergy(smooth);
+                            check(smoothEnergy < fineEnergy * 0.6, "Grain Size did not enlarge its particles");
+                            number("Roughness", 100); const QImage rough = pixels();
+                            check(grainEnergy(rough) > smoothEnergy * 1.5, "Grain Roughness did not add smaller detail");
+                            number("Roughness", 50); const QImage middle = pixels();
+                            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                                check(std::abs(middle.pixelColor(x, y).red() - (smooth.pixelColor(x, y).red() + rough.pixelColor(x, y).red()) / 2.0) <= 3,
+                                      "Grain Roughness midpoint did not interpolate the same two patterns");
+                            number("Size", 1.5); const QImage reference = pixels();
+                            number("Amount", entry.amount * 2); const QImage doubled = pixels();
+                            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                                const int base = original.pixelColor(x, y).red();
+                                check(std::abs(doubled.pixelColor(x, y).red() - base - 2 * (reference.pixelColor(x, y).red() - base)) <= 4,
+                                      "Grain Amount did not scale the same pattern");
+                            }
+                            number("Amount", 0); check(pixels() == original, "zero Grain preview changed pixels");
+                            number("Amount", entry.amount); check(pixels() == reference, "Grain parameter changes reshuffled its seed");
+                        }
+                    } else if (entry.kind == "Motion Blur") { number("Angle", entry.angle); number("Distance", entry.amount); }
+                    else if (entry.kind == "Add Noise") {
+                        number("Amount", entry.amount); click(button(entry.gaussian ? "Gaussian" : "Uniform"));
+                        if (toggle("Monochromatic")->isChecked() != entry.monochromatic) click(toggle("Monochromatic"));
+                        settled();
+                    } else number("Remove Distortion", entry.amount);
+                    check(toggle("Preview")->isChecked(), "filter did not start with Preview enabled");
+                };
+                const auto isolated = [&] {
+                    const auto state = window.sessionState();
+                    for (const char *field : {"layers", "activeLayerID", "hasSelection", "undoName", "redoName", "canUndo", "canRedo", "modified", "foregroundColor", "backgroundColor"})
+                        if (state.value(field) != before.value(field)) {
+                            qWarning() << "filter isolation mismatch" << entry.kind << field << state.value(field) << before.value(field);
+                            check(false, "filter preview changed source, selection, target or history");
+                        }
+                };
+                const auto verify = [&](const QImage &image) {
+                    if (limited) unchangedOutside(original, image, selectedArea);
+                    if (entry.kind == "Exposure" || entry.kind == "Gradient Map" || entry.kind == "Grain") {
+                        int varied = 0;
+                        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                            const auto src = original.pixelColor(x, y), dst = image.pixelColor(x, y);
+                            check(src.alpha() == dst.alpha(), "image adjustment changed alpha");
+                            if (!src.alpha() || (limited && !selectedArea.contains(x, y))) { check(dst == src, "image adjustment changed outside coverage"); continue; }
+                            if (entry.kind == "Grain") {
+                                check(dst.red() == dst.green() && dst.green() == dst.blue(), "Grain colored the neutral fixture");
+                                if (dst.red() != src.red()) ++varied;
+                                check(std::abs(dst.red() - src.red()) <= entry.amount * 0.35 * 255 * 1.6 + 2, "Grain exceeded its strength bound");
+                                continue;
+                            }
+                            const int input[] = {src.red(), src.green(), src.blue()}, actual[] = {dst.red(), dst.green(), dst.blue()};
+                            const double brightness = std::round((2126 * input[0] + 7152 * input[1] + 722 * input[2]) / 10000.0) / 255;
+                            for (int c = 0; c < 3; ++c) {
+                                double expected;
+                                if (entry.kind == "Exposure") {
+                                    const double encoded = input[c] / 255.0;
+                                    const double linear = encoded <= 0.04045 ? encoded / 12.92 : std::pow((encoded + 0.055) / 1.055, 2.4);
+                                    const double raised = std::pow(std::max(0.0, linear * std::pow(2.0, entry.amount) + entry.offset), 1 / entry.gamma);
+                                    expected = 255 * std::clamp(raised <= 0.0031308 ? raised * 12.92 : 1.055 * std::pow(raised, 1 / 2.4) - 0.055, 0.0, 1.0);
+                                } else {
+                                    const int dark[] = {entry.customColors ? 32 : 255, entry.customColors ? 64 : 0, entry.customColors ? 96 : 0};
+                                    const int light[] = {entry.customColors ? 224 : 0, entry.customColors ? 192 : 0, entry.customColors ? 160 : 255};
+                                    const double t = entry.reversed ? 1 - brightness : brightness;
+                                    expected = dark[c] + (light[c] - dark[c]) * t;
+                                }
+                                if (std::abs(actual[c] - expected) > 3) {
+                                    qWarning("adjustment oracle mismatch %s selected=%d at=%d,%d component=%d actual=%d expected=%.3f", qPrintable(entry.kind), limited, x, y, c, actual[c], expected);
+                                    check(false, "image adjustment differs from its independent pixel equation");
+                                }
+                            }
+                        }
+                        if (entry.kind == "Grain" && entry.amount > 0) check(varied > 100, "Grain did not vary its image");
+                    } else if (entry.kind == "Motion Blur") {
+                        const int motionKey = int(entry.angle) + int(entry.amount) * 1000;
+                        if (limited) {
+                            check(fullMotion.contains(motionKey), "selected motion case lacks its whole-image result");
+                            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                                check(image.pixelColor(x, y) == (selectedArea.contains(x, y) ? fullMotion[motionKey].pixelColor(x, y) : original.pixelColor(x, y)),
+                                      "Motion Blur did not clip the streak to the pointer selection");
+                            return;
+                        }
+                        double mass = 0, major = 0, minor = 0, dx = 0, dy = 0;
+                        const double angle = entry.angle * std::acos(-1.0) / 180;
+                        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                            const auto color = image.pixelColor(x, y); const double a = color.alpha();
+                            if (a) check(color.red() == 255 && color.green() == 255 && color.blue() == 255, "motion impulse lost white premultiplied color");
+                            const double u = (x - 32) * std::cos(angle) - (y - 31) * std::sin(angle);
+                            const double v = (x - 32) * std::sin(angle) + (y - 31) * std::cos(angle);
+                            mass += a; dx += a * (x - 32); dy += a * (y - 31); major += a * u * u; minor += a * v * v;
+                        }
+                        check(mass > 225 && mass < 285 && std::abs(dx / mass) < 0.25 && std::abs(dy / mass) < 0.25,
+                              "motion blur changed impulse mass or center");
+                        major /= mass; minor /= mass;
+                        check(major > 0.5 && minor < 0.5 && major > minor * 4, "motion blur direction differs from the selected angle");
+                        const double expectedVariance = entry.amount * entry.amount / 12;
+                        check(std::abs(major - expectedVariance) < expectedVariance * 0.15 + 0.5,
+                              "Motion Blur spread differs from upstream's absolute Distance calibration");
+                        const int index = int(entry.angle) + (limited ? 1000 : 0);
+                        if (entry.amount == 12) shortMotionVariance[index] = major;
+                        else check(major > shortMotionVariance.value(index) * 2.5 && major < shortMotionVariance.value(index) * 5.5,
+                                   "doubling Motion Blur distance did not scale its spread");
+                        fullMotion[motionKey] = image;
+                    } else if (entry.kind == "Add Noise") {
+                        const double spread = entry.amount * 1.275;
+                        double sum = 0, squares = 0; int count = 0, colored = 0, tails = 0;
+                        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                            const auto src = original.pixelColor(x, y), dst = image.pixelColor(x, y);
+                            check(dst.alpha() == src.alpha(), "Add Noise changed alpha");
+                            if (!src.alpha()) check(dst == src, "Add Noise changed a transparent pixel");
+                            if (!src.alpha() || (limited && !selectedArea.contains(x, y))) continue;
+                            const int r = dst.red() - src.red(), g = dst.green() - src.green(), b = dst.blue() - src.blue();
+                            if (r != g || r != b) ++colored;
+                            if (entry.monochromatic) check(r == g && r == b, "monochromatic noise changed channel balance");
+                            if (std::abs(r) > spread + 2) ++tails;
+                            if (!entry.gaussian) check(std::abs(r) <= spread + 2 && std::abs(g) <= spread + 2 && std::abs(b) <= spread + 2,
+                                                       "uniform noise exceeded its amplitude");
+                            sum += r; squares += r * r; ++count;
+                        }
+                        const double mean = sum / count, variance = squares / count - mean * mean;
+                        const double expected = spread * spread * (entry.gaussian ? 4.0 / 9 : 1.0 / 3);
+                        // The selected fixture has 768 samples and an intentionally random seed. A 30% variance
+                        // envelope is about six Gaussian sampling standard errors; wrong amplitudes/modes still fail.
+                        check(std::abs(mean) < spread * 0.12 + 1 && variance > expected * 0.7 && variance < expected * 1.3,
+                              "noise mean/variance differs from the selected amount/distribution");
+                        if (!entry.monochromatic) check(colored > count * 0.8, "color noise did not vary channels independently");
+                        if (entry.gaussian) check(tails > count * 0.04 && tails < count * 0.25, "Gaussian noise did not produce its expected tails");
+                    } else {
+                        const QImage source = original.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                        const QImage actual = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                            if (limited && !selectedArea.contains(x, y)) continue;
+                            // Independent inverse radial map in pixel-center coordinates, with bilinear premultiplied samples.
+                            const double dx = x + 0.5 - 32, dy = y + 0.5 - 32;
+                            const double scale = 1 - entry.amount / 100 * 0.35 * (dx * dx + dy * dy) / 2048;
+                            const double sx = 31.5 + dx * scale, sy = 31.5 + dy * scale;
+                            const int left = int(std::floor(sx)), top = int(std::floor(sy));
+                            double expected[4]{};
+                            for (int j = 0; j < 2; ++j) for (int i = 0; i < 2; ++i) {
+                                if (!source.rect().contains(left + i, top + j)) continue;
+                                const auto sample = source.pixel(left + i, top + j);
+                                const double weight = (i ? sx - left : 1 - sx + left) * (j ? sy - top : 1 - sy + top);
+                                const int components[] = {qRed(sample), qGreen(sample), qBlue(sample), qAlpha(sample)};
+                                for (int c = 0; c < 4; ++c) expected[c] += components[c] * weight;
+                            }
+                            const auto result = actual.pixel(x, y);
+                            const int components[] = {qRed(result), qGreen(result), qBlue(result), qAlpha(result)};
+                            for (int c = 0; c < 4; ++c) if (std::abs(components[c] - std::round(expected[c])) > 2) {
+                                qWarning("lens oracle mismatch distortion=%.0f selected=%d at=%d,%d component=%d actual=%d expected=%.1f", entry.amount, limited, x, y, c, components[c], expected[c]);
+                                check(false, "Lens Correction pixels differ from radial-map oracle");
+                            }
+                        }
+                    }
+                };
+                configure(); const QImage first = pixels(); verify(first); isolated();
+                click(toggle("Preview")); settled(); check(pixels() == original, "filter Preview Off did not restore exact pixels"); isolated();
+                click(toggle("Preview")); settled(); check(pixels() == first, "filter Preview On changed the prepared result or noise seed");
+                click(button("Cancel")); pump([&] { return !panel(); }, "filter Cancel did not close");
+                check(pixels() == original, "filter Cancel did not restore pixels"); isolated();
+                configure(); const QImage preview = pixels(); verify(preview); isolated();
+                click(button("OK")); pump([&] { return !panel() && !window.sessionState().value("busy").toBool(); }, "filter commit did not finish");
+                const auto committed = window.sessionState();
+                if ((entry.kind == "Lens Correction" && entry.amount == 0) || (entry.kind == "Grain" && entry.amount == 0)
+                    || (entry.kind == "Exposure" && entry.amount == 0 && entry.offset == 0 && entry.gamma == 1)) {
+                    // Upstream treats zero distortion/grain and default Exposure as Cancel, without an undo step.
+                    check(preview == original && pixels() == original, "identity filter/adjustment changed pixels"); isolated();
+                    qInfo("Qt filter controls OK (%s, identity selected=%d; identity preview, Preview Off/On, Cancel and history-free OK)", qPrintable(entry.kind), limited);
+                    continue;
+                }
+                check(pixels() == preview && committed.value("activeLayerID") == before.value("activeLayerID")
+                          && committed.value("hasSelection") == before.value("hasSelection") && committed.value("undoName").toString() == entry.kind,
+                      "filter commit differs from preview or lost its target/selection/history");
+                historyKey(Qt::ControlModifier);
+                check(pixels() == original && window.sessionState().value("layers") == before.value("layers"), "filter Undo lost exact source/records");
+                historyKey(Qt::ControlModifier | Qt::ShiftModifier);
+                check(pixels() == preview && window.sessionState().value("layers") == committed.value("layers"), "filter Redo lost exact result/records");
+                qInfo("Qt filter controls OK (%s, amount=%.0f angle=%.0f gaussian=%d monochromatic=%d selected=%d; pixel oracle, Preview Off/On, Cancel/OK, source/history isolation and exact Undo/Redo)",
+                      qPrintable(entry.kind), entry.amount, entry.angle, entry.gaussian, entry.monochromatic, limited);
+                if (adjustments) qInfo("Qt image adjustment parameters (%s exposure/amount=%.2f offset=%.4f gamma=%.2f reversed=%d custom-colors=%d selected=%d)",
+                    qPrintable(entry.kind), entry.amount, entry.offset, entry.gamma, entry.reversed, entry.customColors, limited);
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--layer-disjoint-probe")) {
+            window.resize(1200, 800); QApplication::processEvents();
+            reset(); const auto bottom = window.sessionState().value("activeLayerID");
+            for (int i = 0; i < 24; ++i) command({{"action", "addLayer"}});
+            tool("Brush", "brush");
+            command({{"action", "selectLayer"}, {"layerID", bottom}});
+            const auto table = [&]() -> QWidget * {
+                for (auto *candidate : window.findChildren<QWidget *>())
+                    if (candidate->isVisible() && candidate->property("appKitView").toBool()
+                        && candidate->property("appKitNode").toString().startsWith("LayersPanel|")) return candidate;
+                throw std::runtime_error("disjoint probe table missing");
+            };
+            const auto selected = [&] {
+                auto *list = QAccessible::queryAccessibleInterface(table());
+                check(list, "disjoint probe accessible list missing");
+                QList<int> result;
+                int row = 0;
+                for (int i = 0; i < list->childCount(); ++i) {
+                    auto *child = list->child(i);
+                    if (!child || child->role() != QAccessible::ListItem) continue;
+                    if (child->state().selected) result.append(row);
+                    ++row;
+                }
+                check(row == 25, "disjoint probe lost native rows");
+                return result;
+            };
+            const auto tableKey = [&](int code, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+                table()->setFocus(Qt::OtherFocusReason); QApplication::processEvents();
+                QTest::sendKeyEvent(QTest::Click, window.windowHandle(), static_cast<Qt::Key>(code), QString(), modifiers);
+                QApplication::processEvents();
+            };
+            struct Click { const void *owner; uint64_t session; QPoint position, global; QRect geometry; int scroll; };
+            std::array<Click, 2> clicks{};
+            int clickIndex = 0;
+            const auto rowClick = [&](int row, Qt::KeyboardModifiers modifiers) {
+                auto *target = table();
+                const QPoint position = target->mapTo(&window, QPoint(140, row * 54 + 26));
+                QScrollArea *area = nullptr;
+                for (auto *parent = target->parentWidget(); parent; parent = parent->parentWidget())
+                    if ((area = qobject_cast<QScrollArea *>(parent))) break;
+                if (clickIndex < 2) clicks[clickIndex++] = {target, target->property("appKitSession").toULongLong(), position,
+                    window.mapToGlobal(position), target->geometry(), area ? area->verticalScrollBar()->value() : -1};
+                const auto send = [&](QEvent::Type type, Qt::MouseButtons held) {
+                    QMouseEvent event(type, QPointF(position), QPointF(window.mapToGlobal(position)), Qt::LeftButton, held, modifiers);
+                    QApplication::sendEvent(window.windowHandle(), &event);
+                };
+                QTimer::singleShot(0, &window, [&] { send(QEvent::MouseButtonRelease, Qt::NoButton); });
+                send(QEvent::MouseButtonPress, Qt::LeftButton);
+                QApplication::processEvents();
+            };
+            const auto undo = window.sessionState().value("undoName"); const QImage source = pixels();
+            const auto initial = window.sessionState();
+            const auto checkSessionUI = [&] {
+                const auto state = window.sessionState();
+                for (const char *field : {"tool", "foregroundColor", "backgroundColor"})
+                    check(state.value(field) == initial.value(field), "constructing another window reset the current tool or palette");
+            };
+            const auto checkRows = [&](const QList<int> &expected, const char *phase, int round) {
+                const auto actual = selected();
+                if (actual != expected) {
+                    const auto state = window.sessionState();
+                    int primary = -1;
+                    const auto layers = state.value("layers").toArray();
+                    for (int i = 0; i < layers.size(); ++i)
+                        if (layers[i].toObject().value("id") == state.value("activeLayerID")) primary = layers.size() - 1 - i;
+                    auto *focus = QApplication::focusWidget();
+                    qWarning() << "disjoint phase mismatch" << phase << "round" << round << "actual/expected" << actual << expected
+                               << "primary" << primary << "focus" << focus
+                               << "focus session" << (focus ? focus->property("appKitSession").toULongLong() : 0)
+                               << "current session" << window.sessionHandle();
+                    qWarning().noquote() << swiftUIPointerTrace();
+                    qWarning().noquote() << swiftUIScrollTrace();
+                }
+                check(actual == expected, phase);
+            };
+            for (int round = 0; round < 16; ++round) {
+                if (round % 2) {
+                    {
+                        SessionWindow second;
+                        checkSessionUI();
+                        second.createNewDocument(64, 64); second.resize(1200, 800); second.show(); QApplication::processEvents();
+                        for (auto *candidate : second.findChildren<QWidget *>())
+                            if (candidate->isVisible() && candidate->property("appKitView").toBool()) {
+                                candidate->setFocus(Qt::OtherFocusReason); break;
+                            }
+                        QApplication::processEvents(); second.hide(); QApplication::processEvents();
+                    }
+                    check(compositor_workspace_select_tab(window.sessionHandle()) == 0, "disjoint probe could not restore workspace");
+                    QApplication::setActiveWindow(&window); QApplication::processEvents();
+                    checkSessionUI();
+                    check(window.currentTool() == SessionWindow::Tool::Brush, "restored window does not mirror its Brush tool");
+                }
+                tableKey(Qt::Key_Home); clickIndex = 0;
+                rowClick(2, Qt::NoModifier); rowClick(8, Qt::ControlModifier);
+                const auto rows = selected();
+                if (rows != QList<int>({2, 8})) {
+                    qWarning() << "disjoint probe mismatch" << round << "selected" << rows << "current session" << window.sessionHandle();
+                    for (const auto &entry : clicks) qWarning() << "row click widget/session" << entry.owner << entry.session
+                        << "position/global" << entry.position << entry.global << "geometry/scroll" << entry.geometry << entry.scroll;
+                    qWarning().noquote() << swiftUIPointerTrace();
+                    qWarning().noquote() << swiftUIScrollTrace();
+                }
+                check(rows == QList<int>({2, 8}), "disjoint probe Command-click selected the wrong rows");
+                rowClick(6, Qt::ShiftModifier);
+                checkRows({2, 6, 7, 8}, "disjoint probe Shift-click lost the base", round);
+                tableKey(Qt::Key_Up, Qt::ShiftModifier);
+                checkRows({2, 5, 6, 7, 8}, "disjoint probe Shift-Up lost the clicked range", round);
+                tableKey(Qt::Key_Down, Qt::ShiftModifier);
+                checkRows({2, 6, 7, 8}, "disjoint probe Shift-Down did not contract", round);
+                check(window.sessionState().value("undoName") == undo && pixels() == source, "disjoint probe edited the document");
+                qInfo("Qt disjoint probe OK (round=%d, second-window=%d, Command/Shift clicks and arrows, exact selection, no document edit)", round, round % 2);
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--keyboard-cursor-probe")) {
+            reset(); tool("Zoom", "zoom"); canvas->setFocus();
+            const QPointF position = canvas->rect().center();
+            const auto hover = [&] {
+                mouse(canvas, QEvent::MouseMove, position, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            };
+            const auto sameCursor = [](const QCursor &a, const QCursor &b) {
+                return a.shape() == b.shape() && a.hotSpot() == b.hotSpot()
+                    && a.pixmap().toImage() == b.pixmap().toImage();
+            };
+            hover();
+            check(canvas->cursor().shape() == Qt::BitmapCursor, "Zoom hover did not display its pictured cursor");
+            const auto before = window.sessionState(); const QImage source = pixels();
+            struct Choice { int code; const char *text; const char *label; const char *name; Qt::CursorShape shape; };
+            for (const auto &choice : {Choice{Qt::Key_H, "h", "Hand", "hand", Qt::OpenHandCursor},
+                                       Choice{Qt::Key_Z, "z", "Zoom", "zoom", Qt::BitmapCursor}}) {
+                key(canvas, choice.code, Qt::NoModifier, choice.text);
+                QApplication::processEvents();
+                checkTool(choice.label, choice.name);
+                const QCursor afterKey = canvas->cursor();
+                hover();
+                const QCursor afterHover = canvas->cursor();
+                check(afterHover.shape() == choice.shape, "stationary hover retained a cursor from another tool");
+                if (!sameCursor(afterKey, afterHover))
+                    qWarning() << "keyboard cursor mismatch" << choice.name
+                               << "before/after hover shapes" << afterKey.shape() << afterHover.shape();
+                check(sameCursor(afterKey, afterHover), "keyboard tool change left its cursor stale until the next hover");
+                qInfo("Qt keyboard cursor OK (%s, native shape/picture/hotspot already correct before a stationary hover)", choice.name);
+            }
+            const auto after = window.sessionState();
+            for (const char *field : {"layers", "activeLayerID", "undoName", "redoName", "canUndo", "canRedo", "modified"})
+                check(before.value(field) == after.value(field), "keyboard cursor refresh changed source, target or history");
+            check(pixels() == source, "keyboard cursor refresh changed document pixels");
+            return 0;
+        }
+
+        if (app.arguments().contains("--zoom-cursor-probe")) {
+            const auto viewport = [&] {
+                std::array<double, 6> result{};
+                check(compositor_session_viewport(window.sessionHandle(), result.data()) == 0, "cursor viewport unavailable");
+                return result;
+            };
+            const auto picture = [&] {
+                check(canvas->cursor().shape() == Qt::BitmapCursor, "canvas did not install upstream's pictured zoom cursor");
+                const auto image = canvas->cursor().pixmap().toImage();
+                check(!image.isNull(), "zoom cursor has no native picture");
+                return image;
+            };
+            const auto isolated = [&](const QJsonObject &before, const QImage &source) {
+                const auto after = window.sessionState();
+                for (const char *field : {"layers", "activeLayerID", "undoName", "redoName", "canUndo", "canRedo", "modified"})
+                    check(before.value(field) == after.value(field), "canvas navigation changed source, target or history");
+                check(pixels() == source, "canvas navigation changed document pixels");
+            };
+            for (bool optionOnRelease : {false, true}) {
+                reset(); tool("Zoom", "zoom"); canvas->setFocus();
+                const auto before = window.sessionState(); const QImage source = pixels();
+                const QPointF start = canvas->rect().center();
+                const double initial = viewport()[0];
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                const QImage plus = picture();
+                const auto move = [&](int dx) {
+                    mouse(canvas, QEvent::MouseMove, start + QPointF(dx, 0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                };
+                move(100);
+                check(std::abs(viewport()[0] / initial - 2) < 1e-6 && picture() == plus,
+                      "Zoom drag did not double or retain the plus cursor");
+                move(80); const QImage minus = picture();
+                check(minus != plus && viewport()[0] > initial, "Zoom reversal waited to cross the starting point");
+                move(80); check(picture() == minus, "stationary Zoom sample changed direction");
+                move(90); check(picture() == plus, "Zoom forward reversal did not restore plus");
+                move(70); check(picture() == minus, "Zoom backward reversal did not restore minus");
+                const auto modifiers = optionOnRelease ? Qt::AltModifier : Qt::NoModifier;
+                mouse(canvas, QEvent::MouseButtonRelease, start + QPointF(70, 0), Qt::LeftButton, Qt::NoButton, modifiers);
+                check(picture() == (optionOnRelease ? minus : plus), "Zoom release did not restore its modifier cursor");
+                const double prior = viewport()[0];
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton, modifiers);
+                mouse(canvas, QEvent::MouseButtonRelease, start, Qt::LeftButton, Qt::NoButton, modifiers);
+                check(std::abs(viewport()[0] / prior - (optionOnRelease ? 0.5 : 2)) < 1e-6,
+                      "Zoom click no longer follows Alt");
+                isolated(before, source);
+                qInfo("Qt Zoom cursor OK (Alt release=%d, immediate reversals above start, stationary sample, native pictures, click ratio, source/history isolation)", optionOnRelease);
+            }
+            for (const auto modifier : {Qt::ControlModifier, Qt::MetaModifier}) {
+                reset(); tool("Move", "move"); canvas->setFocus();
+                const auto before = window.sessionState(); const QImage source = pixels();
+                const QPointF start = canvas->rect().center();
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::MiddleButton, Qt::MiddleButton, modifier);
+                const QImage plus = picture();
+                const double initial = viewport()[0];
+                const auto move = [&](int rise) {
+                    mouse(canvas, QEvent::MouseMove, start - QPointF(0, rise), Qt::NoButton, Qt::MiddleButton, modifier);
+                };
+                move(100); const double peak = viewport()[0];
+                check(peak > initial && picture() == plus, "middle zoom did not increase with its plus cursor");
+                move(80); const QImage minus = picture();
+                check(viewport()[0] < peak && viewport()[0] > initial, "middle zoom reversal moved to the wrong zoom level");
+                check(minus != plus, "middle zoom reversal did not update its cursor above the starting point");
+                move(80); check(picture() == minus, "stationary middle zoom changed cursor direction");
+                move(-100); check(picture() == minus && viewport()[0] < initial, "middle zoom lost its downward cursor");
+                move(-80); check(picture() == plus, "middle zoom reversal below the starting point did not restore plus");
+                mouse(canvas, QEvent::MouseButtonRelease, start + QPointF(0, 80), Qt::MiddleButton, Qt::NoButton, modifier);
+                check(canvas->cursor().shape() != Qt::ClosedHandCursor, "middle zoom release retained a grabbing cursor");
+                isolated(before, source);
+                qInfo("Qt middle Zoom cursor OK (modifier=%d, native pictures, immediate reversals above/below start, stationary sample, source/history isolation)", int(modifier));
+            }
+            for (const auto &name : {QString("Move"), QString("Brush")}) {
+                reset(); tool(name, name.toLower()); canvas->setFocus();
+                const auto before = window.sessionState(); const QImage source = pixels();
+                const QPointF start = canvas->rect().center(); const auto initial = viewport();
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::MiddleButton, Qt::MiddleButton, Qt::NoModifier);
+                check(canvas->cursor().shape() == Qt::ClosedHandCursor, "middle pan press did not install the grabbing cursor");
+                mouse(canvas, QEvent::MouseMove, start + QPointF(25, 17), Qt::NoButton, Qt::MiddleButton, Qt::NoModifier);
+                const auto moved = viewport();
+                check(std::abs(moved[1] - initial[1] - 25) < 1e-6 && std::abs(moved[2] - initial[2] - 17) < 1e-6
+                          && moved[0] == initial[0] && canvas->cursor().shape() == Qt::ClosedHandCursor,
+                      "middle pan changed zoom, lost pointer distance or lost the grabbing cursor");
+                mouse(canvas, QEvent::MouseButtonRelease, start + QPointF(25, 17), Qt::MiddleButton, Qt::NoButton, Qt::NoModifier);
+                check(canvas->cursor().shape() != Qt::ClosedHandCursor, "middle pan release retained the grabbing cursor");
+                isolated(before, source);
+                qInfo("Qt middle pan cursor OK (%s, exact pointer distance, no zoom/paint, grabbing/release, source/history isolation)", qPrintable(name));
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--upstream-153-probe")) {
+            reset();
+            for (int i = 0; i < 25; ++i) command({{"action", "addLayer"}});
+            const auto layerTable = [&]() -> QWidget * {
+                for (auto *widget : window.findChildren<QWidget *>())
+                    if (widget->isVisible() && widget->property("appKitView").toBool()
+                        && widget->property("appKitNode").toString().startsWith("LayersPanel|")) return widget;
+                throw std::runtime_error("1.5.3 native layer table missing");
+            };
+            const auto scroll = [&]() -> QScrollArea * {
+                for (auto *area : window.findChildren<QScrollArea *>())
+                    if (area->isVisible() && area->property("appKitScroll").toBool()
+                        && area->property("appKitScrollNode").toString().startsWith("LayersPanel|")) return area;
+                return nullptr;
+            };
+            const auto offset = [&] {
+                auto *area = scroll(); check(area, "1.5.3 current Layers viewport missing");
+                return area->verticalScrollBar()->value();
+            };
+            pump([&] { return scroll() && scroll()->verticalScrollBar()->maximum() > 200; },
+                 "1.5.3 Layers viewport is not scrollable");
+            scroll()->verticalScrollBar()->setValue(0); QApplication::processEvents();
+            const auto before = window.sessionState(); const QImage original = pixels();
+            const QPointF start = layerTable()->mapToGlobal(QPoint(60, 78));
+            const auto middle = [&](QEvent::Type type, QPointF global, bool release = false) {
+                auto *table = layerTable();
+                mouse(table, type, table->mapFromGlobal(global.toPoint()),
+                      type == QEvent::MouseMove ? Qt::NoButton : Qt::MiddleButton,
+                      release ? Qt::NoButton : Qt::MiddleButton, Qt::NoModifier);
+            };
+            middle(QEvent::MouseButtonPress, start);
+            middle(QEvent::MouseMove, start - QPointF(0, 40));
+            check(std::abs(offset() - 40) <= 1, "middle layer drag did not synchronize its live viewport");
+            middle(QEvent::MouseMove, start - QPointF(0, 80));
+            check(std::abs(offset() - 80) <= 1, "middle layer drag lost window coordinates after scrolling");
+            middle(QEvent::MouseButtonRelease, start - QPointF(0, 80), true);
+            for (int i = 0; i < 10; ++i) { QApplication::processEvents(); QThread::msleep(1); }
+            check(std::abs(offset() - 80) <= 1, "middle layer release reset the viewport");
+            const QPointF again = layerTable()->mapToGlobal(QPoint(60, 120));
+            middle(QEvent::MouseButtonPress, again);
+            middle(QEvent::MouseMove, again + QPointF(0, 200));
+            middle(QEvent::MouseButtonRelease, again + QPointF(0, 200), true);
+            check(offset() == 0, "middle layer drag did not clamp to the document start");
+            const auto after = window.sessionState();
+            for (const char *field : {"layers", "activeLayerID", "undoName", "redoName", "canUndo", "canRedo", "modified"})
+                check(after.value(field) == before.value(field), "middle Layers scrolling changed selection, source or history");
+            check(pixels() == original, "middle Layers scrolling changed document pixels");
+            qInfo("Qt 1.5.3 middle Layers OK (thumbnail press, live 40/80 px, scroll-coordinate continuity, release retention, boundary clamp, source/selection/history isolation)");
+
+            const auto radius = [&](const QString &text) {
+                QLineEdit *field = nullptr;
+                for (auto *candidate : window.findChildren<QLineEdit *>())
+                    if (candidate->isVisible() && candidate->placeholderText() == "Radius") field = candidate;
+                check(field, "1.5.3 Shape Radius field missing");
+                field->setFocus(); field->selectAll(); field->insert(text);
+                const QPointer<QLineEdit> retained(field);
+                const int cursor = field->cursorPosition();
+                pump([&] {
+                    for (auto *box : window.findChildren<QCheckBox *>())
+                        if (box->isVisible() && box->text() == "Smooth Corners")
+                            return box->isEnabled() == (text.toDouble() > 0);
+                    return false;
+                }, "Shape Radius did not refresh Smooth Corners while typing");
+                check(retained && QApplication::focusWidget() == retained && retained->cursorPosition() == cursor
+                          && retained->text() == text,
+                      "Shape dependent-control refresh replaced its focused field or moved its cursor");
+                key(retained, Qt::Key_Return); QApplication::processEvents();
+            };
+            const auto smoothing = [&]() -> QCheckBox * {
+                for (auto *box : window.findChildren<QCheckBox *>())
+                    if (box->isVisible() && box->text() == "Smooth Corners") return box;
+                throw std::runtime_error("1.5.3 visible Smooth Corners control missing");
+            };
+            for (bool smooth : {false, true}) {
+                command({{"action", "new"}, {"width", 64}, {"height", 64}, {"emptyLayer", true}});
+                command({{"action", "setPaletteColor"}, {"kind", "foreground"},
+                         {"parameters", QJsonObject{{"red", 0}, {"green", 0}, {"blue", 1}}}});
+                tool("Shape", "shape");
+                QPushButton *rectangle = nullptr;
+                for (auto *picker : window.findChildren<QWidget *>("segmentedPicker"))
+                    for (auto *button : picker->findChildren<QPushButton *>())
+                        if (button->isVisible() && button->text() == "Rectangle") rectangle = button;
+                click(rectangle); radius("0");
+                check(!smoothing()->isEnabled(), "Smooth Corners must be disabled at zero radius");
+                radius("12");
+                try { pump([&] { return smoothing()->isEnabled(); }, "positive Radius did not enable Smooth Corners"); }
+                catch (...) {
+                    const auto size = compositor_session_render_tree(window.sessionHandle(), "ToolHeaders", nullptr, 0);
+                    if (size > 0 && size < 1024 * 1024) {
+                        QByteArray bytes(qsizetype(size), Qt::Uninitialized);
+                        compositor_session_render_tree(window.sessionHandle(), "ToolHeaders", reinterpret_cast<uint8_t *>(bytes.data()), bytes.size());
+                        std::function<void(const QJsonObject &)> inspect = [&](const QJsonObject &node) {
+                            if (node.value("kind").toString() == "TextField" || node.value("kind").toString() == "Toggle")
+                                qWarning().noquote() << "Shape model control" << QJsonDocument(node).toJson(QJsonDocument::Compact);
+                            for (const auto &child : node.value("children").toArray()) inspect(child.toObject());
+                        };
+                        inspect(QJsonDocument::fromJson(bytes).object());
+                    }
+                    qWarning() << "Shape Qt control" << smoothing()->isEnabled() << "focus" << QApplication::focusWidget();
+                    throw;
+                }
+                if (smoothing()->isChecked() != smooth) click(smoothing());
+                const auto beforeShape = window.sessionState(); const QImage blank = pixels();
+                mouse(canvas, QEvent::MouseButtonPress, at(8, 8), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                mouse(canvas, QEvent::MouseMove, at(56, 56), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                const QImage preview = pixels();
+                check(window.sessionState().value("undoName") == beforeShape.value("undoName") && preview != blank,
+                      "Shape draft failed to preview without a history step");
+                mouse(canvas, QEvent::MouseButtonRelease, at(56, 56), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                const QImage committed = pixels(); const auto created = window.sessionState();
+                for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                    const QColor a = preview.pixelColor(x, y), b = committed.pixelColor(x, y);
+                    check(std::abs(a.alpha() - b.alpha()) <= 1 && a.rgb() == b.rgb(), "Shape preview and commit use different corner geometry");
+                }
+                key(canvas, Qt::Key_Z, Qt::ControlModifier);
+                check(pixels() == blank && window.sessionState().value("layers") == beforeShape.value("layers"), "smoothed Shape Undo lost source");
+                key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+                check(pixels() == committed && window.sessionState().value("layers") == created.value("layers"), "smoothed Shape Redo lost exact pixels/records");
+                qInfo("Qt 1.5.3 Shape controls OK (smooth=%d, zero-radius refusal, visible Radius/checkbox, live preview equals commit, exact Undo/Redo)", smooth);
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--transform-snap-probe")) {
+            const auto toggle = [&](const QString &submenu, const QString &title, bool enabled) {
+                const auto locate = [&](QMenu *view) -> QAction * {
+                    if (!view) return nullptr;
+                    QMenu *menu = view;
+                    if (!submenu.isEmpty()) {
+                        menu = nullptr;
+                        for (auto *action : view->actions())
+                            if (action->text().remove('&') == submenu) menu = action->menu();
+                    }
+                    if (menu) for (auto *action : menu->actions())
+                        if (action->text().remove('&') == title) return action;
+                    return nullptr;
+                };
+                QPointer<QMenu> view = window.findChild<QMenu *>("appMenu.View");
+                check(view && view->menuAction()->isVisible(), "snap View menu missing");
+                view->popup(window.mapToGlobal(QPoint(180, 60))); QApplication::processEvents();
+                QPointer<QAction> action = locate(view);
+                check(action && action->isCheckable() && action->isEnabled(), "snap menu toggle unavailable");
+                QPointer<QMenu> child;
+                if (!submenu.isEmpty()) {
+                    for (auto *entry : view->actions()) if (entry->text().remove('&') == submenu) child = entry->menu();
+                    check(child, "snap submenu missing");
+                    child->popup(view->mapToGlobal(QPoint(view->width(), 20))); QApplication::processEvents();
+                }
+                if (action->isChecked() != enabled) action->trigger();
+                if (child) child->hide();
+                if (view) view->hide();
+                QApplication::processEvents(); QApplication::processEvents();
+                auto *fresh = locate(window.findChild<QMenu *>("appMenu.View"));
+                check(fresh && fresh->isChecked() == enabled, "snap menu toggle did not retain its checked state");
+            };
+            const auto zoom = [&](int screenPercent) {
+                tool("Zoom", "zoom");
+                QLineEdit *field = nullptr;
+                for (auto *candidate : window.findChildren<QLineEdit *>())
+                    if (candidate->isVisible() && candidate->placeholderText() == "Zoom") field = candidate;
+                check(field, "snap Zoom field missing");
+                const int percent = qRound(screenPercent * canvas->devicePixelRatioF());
+                field->setFocus(); field->selectAll(); field->insert(QString::number(percent));
+                key(field, Qt::Key_Return);
+                pump([&] { return std::abs(window.sessionState().value("zoom").toDouble() - percent / 100.0) < 0.0001; },
+                     "snap Zoom field did not apply");
+                tool("Move", "move");
+                check(std::abs(at(1, 0).x() - at(0, 0).x() - screenPercent / 100.0) < 0.0001,
+                      "snap fixture does not have the requested screen-point scale");
+            };
+            QImage red(8, 8, QImage::Format_RGBA8888), blue(24, 16, QImage::Format_RGBA8888), blueVertical(16, 24, QImage::Format_RGBA8888);
+            red.fill(Qt::red); blue.fill(Qt::blue); blueVertical.fill(Qt::blue);
+            const QString redPath = temporary.filePath("snap-moving.png"), bluePath = temporary.filePath("snap-target.png");
+            const QString blueVerticalPath = temporary.filePath("snap-target-vertical.png");
+            check(red.save(redPath) && blue.save(bluePath) && blueVertical.save(blueVerticalPath), "snap fixtures could not be saved");
+            struct Case {
+                QString source, label;
+                int percent, rawX, expectedX, line;
+                bool snap = true, sourceOn = true, visible = true;
+                Qt::KeyboardModifiers modifiers = Qt::NoModifier;
+                int resize = 0, expectedWidth = 8, expectedHeight = 8;
+                bool linked = false;
+            };
+            QList<Case> cases{
+                {"bounds", "left edge", 100, 3, 0, 0},
+                {"bounds", "center", 100, 27, 28, 32},
+                {"bounds", "right edge", 100, 55, 56, 64},
+                {"bounds", "outside tolerance", 100, 45, 45, -1},
+                {"bounds", "three pixels / three points", 100, 53, 56, 64},
+                {"bounds", "three pixels / six points", 200, 53, 56, 64},
+                {"bounds", "three pixels / twelve points", 400, 53, 53, -1},
+                {"bounds", "two pixels / eight points", 400, 54, 56, 64},
+                {"bounds", "Control suppresses", 100, 53, 53, -1, true, true, true, Qt::MetaModifier},
+                {"bounds", "Snap off", 100, 53, 53, -1, false},
+                {"bounds", "target off", 100, 53, 53, -1, true, false},
+                {"layers", "left edge", 100, 27, 28, 36},
+                {"layers", "center", 100, 43, 44, 48},
+                {"layers", "right edge", 100, 51, 52, 60},
+                {"layers", "center zoomed", 400, 43, 44, 48},
+                {"layers", "target off", 100, 43, 43, -1, true, false},
+                {"guides", "edge", 100, 24, 25, 25},
+                {"guides", "center", 100, 20, 21, 25},
+                {"guides", "center zoomed", 400, 20, 21, 25},
+                {"guides", "outside tolerance", 100, 42, 42, -1},
+                {"guides", "hidden", 100, 20, 20, -1, true, true, false},
+                {"guides", "target off", 100, 20, 20, -1, true, false},
+                {"guides", "Snap off", 100, 20, 20, -1, false},
+                {"guides", "Control suppresses", 100, 20, 20, -1, true, true, true, Qt::MetaModifier},
+            };
+            const auto resizeCase = [](const QString &source, const QString &label, int edge, int width, int line) {
+                Case entry{source, label, 400, edge, 12, line};
+                entry.resize = 1; entry.expectedWidth = width; entry.expectedHeight = 16;
+                return entry;
+            };
+            cases.append(resizeCase("layers", "side edge", 35, 24, 36));
+            cases.append(resizeCase("layers", "side outside tolerance", 33, 21, -1));
+            auto resizeOff = resizeCase("layers", "side Snap off", 35, 23, -1);
+            resizeOff.snap = false; cases.append(resizeOff);
+            auto resizeFree = resizeCase("layers", "side Control suppresses", 35, 23, -1);
+            resizeFree.modifiers = Qt::MetaModifier; cases.append(resizeFree);
+            auto corner = resizeCase("layers", "proportional corner", 35, 24, 36);
+            corner.resize = 2; corner.linked = true; corner.expectedHeight = 24; cases.append(corner);
+            cases.append(resizeCase("bounds", "side edge", 63, 52, 64));
+            cases.append(resizeCase("bounds", "side outside tolerance", 61, 49, -1));
+            cases.append(resizeCase("guides", "side edge", 24, 13, 25));
+            auto hidden = resizeCase("guides", "side hidden", 24, 12, -1);
+            hidden.visible = false; cases.append(hidden);
+            for (bool vertical : {false, true}) for (const auto &entry : cases) {
+                const int originY = entry.resize ? 24 : 28;
+                const auto point = [&](double x, double y) { return vertical ? at(y, x) : at(x, y); };
+                command({{"action", "new"}, {"width", 64}, {"height", 64}, {"emptyLayer", false}});
+                command({{"action", "importFiles"}, {"paths", QJsonArray{vertical ? blueVerticalPath : bluePath}}});
+                command({{"action", "transform"}, {"parameters", QJsonObject{{"x", vertical ? 24 : 36}, {"y", vertical ? 36 : 24}}}});
+                command({{"action", "importFiles"}, {"paths", QJsonArray{redPath}}});
+                command({{"action", "transform"}, {"parameters", QJsonObject{{"x", vertical ? originY : 12}, {"y", vertical ? 12 : originY},
+                    {"width", entry.resize ? 16 : 8}, {"height", entry.resize ? 16 : 8}}}});
+                command({{"action", "setShowsTransformControls"}, {"enabled", entry.resize != 0}});
+                command({{"action", "setTransformAutoSelect"}, {"enabled", false}});
+                toggle("", "Snap", entry.snap);
+                for (const auto &target : {QString("Guides"), QString("Grid"), QString("Layers"), QString("Document Bounds")}) {
+                    const bool chosen = target == (entry.source == "bounds" ? "Document Bounds" : entry.source == "layers" ? "Layers" : "Guides");
+                    toggle("Snap To", target, chosen && entry.sourceOn);
+                }
+                toggle("Show", "Grid", false);
+                toggle("Show", "Guides", entry.source == "guides");
+                if (entry.source == "guides") {
+                    command({{"action", "guideCreate"}, {"kind", vertical ? "horizontal" : "vertical"}, {"value", 25}});
+                    command({{"action", "guideFinish"}});
+                    toggle("Show", "Guides", entry.visible);
+                    const auto guides = window.sessionState().value("guides").toArray();
+                    check(guides.size() == 1 && guides.first().toObject().value("position").toDouble() == 25,
+                          "snap guide fixture has the wrong position");
+                }
+                zoom(entry.percent);
+                if (entry.resize) {
+                    QAbstractButton *ratio = nullptr;
+                    for (auto *widget : window.findChildren<QWidget *>())
+                        if (widget->isVisible() && widget->toolTip().startsWith("Lock aspect ratio.")) {
+                            ratio = qobject_cast<QAbstractButton *>(widget);
+                            if (!ratio) ratio = widget->findChild<QAbstractButton *>();
+                            if (ratio) break;
+                        }
+                    check(ratio && ratio->isCheckable(), "snap ratio lock missing");
+                    if (ratio->isChecked() != entry.linked) {
+                        for (auto *parent = ratio->parentWidget(); parent; parent = parent->parentWidget())
+                            if (auto *area = qobject_cast<QScrollArea *>(parent)) area->ensureWidgetVisible(ratio);
+                        QApplication::processEvents(); click(ratio);
+                    }
+                    QComboBox *sampling = nullptr;
+                    for (auto *combo : window.findChildren<QComboBox *>())
+                        if (combo->isVisible() && combo->findText("Nearest") >= 0 && combo->findText("High quality") >= 0) sampling = combo;
+                    check(sampling, "snap sampling control missing");
+                    key(sampling, Qt::Key_Home); QApplication::processEvents();
+                }
+                command({{"action", "markSaved"}});
+                const auto before = window.sessionState(); const QImage original = pixels();
+                const auto id = before.value("activeLayerID");
+                const auto verify = [&](const QJsonObject &state, const QImage &image) {
+                    check(state.value("layers").toArray().size() == 2 && state.value("activeLayerID") == id,
+                          "snapping changed layer count or target");
+                    auto expectedLayers = before.value("layers").toArray();
+                    for (int i = 0; i < expectedLayers.size(); ++i) {
+                        auto layer = expectedLayers[i].toObject();
+                        if (layer.value("id") == id) {
+                            auto placement = layer.value("transform").toObject();
+                            placement["origin"] = vertical ? QJsonArray{originY, entry.expectedX} : QJsonArray{entry.expectedX, originY};
+                            placement["size"] = vertical ? QJsonArray{entry.expectedHeight, entry.expectedWidth} : QJsonArray{entry.expectedWidth, entry.expectedHeight};
+                            layer["transform"] = placement; expectedLayers[i] = layer;
+                        }
+                    }
+                    if (state.value("layers") != expectedLayers)
+                        qWarning() << "snap geometry mismatch" << entry.source << entry.label << "actual" << state.value("layers") << "expected" << expectedLayers;
+                    check(state.value("layers") == expectedLayers, "snapping geometry or untouched layer metadata differs");
+                    QImage expected(64, 64, QImage::Format_RGBA8888); expected.fill(Qt::transparent);
+                    for (int y = 24; y < 40; ++y) for (int x = 36; x < 60; ++x) expected.setPixelColor(vertical ? y : x, vertical ? x : y, Qt::blue);
+                    for (int y = originY; y < originY + entry.expectedHeight; ++y)
+                        for (int x = entry.expectedX; x < entry.expectedX + entry.expectedWidth; ++x) expected.setPixelColor(vertical ? y : x, vertical ? x : y, Qt::red);
+                    check(image == expected, "snapping pixels differ from independent opaque-rectangle oracle");
+                };
+                canvas->setFocus();
+                const QPointF start = entry.resize ? point(28, entry.resize == 2 ? 40 : 32) : point(16, 32);
+                const QPointF end = entry.resize ? point(entry.rawX, entry.resize == 2 ? entry.rawX + 10 : 32) : point(entry.rawX + 4, 32);
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton, entry.modifiers);
+                mouse(canvas, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton, entry.modifiers);
+                window.flushPendingDrag(); QApplication::processEvents();
+                const auto draft = window.sessionState(); const QImage preview = pixels();
+                verify(draft, preview);
+                check(draft.value("transforming").toBool() && draft.value("undoName") == before.value("undoName")
+                          && !draft.value("modified").toBool(), "snapping preview added a history step");
+                const auto lines = draft.value("snapLines").toArray();
+                check(lines.size() == 2 && lines[vertical ? 1 : 0].toArray() == (entry.line < 0 ? QJsonArray{} : QJsonArray{entry.line}),
+                      "snapping preview has the wrong alignment target");
+                const QImage liveScreen = canvas->grab().toImage();
+                mouse(canvas, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton, entry.modifiers);
+                const auto after = window.sessionState(); const QImage committed = pixels();
+                verify(after, committed);
+                check(!after.value("transforming").toBool() && after.value("undoName").toString() == "Transform Layer"
+                          && after.value("modified").toBool() && committed == preview,
+                      "snapping release did not commit exactly its preview");
+                const auto cleared = after.value("snapLines").toArray();
+                check(cleared.size() == 2 && cleared[0].toArray().isEmpty() && cleared[1].toArray().isEmpty(),
+                      "snapping release retained alignment lines");
+                if (entry.line > 0 && entry.line < 64 && entry.source != "guides") {
+                    const QImage releasedScreen = canvas->grab().toImage();
+                    const double dpr = canvas->devicePixelRatioF();
+                    const QPoint mark = (point(entry.line, 4) * dpr).toPoint();
+                    const int length = qMax(1, qRound(entry.percent / 100.0 * 8 * dpr));
+                    const QRect strip = vertical ? QRect(mark.x(), mark.y() - 2, length, 5) : QRect(mark.x() - 2, mark.y(), 5, length);
+                    check(liveScreen.copy(strip) != releasedScreen.copy(strip), "native snap line was not visible or did not disappear on release");
+                }
+                key(canvas, Qt::Key_Z, Qt::ControlModifier);
+                check(pixels() == original && window.sessionState().value("layers") == before.value("layers")
+                          && !window.sessionState().value("modified").toBool(), "snapping Undo did not restore the exact saved state in one step");
+                key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+                check(pixels() == committed && window.sessionState().value("layers") == after.value("layers"),
+                      "snapping Redo did not restore exact pixels/records");
+                qInfo("Qt transform snap OK (%s, %s, %s, %d%% screen scale, visible menus/Zoom, live geometry/pixels, release and exact Undo/Redo)",
+                      vertical ? "vertical" : "horizontal", qPrintable(entry.source), qPrintable(entry.label), entry.percent);
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--transform-gestures-probe")) {
+            const auto headerButton = [&](const QString &title) -> QPushButton * {
+                auto *header = window.findChild<QWidget *>("swiftUIOptionsContainer");
+                check(header && header->isVisible(), "transform gesture header missing");
+                for (auto *button : header->findChildren<QPushButton *>())
+                    if (button->isVisible() && button->isEnabled() && button->text() == title) return button;
+                throw std::runtime_error("transform gesture header button missing");
+            };
+            const auto history = [&](const QJsonObject &before, const QImage &original, const QJsonObject &after, const QImage &changed) {
+                key(canvas, Qt::Key_Z, Qt::ControlModifier);
+                check(pixels() == original && window.sessionState().value("layers") == before.value("layers")
+                          && window.sessionState().value("undoName") == before.value("undoName"),
+                      "transform gesture Undo lost exact pixels/records or used more than one history step");
+                key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+                check(pixels() == changed && window.sessionState().value("layers") == after.value("layers"),
+                      "transform gesture Redo lost exact pixels/records");
+            };
+            QImage quadrants(64, 64, QImage::Format_RGBA8888);
+            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                quadrants.setPixelColor(x, y, x < 32 ? (y < 32 ? QColor(Qt::red) : QColor(Qt::blue))
+                                                                    : (y < 32 ? QColor(Qt::green) : QColor(Qt::yellow)));
+            const QString quadrantsPath = temporary.filePath("distort-quadrants.png");
+            check(quadrants.save(quadrantsPath), "distortion fixture save failed");
+            const QPolygonF square{QPointF(0, 0), QPointF(64, 0), QPointF(64, 64), QPointF(0, 64)};
+            for (int variant = 0; variant < 3; ++variant) for (bool apply : {false, true}) {
+                check(window.importImage(quadrantsPath), "distortion fixture import failed"); tool("Move", "move");
+                command({{"action", "setShowsTransformControls"}, {"enabled", true}});
+                command({{"action", "setTransformAutoSelect"}, {"enabled", false}});
+                const auto before = window.sessionState(); const QImage original = pixels();
+                auto corners = square;
+                const QPointF from = variant == 1 ? QPointF(32, 0) : QPointF(0, 0);
+                const QPointF offset = variant == 0 ? QPointF(8, 10) : variant == 1 ? QPointF(0, 8) : QPointF(12, 4);
+                if (variant == 1) { corners[0] += offset; corners[1] += offset; }
+                else corners[0] += variant == 2 ? QPointF(12, 0) : offset;
+                const QPointF start = at(from.x(), from.y()), end = at(from.x() + offset.x(), from.y() + offset.y());
+                const auto modifiers = Qt::ControlModifier | (variant == 2 ? Qt::ShiftModifier : Qt::NoModifier);
+                canvas->setFocus();
+                mouse(canvas, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton, modifiers);
+                mouse(canvas, QEvent::MouseMove, (start + end) / 2, Qt::NoButton, Qt::LeftButton, modifiers);
+                mouse(canvas, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton, modifiers);
+                mouse(canvas, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton, modifiers);
+                const auto draft = window.sessionState(); const auto actualCorners = draft.value("distortCorners").toArray();
+                check(draft.value("transformPending").toBool() && actualCorners.size() == 4
+                          && draft.value("undoName") == before.value("undoName"),
+                      "Ctrl handle drag did not leave an isolated persistent distortion");
+                for (int i = 0; i < 4; ++i) {
+                    const auto point = actualCorners.at(i).toArray();
+                    check(point.size() == 2 && std::abs(point.at(0).toDouble() - corners.at(i).x()) < 0.01
+                              && std::abs(point.at(1).toDouble() - corners.at(i).y()) < 0.01,
+                          "distortion pointer moved the wrong corner/edge or ignored Shift");
+                }
+                QTransform inverse;
+                check(QTransform::quadToQuad(corners, square, inverse), "independent distortion inverse unavailable");
+                const auto verify = [&](const QImage &image) {
+                    int interior = 0, exterior = 0;
+                    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                        const auto source = inverse.map(QPointF(x + 0.5, y + 0.5));
+                        if (source.x() < -2 || source.x() > 66 || source.y() < -2 || source.y() > 66) {
+                            if (image.pixelColor(x, y).alpha() != 0) {
+                                image.save("/tmp/compositor-distortion-actual.png");
+                                qWarning() << "distortion mismatch variant/apply" << variant << apply << "at" << x << y
+                                           << "inverse source" << source << "actual" << image.pixelColor(x, y)
+                                           << "corners" << actualCorners;
+                            }
+                            check(image.pixelColor(x, y).alpha() == 0, "distortion painted outside its independent perspective"); ++exterior;
+                        } else if (source.x() > 2 && source.x() < 62 && source.y() > 2 && source.y() < 62
+                                   && std::abs(source.x() - 32) > 2 && std::abs(source.y() - 32) > 2) {
+                            check(image.pixelColor(x, y) == quadrants.pixelColor(int(source.x()), int(source.y())),
+                                  "distortion interior differs from independent Qt perspective"); ++interior;
+                        }
+                    }
+                    check(interior > 2000 && exterior > 20, "distortion oracle did not exercise enough interior/exterior pixels");
+                };
+                const QImage preview = pixels(); verify(preview);
+                click(headerButton(apply ? "Apply" : "Cancel"));
+                pump([&] { return !window.sessionState().value("transforming").toBool(); });
+                if (apply) {
+                    const auto after = window.sessionState(); const QImage committed = pixels(); verify(committed);
+                    check(after.value("undoName").toString() == "Distort" && committed == preview
+                              && after.value("activeLayerID") == before.value("activeLayerID"),
+                          "distortion Apply changed preview/target or omitted its history step");
+                    history(before, original, after, committed);
+                } else check(pixels() == original && window.sessionState().value("layers") == before.value("layers")
+                                 && window.sessionState().value("undoName") == before.value("undoName"),
+                             "distortion Cancel changed source records/pixels/history");
+                qInfo("Qt distortion gesture OK (variant=%d apply=%d, corner/edge/Shift, independent perspective, Cancel/Apply and exact Undo/Redo)", variant, apply);
+            }
+
+            QImage blue(64, 64, QImage::Format_RGBA8888), green(64, 64, QImage::Format_RGBA8888);
+            blue.fill(Qt::transparent); green.fill(Qt::transparent);
+            for (int y = 16; y < 32; ++y) for (int x = 32; x < 48; ++x) blue.setPixelColor(x, y, Qt::blue);
+            for (int y = 48; y < 56; ++y) for (int x = 48; x < 56; ++x) green.setPixelColor(x, y, Qt::green);
+            const QString bluePath = temporary.filePath("transform-blue.png"), greenPath = temporary.filePath("transform-untouched.png");
+            check(blue.save(bluePath) && green.save(greenPath), "group transform fixtures failed");
+            for (bool folder : {false, true}) for (bool resize : {false, true}) {
+                reset(); const auto redID = window.sessionState().value("activeLayerID");
+                command({{"action", "importFiles"}, {"paths", QJsonArray{greenPath}}});
+                const auto greenID = window.sessionState().value("activeLayerID");
+                command({{"action", "importFiles"}, {"paths", QJsonArray{bluePath}}});
+                const auto blueID = window.sessionState().value("activeLayerID");
+                command({{"action", "selectLayer"}, {"layerID", redID}});
+                command({{"action", "selectLayer"}, {"layerID", blueID}, {"enabled", true}});
+                if (folder) {
+                    QPushButton *group = nullptr;
+                    for (auto *button : window.findChildren<QPushButton *>())
+                        if (button->isVisible() && button->accessibleName() == "New folder") group = button;
+                    click(group); check(window.sessionState().value("activeLayerIsGroup").toBool(), "group transform fixture did not select folder");
+                }
+                tool("Move", "move");
+                command({{"action", "setShowsTransformControls"}, {"enabled", true}});
+                command({{"action", "setTransformAutoSelect"}, {"enabled", false}});
+                QComboBox *sampling = nullptr;
+                for (auto *combo : window.findChildren<QComboBox *>())
+                    if (combo->isVisible() && combo->findText("Nearest") >= 0 && combo->findText("High quality") >= 0) sampling = combo;
+                check(sampling, "group transform sampling control missing");
+                key(sampling, Qt::Key_Home); QApplication::processEvents();
+                const auto before = window.sessionState(); const QImage original = pixels();
+                if (resize) drag(at(64, 64), at(32, 32));
+                else drag(at(24, 24), at(31, 29));
+                const auto after = window.sessionState(); const QImage changed = pixels();
+                check(!after.value("transforming").toBool() && after.value("undoName").toString() == "Transform Layers"
+                          && after.value("activeLayerID") == before.value("activeLayerID"),
+                      "multi-layer/folder pointer transform did not commit once on release or changed target");
+                for (const auto &value : before.value("layers").toArray()) {
+                    const auto prior = value.toObject(); QJsonObject current;
+                    for (const auto &candidate : after.value("layers").toArray())
+                        if (candidate.toObject().value("id") == prior.value("id")) current = candidate.toObject();
+                    check(!current.isEmpty(), "group transform lost a layer record");
+                    if (prior.value("id") == redID || prior.value("id") == blueID) {
+                        auto expected = prior; auto placement = expected.value("transform").toObject();
+                        placement["origin"] = QJsonArray{resize ? 0 : 7, resize ? 0 : 5};
+                        placement["size"] = QJsonArray{resize ? 32 : 64, resize ? 32 : 64};
+                        expected["transform"] = placement;
+                        check(current == expected, "group transform did not carry exact child geometry/appearance");
+                    } else check(current == prior, "group transform changed unselected layer or folder metadata");
+                }
+                QImage expected(64, 64, QImage::Format_RGBA8888); expected.fill(Qt::transparent);
+                for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+                    const int sx = resize ? x * 2 : x - 7, sy = resize ? y * 2 : y - 5;
+                    if (fixture.rect().contains(sx, sy)) {
+                        const QColor color = blue.pixelColor(sx, sy).alpha() ? blue.pixelColor(sx, sy) : fixture.pixelColor(sx, sy);
+                        expected.setPixelColor(x, y, color);
+                    }
+                    if (green.pixelColor(x, y).alpha()) expected.setPixelColor(x, y, green.pixelColor(x, y));
+                }
+                check(changed == expected, "group transform pixels differ from independent translation/half-size oracle");
+                history(before, original, after, changed);
+                check(after.value("layers").toArray().size() == before.value("layers").toArray().size() && !greenID.isNull(),
+                      "group transform changed layer count");
+                qInfo("Qt group transform gesture OK (folder=%d resize=%d, exact child geometry/pixels, unselected isolation, one-step Undo/Redo)", folder, resize);
+            }
+            return 0;
+        }
+
+        if (app.arguments().contains("--selection-outline-probe")) {
+            const auto segment = [&](const QString &title) {
+                QPushButton *button = nullptr;
+                for (auto *picker : window.findChildren<QWidget *>("segmentedPicker"))
+                    for (auto *candidate : picker->findChildren<QPushButton *>())
+                        if (candidate->isVisible() && candidate->text() == title) button = candidate;
+                click(button);
+            };
+            const QRect initial(20, 20, 20, 20);
+            const auto coverage = [&](const QRect &expected) {
+                const auto before = window.sessionState(); const QImage source = pixels();
+                command({{"action", "fillForeground"}});
+                const QImage filled = pixels();
+                for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x)
+                    check(filled.pixelColor(x, y) == (expected.contains(x, y) ? QColor(Qt::blue) : source.pixelColor(x, y)),
+                          "selection outline all-pixel coverage differs from translated rectangle");
+                key(canvas, Qt::Key_Z, Qt::ControlModifier);
+                check(pixels() == source && window.sessionState().value("layers") == before.value("layers")
+                          && window.sessionState().value("undoName") == before.value("undoName"),
+                      "selection outline fill proof did not restore source/history");
+            };
+            struct Entry { int key; Qt::KeyboardModifiers modifiers; QPoint offset; };
+            const QList<Entry> entries{{Qt::Key_Left, Qt::NoModifier, {-1, 0}}, {Qt::Key_Right, Qt::NoModifier, {1, 0}},
+                {Qt::Key_Up, Qt::NoModifier, {0, -1}}, {Qt::Key_Down, Qt::NoModifier, {0, 1}},
+                {Qt::Key_Left, Qt::ShiftModifier, {-10, 0}}, {Qt::Key_Right, Qt::ShiftModifier, {10, 0}},
+                {Qt::Key_Up, Qt::ShiftModifier, {0, -10}}, {Qt::Key_Down, Qt::ShiftModifier, {0, 10}},
+                {0, Qt::NoModifier, {7, -5}}, {0, Qt::NoModifier, {-25, 0}}};
+            for (const auto &entry : entries) {
+                reset(); tool("Marquee", "marquee"); segment("Rectangle"); segment("New");
+                command({{"action", "setPaletteColor"}, {"kind", "foreground"},
+                         {"parameters", QJsonObject{{"red", 0}, {"green", 0}, {"blue", 1}}}});
+                drag(at(20, 20), at(40, 40)); coverage(initial);
+                const auto before = window.sessionState(); const QImage source = pixels();
+                if (entry.key) key(canvas, entry.key, entry.modifiers);
+                else drag(at(30, 30), at(30 + entry.offset.x(), 30 + entry.offset.y()));
+                const auto moved = window.sessionState();
+                check(moved.value("undoName").toString() == "Move Selection" && pixels() == source
+                          && moved.value("layers") == before.value("layers")
+                          && moved.value("activeLayerID") == before.value("activeLayerID"),
+                      "selection outline movement changed pixels/layers/target or omitted its history step");
+                coverage(initial.translated(entry.offset));
+                // Undo immediately followed by Redo proves the move is one operation. Fill proofs
+                // branch history, so inspect original coverage only after that Redo has completed.
+                key(canvas, Qt::Key_Z, Qt::ControlModifier);
+                check(window.sessionState().value("undoName") == before.value("undoName") && pixels() == source,
+                      "selection outline Undo did not restore the previous history position");
+                key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+                coverage(initial.translated(entry.offset));
+                key(canvas, Qt::Key_Z, Qt::ControlModifier); coverage(initial);
+                qInfo("Qt selection outline OK (key=%d shift=%d, offset=%d,%d, unchanged source/target, exact coverage Undo/Redo)",
+                      entry.key, entry.modifiers.testFlag(Qt::ShiftModifier), entry.offset.x(), entry.offset.y());
+            }
+            return 0;
+        }
 
         // A fresh process reads the persisted shortcut table and exercises real canvas key routing.
         const int bindingProbe = app.arguments().indexOf("--shortcut-binding-probe");
@@ -526,6 +2842,10 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                 check(menu, "visible Edit menu missing"); menu->popup(window.mapToGlobal(QPoint(120, 50))); QApplication::processEvents();
                 QAction *selected = nullptr;
                 for (auto *candidate : menu->actions()) if (candidate->text().remove('&') == title) selected = candidate;
+                if (!selected || !selected->isEnabled() || !menu->isVisible())
+                    qWarning() << "image clipboard menu diagnostic" << title << "found" << bool(selected)
+                               << "enabled" << (selected && selected->isEnabled()) << "visible" << menu->isVisible()
+                               << "active window" << QApplication::activeWindow();
                 check(selected && selected->isEnabled() && menu->isVisible(), "image clipboard menu action unavailable");
                 selected->trigger(); menu->hide(); QApplication::processEvents();
             };
@@ -608,6 +2928,29 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                 check(pixels() == original && window.sessionState().value("layers") == pasted.value("layers"), "image Paste Redo lost exact result/records");
                 qInfo("Qt image clipboard OK (%s > Paste, actual Edit menu/pointer selection, PNG MIME/all-pixel colors, cropped origin/dimensions and exact Undo/Redo)", qPrintable(choice));
             }
+            // A Qt editor or another clipboard writer must invalidate the retained selection origin.
+            const auto beforeReplacement = window.sessionState(); const QImage beforeReplacementPixels = pixels();
+            QImage replacement(6, 8, QImage::Format_RGBA8888); replacement.fill(Qt::green);
+            QApplication::clipboard()->setImage(replacement); QApplication::processEvents(); action("Paste");
+            pump([&] { return window.sessionState().value("layers").toArray().size() == 4 && !window.sessionState().value("busy").toBool(); },
+                 "replacement clipboard Paste did not create a layer");
+            const auto replacementState = window.sessionState(); QJsonObject replacementLayer;
+            for (const auto &entry : replacementState.value("layers").toArray())
+                if (entry.toObject().value("id") == replacementState.value("activeLayerID")) replacementLayer = entry.toObject();
+            const auto replacementTransform = replacementLayer.value("transform").toObject();
+            check(replacementTransform.value("origin").toArray() == QJsonArray{29, 28}
+                      && replacementTransform.value("size").toArray() == QJsonArray{6, 8},
+                  "replacement clipboard reused the app's cached image or selection origin");
+            QImage expectedReplacement = beforeReplacementPixels;
+            for (int y = 28; y < 36; ++y) for (int x = 29; x < 35; ++x) expectedReplacement.setPixelColor(x, y, Qt::green);
+            check(pixels() == expectedReplacement, "replacement clipboard Paste changed unexpected pixels");
+            QApplication::setActiveWindow(&window); key(canvas, Qt::Key_Z, Qt::ControlModifier);
+            check(pixels() == beforeReplacementPixels && window.sessionState().value("layers") == beforeReplacement.value("layers"),
+                  "replacement clipboard Undo did not restore exact records/pixels");
+            key(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+            check(pixels() == expectedReplacement && window.sessionState().value("layers") == replacementState.value("layers"),
+                  "replacement clipboard Redo did not restore exact records/pixels");
+            qInfo("Qt image clipboard replacement OK (Qt writer invalidates cached selection, centered new image, exact pixels and Undo/Redo)");
             return 0;
         }
 
@@ -1460,7 +3803,7 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                           && window.sessionState().value("activeLayerID") == before.value("activeLayerID"),
                       "effect Color Picker Redo did not restore exact pixels/records/target");
                 const QString project = temporary.filePath("picker-effect-" + effect.second + ".comp");
-                check(window.writeProjectPackage(project), "effect Color Picker project save failed");
+                check(writeProjectPackage(project), "effect Color Picker project save failed");
                 QFile manifest(QDir(project).filePath("manifest.json")); check(manifest.open(QIODevice::ReadOnly), "effect Color Picker manifest missing");
                 const auto layers = QJsonDocument::fromJson(manifest.readAll()).object().value("layers").toArray();
                 check(layers.size() == 1, "effect Color Picker save changed the layer count");
@@ -6061,6 +8404,133 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
             window.flushPendingDrag();
             QApplication::processEvents();
         };
+        const auto checkMaskToggle = [&] {
+            for (bool group : {false, true}) {
+                fresh();
+                if (group) command({{"action", "groupSelectedLayers"}});
+                command({{"action", "addHideMask"}});
+                const auto hidden = frame();
+                require(static_cast<uint8_t>(pixel(hidden, 32, 16)[3]) == 0, "hide mask did not hide pixels");
+                const QPointF pos(group ? 98 : 106, 26);
+                const auto maskAtPoint = [&](QWidget *candidate, QByteArray *snapshot = nullptr) {
+                    const QString location = candidate->property("appKitNode").toString();
+                    const int split = location.indexOf('|');
+                    const QByteArray panel = location.left(split).toUtf8(), node = location.mid(split + 1).toUtf8();
+                    const auto handle = candidate->property("appKitSession").toULongLong();
+                    const auto size = compositor_session_accessibility_tree(handle, panel.constData(), node.constData(), nullptr, 0);
+                    if (size <= 0 || size >= 1024 * 1024) return false;
+                    QByteArray bytes(qsizetype(size), Qt::Uninitialized);
+                    if (compositor_session_accessibility_tree(handle, panel.constData(), node.constData(),
+                        reinterpret_cast<uint8_t *>(bytes.data()), bytes.size()) != bytes.size()) return false;
+                    bool found = false;
+                    std::function<void(const QJsonObject &)> inspect = [&](const QJsonObject &entry) {
+                        const QRectF rect(entry.value("x").toDouble(), entry.value("y").toDouble(),
+                                          entry.value("width").toDouble(), entry.value("height").toDouble());
+                        if (entry.value("label").toString().startsWith("Select mask:") && rect.contains(pos)) found = true;
+                        for (const auto &child : entry.value("children").toArray()) inspect(child.toObject());
+                    };
+                    inspect(QJsonDocument::fromJson(bytes).object());
+                    if (snapshot) *snapshot = bytes;
+                    return found;
+                };
+                QWidget *table = nullptr;
+                QElapsedTimer ready; ready.start();
+                while (!table && ready.elapsed() < 5000) {
+                    for (auto *candidate : window.findChildren<QWidget *>()) {
+                        if (!candidate->isVisible() || !candidate->property("appKitView").toBool()
+                            || candidate->property("appKitSession").toULongLong() != window.sessionHandle()
+                            || !candidate->property("appKitNode").toString().startsWith("LayersPanel|")) continue;
+                        QScrollArea *scroll = nullptr;
+                        for (auto *parent = candidate->parentWidget(); parent; parent = parent->parentWidget())
+                            if ((scroll = qobject_cast<QScrollArea *>(parent))) break;
+                        const QPoint global = candidate->mapToGlobal(pos.toPoint());
+                        auto *hit = window.childAt(window.mapFromGlobal(global));
+                        if (scroll && scroll->viewport()->rect().contains(scroll->viewport()->mapFromGlobal(global))
+                            && (hit == candidate || (hit && candidate->isAncestorOf(hit))) && maskAtPoint(candidate)) {
+                            table = candidate; break;
+                        }
+                    }
+                    if (!table) { QApplication::processEvents(QEventLoop::AllEvents, 10); QThread::msleep(1); }
+                }
+                if (!table) {
+                    qWarning() << "mask readiness timeout group/current session/layers" << group << window.sessionHandle()
+                               << window.sessionState().value("layers");
+                    for (auto *candidate : window.findChildren<QWidget *>()) {
+                        if (!candidate->isVisible() || !candidate->property("appKitView").toBool()
+                            || !candidate->property("appKitNode").toString().startsWith("LayersPanel|")) continue;
+                        QByteArray snapshot;
+                        const bool nativeMask = maskAtPoint(candidate, &snapshot);
+                        const QPoint global = candidate->mapToGlobal(pos.toPoint());
+                        QScrollArea *scroll = nullptr;
+                        for (auto *parent = candidate->parentWidget(); parent; parent = parent->parentWidget())
+                            if ((scroll = qobject_cast<QScrollArea *>(parent))) break;
+                        qWarning() << "mask readiness candidate/session/geometry/global/scroll/native mask" << candidate
+                                   << candidate->property("appKitSession").toULongLong() << candidate->geometry() << global
+                                   << (scroll ? scroll->verticalScrollBar()->value() : -1) << nativeMask;
+                        qWarning().noquote() << "mask readiness native snapshot" << snapshot;
+                    }
+                }
+                require(table, "active project's mask thumbnail did not become visible within five seconds");
+                const QPointer<QWidget> clickedTable(table);
+                // The root is row zero. Raster/folder masks follow the thumbnail's linked gap.
+                QScrollArea *area = nullptr;
+                for (auto *parent = table->parentWidget(); parent; parent = parent->parentWidget())
+                    if ((area = qobject_cast<QScrollArea *>(parent))) break;
+                const QPoint global = table->mapToGlobal(pos.toPoint());
+                auto *hit = window.childAt(window.mapFromGlobal(global));
+                const auto tableSession = table->property("appKitSession").toULongLong();
+                const QRect tableBeforeClick = table->geometry();
+                const int scrollBeforeClick = area ? area->verticalScrollBar()->value() : -1;
+                const bool inViewport = area && area->viewport()->rect().contains(area->viewport()->mapFromGlobal(global));
+                if (!inViewport || (hit != table && (!hit || !table->isAncestorOf(hit))))
+                    qWarning() << "mask click target mismatch" << "group" << group << "table" << table->geometry()
+                               << "scroll" << (area ? area->verticalScrollBar()->value() : -1)
+                               << "global" << global << "hit" << hit << "in viewport" << inViewport;
+                require(inViewport && (hit == table || (hit && table->isAncestorOf(hit))),
+                        "mask synthetic click does not reach its visible table");
+                require(tableSession == window.sessionHandle(), "mask synthetic click targets a different project");
+                QByteArray accessibility;
+                const bool hasMask = maskAtPoint(table, &accessibility);
+                if (!hasMask) qWarning().noquote() << "mask row before click" << accessibility;
+                require(hasMask, "mask thumbnail is not present at the native click point");
+                QMouseEvent down(QEvent::MouseButtonPress, pos, table->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+                QMouseEvent up(QEvent::MouseButtonRelease, pos, table->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+                QApplication::sendEvent(table, &down); QApplication::sendEvent(table, &up);
+                QApplication::processEvents();
+                const auto revealed = frame();
+                const auto alpha = static_cast<uint8_t>(pixel(revealed, 32, 16)[3]);
+                if (alpha != 255 || app.arguments().contains("--trace-layer-input")) {
+                    const auto afterToggle = window.sessionState();
+                    qWarning() << "mask toggle state group/alpha" << group << int(alpha)
+                               << "after" << afterToggle.value("layers")
+                               << "history" << afterToggle.value("undoName");
+                    if (clickedTable) qWarning() << "mask table geometry" << clickedTable->geometry();
+                    qWarning() << "mask table before click" << tableBeforeClick << "scroll" << scrollBeforeClick
+                               << "table/current session" << tableSession << window.sessionHandle();
+                    qWarning().noquote() << swiftUIPointerTrace();
+                    qWarning().noquote() << swiftUIScrollTrace();
+                    for (auto *area : window.findChildren<QScrollArea *>())
+                        if (area->property("appKitScrollNode").toString().startsWith("LayersPanel|"))
+                            qWarning() << "mask table scroll" << area->verticalScrollBar()->value() << area->viewport()->size();
+                }
+                require(alpha == 255, "Shift-click left stale mask coverage");
+                command({{"action", "undo"}}); require(frame() == hidden, "mask toggle undo pixels differ");
+                command({{"action", "redo"}}); require(frame() == revealed, "mask toggle redo pixels differ");
+                qInfo("Qt mask Shift-click OK (folder=%d, exact alpha and Undo/Redo)", group);
+            }
+        };
+        if (app.arguments().contains("--mask-scroll-replacement-probe")) {
+            fresh();
+            for (int i = 0; i < 25; ++i) command({{"action", "addLayer"}});
+            QScrollArea *area = nullptr;
+            for (auto *candidate : window.findChildren<QScrollArea *>())
+                if (candidate->isVisible() && candidate->property("appKitScrollNode").toString().startsWith("LayersPanel|")) area = candidate;
+            require(area && area->verticalScrollBar()->maximum() > 432, "mask replacement scroll fixture missing");
+            area->verticalScrollBar()->setValue(432); QApplication::processEvents();
+            checkMaskToggle();
+            return 0;
+        }
+        if (app.arguments().contains("--mask-toggle-probe")) { checkMaskToggle(); return 0; }
         // A mixed native import uses the new upstream folder expansion, including natural name order and filtering.
         {
             const QString folderPath = temporary.filePath("Images");
@@ -6578,6 +9048,9 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
                 return QApplication::focusWidget() && QApplication::focusWidget()->property("appKitNode").toString() == node;
             }, "native layer keyboard table did not acquire focus");
             QTest::sendKeyEvent(QTest::Click, window.windowHandle(), static_cast<Qt::Key>(code), QString(), modifiers);
+            if (code == Qt::Key_Home && modifiers == Qt::NoModifier)
+                require(layersScroll() && layersScroll()->verticalScrollBar()->value() == 0,
+                        "native Home left the visible Layers viewport behind the model before the next event");
             QApplication::processEvents();
         };
         const auto stableKeyboardViewport = [&](const char *message) {
@@ -6672,9 +9145,29 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(window.sessionState().value("undoName").toString() == keyboardUndo, "native layer keyboard selection created an Undo step");
         {
             tableKey(Qt::Key_Home);
+            struct RowClickTrace {
+                const void *table, *hit;
+                uint64_t session;
+                int row, modifiers, scroll;
+                QPoint windowPoint, global;
+                QRect geometry, viewport;
+                bool enabled, reachesTable;
+            };
+            std::array<RowClickTrace, 3> clicks{};
+            size_t clickCount = 0;
             const auto clickLayerRow = [&](int row, Qt::KeyboardModifiers modifiers) {
                 auto *table = layerTable(); require(table, "disjoint selection table missing");
                 const QPoint position = table->mapTo(&window, QPoint(140, row * 54 + 26));
+                // Read Qt geometry only: diagnostics must not refresh the native model or settle the event queue.
+                QScrollArea *scroll = nullptr;
+                for (auto *parent = table->parentWidget(); parent; parent = parent->parentWidget())
+                    if ((scroll = qobject_cast<QScrollArea *>(parent))) break;
+                auto *hit = window.childAt(position);
+                if (clickCount < clicks.size()) clicks[clickCount++] = {
+                    table, hit, table->property("appKitSession").toULongLong(), row, int(modifiers),
+                    scroll ? scroll->verticalScrollBar()->value() : -1, position, window.mapToGlobal(position), table->geometry(),
+                    scroll ? QRect(scroll->viewport()->mapToGlobal(QPoint()), scroll->viewport()->size()) : QRect(),
+                    table->isEnabled(), hit == table || (hit && table->isAncestorOf(hit))};
                 const auto sendMouse = [&](QEvent::Type type, Qt::MouseButtons buttons) {
                     QMouseEvent event(type, QPointF(position), QPointF(window.mapToGlobal(position)),
                                       Qt::LeftButton, buttons, modifiers);
@@ -6701,7 +9194,20 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
             };
             clickLayerRow(2, Qt::NoModifier);
             clickLayerRow(8, Qt::ControlModifier);
-            require(selectedRows() == QList<int>({2, 8}), "native Command-click did not create disjoint selection");
+            const auto disjointRows = selectedRows();
+            if (disjointRows != QList<int>({2, 8}) || app.arguments().contains("--trace-layer-input")) {
+                qWarning() << "native disjoint selection/current session" << disjointRows << window.sessionHandle();
+                for (size_t i = 0; i < clickCount; ++i) {
+                    const auto &entry = clicks[i];
+                    qWarning() << "disjoint click table/hit/session/row/modifiers" << entry.table << entry.hit << entry.session << entry.row << entry.modifiers
+                               << "window/global" << entry.windowPoint << entry.global << "geometry/scroll" << entry.geometry << entry.scroll
+                               << "viewport/inside" << entry.viewport << entry.viewport.contains(entry.global)
+                               << "enabled/reaches table" << entry.enabled << entry.reachesTable;
+                }
+                qWarning().noquote() << swiftUIPointerTrace();
+                qWarning().noquote() << swiftUIScrollTrace();
+            }
+            require(disjointRows == QList<int>({2, 8}), "native Command-click did not create disjoint selection");
             clickLayerRow(6, Qt::ShiftModifier);
             require(selectedRows() == QList<int>({2, 6, 7, 8}), "native Shift-click lost the disjoint base or last-click anchor");
             tableKey(Qt::Key_Up, Qt::ShiftModifier);
@@ -7047,30 +9553,7 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
 
         // The upstream AppKit layer thumbnail's Shift-click must invalidate the
         // cached frame even though it keeps the same mask image object.
-        for (bool group : {false, true}) {
-            fresh();
-            if (group) command({{"action", "groupSelectedLayers"}});
-            command({{"action", "addHideMask"}});
-            const auto hidden = frame();
-            require(static_cast<uint8_t>(pixel(hidden, 32, 16)[3]) == 0, "hide mask did not hide pixels");
-            QWidget *table = nullptr;
-            for (auto *candidate : window.findChildren<QWidget *>()) {
-                if (candidate->isVisible() && candidate->property("appKitView").toBool()
-                    && candidate->property("appKitNode").toString().startsWith("LayersPanel|")) { table = candidate; break; }
-            }
-            require(table, "upstream AppKit layers table missing");
-            // The active root is the first row. Tip's thumbnail slot ends at x=78; masks have a 30-point slot
-            // after a 13-point linked gap on raster layers or a 5-point gap on folders. Row controls center at y=26.
-            const QPointF pos(group ? 98 : 106, 26);
-            QMouseEvent down(QEvent::MouseButtonPress, pos, table->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
-            QMouseEvent up(QEvent::MouseButtonRelease, pos, table->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
-            QApplication::sendEvent(table, &down); QApplication::sendEvent(table, &up);
-            QApplication::processEvents();
-            const auto revealed = frame();
-            require(static_cast<uint8_t>(pixel(revealed, 32, 16)[3]) == 255, "Shift-click left stale mask coverage");
-            command({{"action", "undo"}}); require(frame() == hidden, "mask toggle undo pixels differ");
-            command({{"action", "redo"}}); require(frame() == revealed, "mask toggle redo pixels differ");
-        }
+        checkMaskToggle();
         // A detached mask's coverage must follow its handles before mouse-up.
         fresh();
         command({{"action", "addRevealMask"}});
@@ -7453,10 +9936,9 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(textFile.open(QIODevice::ReadOnly), "format-11 native manifest missing");
         textManifest = QJsonDocument::fromJson(textFile.readAll()).object(); textFile.close();
         const auto savedText = textManifest.value("layers").toArray().last().toObject().value("text").toObject();
-        // The format new saves write (upstream's ProjectManifest.current: 11 with font runs, 12 with 16-bit layers
-        // (d9cdb81), 13 with HDR layers (7f239dc)); upstream's own tests compare against it the same way.
-        require(textManifest.value("version").toInt() == 13 && savedText.value("fontRuns").toArray() == chosenRuns,
-                "format-11 save lost chosen font runs");
+        // New saves use version 14 (smooth corners, 9f1d158); font runs arrived in version 11.
+        require(textManifest.value("version").toInt() == 14, "native save did not write current format 14");
+        require(savedText.value("fontRuns").toArray() == chosenRuns, "format-11 save lost chosen font runs");
         require(savedText.value("colorRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "format-11 save lost overlapping color runs");
         require(window.readProjectPackage(textPackage), "format-11 native reopen failed");
@@ -7504,7 +9986,10 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         qInfo("Qt preview journey OK (layer/folder mask Shift-click, unlinked mask drag, Ctrl/Ctrl+Alt pixel drags, colored native text editing, undo/redo)");
         return 0;
     } catch (const std::exception &e) {
-        qCritical("Qt preview journey failed: %s", e.what()); return 1;
+        qCritical("Qt preview journey failed: %s", e.what());
+        qWarning().noquote() << swiftUIPointerTrace();
+        qWarning().noquote() << swiftUIScrollTrace();
+        return 1;
     }
 }
 
@@ -8545,7 +11030,6 @@ extern "C" int compositor_host_text_smoke(int argc, char **argv, int (*probe)(vo
 }
 
 /// Focused Move / Free Transform journey: idle controls, drag history, explicit Apply/Cancel, and draft saves.
-extern "C" int32_t compositor_session_viewport(uint64_t, double *);
 extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
     installJourneyUI(app);

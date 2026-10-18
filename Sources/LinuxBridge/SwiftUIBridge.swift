@@ -25,7 +25,7 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
         if entry.layersPanelWidth != value {
             entry.layersPanelWidth = value
             UserDefaults.standard.set(value, forKey: "layersPanelWidth")
-            DirtyPanels.mark(.init(entry: ObjectIdentifier(entry), panel: "LayersPanel"))
+            DirtyPanels.mark(.init(entry: entry.renderScopeID, panel: "LayersPanel"))
         }
     }
     return entry.layersPanelWidth
@@ -34,7 +34,8 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
 /// Resolves the named panel against `entry`'s session into a wire-ready tree, and refreshes `entry`'s action-handler
 /// registry for it so a later Qt-side interaction can dispatch back to the right closure by node id.
 @MainActor func resolvePanel(_ panel: String, entry: Entry) -> RenderNodeWire? {
-    let scope = "\(ObjectIdentifier(entry).hashValue)|\(panel)"
+    let scope = entry.panelScope(panel)
+    entry.renderedPanels.insert(panel)
     // .onAppear / .onChange actions run after a resolve and usually change the @State it was built from (a field
     // seeding its text on appear); SwiftUI would render again, so resolve again until the tree settles.
     var wire: RenderNodeWire?
@@ -43,7 +44,7 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
         // As SwiftUI does: whatever observable state the body read, a change to it invalidates the panel — the shell
         // re-fetches just the panels that changed (compositor_session_dirty_panels) instead of polling them all.
         DirtyPanels.clear(entry, panel)
-        let key = DirtyPanels.Key(entry: ObjectIdentifier(entry), panel: panel)
+        let key = DirtyPanels.Key(entry: entry.renderScopeID, panel: panel)
         // The shell draws the tree itself: NSViewRepresentables resolve to what their AppKit views show.
         NativeLowering.isActive = true
         let node = withObservationTracking { resolvePanelTree(panel, entry: entry) } onChange: { DirtyPanels.mark(key) }
@@ -70,6 +71,23 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
         if ChangeTracker.lastActionCount == 0 { break }
     }
     return wire
+}
+
+/// Closing one handle releases only its hosted views and observers, including handles sharing a document.
+@MainActor func discardRenderedPanels(_ handle: UInt64, entry: Entry) {
+    DirtyPanels.discard(entry.renderScopeID)
+    for panel in entry.renderedPanels {
+        let scope = entry.panelScope(panel)
+        ChangeTracker.discard(scope: scope)
+        StateStore.discard(scope: scope)
+        NativeLowering.discard(scope: scope)
+    }
+    entry.renderedPanels.removeAll()
+    entry.actionHandlers.removeAll()
+    entry.resultHandlers.removeAll()
+    entry.rawDevelopSheet = nil
+    if pendingTree?.handle == handle { pendingTree = nil }
+    if pendingAccessibility?.handle == handle { pendingAccessibility = nil }
 }
 
 @_cdecl("compositor_session_dispatch_swiftui_drop_event")
@@ -338,17 +356,27 @@ nonisolated public func compositorSessionDispatchSwiftUIAction(_ handle: UInt64,
 /// Panels whose observed state changed since they were last resolved (withObservationTracking's onChange, which may
 /// fire on any thread).
 enum DirtyPanels {
-    nonisolated struct Key: Hashable, Sendable { let entry: ObjectIdentifier; let panel: String }
+    nonisolated struct Key: Hashable, Sendable { let entry: UUID; let panel: String }
     nonisolated(unsafe) private static var dirty: Set<Key> = []
+    nonisolated(unsafe) private static var live: Set<UUID> = []
     private static let lock = NSLock()
-    static func mark(_ key: Key) { lock.lock(); dirty.insert(key); lock.unlock() }
+    static func register(_ id: UUID) { lock.lock(); live.insert(id); lock.unlock() }
+    static func discard(_ id: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        live.remove(id)
+        dirty = dirty.filter { $0.entry != id }
+    }
+    static func mark(_ key: Key) {
+        lock.lock(); defer { lock.unlock() }
+        if live.contains(key.entry) { dirty.insert(key) }
+    }
     static func clear(_ entry: Entry, _ panel: String) {
-        lock.lock(); dirty.remove(Key(entry: ObjectIdentifier(entry), panel: panel)); lock.unlock()
+        lock.lock(); dirty.remove(Key(entry: entry.renderScopeID, panel: panel)); lock.unlock()
     }
     /// The entry's dirty panels, taken (the shell refreshes them now).
     static func take(_ entry: Entry) -> [String] {
         lock.lock(); defer { lock.unlock() }
-        let id = ObjectIdentifier(entry)
+        let id = entry.renderScopeID
         let names = dirty.filter { $0.entry == id }
         dirty.subtract(names)
         return names.map(\.panel).sorted()

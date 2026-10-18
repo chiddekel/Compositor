@@ -65,10 +65,11 @@ import AppKit
         case .leftMouseUp: view.mouseUp(with: event)
         default: view.mouseMoved(with: event)
         }
-        // Move / Free Transform sets resize (8 squares) and rotate (circle) cursors in mouseMoved via
-        // transformCursor(at:). Do not replace that with cursorForPoint — resetCursorRects only installs one
-        // canvas-wide toolCursor, which wiped handle cursors on every hover.
-        if type == .leftMouseUp, let cursor = view.cursorForPoint(viewPoint) {
+        // AppKit applies cursor rectangles on hover and after a drag ends. Move and selection tools
+        // refine their cursor in mouseMoved; keep those results instead of replacing them with a wide rect.
+        let usesCursorRects = view.session.tool != .move && !view.session.tool.isSelectionTool
+        if type == .leftMouseUp || type == .otherMouseUp || (type == .mouseMoved && usesCursorRects),
+           let cursor = view.cursorForPoint(viewPoint) {
             NSCursor.current = cursor
         }
     }

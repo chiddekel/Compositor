@@ -45,11 +45,10 @@ void compositor_motion_row(const float *restrict source, size_t width, size_t he
                         memcpy(&d, top + width * 4 + j * 8 + 4, sizeof d);
                         value = value * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
                     }
-                    sums[j] += value;
+                    sums[j] += value * kernel[k].weight;
                 }
             }
             for (size_t j = 0; j < 4; ++j) {
-                sums[j] /= (float)taps;
                 memcpy(output + x * 4 + j * 8, &sums[j], sizeof sums[j]);
             }
             x += 8;
@@ -64,9 +63,8 @@ void compositor_motion_row(const float *restrict source, size_t width, size_t he
             const Pixel c = sample(source, width, height, sx, sy + 1);
             const Pixel d = sample(source, width, height, sx + 1, sy + 1);
             // Keep the original bilinear grouping and tap accumulation order.
-            sum += (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+            sum += ((a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty) * kernel[k].weight;
         }
-        sum /= (float)taps;
         memcpy(output + x * 4, &sum, sizeof sum);
         ++x;
     }

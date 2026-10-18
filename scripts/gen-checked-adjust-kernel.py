@@ -23,8 +23,10 @@ lines += [f'#define {name} {name}__unchecked' for name, _, _ in entries]
 lines += ['#include "../../Compositor/Rendering/AdjustPixels.c"']
 lines += [f'#undef {name}' for name, _, _ in entries]
 for name, parameters, names in entries:
+    # These upstream 1.5.3 APIs honor stride and explicitly test padded RGBA rows.
+    contract = 'ROW' if name in {'adjust_camera_raw', 'camera_raw_repair_lookup'} else 'CANONICAL'
     lines += ['', f'void {name}({parameters}) {{',
-              f'    COMPOSITOR_REQUIRE_CANONICAL("{name}", stride, width, 4);']
+              f'    COMPOSITOR_REQUIRE_{contract}("{name}", stride, width, 4);']
     if 'blurredStride' in names:
         lines += [f'    COMPOSITOR_REQUIRE_CANONICAL("{name}", blurredStride, width, 4);']
     lines += [f'    {name}__unchecked({", ".join(names)});', '}']

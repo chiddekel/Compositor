@@ -13,7 +13,10 @@ import Sparkle
     static let delegate = CompositorApplicationDelegate(workspace: Workspace.shared)
     static func commands() -> (any View)? {
         NSApplicationDelegateStorage.delegate = delegate
-        SPUStandardUpdaterController.checkHandler = { ShellProjects.pending.append("checkForUpdates") }
+        SPUStandardUpdaterController.checkHandler = { ShellProjects.enqueue("checkForUpdates") }
+        NSApp.hideHandler = { ShellProjects.enqueue("hide") }
+        NSApp.hideOthersHandler = { ShellProjects.enqueue("hideOthers") }
+        NSApp.showAllHandler = { ShellProjects.enqueue("showAll") }
         // Select > All: same as a focused LayerTableView — canvas selectAll, never every layer.
         // While a layer is being renamed, leave the chord to the field (return true without selecting the canvas).
         NSApp.selectAllHandler = {
@@ -28,7 +31,7 @@ import Sparkle
         NSApp.mainMenuProvider = { AppMenuBar.shared.make() }
         PopUpMenus.install()
         // openWindow(id: "editor") (ContentView's showEditor): the shell shows its window.
-        OpenWindowAction.handler = { _ in ShellProjects.pending.append("showEditor") }
+        OpenWindowAction.handler = { _ in ShellProjects.enqueue("showEditor") }
         return CompositorApp().body.commandsContent?()
     }
 
@@ -55,7 +58,7 @@ import Sparkle
         guard let content = commands() else { return [] }
         let nodes = ViewResolver.resolveAll(content)
         func shell(_ title: String, _ request: String, key: String? = nil, modifiers: Int = 0, enabled: Bool = true) -> Item {
-            Item(title: title, enabled: enabled, key: key, modifiers: modifiers, action: { ShellProjects.pending.append(request) })
+            Item(title: title, enabled: enabled, key: key, modifiers: modifiers, action: { ShellProjects.enqueue(request) })
         }
         // Standard groups, in menu order, with the items macOS puts there by default.
         let command = 1 << 4, control = 1 << 2
@@ -151,7 +154,7 @@ import Sparkle
     }
 
     /// Runs the item at `path` in the menus as they are now, if it is enabled — what choosing it (or its shortcut) does.
-    @discardableResult static func perform(_ path: String) -> Bool {
+    @discardableResult static func perform(_ path: String, owner: UInt64? = nil) -> Bool {
         var items = menus()
         var found: Item?
         for part in path.split(separator: ".") {
@@ -168,7 +171,7 @@ import Sparkle
         else { textAction = ["Cut": "cut", "Copy": "copy", "Paste": "paste", "All": "selectAll"][item.title] }
         if let textAction, let nativeTextAction,
            textAction.withCString({ nativeTextAction($0) }) != 0 { return true }
-        action()
+        ShellProjects.$requestOwner.withValue(owner ?? ShellProjects.requestOwner ?? ShellProjects.currentHandle) { action() }
         return true
     }
 }
@@ -234,7 +237,9 @@ nonisolated public func compositorCommandPalettePerform(_ handle: UInt64, _ id: 
         guard let catalog = NativeCommandPalette.catalog(handle),
               let entry = catalog.entries.first(where: { $0.id == value }), entry.isEnabled else { return -1 }
         // Menu entries deliberately capture a weak root, as upstream does. Retain it through the dispatch.
-        withExtendedLifetime(catalog.menu) { entry.perform() }
+        ShellProjects.$requestOwner.withValue(handle) {
+            withExtendedLifetime(catalog.menu) { entry.perform() }
+        }
         return 0
     }
 }
@@ -348,13 +353,37 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
     return onMain { AppMenus.perform(value) ? 0 : -1 }
 }
 
+@_cdecl("compositor_session_app_menu_perform")
+nonisolated public func compositorSessionAppMenuPerform(_ handle: UInt64, _ path: UnsafePointer<CChar>?) -> Int32 {
+    guard let path else { return -1 }
+    let value = String(cString: path)
+    return onMain {
+        guard compositorWorkspaceSelectTab(handle) == 0 else { return -1 }
+        return AppMenus.perform(value, owner: handle) ? 0 : -1
+    }
+}
+
 /// What upstream's ProjectController does from the menus (save, export, sizes, open, ...), done by the shell: each call
 /// queues a request the shell takes after dispatching the menu item (compositor_take_shell_requests).
 @MainActor final class ShellProjects {
     weak var workspace: ProjectWorkspace?
     init(workspace: ProjectWorkspace) { self.workspace = workspace }
-    static var pending: [String] = []
-    private func request(_ name: String) { Self.pending.append(name) }
+    struct Request {
+        let name: String
+        let handle: UInt64?
+    }
+    static var pending: [Request] = []
+    @TaskLocal static var requestOwner: UInt64? = nil
+    static var currentHandle: UInt64? {
+        let id = Workspace.shared.current.id
+        return Sessions.entries.first { $0.value.workspaceTabID == id }?.key
+    }
+    static func enqueue(_ name: String) {
+        let handle = requestOwner ?? currentHandle
+        if let handle, Sessions.entries[handle] == nil { return }
+        pending.append(Request(name: name, handle: handle))
+    }
+    private func request(_ name: String) { Self.enqueue(name) }
 
     var canStart: Bool { workspace?.current.controller.canStart ?? true }
     /// The current tab's window, as upstream's delegate's `projects` (the current ProjectController) keeps it.
@@ -398,11 +427,25 @@ nonisolated public func compositorAppMenuPerform(_ path: UnsafePointer<CChar>?) 
 @_cdecl("compositor_take_shell_requests")
 nonisolated public func compositorTakeShellRequests(_ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
     onMain {
-        let data = (try? JSONEncoder().encode(ShellProjects.pending)) ?? Data("[]".utf8)
+        let data = (try? JSONEncoder().encode(ShellProjects.pending.map(\.name))) ?? Data("[]".utf8)
         guard let output else { return Int64(data.count) }
         guard capacity >= data.count else { return -1 }
         data.copyBytes(to: output, count: data.count)
         ShellProjects.pending = []
+        return Int64(data.count)
+    }
+}
+
+/// A window drains only its own tab's requests. Other windows' timers leave them queued.
+@_cdecl("compositor_take_session_shell_requests")
+nonisolated public func compositorTakeSessionShellRequests(_ handle: UInt64, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    onMain {
+        let requests = ShellProjects.pending.filter { $0.handle == nil || $0.handle == handle }
+        let data = (try? JSONEncoder().encode(requests.map(\.name))) ?? Data("[]".utf8)
+        guard let output else { return Int64(data.count) }
+        guard capacity >= data.count else { return -1 }
+        data.copyBytes(to: output, count: data.count)
+        ShellProjects.pending.removeAll { $0.handle == nil || $0.handle == handle }
         return Int64(data.count)
     }
 }
@@ -457,18 +500,26 @@ extension ProjectWindowView {
         let children: [Item]?
     }
     struct Choice { let menu: NSMenu; let index: Int; let enabled: Bool }
-    struct Presentation {
+    @MainActor struct Presentation {
         let menu: NSMenu
         let finish: (Int?) -> Void
+        let owner = ShellProjects.requestOwner
         var choices: [Int: Choice] = [:]
     }
     static var current: Presentation?
     static func install() {
         NSMenu.presenter = { menu, finish in
-            current?.finish(nil)
+            let previous = current
+            current = nil
+            if let previous { ShellProjects.$requestOwner.withValue(previous.owner) { previous.finish(nil) } }
             current = Presentation(menu: menu, finish: finish)
-            ShellProjects.pending.append("popUpMenu")
+            ShellProjects.enqueue("popUpMenu")
         }
+    }
+    static func cancel(for handle: UInt64) {
+        guard let presentation = current, presentation.owner == handle else { return }
+        current = nil
+        ShellProjects.$requestOwner.withValue(presentation.owner) { presentation.finish(nil) }
     }
     static func items() -> [Item] {
         guard var presentation = current else { return [] }
@@ -487,7 +538,7 @@ extension ProjectWindowView {
                             separator: item.isSeparatorItem, children: children)
             }
         }
-        let result = describe(presentation.menu, enabled: true)
+        let result = ShellProjects.$requestOwner.withValue(presentation.owner) { describe(presentation.menu, enabled: true) }
         current = presentation
         return result
     }
@@ -513,10 +564,12 @@ nonisolated public func compositorPopUpMenuChoose(_ index: Int32) {
     onMain {
         guard let current = PopUpMenus.current else { return }
         PopUpMenus.current = nil
-        if let choice = current.choices[Int(index)], choice.enabled {
-            choice.menu.performActionForItem(at: choice.index)
+        ShellProjects.$requestOwner.withValue(current.owner) {
+            if let choice = current.choices[Int(index)], choice.enabled {
+                choice.menu.performActionForItem(at: choice.index)
+            }
+            current.finish(nil)
         }
-        current.finish(nil)
     }
 }
 

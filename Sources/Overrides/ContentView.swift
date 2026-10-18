@@ -26,7 +26,7 @@ import Sparkle
     /// Tip View › Toggle Fullscreen / Canvas Only (F). Qt hosts chrome; flip session flag and ask the shell.
     func toggleCanvasOnly() {
         session.canvasOnly.toggle()
-        ShellProjects.pending.append("toggleCanvasOnly")
+        ShellProjects.enqueue("toggleCanvasOnly")
     }
 }
 
@@ -510,7 +510,12 @@ extension View {
                 stepper.change = change
                 active ? stepper.listen(step: step) : stepper.stopListening()
             }
-            .onDisappear { stepper.stopListening() }
+            .onDisappear {
+                stepper.stopListening()
+                // The callbacks can capture the view that owns this stepper. Release that cycle on dismissal.
+                stepper.value = { 0 }
+                stepper.change = { _ in }
+            }
     }
 }
 

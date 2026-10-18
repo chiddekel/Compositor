@@ -22,7 +22,7 @@ int compositor_gaussian_fft(const CompositorGaussianPlan *plan,
     float *output, size_t output_stride);
 typedef struct {
     ptrdiff_t x, y;
-    float tx, ty;
+    float tx, ty, weight;
 } CompositorMotionTap;
 // Each worker writes one output row. Coordinates and bilinear fractions are
 // shared by every pixel; out-of-bounds samples remain transparent.

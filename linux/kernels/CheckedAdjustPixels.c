@@ -8,6 +8,7 @@
 #define camera_raw_scope camera_raw_scope__unchecked
 #define camera_raw_statistics camera_raw_statistics__unchecked
 #define adjust_camera_raw adjust_camera_raw__unchecked
+#define camera_raw_repair_lookup camera_raw_repair_lookup__unchecked
 #define adjust_camera_raw_shadows adjust_camera_raw_shadows__unchecked
 #define adjust_camera_raw_clip_overlay adjust_camera_raw_clip_overlay__unchecked
 #define adjust_camera_raw_curve_color adjust_camera_raw_curve_color__unchecked
@@ -26,6 +27,7 @@
 #undef camera_raw_scope
 #undef camera_raw_statistics
 #undef adjust_camera_raw
+#undef camera_raw_repair_lookup
 #undef adjust_camera_raw_shadows
 #undef adjust_camera_raw_clip_overlay
 #undef adjust_camera_raw_curve_color
@@ -68,8 +70,13 @@ void camera_raw_statistics(const uint8_t *rgba, size_t width, size_t height, siz
 }
 
 void adjust_camera_raw(uint8_t *rgba, size_t width, size_t height, size_t stride, const float *table, int grid, int clipping) {
-    COMPOSITOR_REQUIRE_CANONICAL("adjust_camera_raw", stride, width, 4);
+    COMPOSITOR_REQUIRE_ROW("adjust_camera_raw", stride, width, 4);
     adjust_camera_raw__unchecked(rgba, width, height, stride, table, grid, clipping);
+}
+
+void camera_raw_repair_lookup(uint8_t *result, const uint8_t *source, const uint8_t *uncertain, size_t width, size_t height, size_t stride, const float *table, int grid) {
+    COMPOSITOR_REQUIRE_ROW("camera_raw_repair_lookup", stride, width, 4);
+    camera_raw_repair_lookup__unchecked(result, source, uncertain, width, height, stride, table, grid);
 }
 
 void adjust_camera_raw_shadows(uint8_t *rgba, size_t width, size_t height, size_t stride, const float *coefficients, int xCount, float xLow, float xStep, int kCount, float kLow, float kStep) {

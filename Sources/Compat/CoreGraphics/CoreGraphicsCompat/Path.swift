@@ -433,6 +433,33 @@ public final class CGMutablePath: CGPath, @unchecked Sendable {
         segments.append(.cubic(control1.applying(transform), control2.applying(transform), end.applying(transform)))
     }
 
+    public func addArc(center: CGPoint, radius: CGFloat, startAngle: CGFloat, endAngle: CGFloat,
+                       clockwise: Bool, transform: CGAffineTransform = .identity) {
+        guard radius > 0, [center.x, center.y, radius, startAngle, endAngle].allSatisfy(\.isFinite) else { return }
+        let turn = CGFloat.pi * 2
+        let difference = endAngle - startAngle
+        guard difference.isFinite else { return }
+        var sweep = difference.truncatingRemainder(dividingBy: turn)
+        if abs(difference) >= turn { sweep = clockwise ? -turn : turn }
+        else if clockwise && sweep > 0 { sweep -= turn }
+        else if !clockwise && sweep < 0 { sweep += turn }
+        let start = CGPoint(x: center.x + radius * cos(startAngle), y: center.y + radius * sin(startAngle))
+        if isEmpty { move(to: start, transform: transform) }
+        else if currentPoint != start.applying(transform) { addLine(to: start, transform: transform) }
+        guard sweep != 0 else { return }
+        let count = max(1, Int(ceil(abs(sweep) / (.pi / 2))))
+        let step = sweep / CGFloat(count), coefficient = 4 / CGFloat(3) * tan(step / 4)
+        for index in 0..<count {
+            let a = startAngle + CGFloat(index) * step, b = a + step
+            let from = CGPoint(x: center.x + radius * cos(a), y: center.y + radius * sin(a))
+            let to = CGPoint(x: center.x + radius * cos(b), y: center.y + radius * sin(b))
+            addCurve(to: to,
+                     control1: CGPoint(x: from.x - coefficient * radius * sin(a), y: from.y + coefficient * radius * cos(a)),
+                     control2: CGPoint(x: to.x + coefficient * radius * sin(b), y: to.y - coefficient * radius * cos(b)),
+                     transform: transform)
+        }
+    }
+
     public func addRect(_ rect: CGRect, transform: CGAffineTransform = .identity) {
         var s: [PathSegment] = []
         CGPath.appendRect(rect, to: &s)

@@ -54,7 +54,7 @@ def command_palette_view():
     end = source.index('        panel.makeKeyAndOrderFront(nil)\n', start) + len('        panel.makeKeyAndOrderFront(nil)\n')
     source = source[:start] + (
         '        _ = (session, window, menu)\n'
-        '        ShellProjects.pending.append("commandPalette")\n') + source[end:]
+        '        ShellProjects.enqueue("commandPalette")\n') + source[end:]
     return header(tip, 'Only `toggle` differs: the Qt shell presents CommandPaletteDialog (queued as "commandPalette") where\n'
                        'tip builds an NSPanel. Search, ranking, the model and `skipped` are tip\'s (UI/CommandPalette.swift).'
                   ) + objc_selectors.port(source)

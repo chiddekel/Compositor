@@ -708,7 +708,9 @@ public enum NSAccessibility {
         case .cursorUpdate: target?.cursorUpdate(with: event)
         case .tabletPoint: target?.tabletPoint(with: event)
         case .tabletProximity: target?.tabletProximity(with: event)
-        case .otherMouseDown, .otherMouseUp, .otherMouseDragged: break
+        case .otherMouseDown: target?.otherMouseDown(with: event)
+        case .otherMouseUp: target?.otherMouseUp(with: event)
+        case .otherMouseDragged: target?.otherMouseDragged(with: event)
         }
     }
 
@@ -809,11 +811,13 @@ public struct NSScreen {
         }
         return false
     }
-    /// Hide / Hide Others / Show All: window-manager business on Linux (the host may set these).
+    /// Hide / Hide Others / Show All: window-manager business on Linux, carried out by the host's shell.
     public var hideHandler: (() -> Void)?
+    public var hideOthersHandler: (() -> Void)?
+    public var showAllHandler: (() -> Void)?
     public func hide(_ sender: Any?) { hideHandler?() }
-    public func hideOtherApplications(_ sender: Any?) {}
-    public func unhideAllApplications(_ sender: Any?) {}
+    public func hideOtherApplications(_ sender: Any?) { hideOthersHandler?() }
+    public func unhideAllApplications(_ sender: Any?) { showAllHandler?() }
 }
 
 /// Test processes only: on the Mac upstream's tests run inside the app (its test host), whose document window is open

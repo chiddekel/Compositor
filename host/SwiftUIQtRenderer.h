@@ -39,3 +39,6 @@ bool swiftUIDragGestureActive(uint64_t sessionHandle);
 bool swiftUIAppKitTracking();
 /// Bounded geometry/focus diagnostics recorded by native tests or COMPOSITOR_TRACE_SCROLL_BUFFER.
 QString swiftUIScrollTrace();
+/// Bounded native pointer delivery diagnostics recorded by native tests or COMPOSITOR_TRACE_POINTER_BUFFER.
+QString swiftUIPointerTrace();
+void swiftUITraceWindowKey(const void *owner, uint64_t handle, int code, int modifiers);

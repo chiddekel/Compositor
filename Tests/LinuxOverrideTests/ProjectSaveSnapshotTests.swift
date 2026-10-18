@@ -24,6 +24,41 @@ struct ProjectSaveSnapshotTests {
         return try JSONDecoder().decode(ProjectManifest.self, from: Data(bytes))
     }
 
+    @Test(arguments: [false, true]) func recoveryLoadHasNoSaveDestinationOrWatcher(recovery: Bool) async throws {
+        let (source, editor) = try await create()
+        defer { Sessions.entries.removeValue(forKey: source) }
+        let token = await Task.detached { compositorSaveCapture(source) }.value
+        defer { compositorSaveRelease(token) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("recovery-load-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let package = directory.appendingPathComponent("autosave.comp", isDirectory: true)
+        #expect(await Task.detached { package.path.withCString { compositorSaveWritePackage(token, $0, 0) } }.value == 0)
+        let handle = await Task.detached { compositorSessionCreate() }.value
+        defer { Sessions.entries.removeValue(forKey: handle) }
+        let result = await Task.detached {
+            var width: Int32 = 0, height: Int32 = 0
+            let code = package.path.withCString {
+                recovery ? compositorSessionLoadRecovery(handle, $0, &width, &height)
+                    : compositorSessionLoadPackage(handle, $0, &width, &height)
+            }
+            return (code, width, height)
+        }.value
+        #expect(result.0 == 0 && result.1 == 16 && result.2 == 12)
+        let loaded = try #require(Sessions.entries[handle]?.editor)
+        #expect(loaded.session.activeLayerID == editor.session.activeLayerID)
+        #expect(loaded.session.activeLayer?.name == "Original")
+        let changes = loaded.nativeProjects.externalChanges
+        if recovery {
+            #expect(loaded.session.projectURL == nil)
+            #expect(changes.watcher == nil && changes.knownDigest == nil)
+        } else {
+            #expect(loaded.session.projectURL == package)
+            #expect(changes.watcher?.url == package && changes.knownDigest != nil)
+            loaded.nativeProjects.stopWatchingProject()
+        }
+    }
+
     @Test func workerReadsFrozenMetadataAndPixelsAfterEditsAndClose() async throws {
         let (handle, e) = try await create()
         let token = await Task.detached { compositorSaveCapture(handle) }.value

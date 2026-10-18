@@ -26,6 +26,8 @@ extension NSApplication {
     public var informativeText = ""
     public private(set) var buttonTitles: [String] = []
     public private(set) var buttons: [NSButton] = []
+    /// The window supplied to beginSheetModal, available to a native host's alert handler.
+    public private(set) weak var presentationWindow: NSWindow?
     nonisolated(unsafe) public static var handler: ((NSAlert) -> NSApplication.ModalResponse)?
     public init() {}
     @discardableResult public func addButton(withTitle title: String) -> NSButton {
@@ -40,6 +42,9 @@ extension NSApplication {
     /// them is clicked. The host's `handler` (a Qt message box) takes precedence; a window never shown answers
     /// headlessly with the first button, as `runModal` does.
     public func beginSheetModal(for window: NSWindow) async -> NSApplication.ModalResponse {
+        let previous = presentationWindow
+        presentationWindow = window
+        defer { presentationWindow = previous }
         if Self.handler != nil || !window.isVisible { return runModal() }
         let sheet = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 420, height: 160), styleMask: [.titled],
                              backing: .buffered, defer: false)
@@ -73,11 +78,18 @@ extension NSApplication {
     public var canCreateDirectories = false
     public var isExtensionHidden = true
     public var url: URL?
+    /// The parent requested by the caller, available only during presentation.
+    public private(set) weak var presentationWindow: NSWindow?
     nonisolated(unsafe) public static var handler: ((NSSavePanel) -> NSApplication.ModalResponse)?
     public init() {}
     public func runModal() -> NSApplication.ModalResponse { Self.handler?(self) ?? .cancel }
     public func begin() async -> NSApplication.ModalResponse { runModal() }
-    public func beginSheetModal(for window: NSWindow) async -> NSApplication.ModalResponse { runModal() }
+    public func beginSheetModal(for window: NSWindow) async -> NSApplication.ModalResponse {
+        let previous = presentationWindow
+        presentationWindow = window
+        defer { presentationWindow = previous }
+        return runModal()
+    }
 }
 
 open class NSOpenPanel: NSSavePanel {

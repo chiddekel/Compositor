@@ -1,0 +1,35 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0, binding=0, std430) buffer Pixels { uint pixels[]; };
+layout(set=0, binding=1, std430) writeonly buffer Repairs { uint uncertain[]; };
+layout(set=0, binding=2, std430) readonly buffer Lookup { float table[]; };
+layout(push_constant) uniform Parameters { uint width; uint height; uint grid; } p;
+void main() {
+    uvec2 at = gl_GlobalInvocationID.xy;
+    if (at.x >= p.width || at.y >= p.height) return;
+    uint index = at.y * p.width + at.x;
+    uint packed = pixels[index];
+    uvec4 pixel = uvec4(packed & 255u, (packed >> 8) & 255u, (packed >> 16) & 255u, packed >> 24);
+    uvec3 result = pixel.rgb;
+    bool repair = false;
+    if (pixel.a != 0) {
+        uvec3 numerator = min(pixel.rgb, uvec3(pixel.a)) * (p.grid - 1);
+        uvec3 cell = min(numerator / pixel.a, uvec3(p.grid - 2));
+        precise vec3 fraction = vec3(numerator - cell * pixel.a) / float(pixel.a);
+        precise vec3 color = vec3(0);
+        for (uint corner = 0; corner < 8; ++corner) {
+            uvec3 delta = uvec3(corner >> 2, (corner >> 1) & 1u, corner & 1u);
+            precise vec3 weights = mix(vec3(1) - fraction, fraction, notEqual(delta, uvec3(0)));
+            precise float weight = weights.x * weights.y * weights.z;
+            if (weight == 0) continue;
+            uvec3 node = cell + delta;
+            uint entry = ((node.x * p.grid + node.y) * p.grid + node.z) * 3;
+            color += weight * vec3(table[entry], table[entry + 1], table[entry + 2]);
+        }
+        precise vec3 scaled = clamp(color, vec3(0), vec3(1)) * float(pixel.a);
+        repair = any(lessThanEqual(abs(scaled - (floor(scaled) + vec3(0.5))), vec3(0.01)));
+        result = uvec3(clamp(floor(scaled + vec3(0.5)), vec3(0), vec3(pixel.a)));
+    }
+    pixels[index] = result.r | (result.g << 8) | (result.b << 16) | (pixel.a << 24);
+    uncertain[index] = repair ? 1u : 0u;
+}

@@ -85,7 +85,7 @@ final class CommandPaletteController {
     /// the app's own unless a test passes one.
     func toggle(session: EditorSession, over window: NSWindow?, menu: NSMenu? = nil) {
         _ = (session, window, menu)
-        ShellProjects.pending.append("commandPalette")
+        ShellProjects.enqueue("commandPalette")
     }
 
     func close() {

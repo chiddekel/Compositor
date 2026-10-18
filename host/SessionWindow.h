@@ -97,7 +97,7 @@ public:
     bool writeProjectPackage(const QString &path);   // saveProject without noting it as recent
     bool loadProject(const QString &path);
     void openStartupFiles(const QStringList &paths);
-    bool readProjectPackage(const QString &path);    // loadProject without noting it as recent
+    bool readProjectPackage(const QString &path, bool recovery = false);    // loadProject without noting it as recent
 
     // Command Palette (Ctrl+Shift+P / F1)
     void showCommandPalette();
@@ -108,6 +108,7 @@ public:
     // Crash-Recovery Autosave (R61)
     bool performAutosave();
     bool startProjectSave(const QString &path, bool autosave, std::function<void(bool)> completion = {}, bool markSaved = true, uint64_t sourceHandle = 0);
+    bool isProjectSaveInProgress() const { return m_savingDocuments.contains(m_sessionHandle); }
     bool startAutosave();
     bool hasAutosaveRecovery() const;
     bool recoverAutosave();
@@ -208,6 +209,8 @@ public:
     void showAboutPanel();
     bool routesToUpstreamCanvas() const;
     void sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount, bool refresh = true);
+    void applyCanvasCursor(int cursor);
+    void refreshCanvasCursor(int modifierBits);
     void flushPendingDrag();
     std::vector<std::unique_ptr<QMouseEvent>> m_pendingDrags;   // ordered pointer samples awaiting delivery
     void syncAppMenus();
@@ -380,7 +383,8 @@ private:
     double desiredDisplayScale() const;
     QImage renderDisplayImage(double scale);
     QImage fullResolutionImage();
-    void presentSwiftUISheet(const QString &panel);
+    void presentSwiftUISheet(const QString &panel, uint64_t handle = 0);
+    static SessionWindow *windowForSession(uint64_t handle);
     void pumpWhileBusy();
 
     void endBusy();
@@ -520,6 +524,7 @@ private:
     QHash<QString, FloatingPanelWindow> m_floatingPanels;   // panel name -> its window (updateFloatingPanels)
     std::optional<QPoint> m_colorPickerPosition;   // the picker reopens where it was last left
     bool m_updatingFloatingPanels = false, m_floatingPanelsDirty = false;
+    bool m_panelsSuppressedByMinimization = false;
     QTimer *m_floatingPanelDragTimer = nullptr;   // throttles updateFloatingPanels during DragGesture drags
     bool m_floatingPanelDragBypass = false;
     QByteArray m_pumpedState;

@@ -4,24 +4,73 @@ import XCTest
 @testable import CoreImage
 
 final class MotionBlurRasterTests: XCTestCase {
-    // Independent copy of the former scalar algorithm, including transparent borders
-    // and bilinear interpolation. The optimized path must retain its pixels.
+    func testRegionalRenderIncludesSamplesBeyondTheFormerUniformRadius() throws {
+        var pixels = PixelBuffer(width: 65, height: 65)
+        for y in 0..<65 { pixels[40, y] = (255, 255, 255, 255) }
+        let image = CIImage(cgImage: CGImage(pixels)).applyingFilter("CIMotionBlur", parameters: [
+            kCIInputRadiusKey: 4.0, kCIInputAngleKey: 0.0,
+        ])
+        XCTAssertLessThanOrEqual(image.extent.minX, -12)
+        XCTAssertGreaterThanOrEqual(image.extent.maxX, 77)
+        let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let full = try XCTUnwrap(context.createCGImage(image, from: CGRect(x: 0, y: 0, width: 65, height: 65),
+                                                     format: .RGBA8, colorSpace: space))
+        let tile = try XCTUnwrap(context.createCGImage(image, from: CGRect(x: 32, y: 32, width: 1, height: 1),
+                                                     format: .RGBA8, colorSpace: space))
+        let index = 32 * full.bytesPerRow + 32 * 4
+        let expected = Array(full.portableImage.bytes[index..<(index + 4)])
+        XCTAssertGreaterThan(expected[3], 0, "A source two standard deviations away still contributes")
+        XCTAssertEqual(Array(tile.portableImage.bytes.prefix(4)), expected,
+                       "Regional evaluation must request the entire weighted sampling footprint")
+    }
+
+    func testRadiusMatchesTheStandardDeviationUsedByUpstreamDistanceCalibration() {
+        // PixelFilter maps a streak distance d to radius d / sqrt(12): radius is its standard deviation.
+        // Measuring the impulse's second moment independently detects a shorter, uniform sample interval.
+        let region = CGRect(x: 0, y: 0, width: 129, height: 129)
+        var input = Raster(rect: region)
+        let center = input.index(64, 64)
+        for channel in 0..<4 { input.data[center + channel] = 1 }
+        for radius in [2.0, 4.0, 8.0] {
+            for angle in [0.0, Double.pi / 4, Double.pi / 2, -Double.pi / 4] {
+                let output = RasterFilters.motionBlur(input, radius: radius, angle: angle, output: region)
+                var mass = 0.0, major = 0.0, minor = 0.0
+                for y in 0..<output.height { for x in 0..<output.width {
+                    let alpha = Double(output.data[output.index(x, y) + 3])
+                    let u = Double(x - 64) * cos(angle) + Double(y - 64) * sin(angle)
+                    let v = -Double(x - 64) * sin(angle) + Double(y - 64) * cos(angle)
+                    mass += alpha; major += alpha * u * u; minor += alpha * v * v
+                } }
+                XCTAssertEqual(mass, 1, accuracy: 0.00001)
+                XCTAssertEqual(major / mass, radius * radius, accuracy: max(0.3, radius * radius * 0.06),
+                               "radius=\(radius), angle=\(angle): Motion Blur must retain upstream's distance calibration")
+                XCTAssertLessThan(minor / mass, 0.3, "Interpolation may soften the line by a fraction of a pixel")
+            }
+        }
+    }
+
+    // Scalar weighted-line convolution checks the SIMD sampler, including transparent borders and
+    // bilinear interpolation. The impulse moments above independently enforce radius calibration.
     private func reference(_ input: Raster, radius: Double, angle: Double, region: CGRect) -> Raster {
+        guard radius > 0 else { return input.cropped(to: region) }
         var output = Raster(rect: region)
-        let taps = max(1, Int(ceil(radius * 2)))
+        let reach = Int(ceil(radius * 3))
+        let weights = (-reach...reach).map { exp(-Double($0 * $0) / (2 * radius * radius)) }
+        let total = weights.reduce(0, +)
         for y in 0..<output.height {
             for x in 0..<output.width {
                 let cx = Double(region.minX - input.rect.minX) + Double(x) + 0.5
                 let cy = Double(region.minY - input.rect.minY) + Double(y) + 0.5
                 var sum: (Float, Float, Float, Float) = (0, 0, 0, 0)
-                for tap in 0...taps {
-                    let s = (Double(tap) / Double(taps) * 2 - 1) * radius
+                for tap in -reach...reach {
+                    let s = Double(tap), weight = Float(weights[tap + reach] / total)
                     let pixel = input.bilinear(cx + s * cos(angle), cy + s * sin(angle))
-                    sum.0 += pixel.0; sum.1 += pixel.1; sum.2 += pixel.2; sum.3 += pixel.3
+                    sum.0 += pixel.0 * weight; sum.1 += pixel.1 * weight; sum.2 += pixel.2 * weight; sum.3 += pixel.3 * weight
                 }
-                let i = output.index(x, y), n = Float(taps + 1)
-                output.data[i] = sum.0 / n; output.data[i + 1] = sum.1 / n
-                output.data[i + 2] = sum.2 / n; output.data[i + 3] = sum.3 / n
+                let i = output.index(x, y)
+                output.data[i] = sum.0; output.data[i + 1] = sum.1
+                output.data[i + 2] = sum.2; output.data[i + 3] = sum.3
             }
         }
         return output

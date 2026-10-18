@@ -215,7 +215,7 @@ private struct State: Encodable {
     /// Every keyboard shortcut upstream defines (ShortcutDefinition.all) with the chord it is set to now (ShortcutSettings:
     /// the editor's saved choices) and its original: the shell applies them to its menus and canvas keys.
     let shortcuts: [ShortcutState]
-    struct ShortcutState: Encodable { let title: String; let group: String; let key: String; let modifiers: Int; let originalKey: String; let originalModifiers: Int }
+    struct ShortcutState: Encodable, Equatable { let title: String; let group: String; let key: String; let modifiers: Int; let originalKey: String; let originalModifiers: Int }
     struct AlertState: Encodable { let kind: String; let title: String; let message: String }
     struct TextDraftState: Encodable {
         let id: UUID
@@ -403,9 +403,10 @@ final class UpstreamEditor {
         return awaitOnMain({ [self] in await commandAsync(json) }, whileWaiting: { [self] in
             ImportPrompts.presentPendingSheet(for: self)
             let now = Date()
-            guard let pump = ImportPrompts.waitPump, now.timeIntervalSince(started) > 0.15, now.timeIntervalSince(pumped) > 0.016 else { return }
+            guard ImportPrompts.sessionWaitPump != nil || ImportPrompts.waitPump != nil,
+                  now.timeIntervalSince(started) > 0.15, now.timeIntervalSince(pumped) > 0.016 else { return }
             pumped = now
-            pump(ImportPrompts.waitPumpContext)
+            ImportPrompts.pump(for: self)
         })
     }
 
@@ -860,13 +861,13 @@ final class UpstreamEditor {
         // Layer > Edit Adjustment… / double-click: open the upstream editor for that adjustment layer.
         case "beginAdjustmentEditing":
             let id = command.layerID ?? s.activeLayerID
-            guard let id, s.document?.layers.first(where: { $0.id == id })?.adjustment != nil else {
+            guard let id, let adjustment = s.document?.layers.first(where: { $0.id == id })?.adjustment else {
                 return fail(-1, "not an adjustment layer")
             }
+            guard adjustment.kind.isEditable else { return fail(-1, "adjustment has no editable settings") }
             s.adjustmentEditingID = id
             await s.beginAdjustmentEditing(id)
-            guard s.adjustmentOriginal != nil || s.levels != nil || s.hueSaturation != nil || s.filterEdit != nil
-                    || s.document?.layers.first(where: { $0.id == id })?.adjustment?.kind == .invert else {
+            guard s.adjustmentOriginal != nil || s.levels != nil || s.hueSaturation != nil || s.filterEdit != nil else {
                 return fail(-5, "adjustment editor could not start")
             }
         // Image > Trim… (ProjectController.trim): upstream's sheet, then its trim, as one undo step.
@@ -1297,6 +1298,12 @@ final class UpstreamEditor {
             if command.kind.flatMap(FilterKind.init(rawValue:)) == nil { return (-1, "unknown filter") }
         case "addAdjustment":
             if command.kind.flatMap(AdjustmentKind.init(rawValue:)) == nil { return (-1, "unknown adjustment") }
+        case "beginAdjustmentEditing":
+            let id = command.layerID ?? s.activeLayerID
+            guard let id, let adjustment = s.document?.layers.first(where: { $0.id == id })?.adjustment else {
+                return (-1, "not an adjustment layer")
+            }
+            if !adjustment.kind.isEditable { return (-1, "adjustment has no editable settings") }
         case "addLayerEffect":
             if command.kind.flatMap(LayerEffectKind.init(rawValue:)) == nil { return (-1, "invalid effect") }
             if s.activeLayer == nil { return (-2, "no layer") }
@@ -1604,17 +1611,27 @@ final class UpstreamEditor {
             alert: s.brushError.map { State.AlertState(kind: "brush", title: "Couldn’t paint", message: $0) }
                 ?? s.cropError.map { State.AlertState(kind: "crop", title: "Couldn’t crop", message: $0) },
             distortCorners: s.transformEdit?.corners.map { $0.map { [Double($0.x), Double($0.y)] } },
-            shortcuts: ShortcutDefinition.all.map { definition in
-                let chord = ShortcutSettings.shared.chord(definition)
-                return State.ShortcutState(title: definition.title, group: definition.group, key: chord.key, modifiers: chord.modifiers,
-                                           originalKey: definition.original.key, originalModifiers: definition.original.modifiers)
-            })
+            shortcuts: [])
         // Sorted keys: the same state must encode to the same bytes, or the shell's pump sees a change on every tick
         // (dictionary order varies) and refreshes the whole window at 60 Hz.
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(state)
+        var json = try encoder.encode(state)
+        // The shortcut catalog is most of the state and changes only when a shortcut is edited: its encoded bytes are
+        // reused while the chords match, and spliced in where the empty array was encoded.
+        let shortcuts = ShortcutDefinition.all.map { definition in
+            let chord = ShortcutSettings.shared.chord(definition)
+            return State.ShortcutState(title: definition.title, group: definition.group, key: chord.key, modifiers: chord.modifiers,
+                                       originalKey: definition.original.key, originalModifiers: definition.original.modifiers)
+        }
+        if Self.encodedShortcuts?.states != shortcuts { Self.encodedShortcuts = (shortcuts, try encoder.encode(shortcuts)) }
+        let empty = Data(#""shortcuts":[]"#.utf8)
+        if let range = json.range(of: empty), let encoded = Self.encodedShortcuts?.json {
+            json.replaceSubrange(range, with: Data(#""shortcuts":"#.utf8) + encoded)
+        }
+        return json
     }
+    private static var encodedShortcuts: (states: [State.ShortcutState], json: Data)?
 
     /// Adds premultiplied RGBA8 pixels as a layer (`replacing`: as a new one-layer document of that size, history cleared).
     func importRGBA(_ pixels: [UInt8], width: Int, height: Int, name: String, replacing: Bool) -> Int32 {
@@ -1759,7 +1776,7 @@ final class UpstreamEditor {
             context.strokePath()
         } else {
             context.setFillColor(color)
-            context.addPath(draft.kind.path(in: draft.rect, cornerRadius: draft.cornerRadius))
+            context.addPath(draft.kind.path(in: draft.rect, cornerRadius: draft.cornerRadius, smoothing: draft.smoothing))
             context.fillPath()
         }
         guard let image = context.makeImage() else { return nil }
@@ -1914,6 +1931,8 @@ final class UpstreamEditor {
         let size: CGSize?
         let brushRevision: Int
         let layers: [Layer]
+        /// A distortion moves corners without changing the ordinary layer transform or source image.
+        let distortionCorners: [CGPoint]?
         let editingTextLayer: UUID?
         /// The Shape tool's draft and the color it previews in (it is part of the composite, as on the Mac).
         let shapeDraft: ShapeDraft?
@@ -1938,7 +1957,8 @@ final class UpstreamEditor {
                 maskPlacement: s.displayedMaskPlacement(for: layer), preview: preview.map { ObjectIdentifier($0) })
         }
         return RenderKey(documentID: document?.id, size: document?.size, brushRevision: s.brushRevision, layers: layers,
-                         editingTextLayer: s.textDraft?.layerID, shapeDraft: s.shapeDraft, shapeColor: s.foregroundColor,
+                         distortionCorners: s.transformEdit?.corners, editingTextLayer: s.textDraft?.layerID,
+                         shapeDraft: s.shapeDraft, shapeColor: s.foregroundColor,
                          shapeLineWidth: Double(s.shapeLineWidth))
     }
 

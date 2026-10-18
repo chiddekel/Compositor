@@ -243,20 +243,24 @@ enum RasterFilters {
         return out.cropped(to: region)
     }
 
-    /// Straight-line blur of length 2*radius through each pixel at `angle` radians (CIMotionBlur).
+    /// Gaussian-weighted line at `angle` radians; radius is its standard deviation, as upstream calibrates Distance.
     static func motionBlur(_ input: Raster, radius: Double, angle: Double, output region: CGRect) -> Raster {
+        guard radius > 0, radius.isFinite else { return input.cropped(to: region) }
         var out = Raster(rect: region)
-        let taps = max(1, Int(ceil(radius * 2)))
+        let reach = Int(ceil(radius * 3))
+        let weights = (-reach...reach).map { exp(-Double($0 * $0) / (2 * radius * radius)) }
+        let total = weights.reduce(0, +)
         let dx = cos(angle), dy = sin(angle)
         let width = out.width, height = out.height, sourceWidth = input.width, sourceHeight = input.height
         guard width > 0, height > 0, sourceWidth > 0, sourceHeight > 0 else { return out }
         let firstX = Int(region.minX - input.rect.minX), firstY = Int(region.minY - input.rect.minY)
         // Every output pixel uses the same offsets and fractions. Computing these in
         // the inner loop made even the default adjustment stall the desktop for seconds.
-        let kernel = (0...taps).map { t -> CompositorMotionTap in
-            let s = (Double(t) / Double(taps) * 2 - 1) * radius
+        let kernel = (-reach...reach).map { t -> CompositorMotionTap in
+            let s = Double(t)
             let x = s * dx, y = s * dy, ix = floor(x), iy = floor(y)
-            return CompositorMotionTap(x: Int(ix), y: Int(iy), tx: Float(x - ix), ty: Float(y - iy))
+            return CompositorMotionTap(x: Int(ix), y: Int(iy), tx: Float(x - ix), ty: Float(y - iy),
+                                       weight: Float(weights[t + reach] / total))
         }
         kernel.withUnsafeBufferPointer { kernel in
             input.data.withUnsafeBufferPointer { source in
@@ -266,7 +270,7 @@ enum RasterFilters {
                     DispatchQueue.concurrentPerform(iterations: workers) { worker in
                         for y in (worker * height / workers)..<((worker + 1) * height / workers) {
                             compositor_motion_row(src, sourceWidth, sourceHeight, firstX, firstY + y,
-                                                  width, weights, taps + 1, dst + y * width * 4)
+                                                  width, weights, kernel.count, dst + y * width * 4)
                         }
                     }
                 }

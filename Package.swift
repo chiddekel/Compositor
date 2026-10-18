@@ -120,6 +120,7 @@ let package = Package(
                 "LayerRenderer.swift",
                 "LiveMaskRenderer.swift",
                 "MetalBrushCoverage.swift",
+                "MetalCameraRawLookup.swift",
                 "MetalLayerEffects.swift",
                 "MetalWarp.swift",
                 "NavigatorGeometry.swift",
@@ -179,6 +180,8 @@ let package = Package(
         // ICC colour management (CMYK colour spaces and contexts, ColorSync) over the runtime's LittleCMS 2.
         .target(name: "CompositorColorManagement", path: "backends/colormanagement", publicHeadersPath: "include",
                 linkerSettings: [.linkedLibrary("lcms2")]),
+        .target(name: "CompositorCameraRawBackend", path: "backends/cameraraw", exclude: ["shaders/lookup.comp"],
+                sources: ["VulkanCameraRaw.cpp"], publicHeadersPath: "include", linkerSettings: [.linkedLibrary("vulkan")]),
         // ColorSync's profile calls (CMYK profile names), over the same LittleCMS backend.
         .target(name: "ColorSync", dependencies: ["CompositorColorManagement"], path: "Sources/Compat/ColorSync",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -240,7 +243,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal", "ColorSync"] + ["CompositorKernels", "CompositorDitherKernel", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal", "ColorSync"] + ["CompositorKernels", "CompositorDitherKernel", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompositorCameraRawBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
@@ -269,6 +272,7 @@ let package = Package(
                      "Document/SmudgeLiquify.swift",
                      "Document/ColorRangeSelection.swift",
                      "Rendering/MetalBrushCoverage.swift",
+                     "Rendering/MetalCameraRawLookup.swift",
                      "Rendering/MetalLayerEffects.swift",
                      "Rendering/MetalWarp.swift",
                      "Rendering/GPUCanvas.swift",
@@ -367,7 +371,9 @@ let package = Package(
             ],
             // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
             // the link follows the same condition; RawDecoder.cpp likewise with LibRaw (static, plus OpenMP's runtime).
+            // OtherApplications.h (Hide Others / Show All) uses xcb when its header is installed.
             linkerSettings: (FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : [])
+                + (FileManager.default.fileExists(atPath: "/usr/include/xcb/xcb.h") ? [.linkedLibrary("xcb")] : [])
                 + [.linkedLibrary("z"), .linkedLibrary("tiff")]
                 + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"] + rawspeedLibraries), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
                 + (openexrLibraries.isEmpty ? [] : [.unsafeFlags(openexrLibraries), .linkedLibrary("zstd")])

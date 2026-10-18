@@ -50,9 +50,14 @@ public enum NSBorderType: Int, Sendable { case noBorder, lineBorder, bezelBorder
     /// Keeps the visible area over the document, as AppKit's `constrainBoundsRect` does: never scrolled past its end
     /// (or before its start), and at its start when the document is smaller than the clip view.
     func constrainedOrigin(_ point: CGPoint) -> CGPoint {
-        guard let document = documentView?.frame else { return point }
-        let maxX = max(document.minX, document.maxX - frame.width), maxY = max(document.minY, document.maxY - frame.height)
-        return CGPoint(x: min(max(point.x, document.minX), maxX), y: min(max(point.y, document.minY), maxY))
+        constrainBoundsRect(CGRect(origin: point, size: frame.size)).origin
+    }
+    open func constrainBoundsRect(_ proposedBounds: CGRect) -> CGRect {
+        guard let document = documentView?.frame else { return proposedBounds }
+        var result = proposedBounds
+        let maxX = max(document.minX, document.maxX - result.width), maxY = max(document.minY, document.maxY - result.height)
+        result.origin = CGPoint(x: min(max(result.minX, document.minX), maxX), y: min(max(result.minY, document.minY), maxY))
+        return result
     }
     /// Re-applies that constraint after the document or this view changed size.
     public func reconstrain() {
