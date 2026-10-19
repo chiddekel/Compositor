@@ -13,6 +13,18 @@ Linux commands below use the release build, `B=.build/evidence/swift-build/x86_6
 run inside the SDK with the contract environment (`.build/evidence/env.sh`), or the installed app through
 `flatpak run --command=compositor com.compositor.Client …`.
 
+## What Linux already checks on its own
+
+Each of these has a Linux-only counterpart that runs without a Mac; they guard Linux against regressions and say
+nothing about macOS, which stays **unverified** until the steps below are done.
+
+- T-10: `ProjectCorpusRoundTripTests` saves, reopens and saves again a corpus of every kind of content (manifest
+  field by field, every asset pixel by pixel, and the flattened image).
+- T-23: `LinuxGoldenImageTests` holds 88 Linux baselines (`Tests/Fixtures/golden-linux`) for every blend mode,
+  adjustment, filter, effect, transform sampling, text and shapes; same results on RADV and on lavapipe.
+- T-18: `scripts/fetch-segmentation-references.py` builds 28 photos with exact masks from cut-out photographs on
+  Wikimedia Commons; `compare-subject-masks.py` scores Linux against them (median IoU 0.917, every photo ≥ 0.5).
+
 ## T-10: `.comp` documents both ways (closes GAP-VER-04 for documents)
 
 The tool is `--interchange` (`host/InterchangeJourney.cpp`), described step by step in
