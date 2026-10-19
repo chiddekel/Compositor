@@ -250,6 +250,12 @@ private indirect enum Node {
         return (sources, key)
     }
 
+    /// Gaussian add_noise stays on the CPU twin: on Mesa (RADV, lavapipe) the shader's log/cos under the raster
+    /// shader's float controls left pixels without noise or NaN, where NoisePixels.c adds tens of levels.
+    private static func runsOnGPU(_ step: VulkanRasterStep) -> Bool {
+        step.operation != 8 || step.parameters[1] == 0
+    }
+
     private static func encodeProcessorStep(kernel: CIImageProcessorKernel.Type, arguments: [String: Any],
                                             region: CGRect, sourceIndex: Int = 0) -> VulkanRasterStep? {
         let outRect = region.integral
@@ -357,7 +363,8 @@ private indirect enum Node {
                 step = VulkanRasterStep(operation: 6, source: input)
             case .processor(let kernel, let inputs, let arguments, _) where !env.linear && inputs.count == 1:
                 guard let input = visit(inputs[0], domain, depth: depth + 1),
-                      let encoded = Self.encodeProcessorStep(kernel: kernel, arguments: arguments, region: region, sourceIndex: input)
+                      let encoded = Self.encodeProcessorStep(kernel: kernel, arguments: arguments, region: region, sourceIndex: input),
+                      Self.runsOnGPU(encoded)
                 else { return nil }
                 step = encoded
             default:
@@ -632,7 +639,7 @@ private indirect enum Node {
             let input = first.eval(inter, Env(linear: false, gpu: env.gpu))
             var out: Raster
             if let step = Self.encodeProcessorStep(kernel: kernel, arguments: arguments, region: inter) {
-                if let gpuResult = env.gpu?.render(step.operation, source: input, parameters: step.parameters) {
+                if Self.runsOnGPU(step), let gpuResult = env.gpu?.render(step.operation, source: input, parameters: step.parameters) {
                     out = gpuResult
                 } else if step.operation == 8 {
                     out = RasterFilters.addNoise(input, parameters: step.parameters)
