@@ -41,6 +41,11 @@ struct HostBootstrap {
             guard result == 0 else { fail("Qt text backend smoke returned \(result)") }
             return
         }
+        // --subject-masks <images> <masks>: Remove Background's mask for each image (T-18, compared with the Mac's).
+        if let index = CommandLine.arguments.firstIndex(of: "--subject-masks"), CommandLine.arguments.count > index + 2 {
+            let failures = compositorWriteSubjectMasks(from: CommandLine.arguments[index + 1], to: CommandLine.arguments[index + 2])
+            exit(failures == 0 ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--preferences-smoke") {
             runPreferencesSmoke()
             return

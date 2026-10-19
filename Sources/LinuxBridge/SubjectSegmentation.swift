@@ -2,7 +2,9 @@
 // segmentation seam, so upstream's Select Subject, Object Selection and Remove Background (unmodified) get a learned
 // subject mask as they do on macOS. Without the model file or the DNN build the classical segmenter stays in place.
 import CompositorVisionBackend
+import CoreGraphics
 import Foundation
+import ImageIO
 import Vision
 
 final class U2NetSegmenter: ForegroundSegmentationBackend {
@@ -59,3 +61,43 @@ final class U2NetSegmenter: ForegroundSegmentationBackend {
 nonisolated public func compositorInstallSubjectModel() -> Int32 {
     onMain { U2NetSegmenter.install() ? 0 : -1 }
 }
+
+/// `CompositorHostBootstrap --subject-masks <images> <masks>`: for every image in a folder, the subject mask upstream's
+/// Layer › Remove Background gives it (`SubjectRemoval.subjectMask`, the image imported as the importer does), written
+/// as `<name>.mask.png` (8-bit gray, white = kept). The Linux half of the subject-mask comparison with macOS (T-18):
+/// the Mac half is the same photos through Remove Background, saved as projects, whose `<layer>.mask.png` is the same
+/// mask. `scripts/compare-subject-masks.py` scores them. Returns how many images failed; -1 when nothing could run.
+nonisolated public func compositorWriteSubjectMasks(from input: String, to output: String) -> Int32 {
+    guard U2NetSegmenter.install() else {
+        FileHandle.standardError.write(Data("subject masks: the subject model is unavailable\n".utf8))
+        return -1
+    }
+    let images = ImageFolder.images(in: URL(fileURLWithPath: input, isDirectory: true))
+    guard !images.isEmpty, (try? FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)) != nil
+    else { return -1 }
+    var failures: Int32 = 0
+    for url in images {
+        let started = Date()
+        do {
+            let made = projectStoreOperation { () async throws -> UncheckedImage in
+                let asset = try await ImageImporter.shared.decode(url)
+                return UncheckedImage(image: try SubjectRemoval.subjectMask(asset.image, under: nil, settings: FilterSettings()))
+            }
+            let mask = try made.get().image
+            let target = URL(fileURLWithPath: output).appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".mask.png")
+            guard let destination = CGImageDestinationCreateWithURL(target as CFURL, "public.png" as CFString, 1, nil) else {
+                throw ExportError.render
+            }
+            CGImageDestinationAddImage(destination, mask, nil)
+            guard CGImageDestinationFinalize(destination) else { throw ExportError.render }
+            print("\(url.lastPathComponent): \(mask.width)x\(mask.height) mask in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+        } catch {
+            failures += 1
+            FileHandle.standardError.write(Data("\(url.lastPathComponent): \(error)\n".utf8))
+        }
+    }
+    return failures
+}
+
+/// A CGImage handed back from the batch's worker (immutable, so safe to share).
+private struct UncheckedImage: @unchecked Sendable { let image: CGImage }

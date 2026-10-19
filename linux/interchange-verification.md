@@ -1,10 +1,11 @@
 # macOS and GNU/Linux interchange verification
 
 This procedure tests saved editable layers in both directions. Linux self-round-trip
-results alone do not prove macOS interoperability. Use a macOS Compositor build
-that supports format 11 (the pinned 1.3.4 implementation, `c28f827`, or an equivalent
-compatible build). The protected macOS source in this checkout still writes
-format 10; do not change it for this procedure.
+results alone do not prove macOS interoperability. Use the macOS Compositor release
+GNU_Linux tracks (1.5.3, project format 14; `ProjectManifest.current` in
+`Compositor/IO/ProjectStore.swift`). Do not change the protected macOS source for this
+procedure. `docs/mac-verification-plan.md` puts this procedure together with the
+golden-image (T-23) and subject-mask (T-18) checks.
 
 ## Generate and check the fixture on Linux
 
@@ -13,8 +14,8 @@ the application. Run with isolated settings and the real Qt and Skia backends:
 
 ```sh
 export LD_LIBRARY_PATH=/usr/lib/sdk/swift6/lib/swift/linux
-export COMPOSITOR_SKIA_BRIDGE=$PWD/build/lib/libCompositorSkiaBridge.so
-export COMPOSITOR_IMAGEIO_BACKEND=$PWD/build/lib/libCompositorQtImageIO.so
+export COMPOSITOR_SKIA_BRIDGE=$PWD/.build/linux-contract-native/libCompositorSkiaBridge.so
+export COMPOSITOR_IMAGEIO_BACKEND=$PWD/.build/linux-contract-native/libCompositorQtImageIO.so
 export QT_QPA_PLATFORM=offscreen
 settings=$(mktemp -d)
 export XDG_CONFIG_HOME=$settings/config XDG_DATA_HOME=$settings/data
