@@ -41,6 +41,7 @@ private:
     QPointer<QWidget> m_returnFocus;
     QLineEdit *m_filter = nullptr;
     QListWidget *m_list = nullptr;
+    QLabel *m_empty = nullptr;   // "No commands match"
     void populateList(const QString &query);
     void triggerSelected();
 };

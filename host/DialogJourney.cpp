@@ -7589,6 +7589,22 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
                     "command palette ignored its upstream content size");
             filter->setText("Canvas");
             require(list->count() > 0, "command palette search for 'Canvas' returned no items");
+            // Upstream CommandPaletteView: its placeholder, the "No commands match" overlay, shortcuts in their own
+            // column (not appended to the title).
+            require(filter->placeholderText() == QLatin1String("Search commands and tools"), "command palette placeholder differs from upstream");
+            auto *empty = dialog->findChild<QLabel *>("commandPalette.empty");
+            require(empty && empty->isHidden(), "command palette shows its empty state over results");
+            filter->setText("zzzzqq");
+            require(list->count() == 0 && !empty->isHidden() && empty->text() == QLatin1String("No commands match"),
+                    "command palette lacks upstream's 'No commands match'");
+            filter->setText("Copy");
+            bool shortcutColumn = false;
+            for (int row = 0; row < list->count(); ++row) {
+                const auto *item = list->item(row);
+                const QString shortcut = item->data(Qt::UserRole + 2).toString();
+                if (!shortcut.isEmpty() && !item->text().contains(shortcut)) shortcutColumn = true;
+            }
+            require(shortcutColumn, "command palette shortcuts are not in their own column");
             dialog->reject();
         });
 
@@ -9762,6 +9778,21 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
             auto *filter = palette.findChild<QLineEdit *>("commandPalette.filter");
             auto *list = palette.findChild<QListWidget *>("commandPalette.list");
             require(filter && list && list->count() > 0, "native palette catalog missing");
+            // Upstream CommandPaletteView: its placeholder, "No commands match" over an empty list, and shortcuts in a
+            // column of their own rather than appended to the title.
+            require(filter->placeholderText() == QLatin1String("Search commands and tools"), "native palette placeholder differs from upstream");
+            auto *empty = palette.findChild<QLabel *>("commandPalette.empty");
+            require(empty && empty->isHidden(), "native palette shows its empty state over results");
+            filter->setText("zzzzqq");
+            require(list->count() == 0 && !empty->isHidden() && empty->text() == QLatin1String("No commands match"),
+                    "native palette lacks upstream's 'No commands match'");
+            filter->clear();
+            bool shortcutColumn = false;
+            for (int row = 0; row < list->count(); ++row) {
+                const QString shortcut = list->item(row)->data(Qt::UserRole + 2).toString();
+                if (!shortcut.isEmpty() && !list->item(row)->text().contains(shortcut)) shortcutColumn = true;
+            }
+            require(shortcutColumn, "native palette shortcuts are not in their own column");
             int copies = 0, disabled = -1;
             for (int row = 0; row < list->count(); ++row) {
                 const auto id = list->item(row)->data(Qt::UserRole).toString();
