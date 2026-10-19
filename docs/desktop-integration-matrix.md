@@ -18,6 +18,39 @@ Last run: 2026-10-19, `1.5.3-linux-alpha.1` (user install), GNOME on Wayland, Fl
 | Thumbnailer exported to the desktop | **fail**: Flatpak exports no `share/thumbnailers`, so file managers show no `.comp` previews. This is a Flatpak limitation (flatpak/flatpak#1083); a distribution package would install the thumbnailer normally. |
 | Icons 128/256/512 exported; AppStream metainfo installed | pass |
 
+## Automated on a private X server (scripts/test-desktop-dnd.sh)
+
+Last run: 2026-10-19, release build, Xvfb with xdotool and xclip as the other X clients (the user's display is not
+touched).
+
+| Check | Result |
+|---|---|
+| The app runs as an X client (Qt xcb) | pass |
+| An image another client put on the clipboard (xclip, image/png) pastes as a layer | pass |
+| Copy Merged reaches other clients as image/png | pass |
+| A drop from another client on the canvas reaches it, is accepted, and stays in its document | pass |
+| A drop on the header's empty area opens a new tab | pass |
+| The dropped files' contents become layers / the new tab's image | **limit**: on Xvfb with synthetic XTEST input the XDND data arrives empty, even between two plain Qt programs (the script's control check), so this needs a real session: rows 1–4 below |
+
+## Automated input (--input-probe, a contract gate) and HiDPI
+
+Events go in through Qt's platform layer (`QWindowSystemInterface`), as the xcb and Wayland plugins deliver real
+devices, with Qt making mouse events from pen and touch as it does on those platforms.
+
+| Check | Result |
+|---|---|
+| Pen (tablet events) paints with the Brush | pass |
+| One finger (touch) paints with the Brush | pass |
+| Trackpad two-finger scroll pans at the same zoom | pass |
+| Trackpad pinch zooms in | pass |
+| Ctrl + mouse wheel zooms out | pass |
+| `]` and `[` resize the brush | pass |
+| UI audit at 125 %, 150 % and 200 % (`QT_SCALE_FACTOR`): no elided text, empty buttons or missing symbols | pass |
+| Text and icons at 200 % are sharp (screenshot `.build/evidence/audit/shots/hidpi2.png`) | pass |
+
+Upstream has no pen pressure, so a pen draws as the mouse does, on the Mac too. What none of this shows is a real
+device and its driver: the table below still needs them.
+
 ## By hand (T-15): drag and drop and the file manager
 
 Run each on GNOME and KDE Plasma, each on Wayland and on X11 (or Xwayland with `QT_QPA_PLATFORM=xcb`).

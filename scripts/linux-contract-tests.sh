@@ -127,6 +127,8 @@ NATIVE_GATES=(
     "test --combo-smoke --cmyk-proof-probe"
     "test --combo-smoke --svg-import-probe"
     "test --combo-smoke --ui-audit-probe"
+    "test --combo-smoke --input-probe"
+    "app --dialog-smoke"
     "solo test --preview-smoke"
     "test --save-smoke"
     "test --package-smoke"

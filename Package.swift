@@ -49,6 +49,13 @@ let librawPrefix: String? = ["\(packageRoot)/build/libraw/install", "/app"].firs
 let lensfunPrefix: String? = ["\(packageRoot)/build/lensfun/install", "/app"].first {
     FileManager.default.fileExists(atPath: "\($0)/include/lensfun/lensfun.h") && FileManager.default.fileExists(atPath: "\($0)/lib/liblensfun.a")
 }
+// Qt's private platform headers (qpa/qwindowsysteminterface.h), for the input probe that feeds events in the way the
+// platform plugins deliver real devices (host/InputProbeJourney.h); versioned directories under the SDK's Qt.
+let qtPrivateIncludes: [String] = ((try? FileManager.default.contentsOfDirectory(atPath: "/usr/include/QtGui")) ?? [])
+    .filter { $0.first == "6" }.sorted().last.map { version in
+        ["-I/usr/include/QtGui/\(version)", "-I/usr/include/QtGui/\(version)/QtGui", "-I/usr/include/QtCore/\(version)",
+         "-I/usr/include/QtCore/\(version)/QtCore"]
+    } ?? []
 import Foundation
 
 // LibRaw built with RawSpeed (scripts/build-rawspeed.sh, then scripts/build-libraw.sh): RawSpeed's static libraries
@@ -373,7 +380,8 @@ let package = Package(
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB", "-DQT_DBUS_LIB",
                 ] + (librawPrefix.map { ["-I\($0)/include"] } ?? []) + (rawspeedLibraries.isEmpty ? [] : ["-DLIBRAW_WITH_RAWSPEED3"])
                   + (openexrPrefix.map { ["-I\($0)/include", "-I\($0)/include/OpenEXR", "-I\($0)/include/Imath", "-DCOMPOSITOR_HAS_OPENEXR=1"] } ?? [])
-                  + (lensfunPrefix.map { ["-I\($0)/include", "-DCOMPOSITOR_HAS_LENSFUN=1"] } ?? [])),
+                  + (lensfunPrefix.map { ["-I\($0)/include", "-DCOMPOSITOR_HAS_LENSFUN=1"] } ?? [])
+                  + qtPrivateIncludes),
             ],
             // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
             // the link follows the same condition; RawDecoder.cpp likewise with LibRaw (static, plus OpenMP's runtime).

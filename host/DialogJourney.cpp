@@ -13,6 +13,8 @@
 #include "CanvasSizeJourney.h"
 #include "ImageSizeJourney.h"
 #include "UIAuditJourney.h"
+#include "DesktopProbeJourney.h"
+#include "InputProbeJourney.h"
 #include "OtherApplications.h"
 #include "compositor_host_run.h"
 #include "interfaces/IPlatformServices.h"
@@ -123,6 +125,8 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     if (app.arguments().contains("--canvas-size-controls-probe")) return canvassizejourney::run(app);
     if (app.arguments().contains("--image-size-controls-probe")) return imagesizejourney::run(app);
     if (app.arguments().contains("--ui-audit-probe")) return uiauditjourney::run(app);
+    if (app.arguments().contains("--desktop-probe")) return desktopprobe::run(app);
+    if (app.arguments().contains("--input-probe")) return inputprobe::run(app);
     try {
         const auto check = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
         QTemporaryDir temporary;
