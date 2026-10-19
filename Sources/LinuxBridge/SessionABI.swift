@@ -527,6 +527,7 @@ nonisolated public func compositorSessionRenderRevision(_ handle: UInt64) -> Int
     withEntry(handle) { entry in
         guard entry.editor.session.document != nil else { return -2 }
         entry.editor.settle()   // same key the next render will compute (a pending preview lands first)
+        entry.editor.prefetchLayerPixels()   // a stroke just committed: its layer is ready before the next one starts
         return entry.renderedKey == entry.editor.renderKey() && entry.rendered != nil ? entry.renderRevision : entry.renderRevision + 1
     }
 }

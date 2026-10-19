@@ -158,6 +158,18 @@ public final class CGImage: @unchecked Sendable {
         regionCache.removeAll()
         return image
     }
+    private var prefetching = false
+    /// Resolves a raster supplied lazily by a data provider (a committed brush stroke's `RasterSnapshot`) on a
+    /// background queue, so the first draw that needs its pixels — a stroke's first full-resolution frame — finds them
+    /// ready instead of materializing them then. Filter results (rendered by region) and resolved images are left alone.
+    public func prefetch() {
+        imageLock.lock()
+        let pending = resolved == nil && deferred != nil && regionRenderer == nil && !prefetching
+        if pending { prefetching = true }
+        imageLock.unlock()
+        guard pending else { return }
+        DispatchQueue.global(qos: .utility).async { _ = self.nativeImage }
+    }
     private var eightBitView: PortableImage?
     /// The raster at 8 bits a channel, as the compat's 8-bit paths take it: `nativeImage` itself for an 8-bit image, a
     /// rounded copy (kept) for a 16-bit or half-float one.

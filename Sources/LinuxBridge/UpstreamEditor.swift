@@ -1830,6 +1830,19 @@ final class UpstreamEditor {
         return (ImportedImage(image: image, thumbnail: image, name: stroke.layer.name, raster: raster), stroke.transform(for: crop))
     }
 
+    /// Layer pixels upstream keeps lazy (a committed stroke is a `RasterSnapshot`, which the Mac's GPU canvas draws tile
+    /// by tile), resolved in the background as soon as the shell sees the document change: otherwise the next
+    /// full-resolution region render — a brush stroke's first frame — materializes every one of them (≈ 30 ms a layer
+    /// at 8000×6000).
+    func prefetchLayerPixels() {
+        guard let document = session.document else { return }
+        let visible = document.effectiveVisibleIDs
+        for layer in document.layers where visible.contains(layer.id) {
+            layer.asset?.image.prefetch()
+            layer.mask?.asset.image.prefetch()
+        }
+    }
+
     func renderRegionRGBA(_ region: CGRect, scale: CGFloat = 1) throws -> (bytes: [UInt8], rect: CGRect, width: Int, height: Int) {
         let prepared = try regionSnapshot(region, scale: scale)
         let raster = try exportRGBA(prepared.snapshot, scale: prepared.scale)
