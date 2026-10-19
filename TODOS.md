@@ -204,7 +204,14 @@ by `applyToolLocally` with the session's reported tool; `requestTool` decides fr
 ### Retire remaining hand overrides behind AppKit/Metal (DONE 2026-10-11)
 **Resolution:** every Compositor/UI file is tip-generated (scripts/gen-objc-overrides.py, scripts/gen-patched-overrides.py);
 the Qt shell draws AppKit representables through compat SwiftUI NativeLowering. MetalBrushCoverage, MetalLayerEffects,
-MetalWarp, GPUCanvas and GPUNoise stay replaced: their job is Metal itself, done on Linux by the CPU/Vulkan backends.
+MetalWarp and GPUCanvas stay replaced: their job is Metal itself, done on Linux by the CPU/Vulkan backends. GPUNoise
+compiles unchanged from upstream since 2026-10-19 (compat Metal → Vulkan raster ops 8/9).
+
+### Gaussian Add Noise on Vulkan (open, found by /qa 2026-10-19)
+**What:** op 8's Gaussian branch (`backends/coreimage/shaders/raster_ops.glsl`) is off by up to 255 levels on Mesa (RADV,
+lavapipe): offsets dropped or NaN under the raster shader's float controls. Gaussian noise runs on the CPU twin
+(`runsOnGPU` in Sources/Compat/CoreImage/CoreImage.swift); uniform noise and grain stay on Vulkan.
+**Done when:** `GPUNoiseParityTests` passes with `runsOnGPU` returning true for Gaussian, on RADV and lavapipe.
 **What:** Convert NativeLayerListOverride, UIStandIns, CameraRawSlider, MetalBrushCoverage to generated or tip-compiled forms where the compat layer allows.
 **Why:** Every hand override needs drift policing; generated ones don't.
 **Context:** ContentView, LayerMaskMenu and KeyboardShortcuts move to generators in this plan.
