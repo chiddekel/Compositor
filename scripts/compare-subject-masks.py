@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Scores Linux subject masks against the Mac's (T-18).
 
-  scripts/compare-subject-masks.py <linux-masks> <mac-projects> [--min-iou 0.90]
+  scripts/compare-subject-masks.py <linux-masks> <mac-projects | reference-masks> [--min-iou 0.90]
 
 <linux-masks>: `CompositorHostBootstrap --subject-masks <photos> <linux-masks>` output (`<name>.mask.png`).
 <mac-projects>: one `<name>.comp` per photo, saved on the Mac after Layer › Remove Background on that photo alone
 (docs/mac-verification-plan.md). The layer's mask, `<layer id>.mask.png` in the package, is the Mac's mask.
+Or <reference-masks>: `<name>.mask.png` ground truth (scripts/fetch-segmentation-references.py), for Linux alone.
 
 For each pair: intersection over union of the kept area (gray >= 128), the mean absolute difference (0-255) and the
 share of pixels that disagree inside a band around the Mac's edge (where hair and fur go). The run passes when the
@@ -95,16 +96,19 @@ def main():
         return 2
     linux_dir, mac_dir = map(pathlib.Path, args)
     results, problems = [], []
-    for package in sorted(mac_dir.glob("*.comp")):
-        linux = linux_dir / f"{package.stem}.mask.png"
+    packages = sorted(mac_dir.glob("*.comp"))
+    references = [] if packages else sorted(mac_dir.glob("*.mask.png"))
+    pairs = [(p.stem, lambda p=p: mac_mask(p)) for p in packages] + [(r.name[:-len(".mask.png")], lambda r=r: read_png(r)) for r in references]
+    for name, expected in pairs:
+        linux = linux_dir / f"{name}.mask.png"
         try:
             if not linux.exists():
                 raise ValueError("no Linux mask (run --subject-masks on the same photos)")
-            iou, mad, edge = score(read_png(linux), mac_mask(package))
-            results.append((package.stem, iou, mad, edge))
-            print(f"{package.stem:40s} IoU {iou:.3f}  mean diff {mad:5.1f}  edge disagreement {edge:.1%}")
+            iou, mad, edge = score(read_png(linux), expected())
+            results.append((name, iou, mad, edge))
+            print(f"{name:40s} IoU {iou:.3f}  mean diff {mad:5.1f}  edge disagreement {edge:.1%}")
         except Exception as error:  # noqa: BLE001 — report and go on
-            problems.append(f"{package.stem}: {error}")
+            problems.append(f"{name}: {error}")
     for problem in problems:
         print(f"ERROR {problem}")
     if not results:
