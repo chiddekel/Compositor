@@ -84,7 +84,7 @@ private enum RawFixture {
                 node.kind == "Toggle" && descendants(node).contains { $0.stringParams["text"] == "Lens Correction" }
             })
             #expect(lens.modifiers.contains { if case .disabled(true) = $0 { return true }; return false })
-            #expect(lens.modifiers.contains { if case .help(let text) = $0 { return text.contains("unavailable on Linux") }; return false })
+            #expect(lens.modifiers.contains { if case .help(let text) = $0 { return text == "This file has no lens profile" }; return false })
         }
     }
 

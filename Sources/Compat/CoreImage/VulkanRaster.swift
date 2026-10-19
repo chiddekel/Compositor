@@ -77,12 +77,14 @@ final class VulkanRaster: @unchecked Sendable {
         var native: [CompositorVulkanRasterStep] = []
         for step in steps {
             let limit = sources.count + native.count
-            guard (1...7).contains(step.operation), step.source >= 0, step.source < limit,
+            guard (1...9).contains(step.operation), step.source >= 0, step.source < limit,
                   step.operation > 2 || (step.background >= 0 && step.background < limit),
                   step.operation != 2 || (step.mask >= 0 && step.mask < limit),
                   step.operation != 3 || step.parameters.count == 20,
                   step.operation != 4 || step.parameters.count == 8,
                   step.operation != 7 || step.parameters.count == 4,
+                  step.operation != 8 || step.parameters.count == 8,
+                  step.operation != 9 || step.parameters.count == 12,
                   step.parameters.count <= 20 else { return nil }
             var s = CompositorVulkanRasterStep()
             s.operation = step.operation; s.channel = step.channel; s.source = UInt32(step.source)
@@ -136,12 +138,14 @@ final class VulkanRaster: @unchecked Sendable {
 
     func render(_ operation: UInt32, source: Raster, background: Raster? = nil, mask: Raster? = nil,
                 channel: UInt32 = 0, parameters: [Float] = []) -> Raster? {
-        guard !graphsOnly, source.width > 0, source.height > 0, source.width <= 65_536, source.height <= 65_536,
+        guard !graphsOnly, (1...9).contains(operation),
+              source.width > 0, source.height > 0, source.width <= 65_536, source.height <= 65_536,
               source.data.count == source.width * source.height * 4,
               background == nil || (background?.rect == source.rect && background?.data.count == source.data.count),
               mask == nil || (mask?.rect == source.rect && mask?.data.count == source.data.count),
               operation != 3 || parameters.count == 20, operation != 4 || parameters.count == 8,
-              operation != 7 || parameters.count == 4 else { return nil }
+              operation != 7 || parameters.count == 4, operation != 8 || parameters.count == 8,
+              operation != 9 || parameters.count == 12 else { return nil }
         lock.lock()
         defer { lock.unlock() }
         guard !failed else { return nil }

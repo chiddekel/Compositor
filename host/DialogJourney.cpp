@@ -8324,7 +8324,7 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
                         if (button->text() == QLatin1String("Cancel")) cancel = button;
                     }
                     if (!lens || !highlight || !noise || !reset || !cancel) return;
-                    if (lens->isEnabled() || !lens->toolTip().contains("unavailable")) { fail("RAW lens capability/tooltip was dishonest"); return; }
+                    if (lens->isEnabled() || lens->toolTip() != QLatin1String("This file has no lens profile")) { fail("RAW lens capability/tooltip was dishonest"); return; }
                     if (!noise->isEnabled() || !highlight->isEnabled()) { fail("RAW supported controls were disabled"); return; }
                     if (phase == 0) {
                         if (window.sendCommand({{"action", "new"}, {"width", 64}, {"height", 64}})) { fail("RAW replacement allowed a nested document command"); return; }

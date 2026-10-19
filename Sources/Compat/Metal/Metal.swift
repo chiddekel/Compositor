@@ -70,6 +70,14 @@ public final class MTLTexture {
         rgbaBytes = [UInt8](repeating: 0, count: max(1, width * height * bpp))
     }
 
+    public init(proxyWidth: Int, height: Int, pixelFormat: MTLPixelFormat = .rgba32Float, usage: MTLTextureUsage = []) {
+        self.width = proxyWidth
+        self.height = height
+        self.pixelFormat = pixelFormat
+        self.usage = usage
+        self.rgbaBytes = []
+    }
+
     public func getBytes(_ pointer: UnsafeMutableRawPointer, bytesPerRow: Int, from region: MTLRegion, mipmapLevel: Int) {
         _ = mipmapLevel
         let bpp = pixelFormat == .r8Unorm ? 1 : 4
@@ -99,8 +107,55 @@ public final class MTLTexture {
     }
 }
 
-public final class MTLCommandBuffer {
+public final class MTLCompileOptions: @unchecked Sendable {
     public init() {}
+}
+
+public final class MTLFunction: @unchecked Sendable {
+    public let name: String
+    public init(name: String) { self.name = name }
+}
+
+public final class MTLLibrary: @unchecked Sendable {
+    public let source: String
+    public init(source: String) { self.source = source }
+    public func makeFunction(name: String) -> MTLFunction? { MTLFunction(name: name) }
+}
+
+public final class MTLComputePipelineState: @unchecked Sendable {
+    public let name: String
+    public init(name: String) { self.name = name }
+}
+
+public final class MTLComputeCommandEncoder {
+    public private(set) var pipeline: MTLComputePipelineState?
+    public private(set) var textures: [Int: MTLTexture] = [:]
+    public private(set) var bytes: [Int: Data] = [:]
+    public private(set) var threadgroupsPerGrid: MTLSize?
+    public private(set) var threadsPerThreadgroup: MTLSize?
+    public private(set) var ended = false
+
+    public init() {}
+    public func setComputePipelineState(_ state: MTLComputePipelineState) { pipeline = state }
+    public func setTexture(_ texture: MTLTexture?, index: Int) { textures[index] = texture }
+    public func setBytes(_ pointer: UnsafeRawPointer, length: Int, index: Int) {
+        bytes[index] = Data(bytes: pointer, count: max(0, length))
+    }
+    public func dispatchThreadgroups(_ threadgroupsPerGrid: MTLSize, threadsPerThreadgroup: MTLSize) {
+        self.threadgroupsPerGrid = threadgroupsPerGrid
+        self.threadsPerThreadgroup = threadsPerThreadgroup
+    }
+    public func endEncoding() { ended = true }
+}
+
+public final class MTLCommandBuffer {
+    public private(set) var computeEncoders: [MTLComputeCommandEncoder] = []
+    public init() {}
+    public func makeComputeCommandEncoder() -> MTLComputeCommandEncoder? {
+        let encoder = MTLComputeCommandEncoder()
+        computeEncoders.append(encoder)
+        return encoder
+    }
     public func commit() {}
     public func waitUntilCompleted() {}
     public func waitUntilScheduled() {}
@@ -111,10 +166,17 @@ public final class MTLCommandQueue {
     public func makeCommandBuffer() -> MTLCommandBuffer? { MTLCommandBuffer() }
 }
 
-public final class MTLDevice {
+public final class MTLDevice: @unchecked Sendable {
     public init() {}
     public func makeTexture(descriptor: MTLTextureDescriptor) -> MTLTexture? { MTLTexture(descriptor: descriptor) }
     public func makeCommandQueue() -> MTLCommandQueue? { MTLCommandQueue() }
+    public func makeLibrary(source: String, options: MTLCompileOptions?) throws -> MTLLibrary {
+        _ = options
+        return MTLLibrary(source: source)
+    }
+    public func makeComputePipelineState(function: MTLFunction) throws -> MTLComputePipelineState {
+        MTLComputePipelineState(name: function.name)
+    }
 }
 
 public func MTLCreateSystemDefaultDevice() -> MTLDevice? { MTLDevice() }

@@ -266,7 +266,7 @@ struct CompositorVulkanRaster {
             uploadBytes+=bytes;
         }
         if (parameters) {
-            std::memcpy(buffers[4]->mapped,parameters,operation==3?80:operation==7?16:32);
+            std::memcpy(buffers[4]->mapped,parameters,operation==3?80:operation==9?48:operation==7?16:32);
             buffers[4]->flush();
         }
         const uint32_t u[4]{width,height,operation,channel};
@@ -504,7 +504,7 @@ extern "C" int compositor_vulkan_raster_render_graph(CompositorVulkanRaster *c,u
     for (uint32_t i=0;i<inputCount;++i) if (!inputs[i]) return -1;
     for (uint32_t i=0;i<stepCount;++i) {
         const auto &s=steps[i]; const uint32_t limit=inputCount+i;
-        if (s.operation<1 || s.operation>7 || s.source>=limit || (s.operation<=2 && s.background>=limit) ||
+        if (s.operation<1 || s.operation>9 || s.source>=limit || (s.operation<=2 && s.background>=limit) ||
             (s.operation==2 && (s.mask>=limit || (s.channel!=0 && s.channel!=3 && s.channel!=4)))) return -1;
     }
     if (!c) return -2;
@@ -522,9 +522,9 @@ extern "C" int compositor_vulkan_raster_render_graph(CompositorVulkanRaster *c,u
 extern "C" int compositor_vulkan_raster_render_cached(CompositorVulkanRaster *c,uint32_t width,uint32_t height,
     uint32_t operation,uint32_t channel,const float *source,const float *background,
     const float *mask,const float *parameters,float *output,uint32_t uploadMask,uint64_t *generation) {
-    if (!width || !height || width>65536 || height>65536 || !source || !output || operation<1 || operation>7 ||
+    if (!width || !height || width>65536 || height>65536 || !source || !output || operation<1 || operation>9 ||
         ((operation==1 || operation==2) && !background) || (operation==2 && (!mask || (channel!=0 && channel!=3 && channel!=4))) ||
-        ((operation==3 || operation==4 || operation==7) && !parameters)) return -1;
+        ((operation==3 || operation==4 || operation==7 || operation==8 || operation==9) && !parameters)) return -1;
     if (!c) return -2;
     std::lock_guard<std::mutex> guard(c->lock);
     if (!c->usable) return -2;

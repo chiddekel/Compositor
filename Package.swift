@@ -229,7 +229,7 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreImageKernels", path: "backends/coreimage", exclude: ["shaders/raster.comp", "shaders/raster_fused.comp", "shaders/raster_ops.glsl"], sources: ["Gaussian.c", "GaussianFFT.c", "Motion.c", "VulkanRaster.cpp"],
                 publicHeadersPath: "include", cSettings: [.unsafeFlags(["-ffp-contract=off"])], linkerSettings: [.linkedLibrary("vulkan")]),
-        .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport", "CoreImageKernels"], path: "Sources/Compat/CoreImage",
+        .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport", "CoreImageKernels", "Metal"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // CoreText: single-line drawing over the Qt text engine (upstream's Dither ASCII glyphs).
         .target(name: "CoreText", dependencies: ["AppKit", "CoreGraphics"], path: "Sources/Compat/CoreText",
@@ -288,12 +288,10 @@ let package = Package(
                      "Rendering/MetalLayerEffects.swift",
                      "Rendering/MetalWarp.swift",
                      "Rendering/GPUCanvas.swift",
-                     "Rendering/GPUNoise.swift",
                      "Rendering/InlineTextEditor.swift",
                      "Rendering/TransformOverlay.swift",
                      "UI/ProjectTabs.swift",
-                     "UI/LayerMaskMenu.swift",
-                     "UI/RawDevelopSheet.swift"],
+                     "UI/LayerMaskMenu.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),

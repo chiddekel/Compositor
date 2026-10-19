@@ -17,9 +17,6 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 
 OUTPUTS = {
-    'Sources/Overrides/RawDevelopSheet.swift': (
-        'Compositor/UI/RawDevelopSheet.swift', 'linux/patches/raw-develop-sheet-linux.patch',
-        'Linux corrects lenses from the file\'s own profile (host/RawLensProfile.h); the disabled tooltip names the platform.'),
     'Sources/Overrides/ContentView.swift': (
         'Compositor/ContentView.swift', 'linux/patches/content-view-linux.patch',
         'The Qt shell renders toolHeaders, toolRail and statusBar on their own (internal here), shows Color Range in its\n'
@@ -55,13 +52,14 @@ def main():
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     stale = []
-    # History now compiles unchanged from upstream; reject old copies that would duplicate the type.
-    retired = root / "Sources/Overrides/DocumentHistory.swift"
-    if retired.exists():
-        if args.check:
-            stale.append(str(retired.relative_to(root)))
-        else:
-            retired.unlink()
+    # History and RawDevelopSheet now compile unchanged from upstream; reject old copies that would duplicate types.
+    for retired_rel in ("Sources/Overrides/DocumentHistory.swift", "Sources/Overrides/RawDevelopSheet.swift"):
+        retired = root / retired_rel
+        if retired.exists():
+            if args.check:
+                stale.append(str(retired.relative_to(root)))
+            else:
+                retired.unlink()
     for path, (tip, patch, note) in OUTPUTS.items():
         text = generate(tip, patch, note)
         target = root / path

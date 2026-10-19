@@ -487,10 +487,18 @@ extension View {
         }
     }
     public func animation<V: Equatable>(_ animation: StyleToken?, value: V) -> some View { self }
-    /// Stacking order among siblings (inert on Linux's Qt tree; needed so tip ProjectTabs type-checks).
-    public func zIndex(_ value: Double) -> some View { self }
-    public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View { self }
-    public func aspectRatio(contentMode: ContentMode) -> some View { self }
+    public func zIndex(_ value: Double) -> some View {
+        modified { $0.doubleParams["zIndex"] = value }
+    }
+    public func aspectRatio(_ aspectRatio: Double? = nil, contentMode: ContentMode) -> some View {
+        modified {
+            $0.stringParams["contentMode"] = (contentMode == .fill) ? "fill" : "fit"
+            if let aspectRatio { $0.doubleParams["aspectRatio"] = aspectRatio }
+        }
+    }
+    public func aspectRatio(contentMode: ContentMode) -> some View {
+        aspectRatio(nil, contentMode: contentMode)
+    }
     public func popover<V: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> V) -> some View {
         let popoverNode = ViewResolver.resolveList(content(), path: ViewResolver.nestedPath("popover")).first
             ?? RenderNode(kind: "_Empty")

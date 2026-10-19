@@ -657,4 +657,107 @@ enum RasterFilters {
         }
         return out
     }
+
+    @inline(__always) private static func mix32(_ x: UInt32) -> UInt32 {
+        var v = x
+        v ^= v >> 16; v &*= 0x7feb352d
+        v ^= v >> 15; v &*= 0x846ca68b
+        v ^= v >> 16
+        return v
+    }
+
+    @inline(__always) private static func unitNoise(_ key: UInt32) -> Float {
+        Float(mix32(key) >> 8) * (1.0 / 16_777_216.0)
+    }
+
+    @inline(__always) private static func latticeNoise(_ ix: Int32, _ iy: Int32, _ seed: UInt32) -> Float {
+        let h = mix32((UInt32(bitPattern: ix) &* 0x9E3779B1) ^ mix32((UInt32(bitPattern: iy) &* 0x85EBCA77) ^ seed))
+        return Float(h & 0xFFFF) / 65535.0 + Float(h >> 16) / 65535.0 - 1.0
+    }
+
+    @inline(__always) private static func grainField(_ u: Float, _ v: Float, _ scale: Float, _ seed: UInt32) -> Float {
+        let cellX = floor(u / scale), cellY = floor(v / scale)
+        var tx = u / scale - cellX, ty = v / scale - cellY
+        tx = tx * tx * (3.0 - 2.0 * tx)
+        ty = ty * ty * (3.0 - 2.0 * ty)
+        let ix = Int32(cellX), iy = Int32(cellY)
+        let n00 = latticeNoise(ix, iy, seed), n10 = latticeNoise(ix &+ 1, iy, seed)
+        let n01 = latticeNoise(ix, iy &+ 1, seed), n11 = latticeNoise(ix &+ 1, iy &+ 1, seed)
+        let top = n00 + (n10 - n00) * tx, bottom = n01 + (n11 - n01) * tx
+        return (top + (bottom - top) * ty) * 1.6
+    }
+
+    static func addNoise(_ src: Raster, parameters p: [Float]) -> Raster {
+        guard p.count >= 6 else { return src }
+        var out = src
+        let w = out.width, h = out.height
+        let amount = p[0], gaussian = p[1] != 0, monochromatic = p[2] != 0
+        let seed = p[3].bitPattern
+        let originX = Int32(bitPattern: p[4].bitPattern)
+        let originY = Int32(bitPattern: p[5].bitPattern)
+        let spread = amount / 100.0 * 127.5
+        out.data.withUnsafeMutableBufferPointer { buf in
+            guard let ptr = buf.baseAddress else { return }
+            for y in 0..<h {
+                let py = UInt32(bitPattern: originY &+ Int32(y))
+                let pyHash = mix32(py &* 0x85ebca6b)
+                let row = y * w * 4
+                for x in 0..<w {
+                    let i = row + x * 4
+                    let a = ptr[i + 3]
+                    guard a * 255.0 > 0 else { continue }
+                    let px = UInt32(bitPattern: originX &+ Int32(x))
+                    let base = mix32(seed ^ mix32((px &* 0x9e3779b9) ^ pyHash))
+                    for c in 0..<3 {
+                        let key = monochromatic ? base : base &+ UInt32(c) &* 0x9e3779b9
+                        let n: Float
+                        if gaussian {
+                            let u1 = unitNoise(key), u2 = unitNoise(key ^ 0x68e31da4)
+                            n = sqrt(-2.0 * log(1.0 - u1)) * cos(6.2831853 * u2) * spread * (2.0 / 3.0)
+                        } else {
+                            n = (unitNoise(key) * 2.0 - 1.0) * spread
+                        }
+                        let v = min(255.0, max(0.0, ptr[i + c] * 255.0 / a + n))
+                        ptr[i + c] = v / 255.0 * a
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    static func addGrain(_ src: Raster, parameters p: [Float]) -> Raster {
+        guard p.count >= 10 else { return src }
+        var out = src
+        let w = out.width, h = out.height
+        let strength = p[0], roughness = p[1], size = p[2], detailSize = p[3]
+        let originX = p[4], originY = p[5], unitsPerPixel = p[6]
+        let seed = p[7].bitPattern
+        let fineSeed = mix32(seed ^ 0xA511E9B3)
+        let minX = Int32(bitPattern: p[8].bitPattern)
+        let minY = Int32(bitPattern: p[9].bitPattern)
+        out.data.withUnsafeMutableBufferPointer { buf in
+            guard let ptr = buf.baseAddress else { return }
+            for y in 0..<h {
+                let v = originY + (Float(minY &+ Int32(y)) + 0.5) * unitsPerPixel
+                let row = y * w * 4
+                for x in 0..<w {
+                    let i = row + x * 4
+                    let a = ptr[i + 3]
+                    guard a > 0 else { continue }
+                    let u = originX + (Float(minX &+ Int32(x)) + 0.5) * unitsPerPixel
+                    let smooth = grainField(u, v, size, seed)
+                    let fine = grainField(u, v, detailSize, fineSeed)
+                    let noise = smooth + (fine - smooth) * roughness
+                    let r = ptr[i] / a * 255.0, g = ptr[i + 1] / a * 255.0, b = ptr[i + 2] / a * 255.0
+                    let level = min(1.0, (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0)
+                    let delta = noise * strength * (0.4 + 2.4 * level * (1.0 - level))
+                    ptr[i] = min(255.0, max(0.0, r + delta)) / 255.0 * a
+                    ptr[i + 1] = min(255.0, max(0.0, g + delta)) / 255.0 * a
+                    ptr[i + 2] = min(255.0, max(0.0, b + delta)) / 255.0 * a
+                }
+            }
+        }
+        return out
+    }
 }

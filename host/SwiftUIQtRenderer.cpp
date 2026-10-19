@@ -2689,6 +2689,7 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
     // No spacing given: SwiftUI's default between two views, 8 points.
     layout->setSpacing(doubles.contains("spacing") ? static_cast<int>(doubles.value("spacing").toDouble()) : 8);
     QString precedingText;
+    QList<std::pair<double, QWidget *>> zOrdered;
     for (const auto &childValue : node.value("children").toArray()) {
         const QJsonObject childObj = childValue.toObject();
         if (QWidget *child = buildNode(handle, panel, childObj)) {
@@ -2735,7 +2736,15 @@ QWidget *buildStack(uint64_t handle, const QString &panel, const QJsonObject &no
                                       : alignment == QLatin1String("trailing") ? Qt::AlignRight : Qt::AlignHCenter;
             }
             layout->addWidget(child, stretch, placed);
+            const QJsonObject childDoubles = childObj.value("doubleParams").toObject();
+            if (childDoubles.contains("zIndex"))
+                zOrdered.append({childDoubles.value("zIndex").toDouble(), child});
         }
+    }
+    std::stable_sort(zOrdered.begin(), zOrdered.end(),
+                     [](const auto &a, const auto &b) { return a.first < b.first; });
+    for (const auto &entry : zOrdered) {
+        if (entry.second) entry.second->raise();
     }
     return container;
 }

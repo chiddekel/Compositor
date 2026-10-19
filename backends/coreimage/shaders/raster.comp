@@ -18,7 +18,7 @@ void main() {
     // Absent inputs are bound to small placeholder buffers: read only what the operation uses.
     const vec4 bg=u.operation<=2?background[i]:vec4(0);
     const vec4 m=u.operation==2?mask[i]:vec4(0);
-    const uint parameterCount=u.operation==3?5:u.operation==4?2:u.operation==7?1:0;
+    const uint parameterCount=u.operation==3?5:(u.operation==4||u.operation==8)?2:u.operation==9?3:u.operation==7?1:0;
     vec4 v[5]=vec4[5](vec4(0),vec4(0),vec4(0),vec4(0),vec4(0));
     for (uint k=0;k<parameterCount;++k) v[k]=values[k];
     destination[i]=rasterOperation(u.operation,u.channel,source[i],bg,m,v[0],v[1],v[2],v[3],v[4],p);

@@ -5,6 +5,7 @@
 // linux/ui-audit-allow.json (read from the working directory, or $COMPOSITOR_UI_AUDIT_ALLOW); anything else fails the gate.
 #pragma once
 
+#include "EditorDialogs.h"
 #include "SessionWindow.h"
 #include "SwiftUIQtRenderer.h"
 #include "UIAudit.h"
@@ -30,6 +31,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QDebug>
 #include <functional>
 #include <stdexcept>
@@ -319,7 +321,41 @@ inline int run(QApplication &app) {
         sheet({"Image", "Image Size" + ellipsis});
         sheet({"Image", "Trim" + ellipsis});
         sheet({"View", "Grid Settings" + ellipsis});
-        // File › Export As is driven by the --save-smoke journey: its sheet runs a nested export wait this poller can't end.
+        // File › Export As runs a nested export wait when opened via menu, so audit its SwiftUI sheet directly,
+        // along with CommandPaletteDialog (CommandPaletteView).
+        {
+            CommandPaletteDialog palette(&window, &window);
+            palette.show();
+            settle(200);
+            audit(&palette, "Command Palette");
+            palette.close();
+        }
+        {
+            const QString where = QStringLiteral("File › Export As…");
+            qInfo() << "UI audit sheet:" << where;
+            bool seen = false;
+            QElapsedTimer clock; clock.start();
+            QTimer poll; poll.setInterval(25);
+            QObject::connect(&poll, &QTimer::timeout, &window, [&] {
+                if (clock.elapsed() > 8000) {
+                    for (QWidget *top : QApplication::topLevelWidgets())
+                        if (auto *dialog = qobject_cast<QDialog *>(top)) dialog->reject();
+                    poll.stop();
+                    return;
+                }
+                auto *sheet = window.findChild<QDialog *>(QStringLiteral("swiftUISheet.ExportAsSheet"));
+                if (!sheet || !sheet->isVisible() || clock.elapsed() < 800) return;
+                seen = true;
+                poll.stop();
+                QJsonArray found; uiaudit::auditTree(sheet, where, found); findings.merge(found);
+                if (QPushButton *cancel = button(sheet, QStringLiteral("Cancel"))) cancel->click(); else sheet->reject();
+            });
+            poll.start();
+            window.sendCommand({{"action", "exportAsSheet"}, {"kind", "jpeg"}});
+            poll.stop();
+            if (!seen) findings.gap(where, "no sheet opened");
+            settle(300);
+        }
 
         // Adjustment layers: each kind's row in the Layers list (its symbol thumbnail) and its editor.
         for (const QString &kind : {"Hue/Saturation", "Levels", "Curves", "Exposure", "Gradient Map", "Grain", "Add Noise",
@@ -383,7 +419,7 @@ inline int run(QApplication &app) {
         qCritical("Qt UI audit FAILED: %d finding(s)", int(findings.list.size()));
         return 1;
     }
-    qInfo("Qt UI audit OK (welcome, 23 tool states, 22 floating panels, 4 sheets, 12 adjustment layers, CMYK pills: no elided "
+    qInfo("Qt UI audit OK (welcome, 23 tool states, 22 floating panels, 4 sheets, Export As, Command Palette, 12 adjustment layers, CMYK pills: no elided "
           "text, empty buttons or missing symbols; presets, Camera Raw scope, Color Range eyedroppers and pills as upstream draws them)");
     return 0;
 }

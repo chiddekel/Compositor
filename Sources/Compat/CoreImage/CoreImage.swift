@@ -11,6 +11,7 @@ import Foundation
 import CompatSupport
 import CoreVideo
 import Dispatch
+import Metal
 
 // MARK: - Small value types
 
@@ -124,6 +125,7 @@ private indirect enum Node {
     /// (CIPerspectiveTransformWithExtent's inputExtent), else the input's extent.
     case perspective(Node, [CGPoint], CGRect?)
     case upsample(guide: Node, small: Node, Double, Double)
+    case processor(CIImageProcessorKernel.Type, [Node], [String: Any], CGRect)
 
     var extent: CGRect {
         switch self {
@@ -146,6 +148,7 @@ private indirect enum Node {
             let xs = pts.map(\.x), ys = pts.map(\.y)
             return CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
         case .upsample(let g, _, _, _): return g.extent
+        case .processor(_, _, _, let r): return r
         }
     }
 
@@ -175,6 +178,8 @@ private indirect enum Node {
             return count > 0 ? min(limit, count + 1) : 0
         case .matrix(let n, _, _), .colorClamp(let n, _, _), .unpremultiply(let n), .maxComponent(let n):
             return 1 + n.graphOperationCount(limit - 1)
+        case .processor(_, let inputs, _, _) where inputs.count == 1:
+            return 1 + inputs[0].graphOperationCount(limit - 1)
         case .over(let s, let b):
             let count = 1 + s.graphOperationCount(limit - 1)
             return count + b.graphOperationCount(limit - count)
@@ -245,6 +250,72 @@ private indirect enum Node {
         return (sources, key)
     }
 
+    private static func encodeProcessorStep(kernel: CIImageProcessorKernel.Type, arguments: [String: Any],
+                                            region: CGRect, sourceIndex: Int = 0) -> VulkanRasterStep? {
+        let outRect = region.integral
+        let w = Int(outRect.width), h = Int(outRect.height)
+        guard w > 0, h > 0 else { return nil }
+        let inRect = kernel.roi(forInput: 0, arguments: arguments, outputRect: outRect).integral
+        let inTex = MTLTexture(proxyWidth: max(1, Int(inRect.width)), height: max(1, Int(inRect.height)), usage: .shaderRead)
+        let outTex = MTLTexture(proxyWidth: w, height: h, usage: .shaderWrite)
+        let cmdBuf = MTLCommandBuffer()
+        let input = CIImageProcessorInput(region: inRect, metalTexture: inTex)
+        let output = CIImageProcessorOutput(region: outRect, metalTexture: outTex, metalCommandBuffer: cmdBuf)
+        guard (try? kernel.process(with: [input], arguments: arguments, output: output)) != nil,
+              let encoder = cmdBuf.computeEncoders.last, encoder.ended,
+              let name = encoder.pipeline?.name,
+              let paramData = encoder.bytes[0],
+              let placeData = encoder.bytes[1], placeData.count >= 16 else { return nil }
+        func readFloat(_ data: Data, _ offset: Int) -> Float {
+            var v: Float = 0
+            _ = withUnsafeMutableBytes(of: &v) { dst in data.copyBytes(to: dst, from: offset..<(offset + 4)) }
+            return v
+        }
+        func readUInt32(_ data: Data, _ offset: Int) -> UInt32 {
+            var v: UInt32 = 0
+            _ = withUnsafeMutableBytes(of: &v) { dst in data.copyBytes(to: dst, from: offset..<(offset + 4)) }
+            return v
+        }
+        func readInt32(_ data: Data, _ offset: Int) -> Int32 {
+            var v: Int32 = 0
+            _ = withUnsafeMutableBytes(of: &v) { dst in data.copyBytes(to: dst, from: offset..<(offset + 4)) }
+            return v
+        }
+        let placeX = readInt32(placeData, 0)
+        let placeY = readInt32(placeData, 4)
+        let minY = placeY &- Int32(h - 1)
+        switch name {
+        case "add_noise" where paramData.count >= 24:
+            let amount = readFloat(paramData, 0)
+            let gaussian = readUInt32(paramData, 4)
+            let monochromatic = readUInt32(paramData, 8)
+            let seed = readUInt32(paramData, 12)
+            let cornerX = readInt32(paramData, 16)
+            let cornerY = readInt32(paramData, 20)
+            let originX = placeX &+ cornerX
+            let originY = minY &+ cornerY
+            return VulkanRasterStep(operation: 8, source: sourceIndex, parameters: [
+                amount, Float(gaussian), Float(monochromatic), Float(bitPattern: seed),
+                Float(bitPattern: UInt32(bitPattern: originX)), Float(bitPattern: UInt32(bitPattern: originY)), 0, 0
+            ])
+        case "add_grain" where paramData.count >= 32:
+            let strength = readFloat(paramData, 0)
+            let roughness = readFloat(paramData, 4)
+            let size = readFloat(paramData, 8)
+            let detailSize = readFloat(paramData, 12)
+            let originX = readFloat(paramData, 16)
+            let originY = readFloat(paramData, 20)
+            let unitsPerPixel = readFloat(paramData, 24)
+            let seed = readUInt32(paramData, 28)
+            return VulkanRasterStep(operation: 9, source: sourceIndex, parameters: [
+                strength, roughness, size, detailSize, originX, originY, unitsPerPixel, Float(bitPattern: seed),
+                Float(bitPattern: UInt32(bitPattern: placeX)), Float(bitPattern: UInt32(bitPattern: minY)), 0, 0
+            ])
+        default:
+            return nil
+        }
+    }
+
     private func evalGraph(_ region: CGRect, _ env: Env) -> Raster? {
         guard let gpu = env.gpu, gpu.isAvailable, region.width * region.height >= Double(gpu.minimumGraphPixels),
               graphOperationCount(2) > 1 else { return nil }
@@ -284,6 +355,11 @@ private indirect enum Node {
             case .maxComponent(let n):
                 guard let input = visit(n, domain, depth: depth + 1) else { return nil }
                 step = VulkanRasterStep(operation: 6, source: input)
+            case .processor(let kernel, let inputs, let arguments, _) where !env.linear && inputs.count == 1:
+                guard let input = visit(inputs[0], domain, depth: depth + 1),
+                      let encoded = Self.encodeProcessorStep(kernel: kernel, arguments: arguments, region: region, sourceIndex: input)
+                else { return nil }
+                step = encoded
             default:
                 // Keep the CPU node's original crop domain; padding happens only at the graph boundary.
                 let evaluate = { node.eval(domain, Env(linear: env.linear)).cropped(to: region) }
@@ -550,6 +626,26 @@ private indirect enum Node {
         case .upsample(let g, let small, let spatial, let luma):
             return RasterFilters.edgePreserveUpsample(guide: g.eval(region, env), small: small.eval(small.extent.integral, env),
                                                       spatialSigma: spatial, lumaSigma: luma)
+        case .processor(let kernel, let inputs, let arguments, let extent):
+            let inter = region.intersection(extent).integral
+            guard !inter.isNull, inter.width > 0, inter.height > 0, let first = inputs.first else { return Raster(rect: region) }
+            let input = first.eval(inter, Env(linear: false, gpu: env.gpu))
+            var out: Raster
+            if let step = Self.encodeProcessorStep(kernel: kernel, arguments: arguments, region: inter) {
+                if let gpuResult = env.gpu?.render(step.operation, source: input, parameters: step.parameters) {
+                    out = gpuResult
+                } else if step.operation == 8 {
+                    out = RasterFilters.addNoise(input, parameters: step.parameters)
+                } else if step.operation == 9 {
+                    out = RasterFilters.addGrain(input, parameters: step.parameters)
+                } else {
+                    out = input
+                }
+            } else {
+                out = input
+            }
+            if env.linear { Gamma.map(&out, Gamma.toLinear) }
+            return out.rect == region ? out : out.cropped(to: region)
         }
     }
 }
@@ -1108,5 +1204,42 @@ public final class CIRAWFilter: @unchecked Sendable {
                                   provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         else { return nil }
         return CIImage(node: .bitmap(image))
+    }
+}
+
+// MARK: - CIImageProcessorKernel
+
+public final class CIImageProcessorInput {
+    public let region: CGRect
+    public let metalTexture: MTLTexture?
+    public init(region: CGRect, metalTexture: MTLTexture?) {
+        self.region = region
+        self.metalTexture = metalTexture
+    }
+}
+
+public final class CIImageProcessorOutput {
+    public let region: CGRect
+    public let metalTexture: MTLTexture?
+    public let metalCommandBuffer: MTLCommandBuffer?
+    public init(region: CGRect, metalTexture: MTLTexture?, metalCommandBuffer: MTLCommandBuffer?) {
+        self.region = region
+        self.metalTexture = metalTexture
+        self.metalCommandBuffer = metalCommandBuffer
+    }
+}
+
+open class CIImageProcessorKernel {
+    open class var outputFormat: CIFormat { .RGBAh }
+    open class func formatForInput(at input: Int32) -> CIFormat { .RGBAh }
+    open class func roi(forInput input: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect { outputRect }
+    open class func process(with inputs: [CIImageProcessorInput]?, arguments: [String: Any]?,
+                            output: CIImageProcessorOutput) throws {}
+
+    open class func apply(withExtent extent: CGRect, inputs: [CIImage]?, arguments: [String: Any]?) throws -> CIImage {
+        let rect = extent.integral
+        guard !rect.isNull, !rect.isEmpty, rect.width >= 1, rect.height >= 1 else { return .empty() }
+        let nodes = (inputs ?? []).map { $0.cropped(to: rect).node }
+        return CIImage(node: .crop(.processor(self, nodes, arguments ?? [:], rect), rect))
     }
 }
