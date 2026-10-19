@@ -186,6 +186,33 @@ modules:
       - type: patch
         path: linux/patches/libraw-0.22.2-wavelet-size.patch
 
+  # RAW Lens Correction for files without a profile of their own: lensfun's lens database (LGPL-3 library, CC-BY-SA 3.0
+  # data) by camera and lens, static over the runtime's GLib (host/RawLensfun.h). Same options as
+  # scripts/build-lensfun.sh. The database installs to /app/share/lensfun/version_1.
+  - name: lensfun
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_STATIC=ON
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_LENSTOOL=OFF
+      - -DBUILD_DOC=OFF
+      - -DINSTALL_HELPER_SCRIPTS=OFF
+      - -DINSTALL_PYTHON_MODULE=OFF
+      - -DBUILD_FOR_SSE=ON
+      - -DBUILD_FOR_SSE2=ON
+    post-install:
+      - install -Dm644 -t /app/share/licenses/com.compositor.Client/lensfun docs/lgpl-3.0.txt docs/cc-by-sa-3.0.txt
+    cleanup:
+      - /lib/python*
+    sources:
+      - type: archive
+        url: https://github.com/lensfun/lensfun/archive/refs/tags/v0.3.4.tar.gz
+        sha256: dafb39c08ef24a0e2abd00d05d7341b1bf1f0c38bfcd5a4c69cf5f0ecb6db112
+
   # EXR import and export (compat ImageIO through host/QtImageIO.cpp, as Apple's ImageIO reads and writes it):
   # OpenEXR with its Imath and libdeflate, static, as scripts/build-openexr.sh builds them for the dev loop.
   - name: libdeflate

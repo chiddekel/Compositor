@@ -66,7 +66,7 @@ struct Tags {
 };
 
 struct Profile {
-    enum Source { None, Dng, Sony, Fuji, Olympus, Panasonic } source = None;
+    enum Source { None, Dng, Sony, Fuji, Olympus, Panasonic, Lensfun } source = None;
     std::vector<DngOp> dng;     // DNG: the opcodes, in list order
     Spline vignette;            // radial: the source pixel is divided by this at its radius
     Spline distortion[3];       // radial: source radius / destination radius, per channel, at the destination radius

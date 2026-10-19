@@ -55,8 +55,15 @@ std::vector<uint8_t> warpList(double kr0) {
     return list.data;
 }
 
+// The camera and lens a DNG names (IFD0 Make/Model, EXIF LensModel/FocalLength/FNumber), for the lens database.
+struct Shot {
+    const char *make = "Compositor", *model = "Lens sensor", *lens = nullptr;
+    double focal = 0, aperture = 0;
+};
+
 // A Bayer DNG, neutral grey, with a bright vertical line at `lineX` when >= 0, and the given OpcodeList3.
-QString makeDng(const QTemporaryDir &dir, const char *name, int w, int h, int lineX, const std::vector<uint8_t> &opcodes) {
+QString makeDng(const QTemporaryDir &dir, const char *name, int w, int h, int lineX, const std::vector<uint8_t> &opcodes,
+                const Shot &shot = {}) {
     const QString path = dir.filePath(name);
     auto file = std::unique_ptr<TIFF, decltype(&TIFFClose)>(TIFFOpen(path.toUtf8().constData(), "w"), TIFFClose);
     require(bool(file), "lens DNG could not open");
@@ -78,8 +85,8 @@ QString makeDng(const QTemporaryDir &dir, const char *name, int w, int h, int li
     TIFFSetField(t, TIFFTAG_DNGVERSION, version);
     TIFFSetField(t, TIFFTAG_DNGBACKWARDVERSION, backward);
     TIFFSetField(t, TIFFTAG_UNIQUECAMERAMODEL, "Compositor lens sensor");
-    TIFFSetField(t, TIFFTAG_MAKE, "Compositor");
-    TIFFSetField(t, TIFFTAG_MODEL, "Lens sensor");
+    TIFFSetField(t, TIFFTAG_MAKE, shot.make);
+    TIFFSetField(t, TIFFTAG_MODEL, shot.model);
     TIFFSetField(t, TIFFTAG_CFAREPEATPATTERNDIM, repeat);
     TIFFSetField(t, TIFFTAG_CFAPATTERN, 4, pattern);
     TIFFSetField(t, TIFFTAG_CFAPLANECOLOR, 3, planes);
@@ -100,6 +107,19 @@ QString makeDng(const QTemporaryDir &dir, const char *name, int w, int h, int li
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) row[x] = lineX >= 0 && std::abs(x - lineX) <= 1 ? 52000 : 9000;
         require(TIFFWriteScanline(t, row.data(), y) >= 0, "lens DNG scanline write failed");
+    }
+    if (shot.lens) {
+        // EXIF IFD after the image: written as its own directory, then pointed to from IFD0.
+        require(TIFFWriteDirectory(t) == 1, "lens DNG IFD0 not written");
+        require(TIFFCreateEXIFDirectory(t) == 0, "EXIF directory could not be created");
+        TIFFSetField(t, EXIFTAG_LENSMODEL, shot.lens);
+        TIFFSetField(t, EXIFTAG_FOCALLENGTH, shot.focal);
+        TIFFSetField(t, EXIFTAG_FNUMBER, shot.aperture);
+        uint64_t exif = 0;
+        require(TIFFWriteCustomDirectory(t, &exif) == 1, "EXIF directory not written");
+        require(TIFFSetDirectory(t, 0) == 1, "lens DNG IFD0 not found again");
+        TIFFSetField(t, TIFFTAG_EXIFIFD, exif);
+        require(TIFFRewriteDirectory(t) == 1, "lens DNG IFD0 not rewritten with its EXIF pointer");
     }
     return path;
 }
@@ -173,6 +193,29 @@ void verify() {
         }
     }
 
+#if defined(COMPOSITOR_HAS_LENSFUN)
+    // No profile in the file, but a camera and lens the lens database knows (lensfun): offered and on by default, as
+    // Apple's RAW engine does from its own database; the corners brighten (the lens vignettes wide open). An unknown
+    // lens on the same camera is not offered.
+    {
+        const Shot known{"Canon", "Canon EOS 5D Mark III", "EF70-200mm f/2.8L IS II USM", 70, 2.8};
+        Raw raw = open(makeDng(dir, "lensfun.dng", w, h, -1, {}, known));
+        uint32_t flags = 0; float noise = 0; int32_t lens = -1, highlight = 0;
+        require(compositor_raw_capabilities(raw.get(), &flags, &noise, &lens, &highlight) == 0, "capabilities failed");
+        require((flags & 2u) != 0 && lens == 1, "a lens the database knows is not offered as lens correction");
+        const Developed off = develop(raw.get(), false, 1, false), on = develop(raw.get(), true, 1, false);
+        const int n = std::max(2, off.w / 20);
+        const double offCorner = off.block(0, 0, n), onCorner = on.block(0, 0, n);
+        qInfo("lensfun vignette: corner %.1f -> %.1f", offCorner, onCorner);
+        require(onCorner > offCorner + 10, "the database's vignetting correction did not brighten the corners");
+        Shot unknown = known;
+        unknown.lens = "Compositor 50mm f/1.0 Imaginary";
+        Raw other = open(makeDng(dir, "unknown-lens.dng", w, h, -1, {}, unknown));
+        require(compositor_raw_capabilities(other.get(), &flags, &noise, &lens, &highlight) == 0, "capabilities failed");
+        require((flags & 2u) == 0 && lens == 0, "an unknown lens was offered lens correction");
+    }
+#endif
+
     // WarpRectilinear: kr0 < 1 magnifies about the centre, so a line right of centre moves outwards.
     {
         const int line = w * 3 / 4;
@@ -192,7 +235,11 @@ void verify() {
 extern "C" int compositor_host_raw_lens_smoke(int, char **) {
     try {
         verify();
+#if defined(COMPOSITOR_HAS_LENSFUN)
+        qInfo("RAW lens correction OK (DNG OpcodeList3 vignette and warp, lensfun database profile, full and draft develops, no-profile files untouched)");
+#else
         qInfo("RAW lens correction OK (DNG OpcodeList3 vignette and warp, full and draft develops, no-profile files untouched)");
+#endif
         return 0;
     } catch (const std::exception &e) {
         qCritical("RAW lens journey failed: %s", e.what());

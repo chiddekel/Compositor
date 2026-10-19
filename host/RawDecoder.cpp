@@ -13,6 +13,7 @@
 #include <libraw/libraw.h>
 #include "PerfTrace.h"
 #include "RawLensProfile.h"
+#include "RawLensfun.h"
 #include <QImage>
 #include <algorithm>
 #include <cmath>
@@ -217,6 +218,20 @@ CompositorRaw *compositor_raw_open(const char *path, int32_t *width, int32_t *he
         handle->lensTags.dngOpcodeList3.assign(static_cast<const uint8_t *>(opcodes.data),
                                                static_cast<const uint8_t *>(opcodes.data) + opcodes.len);
     if (!handle->raw.fujiRotated() && d.idata.colors >= 3) handle->lens = rawlens::buildProfile(handle->lensTags, w, h);
+#if defined(COMPOSITOR_HAS_LENSFUN)
+    // No profile in the file: the camera and lens it names, from the lens database (as Apple's RAW engine does).
+    if (!handle->lens.valid() && !handle->raw.fujiRotated() && d.idata.colors >= 3) {
+        PERF_SCOPE("raw.open: lensfun profile");
+        rawlens::Shot shot;
+        shot.cameraMaker = d.idata.make;
+        shot.cameraModel = d.idata.model;
+        shot.lensMaker = d.lens.LensMake;
+        shot.lensModel = d.lens.Lens[0] ? d.lens.Lens : d.lens.makernotes.Lens;
+        shot.focal = d.other.focal_len;
+        shot.aperture = d.other.aperture;
+        handle->lens = rawlens::lensfunProfile(shot, w, h);
+    }
+#endif
     handle->raw.set_exifparser_handler(nullptr, nullptr);
     handle->raw.set_makernotes_handler(nullptr, nullptr);
     if (handle->lens.valid()) handle->capabilities |= 2u;

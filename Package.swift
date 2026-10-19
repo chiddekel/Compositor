@@ -44,6 +44,11 @@ let openexrLibraries: [String] = openexrPrefix.map { prefix in
 let librawPrefix: String? = ["\(packageRoot)/build/libraw/install", "/app"].first {
     FileManager.default.fileExists(atPath: "\($0)/include/libraw/libraw.h") && FileManager.default.fileExists(atPath: "\($0)/lib/libraw_r.a")
 }
+// lensfun (scripts/build-lensfun.sh, or the Flatpak's lensfun module): the lens database RAW Lens Correction falls back
+// on for files without a profile of their own (host/RawLensfun.h), static, over the runtime's GLib.
+let lensfunPrefix: String? = ["\(packageRoot)/build/lensfun/install", "/app"].first {
+    FileManager.default.fileExists(atPath: "\($0)/include/lensfun/lensfun.h") && FileManager.default.fileExists(atPath: "\($0)/lib/liblensfun.a")
+}
 import Foundation
 
 // LibRaw built with RawSpeed (scripts/build-rawspeed.sh, then scripts/build-libraw.sh): RawSpeed's static libraries
@@ -367,7 +372,8 @@ let package = Package(
                     "-I/usr/include/QtSvg",
                     "-DQT_CORE_LIB", "-DQT_GUI_LIB", "-DQT_WIDGETS_LIB", "-DQT_DBUS_LIB",
                 ] + (librawPrefix.map { ["-I\($0)/include"] } ?? []) + (rawspeedLibraries.isEmpty ? [] : ["-DLIBRAW_WITH_RAWSPEED3"])
-                  + (openexrPrefix.map { ["-I\($0)/include", "-I\($0)/include/OpenEXR", "-I\($0)/include/Imath", "-DCOMPOSITOR_HAS_OPENEXR=1"] } ?? [])),
+                  + (openexrPrefix.map { ["-I\($0)/include", "-I\($0)/include/OpenEXR", "-I\($0)/include/Imath", "-DCOMPOSITOR_HAS_OPENEXR=1"] } ?? [])
+                  + (lensfunPrefix.map { ["-I\($0)/include", "-DCOMPOSITOR_HAS_LENSFUN=1"] } ?? [])),
             ],
             // QtImageIO.cpp routes HEIF/HEIC/AVIF through libheif when its header is installed (`__has_include`), so
             // the link follows the same condition; RawDecoder.cpp likewise with LibRaw (static, plus OpenMP's runtime).
@@ -377,10 +383,11 @@ let package = Package(
                 + [.linkedLibrary("z"), .linkedLibrary("tiff")]
                 + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"] + rawspeedLibraries), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
                 + (openexrLibraries.isEmpty ? [] : [.unsafeFlags(openexrLibraries), .linkedLibrary("zstd")])
+                + (lensfunPrefix.map { [.unsafeFlags(["\($0)/lib/liblensfun.a"]), .linkedLibrary("glib-2.0")] } ?? [])
         ),
         .executableTarget(
             name: "CompositorHostBootstrap",
-            dependencies: ["Compositor", "HostRun", "ImageIO", "CoreGraphics", "FoundationCompat", "AppKit"],
+            dependencies: ["Compositor", "HostRun", "ImageIO", "CoreGraphics", "FoundationCompat", "AppKit", "ColorSync"],
             path: "Sources/CompositorHostBootstrap",
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
             linkerSettings: [
