@@ -285,7 +285,7 @@ final class UpstreamEditor {
         "adjustmentCommit", "adjustmentCancel", "contentFill", "removeBackground", "smartMatte", "selectTool",
         "swapPaletteColors", "resetPaletteColors", "setPaletteColor", "openColorPicker", "setColorPickerColor",
         "closeColorPicker", "closeFloatingPanel", "addLayerEffect", "openFilter", "beginLevels", "beginHueSaturation",
-        "beginAdjustmentEditing", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "exportPDF", "exportAsSheet", "writeExport", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
+        "beginAdjustmentEditing", "trim", "canvasSizeSheet", "imageSizeSheet", "gridSettingsSheet", "exportPNG", "exportPDF", "exportAsSheet", "writeExport", "sampleColorPicker", "dismissAlert", "dismissImporter", "guideCreate", "guideHit", "guideMove", "guideFinish", "guideCancel", "clearGuides", "showKeyboardShortcuts", "distortDragBegin", "distortDragMove", "distortDragEnd", "importFiles",
         "gradientBegin", "gradientMove", "gradientEndDrag", "gradientCommit", "gradientCancel",
         "shapeBegin", "shapeDrag", "shapeFinish", "shapeCancel",
         "textEditAt", "textBegin", "textBeginBox", "textSetContent", "textReplace", "textRestore", "textSelect", "textFinish", "textCancel",
@@ -640,6 +640,8 @@ final class UpstreamEditor {
             s.moveGuideDrag(to: value)
         case "guideFinish": s.finishGuideDrag(delete: command.enabled == true)
         case "guideCancel": s.cancelGuideDrag()
+        // View › Clear Guides (CompositorApp: session.clearGuides()), one undo step.
+        case "clearGuides": s.clearGuides()
         // The shell's file chooser for upstream's .fileImporter / the welcome's Open project has closed.
         case "dismissImporter":
             s.showsImporter = false
