@@ -126,31 +126,35 @@ final class WarpStroke {
     }
 
     /// Continues the stroke to `point`, dabbing along the way, then refreshes `image`.
-    /// Long jumps are chunked (`dabBudget`) so the Qt shell can dirty-blit before the rest runs.
+    /// Long jumps are chunked (`liveBudget`) so the Qt shell can dirty-blit before the rest runs.
     var hasPendingDabs: Bool { pendingSegment != nil || pendingIndex < pendingTargets.count }
     nonisolated(unsafe) static var timeSlicesLiveStrokes = false
 
     func append(_ point: CGPoint) {
         pendingTargets.append(point)
-        drain(maxDabs: Self.timeSlicesLiveStrokes ? dabBudget : Int.max)
+        drain(budget: Self.timeSlicesLiveStrokes ? Self.liveBudget : nil)
     }
 
     @discardableResult
     func continuePending() -> Bool {
-        drain(maxDabs: dabBudget)
+        drain(budget: Self.liveBudget)
         return hasPendingDabs
     }
 
     func flushPending() {
-        drain(maxDabs: Int.max)
+        drain(budget: nil)
     }
 
-    private var dabBudget: Int { mode == .smudge ? 4 : 48 }
+    /// Time each turn may spend dabbing before the shell paints (half a 60 Hz frame). A fixed dab count (it was 4 for
+    /// Smudge, 1 px apart) let a fast drag fall behind, and the backlog then ran when the button came up.
+    static let liveBudget: UInt64 = 8_000_000
 
     /// Keep each segment's upstream interpolation intact across frame boundaries. New samples wait in order.
-    private func drain(maxDabs: Int) {
+    private func drain(budget: UInt64?) {
+        let deadline = budget.map { DispatchTime.now().uptimeNanoseconds + $0 }
         var done = 0
-        while done < maxDabs, hasPendingDabs {
+        while hasPendingDabs {
+            if let deadline, done > 0, DispatchTime.now().uptimeNanoseconds >= deadline { break }
             if pendingSegment == nil {
                 let target = pendingTargets[pendingIndex]
                 pendingIndex += 1

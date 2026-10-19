@@ -77,6 +77,7 @@ extern "C" int compositor_raw_install(void);
 extern "C" int32_t compositor_install_subject_model(void);
 extern "C" void compositor_app_did_become_active(void);
 extern "C" void compositor_app_did_resign_active(void);
+extern "C" int32_t compositor_session_warp_continue(uint64_t handle);
 extern "C" void compositor_modifiers_changed(int32_t);
 extern "C" void compositor_menu_did_end_tracking(void);
 
@@ -618,8 +619,10 @@ extern "C" int compositor_host_run(int argc, char **argv) {
             const std::pair<const char *, SessionWindow::Tool> tools[] = {
                 {"move", SessionWindow::Tool::Move}, {"marquee", SessionWindow::Tool::Marquee},
                 {"lasso", SessionWindow::Tool::Lasso}, {"brush", SessionWindow::Tool::Brush},
-                {"hand", SessionWindow::Tool::Hand}, {"gradient", SessionWindow::Tool::Gradient}, {"zoom", SessionWindow::Tool::Zoom}};
-            const int steps = 60;
+                {"hand", SessionWindow::Tool::Hand}, {"gradient", SessionWindow::Tool::Gradient}, {"zoom", SessionWindow::Tool::Zoom},
+                {"smudge", SessionWindow::Tool::Smear}};
+            // COMPOSITOR_BENCH_STEPS=N: frames the drag takes (fewer is a faster stroke; 60 by default).
+            const int steps = qEnvironmentVariableIsSet("COMPOSITOR_BENCH_STEPS") ? std::max(1, qEnvironmentVariable("COMPOSITOR_BENCH_STEPS").toInt()) : 60;
             // COMPOSITOR_BENCH_TOOLS=brush,move: only those.
             const QStringList only = qEnvironmentVariable("COMPOSITOR_BENCH_TOOLS").split(QLatin1Char(','), Qt::SkipEmptyParts);
             for (const auto &[name, tool] : tools) {
@@ -641,6 +644,7 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                     while (settleLayers.elapsed() < 1500) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
                 }
                 window.setTool(tool);
+                if (tool == SessionWindow::Tool::Smear) window.setSmearMode(SessionWindow::SmearMode::Smudge);
                 // COMPOSITOR_BENCH_DIAMETER: the brush size the painting tools use.
                 if (qEnvironmentVariableIsSet("COMPOSITOR_BENCH_DIAMETER"))
                     window.sendCommand({{"version", 1}, {"action", "setBrushSettings"},
@@ -668,6 +672,12 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                     flush();
                 }
                 const double drag = t.nsecsElapsed() / 1e6 / steps;
+                // Smudge/Liquify: dab work still queued when the button comes up (how far the stroke trails the pointer).
+                t.restart();
+                int backlogSlices = 0;
+                if (tool == SessionWindow::Tool::Smear)
+                    while (compositor_session_warp_continue(window.sessionHandle()) > 0) ++backlogSlices;
+                const double backlog = t.nsecsElapsed() / 1e6;
 
                 t.restart();
                 send(QEvent::MouseButtonRelease, doc(0.6, 0.5), Qt::LeftButton, Qt::NoButton);
@@ -676,8 +686,8 @@ extern "C" int compositor_host_run(int argc, char **argv) {
                 t.restart();
                 for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
                 const double settle = t.nsecsElapsed() / 1e6;
-                std::fprintf(stderr, "BENCH %-9s hover %6.2f ms  press %7.2f ms  drag %6.2f ms  release %7.2f ms  settle %7.2f ms\n",
-                             name, hover, press, drag, release, settle);
+                std::fprintf(stderr, "BENCH %-9s hover %6.2f ms  press %7.2f ms  drag %6.2f ms  backlog %7.2f ms (%d slices)  release %7.2f ms  settle %7.2f ms\n",
+                             name, hover, press, drag, backlog, backlogSlices, release, settle);
             }
             return 0;
         }

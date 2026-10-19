@@ -17,7 +17,10 @@ inline bool validBrush(const CompositorBrushUniforms *u, const CompositorBrushSe
         const auto &s = segments[i];
         for (float v : {s.x0,s.y0,s.x1,s.y1}) if (!std::isfinite(v) || std::abs(v) > 1e7f) return false;
     }
-    for (size_t i = 0; i < pixels; ++i)
-        if (!std::isfinite(permanent[i]) || permanent[i] < 0 || permanent[i] > (u->hardness >= 1 ? 1 : 20)) return false;
-    return true;
+    // Finite and within [0, cap]: NaN fails both comparisons and an infinity fails one, so no isfinite is needed. No
+    // early exit, so the scan vectorizes (it runs on every coverage update of a 256x256 tile).
+    const float cap = u->hardness >= 1 ? 1 : 20;
+    unsigned inRange = 1;
+    for (size_t i = 0; i < pixels; ++i) inRange &= unsigned(permanent[i] >= 0) & unsigned(permanent[i] <= cap);
+    return inRange != 0;
 }

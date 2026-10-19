@@ -70,18 +70,18 @@ extern "C" int compositor_brush_cpu_rows(const CompositorBrushUniforms *uniforms
         maxX = std::max(maxX,std::max(s.x0,s.x1)+reach);
         maxY = std::max(maxY,std::max(s.y0,s.y1)+reach);
     }
-    for (uint32_t y=firstRow;y<endRow;++y) for (uint32_t x=0;x<u.width;++x) {
+    const auto pixel = [&](uint32_t x, uint32_t y) {
         const size_t i = size_t(y)*u.width+x;
         const float px = u.origin_x+(float(x)+0.5f)*u.a+(float(y)+0.5f)*u.c;
         const float py = u.origin_y+(float(x)+0.5f)*u.b+(float(y)+0.5f)*u.d;
         next[i] = permanent[i]; preview[i] = 0;
-        if (px<0 || py<0 || px>=u.canvas_width || py>=u.canvas_height) continue;
+        if (px<0 || py<0 || px>=u.canvas_width || py>=u.canvas_height) return;
         // Hard coverage accumulates by max. A fully covered pixel cannot change with another
         // settled segment or provisional tail (notably the many overlapping dabs at warp commit).
-        if (u.hardness >= 1 && permanent[i] == 1) { preview[i] = 255; continue; }
+        if (u.hardness >= 1 && permanent[i] == 1) { preview[i] = 255; return; }
         // Soft coverage stores density, capped at 20. Further deposition cannot change
         // either that cap or its fully opaque 8-bit preview.
-        if (u.hardness < 1 && permanent[i] == 20) { preview[i] = 255; continue; }
+        if (u.hardness < 1 && permanent[i] == 20) { preview[i] = 255; return; }
         float value;
         if (px<minX || px>maxX || py<minY || py>maxY) {
             value = u.hardness >= 1 ? permanent[i]
@@ -100,6 +100,44 @@ extern "C" int compositor_brush_cpu_rows(const CompositorBrushUniforms *uniforms
             value = 1-std::exp(-std::min(settled+tail,20.0f));
         }
         preview[i] = uint8_t(std::clamp(std::round(255*value),0.0f,255.0f));
+    };
+    // Axis-aligned tile wholly on the canvas (the usual case): outside the segments' support, a pixel only carries its
+    // permanent coverage over, exactly as `pixel` does there. Those runs are copied without the per-pixel geometry, so
+    // an update costs the dab's area rather than the whole 256x256 tile (a warp commit replays hundreds of updates).
+    const auto inside = [&](float px, float py) { return px>=0 && py>=0 && px<u.canvas_width && py<u.canvas_height; };
+    const float x0c = u.origin_x+0.5f*u.a, x1c = u.origin_x+(float(u.width)-0.5f)*u.a;
+    const float y0c = u.origin_y+0.5f*u.d, y1c = u.origin_y+(float(u.height)-0.5f)*u.d;
+    if (u.b == 0 && u.c == 0 && u.a != 0 && u.d != 0 && inside(x0c,y0c) && inside(x1c,y1c)) {
+        // Local columns/rows whose centers may fall in [minX,maxX]x[minY,maxY], widened by a pixel each side.
+        const auto span = [](float lo, float hi, float origin, float scale, uint32_t size) {
+            float a = (lo-origin)/scale-0.5f, b = (hi-origin)/scale-0.5f;
+            if (a > b) std::swap(a,b);
+            if (!(b >= -1) || !(a <= float(size))) return std::pair<uint32_t,uint32_t>{0,0};
+            const uint32_t first = uint32_t(std::max(0.0f,std::floor(a)-1));
+            const uint32_t end = uint32_t(std::min(float(size),std::ceil(b)+2));
+            return std::pair<uint32_t,uint32_t>{first,std::max(first,end)};
+        };
+        const auto [sx0,sx1] = count ? span(minX,maxX,u.origin_x,u.a,u.width) : std::pair<uint32_t,uint32_t>{0,0};
+        const auto [sy0,sy1] = count ? span(minY,maxY,u.origin_y,u.d,u.height) : std::pair<uint32_t,uint32_t>{0,0};
+        const auto carry = [&](size_t i, size_t end) {
+            std::copy(permanent+i,permanent+end,next+i);
+            for (;i<end;++i) {
+                const float p = permanent[i];
+                if (p == 0) { preview[i] = 0; continue; }
+                if (u.hardness >= 1 ? p == 1 : p == 20) { preview[i] = 255; continue; }
+                const float value = u.hardness >= 1 ? p : 1-std::exp(-p);
+                preview[i] = uint8_t(std::clamp(std::round(255*value),0.0f,255.0f));
+            }
+        };
+        for (uint32_t y=firstRow;y<endRow;++y) {
+            const size_t row = size_t(y)*u.width;
+            if (y < sy0 || y >= sy1 || sx0 >= sx1) { carry(row,row+u.width); continue; }
+            carry(row,row+sx0);
+            for (uint32_t x=sx0;x<sx1;++x) pixel(x,y);
+            carry(row+sx1,row+u.width);
+        }
+        return 0;
     }
+    for (uint32_t y=firstRow;y<endRow;++y) for (uint32_t x=0;x<u.width;++x) pixel(x,y);
     return 0;
 }
