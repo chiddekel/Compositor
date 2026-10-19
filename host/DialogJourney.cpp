@@ -298,6 +298,31 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
             };
             window.showNormal(); other.showNormal();
             QApplication::setActiveWindow(&window); window.activateWindow(); QApplication::processEvents();
+            {
+                // Window menu as AppKit completes it: Minimize, Zoom, Bring All to Front, then the window, checked.
+                QMenu *windowMenu = nullptr;
+                for (auto *top : window.menuBar()->actions())
+                    if (top->isVisible() && top->menu() && top->menu()->objectName() == "appMenu.Window") windowMenu = top->menu();
+                check(windowMenu, "visible Window menu missing");
+                emit windowMenu->aboutToShow();
+                QStringList titles;
+                QAction *bring = nullptr, *entry = nullptr;
+                for (auto *action : windowMenu->actions()) {
+                    if (!action->isVisible()) continue;
+                    titles << (action->isSeparator() ? QStringLiteral("-") : action->text().remove('&'));
+                    if (action->text().remove('&') == "Bring All to Front") bring = action;
+                    if (action->text().remove('&') == "Compositor") entry = action;
+                }
+                const std::string shown = "Window menu differs from AppKit's: " + titles.join(", ").toStdString();
+                check(titles == QStringList({"Minimize", "Zoom", "-", "Bring All to Front", "-", "Compositor"}), shown.c_str());
+                check(entry->isCheckable() && entry->isChecked(), "the window's own entry is not checked");
+                window.showMinimized(); QApplication::processEvents();
+                bring->trigger();
+                QElapsedTimer settle; settle.start();
+                while (settle.elapsed() < 300 && window.isMinimized()) QApplication::processEvents(QEventLoop::AllEvents, 10);
+                check(!window.isMinimized() && window.isVisible(), "Bring All to Front left the project window minimized");
+                qInfo("Qt Window menu OK (Minimize, Zoom, Bring All to Front, checked window entry; Bring All to Front restores)");
+            }
             if (!OtherApplications::canHideOthers()) {
                 // No window manager lets this client hide other applications (Wayland, offscreen): Hide Others is
                 // disabled rather than silently doing nothing, and Show All leaves every project window as it was.

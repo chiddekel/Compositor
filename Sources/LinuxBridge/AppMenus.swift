@@ -67,6 +67,11 @@ import Sparkle
             "appVisibility": [], "appTermination": [shell("Quit Compositor", "quit", key: "q", modifiers: command)],
             "newItem": [], "saveItem": [], "undoRedo": [], "pasteboard": [], "toolbar": [],
             "windowSize": [shell("Minimize", "minimize", key: "m", modifiers: command), shell("Zoom", "zoom")],
+            // What AppKit appends to a Window menu: Bring All to Front, then the app's windows, the key one checked.
+            // Upstream has one window (`Window("Compositor", id: "editor")`); Fill, Center and tiling are the Mac
+            // window manager's own and left to the desktop here.
+            "windowArrangement": [shell("Bring All to Front", "bringAllToFront")],
+            "windowList": [Item(title: "Compositor", enabled: true, checked: true, action: { ShellProjects.enqueue("showWindow") })],
             "help": [shell("Compositor Help", "openHelp")],
         ]
         let layout: [(String, [String])] = [
@@ -103,7 +108,7 @@ import Sparkle
         }
         var menus = layout.map { assemble($0.0, $0.1) }
         menus += custom
-        menus.append(assemble("Window", ["windowSize"]))
+        menus.append(assemble("Window", ["windowSize", "windowArrangement", "windowList"]))
         menus.append(assemble("Help", ["help"]))
         // Paths, for perform.
         func number(_ items: inout [Item], prefix: String) {

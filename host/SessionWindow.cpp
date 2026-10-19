@@ -2902,6 +2902,15 @@ void SessionWindow::handleShellRequests() {
         else if (request == QLatin1String("minimize")) showMinimized();
         else if (request == QLatin1String("zoom")) { if (isMaximized()) showNormal(); else showMaximized(); }
         else if (request == QLatin1String("fullScreen")) { if (isFullScreen()) showNormal(); else showFullScreen(); }
+        else if (request == QLatin1String("bringAllToFront") || request == QLatin1String("showWindow")) {
+            // Window › Bring All to Front / the window's own entry: the project window and its floating panels, raised.
+            if (isMinimized()) showNormal();
+            raise();
+            activateWindow();
+            if (request == QLatin1String("bringAllToFront"))
+                for (const auto &panel : std::as_const(m_floatingPanels))
+                    if (panel.window && panel.window->isVisible()) panel.window->raise();
+        }
     }
 }
 
