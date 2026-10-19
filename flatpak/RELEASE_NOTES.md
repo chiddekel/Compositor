@@ -1,3 +1,12 @@
+Compositor 1.5.3-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
+
+- RAW Develop and Add Noise/Grain now use upstream's own code unchanged
+- Live Add Noise and Grain run on the GPU (Vulkan); Gaussian noise matches the exported file exactly
+- Projects tab bar: a dragged tab stays above its neighbours
+- UI checks now cover the Export As sheet and the command palette
+
+Previous release notes:
+
 Compositor 1.5.3-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
 - RAW Lens Correction for files without their own profile, from the lensfun lens database

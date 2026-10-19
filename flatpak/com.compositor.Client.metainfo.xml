@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.3-linux-alpha.3" date="2026-10-19" type="development">
+      <description><p>RAW Develop and Add Noise/Grain now use upstream's own code unchanged; Live Add Noise and Grain run on the GPU (Vulkan); Gaussian noise matches the exported file exactly; Projects tab bar: a dragged tab stays above its neighbours; UI checks now cover the Export As sheet and the command palette.</p></description>
+    </release>
     <release version="1.5.3-linux-alpha.2" date="2026-10-19" type="development">
       <description><p>RAW Lens Correction for files without their own profile, from the lensfun lens database; A default CMYK profile (SWOP TR005 Coated), so View › CMYK and CMYK export work without loading one; Select Subject and Remove Background follow the photo's edges more closely; Faster brushes and drags on large documents; no stall on a stroke's first frame; Command palette as on the Mac: its placeholder, No commands match, shortcuts in their own column; Window menu: Bring All to Front and the window entry; Export As preview: dragging the zoomed image pans it, and zooming keeps its middle; View › Clear Guides works; UI fixes: New Canvas preset menu, CMYK proof and gamut pills, unclipped slider titles, missing icons, Camera Raw scope layout.</p></description>
     </release>
