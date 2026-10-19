@@ -232,9 +232,22 @@ extension View {
     public func menuIndicator(_ visibility: StyleToken) -> some View {
         modified { $0.modifiers.append(.menuStyle("indicator:\(visibility.name)")) }
     }
+    /// The scroll view shows `position`'s point (a `scrollTo` moves it there) and keeps the binding at wherever it is
+    /// scrolled to, through the host's scroll geometry reports (the same channel an AppKit scroll view uses).
     public func scrollPosition(_ position: Binding<ScrollPosition>) -> some View {
-        _ = position
-        return modified { $0.modifiers.append(.identifier("scrollPosition")) }
+        modified { node in
+            node.modifiers.append(.identifier("scrollPosition"))
+            guard node.kind == "ScrollView" else { return }
+            node.boolParams["appKitScroll"] = true
+            node.doubleParams["scrollX"] = max(0, position.wrappedValue.point.x)
+            node.doubleParams["scrollY"] = max(0, position.wrappedValue.point.y)
+            ScrollGeometryValues.addHandler(to: &node) { geometry in
+                guard position.wrappedValue.point != geometry.contentOffset else { return }
+                var moved = position.wrappedValue
+                moved.scrollTo(point: geometry.contentOffset)
+                position.wrappedValue = moved
+            }
+        }
     }
     public func onDisappear(perform action: @escaping () -> Void = {}) -> some View {
         modified { $0.modifiers.append(.onDisappear(action)) }
@@ -409,8 +422,21 @@ extension View {
             base = wrapper
         }
     }
+    /// `action(old, new)` when `transform` of the scroll view's geometry changes, as the host reports it scrolled.
     public func onScrollGeometryChange<T: Equatable>(for type: T.Type, of transform: @escaping (ScrollGeometry) -> T,
-                                                      action: @escaping (T, T) -> Void) -> some View { self }
+                                                      action: @escaping (T, T) -> Void) -> some View {
+        modified { node in
+            guard node.kind == "ScrollView" else { return }
+            node.boolParams["appKitScroll"] = true
+            let key = ViewResolver.nestedPath("scrollGeometryChange")
+            ScrollGeometryValues.addHandler(to: &node) { geometry in
+                let new = transform(geometry)
+                let old = ScrollGeometryValues.last[key] as? T ?? transform(ScrollGeometry())
+                ScrollGeometryValues.last[key] = new
+                if old != new { action(old, new) }
+            }
+        }
+    }
     public func onDrop(of types: [String], delegate: any DropDelegate) -> some View {
         modified {
             $0.stringParams["dropTypes"] = types.joined(separator: ",")
@@ -663,6 +689,27 @@ extension View {
 
 public enum AccessibilityChildBehavior: Sendable {
     case ignore, contain, combine
+}
+
+/// The last value each `.onScrollGeometryChange` reported, by its place in the tree (it outlives a re-render).
+enum ScrollGeometryValues {
+    nonisolated(unsafe) static var last: [String: Any] = [:]
+
+    /// A scroll view's offset and content size from the host's report (`width`/`height` are the viewport's).
+    static func addHandler(to node: inout RenderNode, _ handle: @escaping (ScrollGeometry) -> Void) {
+        let previous = node.handlers["scrollGeometry"]
+        node.handlers["scrollGeometry"] = { payload in
+            previous?(payload)
+            guard let values = payload as? [String: Any] else { return }
+            func number(_ name: String) -> CGFloat? {
+                guard let value = (values[name] as? Double) ?? (values[name] as? Int).map(Double.init), value.isFinite else { return nil }
+                return CGFloat(value)
+            }
+            guard let x = number("x"), let y = number("y") else { return }
+            handle(ScrollGeometry(contentOffset: CGPoint(x: x, y: y),
+                                  contentSize: CGSize(width: number("documentWidth") ?? 0, height: number("documentHeight") ?? 0)))
+        }
+    }
 }
 
 public struct ScrollGeometry: Sendable {
