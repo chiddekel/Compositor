@@ -77,9 +77,24 @@ python3 tests/test_linux_source_coverage.py "$NATIVE_BUILD/package-description.j
 SWIFT_BIN="$(swift build -c release --scratch-path "$SWIFT_BUILD" --show-bin-path)"
 mkdir -p "$SWIFT_BIN"
 install -m644 Compositor/Resources/CameraRawTables.bin Compositor/Resources/CameraRawShadows.bin "$SWIFT_BIN/"
-# One test at a time: many suites wait synchronously on the main actor and share the GPU device; running Swift
-# Testing suites in parallel deadlocked (1,069 started, 71 finished, no progress).
-swift test -c release --scratch-path "$SWIFT_BUILD" --manifest-cache none --no-parallel "${SWIFT_JOB_ARGS[@]}" "$@"
+# Swift tests in two passes. The suites below share process-wide state the shell has one of (the shell request
+# queue, the pop-up menu being shown, the alert and file-panel presenters they record), or time themselves (a tool
+# matrix against a budget; upstream's file-watch reloads after a fixed 900 ms wait; Color Range waits for its worker
+# behind the one main actor). Alongside others they see each
+# other's requests and sheets, or run late under load, so they run one test at a time after the rest. Everything else runs in parallel. (The parallel run used to deadlock: a main-queue preview render
+# waited for a thread of the concurrency pool that was itself waiting for the main queue; fixed in 9bf048b.)
+# A caller's own --filter/--skip (CI's subset) keeps the single serial run.
+SHARED_STATE_SUITES='ShellRequestOwnershipTests|PopUpRequestOwnershipTests|PopUpMenuTests|NativeAlertOwnershipTests|NativeFilePanelTests|ToolCombinationTests|ExternalChangeTests|ColorRangeTests'
+selects_tests=0
+for argument in "$@"; do [[ $argument == --filter* || $argument == --skip* ]] && selects_tests=1; done
+if (( selects_tests )); then
+    swift test -c release --scratch-path "$SWIFT_BUILD" --manifest-cache none --no-parallel "${SWIFT_JOB_ARGS[@]}" "$@"
+else
+    swift test -c release --scratch-path "$SWIFT_BUILD" --manifest-cache none --parallel "${SWIFT_JOB_ARGS[@]}" \
+        --skip "$SHARED_STATE_SUITES" "$@"
+    swift test -c release --scratch-path "$SWIFT_BUILD" --manifest-cache none --no-parallel --skip-build "${SWIFT_JOB_ARGS[@]}" \
+        --filter "$SHARED_STATE_SUITES" "$@"
+fi
 # Native journeys. Each gate is independent; NATIVE_JOBS (above) of them run at a time,
 # each with its own XDG config/data copy and log, printed in order afterwards. Any failing gate fails the run.
 NATIVE_GATES=(
