@@ -317,7 +317,7 @@ if(Qt6_FOUND)
     # (EXCLUDE_FROM_ALL): its source list predates the host's D-Bus, SwiftUI renderer and
     # RAW sources, and nothing runs it; `cmake --build build --target test_session_window_io`.
     if(DEFINED CompositorCore_SWIFT_STATIC_LIB)
-        add_executable(test_session_window_io EXCLUDE_FROM_ALL tests/test_session_window_io.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp)
+        add_executable(test_session_window_io EXCLUDE_FROM_ALL tests/test_session_window_io.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp)
         target_include_directories(test_session_window_io PRIVATE ${CMAKE_SOURCE_DIR}/host)
         target_link_libraries(test_session_window_io PRIVATE Qt6::Widgets Qt6::Gui ${COMPOSITOR_CORE_LINK})
     endif()
@@ -344,7 +344,7 @@ if(Qt6_FOUND)
     # via compositor_session_* and paints the composited RGBA); CMake's AUTOMOC
     # generates SessionWindow's moc (the SwiftPM build uses the committed
     # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc).
-    add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/InterchangeJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/AdjustDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp host/QtImageIO.cpp host/FlatpakUpdateService.cpp host/SwiftUIQtRenderer.cpp)
+    add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/InterchangeJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp host/QtImageIO.cpp host/FlatpakUpdateService.cpp host/SwiftUIQtRenderer.cpp)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
     target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets Qt6::DBus Qt6::Svg PRIVATE ZLIB::ZLIB TIFF::TIFF PkgConfig::LCMS2)
     # OtherApplications.h (Hide Others / Show All) uses xcb when its header is installed.
