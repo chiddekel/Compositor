@@ -1914,7 +1914,7 @@ final class UpstreamEditor {
 
     /// Renders a snapshot off the main thread (upstream's exporter actor), as premultiplied RGBA8.
     nonisolated static func renderInBackground(_ snapshot: ProjectSnapshot, scale: CGFloat = 1) async throws -> (bytes: [UInt8], width: Int, height: Int) {
-        let image = try await ImageExporter.shared.renderPreview(snapshot, scale: scale).image
+        let image = try ImageExporter.shared.renderPreview(snapshot, scale: scale).image
         return try rgbaBytes(of: image)
     }
 
@@ -2017,18 +2017,10 @@ final class UpstreamEditor {
     }
 
     private func exportRGBA(_ snapshot: ProjectSnapshot, scale: CGFloat = 1) throws -> (bytes: [UInt8], width: Int, height: Int) {
-        // The exporter is an actor that never needs the main thread, so this blocks the caller on a plain semaphore:
-        // safe from a Qt callback and from a main-actor test alike (pumping the main run loop would deadlock in the latter).
-        nonisolated(unsafe) var outcome: Result<ExportRaster, Error>?
-        let done = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) let captured = snapshot
-        Task.detached {
-            do { outcome = .success(try await ImageExporter.shared.renderPreview(captured, scale: scale)) } catch { outcome = .failure(error) }
-            done.signal()
-        }
-        done.wait()
-        guard let raster = outcome else { throw ExportError.render }
-        return try Self.rgbaBytes(of: try raster.get().image)
+        // Rendered here, on the calling thread (the preview renderer is nonisolated). Handing it to a task and waiting
+        // on a semaphore needed a free thread of the concurrency pool while this one held the main queue: with the pool
+        // busy waiting for the main queue (other sessions' C-ABI calls), neither ever moved (GAP-TEST-01).
+        try Self.rgbaBytes(of: ImageExporter.shared.renderPreview(snapshot, scale: scale).image)
     }
 
     /// Tip `canPaint` / `canEditPixels` refuse Cut and Clear when the Layers panel has several selected.
