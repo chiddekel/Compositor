@@ -18,6 +18,7 @@
 
 import Compositor
 import AppKit
+import ColorSync
 import CoreGraphics
 import ImageIO
 import Foundation
@@ -44,6 +45,8 @@ struct HostBootstrap {
             runPreferencesSmoke()
             return
         }
+        // View › CMYK and CMYK export need a profile; macOS always has Generic CMYK (third_party/color).
+        ColorSyncGenericProfiles.installBundledDefault()
         compositorConfigureBrushAcceleration(ProcessInfo.processInfo.environment["COMPOSITOR_BRUSH_BACKEND"] != "cpu")
         // Hardware graphs accelerate supported operations, but complete frames still lose to Core Graphics in
         // the measured six-layer scene. Keep the fast default while transform/generator work continues.

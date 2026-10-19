@@ -58,6 +58,12 @@ cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBr
 export COMPOSITOR_SKIA_BRIDGE="$NATIVE_BUILD/libCompositorSkiaBridge.so"
 export COMPOSITOR_IMAGEIO_BACKEND="$NATIVE_BUILD/libCompositorQtImageIO.so"
 export QT_QPA_PLATFORM=offscreen
+# The default CMYK profile the app installs on first run (third_party/color): upstream's CMYK tests proof and export
+# through "Generic CMYK Profile", which macOS always has. A profile already in place (a developer's own) is kept.
+CMYK_FOLDER="${XDG_DATA_HOME:-$HOME/.local/share}/CMYK Profiles"
+if [[ ! -f "$CMYK_FOLDER/Generic CMYK Profile.icc" ]]; then
+    install -D -m644 third_party/color/SWOP_TR005_coated_5.icc "$CMYK_FOLDER/Generic CMYK Profile.icc"
+fi
 export COMPOSITOR_REQUIRE_SUBJECT_MODEL=1
 "$NATIVE_BUILD/test_imageio_color" --require-heif
 "$NATIVE_BUILD/test_font_traits"

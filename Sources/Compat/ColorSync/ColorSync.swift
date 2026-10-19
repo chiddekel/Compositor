@@ -2,7 +2,8 @@
 //
 // Upstream names a CMYK profile by its ICC description. macOS's own Generic CMYK profile describes itself as
 // "Generic CMYK Profile"; on Linux that role is played by the profile installed as `Generic CMYK Profile.icc` in the
-// app's CMYK profile folder by the user, so those bytes are described by that name. It is not Apple's profile.
+// app's CMYK profile folder, so those bytes are described by that name. It is not Apple's profile: on first run the app
+// installs a redistributable one there (third_party/color, SWOP TR005 Coated, CC0), and a user may replace it.
 
 import Foundation
 import CompositorColorManagement
@@ -53,6 +54,37 @@ public enum ColorSyncGenericProfiles {
         return base.appendingPathComponent("CMYK Profiles", isDirectory: true)
     }
     public static var genericCMYKFile: URL { folder.appendingPathComponent(genericCMYKName + ".icc") }
+
+    /// The redistributable stand-in for Apple's Generic CMYK: COMPOSITOR_CMYK_PROFILE, the Flatpak's copy, or the
+    /// source tree's (`third_party/color`, found above this file).
+    public static var bundledDefault: URL? {
+        var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        var checkout: String?
+        while directory.path != "/" {
+            let file = directory.appendingPathComponent("third_party/color/SWOP_TR005_coated_5.icc").path
+            if FileManager.default.fileExists(atPath: file) { checkout = file; break }
+            directory = directory.deletingLastPathComponent()
+        }
+        let candidates: [String?] = [ProcessInfo.processInfo.environment["COMPOSITOR_CMYK_PROFILE"],
+                                     "/app/share/compositor/color/SWOP_TR005_coated_5.icc", checkout]
+        return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }.map(URL.init(fileURLWithPath:))
+    }
+
+    /// Gives a fresh install the Generic CMYK profile macOS always has, so View › CMYK and CMYK export work before the
+    /// user loads one (upstream picks "Generic CMYK Profile" when nothing is chosen). A profile already there — the
+    /// user's own, or an earlier copy — is kept. Returns whether one is there afterwards.
+    @discardableResult public static func installBundledDefault() -> Bool {
+        let file = genericCMYKFile
+        if FileManager.default.fileExists(atPath: file.path) { return true }
+        guard let source = bundledDefault, let data = try? Data(contentsOf: source) else { return false }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try data.write(to: file, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
 
     nonisolated(unsafe) private static var known: (modified: Date, data: Data)?
     private static let lock = NSLock()

@@ -366,6 +366,9 @@ modules:
       # Subject segmentation (Select Subject / Remove Background): U²-Net-small, Apache-2.0 (third_party/models).
       - install -Dm644 third_party/models/u2netp.onnx /app/share/compositor/models/u2netp.onnx
       - install -Dm644 third_party/models/LICENSE-U2Net.txt /app/share/compositor/models/LICENSE-U2Net.txt
+      # Default CMYK profile (View › CMYK, CMYK export): SWOP TR005 Coated from colord, CC0 (third_party/color).
+      - install -Dm644 third_party/color/SWOP_TR005_coated_5.icc /app/share/compositor/color/SWOP_TR005_coated_5.icc
+      - install -Dm644 third_party/color/README.md /app/share/compositor/color/README.md
       - install -Dm644 flatpak/com.compositor.Client.desktop /app/share/applications/com.compositor.Client.desktop
       - install -Dm644 flatpak/com.compositor.Client.metainfo.xml /app/share/metainfo/com.compositor.Client.metainfo.xml
       # MIME + thumbnailer: Finder Quick Look / Dock-Services twin for .comp packages.
