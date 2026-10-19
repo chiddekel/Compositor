@@ -1,3 +1,17 @@
+Compositor 1.5.3-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
+
+- RAW Lens Correction for files without their own profile, from the lensfun lens database
+- A default CMYK profile (SWOP TR005 Coated), so View › CMYK and CMYK export work without loading one
+- Select Subject and Remove Background follow the photo's edges more closely
+- Faster brushes and drags on large documents; no stall on a stroke's first frame
+- Command palette as on the Mac: its placeholder, No commands match, shortcuts in their own column
+- Window menu: Bring All to Front and the window entry
+- Export As preview: dragging the zoomed image pans it, and zooming keeps its middle
+- View › Clear Guides works
+- UI fixes: New Canvas preset menu, CMYK proof and gamut pills, unclipped slider titles, missing icons, Camera Raw scope layout
+
+Previous release notes:
+
 Compositor 1.5.3-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 - Linux: adaptations and parity fixes for upstream 1.5.3
