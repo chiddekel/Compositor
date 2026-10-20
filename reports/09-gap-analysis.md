@@ -1,5 +1,9 @@
 # 09 — Gap analysis
 
+October 20 update: [independent rendering and optional desktop providers](../docs/render-parity-and-desktop-previews.md)
+are implemented. Mac comparisons and real Dolphin GUI acceptance remain pending.
+APP-12 passed its independent GIO desktop launch check and no longer shares GAP-VER-02.
+
 Baseline GNU_Linux `a13f27d` vs upstream `365b574`. 22 gaps confirmed by this audit: **7 open**, 15 resolved (each resolved one lists the fix and the check that verifies it). Each open gap lists the symptom, the upstream behavior, the Linux cause, the evidence, the fix and the test that closes it.
 
 ## Open
@@ -11,7 +15,7 @@ Baseline GNU_Linux `a13f27d` vs upstream `365b574`. 22 gaps confirmed by this au
 | GAP-PLAT-01 | Low | IMPLEMENTED_UNVERIFIED | Object selection / Select Subject / Remove Background use U²-Net instead of Apple Vision | SEL-03, FLT-12, TOOL-05 |
 | GAP-PLAT-03 | Low | LINUX_EQUIVALENT | Hide Others / Show All unavailable on Wayland | APP-07 |
 | GAP-VER-01 | Low | IMPLEMENTED_UNVERIFIED | Physical desktop drag and drop (between windows and applications) unverified | FILE-15, FILE-16 |
-| GAP-VER-02 | Low | PARTIAL | Desktop integration: .comp thumbnails absent in file managers (Flatpak exports no thumbnailers) | APP-12, FILE-18 |
+| GAP-VER-02 | Low | IMPLEMENTED_UNVERIFIED | Optional host thumbnail providers implemented; Nautilus and KIO dispatch pass, real Dolphin GUI acceptance pending | FILE-18 |
 | GAP-VER-03 | Low | IMPLEMENTED_UNVERIFIED | Physical touch, pen, trackpad and native Wayland input unverified | VIEW-16, KEY-04 |
 
 ## Resolved

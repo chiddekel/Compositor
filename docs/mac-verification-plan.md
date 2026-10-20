@@ -1,10 +1,15 @@
 # Verifying against macOS (T-10, T-18, T-23)
 
-Three checks need a Mac running upstream Compositor. The Linux side of each is scripted. The Mac side is ordinary
-use of the app: no Xcode, no changes to the Mac sources or their project. Any Apple-silicon or Intel Mac on
-macOS 15 or later with upstream Compositor 1.5.3 (the release GNU_Linux tracks) will do: a borrowed machine, or a
-rented one (MacStadium, AWS EC2 Mac, Scaleway Apple silicon). A GitHub-hosted macOS runner works for nothing here,
-because every step needs the app's interface.
+**October 20 follow-up:** an automated independent Mac/Linux render workflow now
+exists; see [render parity and desktop previews](render-parity-and-desktop-previews.md).
+It has not yet supplied a passing Mac comparison. The tracked upstream requires
+Apple silicon and macOS 26. GitHub-hosted macOS can run the new renderer harness; the manual
+interchange and subject-mask checks below remain separate.
+
+These manual procedures use upstream Compositor 1.5.3 on an Apple-silicon Mac
+running macOS 26 or later. The Linux side is scripted; manual interchange and
+subject-mask checks use the Mac app's interface. The automated render workflow
+uses Xcode and GitHub-hosted macOS instead, without changing protected sources.
 
 Record for each run: Mac model, macOS version, Compositor version (About), and the Linux commit and Flatpak version.
 Keep everything that goes back and forth under `.build/evidence/mac/<date>/`.

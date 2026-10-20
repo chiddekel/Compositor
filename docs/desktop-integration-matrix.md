@@ -1,5 +1,12 @@
 # Desktop integration and physical input (T-15, T-16)
 
+**October 20 follow-up:** optional host Nautilus/Dolphin providers now exist;
+[installation and current evidence](render-parity-and-desktop-previews.md).
+The historical Flatpak-only failure below remains accurate without that optional
+integration. Real Nautilus preview/refresh/removal and KIO worker dispatch pass;
+real Dolphin GUI acceptance remains pending. APP-12 now has its own GIO desktop
+launch regression instead of sharing the thumbnail acceptance criterion.
+
 What a script can check runs in `scripts/desktop-integration-check.sh` against the installed Flatpak. What needs a
 person at the machine — a pointer dragging between windows, a trackpad, a pen — is listed below, with a column per
 desktop to fill in. Record `pass`, `fail: <what happened>` or `n/a` and the app version tested.

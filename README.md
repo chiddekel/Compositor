@@ -130,6 +130,9 @@ No native title bar: drag the header to move the window, double-click to maximiz
 
 Headless: `QT_QPA_PLATFORM=offscreen flatpak run com.compositor.Client --help`
 
+Optional Nautilus/Dolphin project previews and the independent macOS/Linux render
+comparison are described in [render parity and desktop previews](docs/render-parity-and-desktop-previews.md).
+
 ### Dev loop
 
 [`scripts/run-compositor.sh`](scripts/run-compositor.sh) — builds from the working tree, runs from `.build/`, seconds not minutes:

@@ -1,5 +1,12 @@
 # 11 — Final parity assessment
 
+**October 20 follow-up:** the metrics below describe the historical baseline.
+The current matrix has 119 VERIFIED_PARITY, 57 IMPLEMENTED_UNVERIFIED, 3
+LINUX_EQUIVALENT and 0 PARTIAL rows. APP-12 has independent launch evidence;
+FILE-18 has optional host implementations pending real Dolphin GUI acceptance.
+The new independent Mac/Linux renderer workflow is implemented but has not yet
+produced a passing macOS comparison. See [current evidence and limits](../docs/render-parity-and-desktop-previews.md).
+
 **Baseline:** upstream `365b574` (1.5.3) against GNU_Linux **`a13f27d`**, 2026-10-19.
 
 Commits since the first pass (`959850f`):

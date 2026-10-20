@@ -1,5 +1,10 @@
 # 04 — Feature parity matrix
 
+October 20 follow-up: APP-12 now has independent GIO desktop-launch evidence;
+FILE-18 has optional host implementations and awaits Dolphin GUI verification.
+These two rows and totals are updated below; the other evidence retains the
+original audit baseline. See [current acceptance](../docs/render-parity-and-desktop-previews.md).
+
 Status rules (applied mechanically by `gen_reports.py`):
 
 - **VERIFIED_PARITY** — Linux scope only: unchanged or generated upstream logic, every listed upstream test suite passed in the run used as evidence (full contract runner on `a13f27d` (`.build/evidence/full-contract-epic.log`, exit `0 0`): Swift Testing (parallel, then 8 shared-state suites serially), XCTest, CTest, 36 native journeys incl. `--ui-audit-probe` and `--input-probe`, and the upstream-integrity check), and the UI was observed working in this audit's screenshots or by the `--ui-audit-probe` gate (or the feature has no UI). Not compared with macOS (GAP-VER-04).
@@ -8,10 +13,10 @@ Status rules (applied mechanically by `gen_reports.py`):
 
 | Status | Features |
 |---|---:|
-| PARTIAL | 2 |
-| IMPLEMENTED_UNVERIFIED | 56 |
+| PARTIAL | 0 |
+| IMPLEMENTED_UNVERIFIED | 57 |
 | LINUX_EQUIVALENT | 3 |
-| VERIFIED_PARITY | 118 |
+| VERIFIED_PARITY | 119 |
 | **Total** | **179** |
 
 | ID | Category | Upstream feature | Upstream evidence | Linux counterpart | Logic (tests today) | UI (seen today) | Status | Severity | Gaps | Acceptance |
@@ -27,7 +32,7 @@ Status rules (applied mechanically by `gen_reports.py`):
 | APP-09 | App | Unsaved-changes prompt (Don't Save matches Cancel) | `Compositor/IO/ProjectController.swift`; 283d360,4e035bf | R | PASS: ProjectTests ✔ | - | **IMPLEMENTED_UNVERIFIED** | - | — | ProjectTests pass; UI interaction journey |
 | APP-10 | App | Window menu (Minimize, Zoom) | (AppKit default); - | R | none | seen | **IMPLEMENTED_UNVERIFIED** | - | GAP-UI-09 (resolved) | add a test (none upstream) |
 | APP-11 | App | Help menu | (AppKit default); - | R | none | seen | **IMPLEMENTED_UNVERIFIED** | - | — | add a test (none upstream) |
-| APP-12 | App | Open a project while the app is quit shows its window | `Compositor/IO/CompositorApplicationDelegate.swift`; e70da06 | P | none | - | **PARTIAL** | Low | GAP-VER-02 | Nautilus/Dolphin show .comp thumbnails; double-click opens the project. |
+| APP-12 | App | Open a project while the app is quit shows its window | `Compositor/IO/CompositorApplicationDelegate.swift`; e70da06 | P | PASS: test_project_launch.py | window screenshot | **VERIFIED_PARITY** | - | — | GIO desktop-entry %F launch opens the saved project with exact dimensions/layers and clean history; Linux scope. |
 | APP-13 | App | Title-bar free space drags the window | `Compositor/UI/ProjectTabs.swift`; e8ed83b | R | PASS: TitleBarDragTests ✔ | - | **IMPLEMENTED_UNVERIFIED** | - | — | TitleBarDragTests pass; UI interaction journey |
 | APP-14 | App | Canvas Only / Toggle Fullscreen (F, Esc) | `Compositor/IO/CompositorApplicationDelegate.swift:102` (toggleCanvasOnly); ad4bddf,088a5c1,720c121 | M,R | PASS: CompositorTests ✔ | seen | **VERIFIED_PARITY** | - | — | CompositorTests pass; UI interaction journey |
 | APP-15 | App | Enter Full Screen (window) | (AppKit default); - | R | none | seen | **IMPLEMENTED_UNVERIFIED** | - | — | add a test (none upstream) |
@@ -49,7 +54,7 @@ Status rules (applied mechanically by `gen_reports.py`):
 | FILE-15 | Files | Drop files on canvas / anywhere on tab bar to open in a new project | `Compositor/IO/ImageFileDrop.swift`; d3d0ce7,54dc7ba | R,P | PASS: ProjectWorkspaceTests ✔ | - | **IMPLEMENTED_UNVERIFIED** | Low | GAP-VER-01 | Drag a PNG from the file manager onto canvas/tab bar; drag a layer between two windows. |
 | FILE-16 | Files | Drag a layer into another / a new project (canvas sizes to it) | `Compositor/Document/ProjectWorkspace.swift:20` (ProjectWorkspace); e580107 | R | PASS: ProjectWorkspaceTests ✔ | - | **IMPLEMENTED_UNVERIFIED** | Low | GAP-VER-01 | Drag a PNG from the file manager onto canvas/tab bar; drag a layer between two windows. |
 | FILE-17 | Files | External change reload (agents writing .comp), Revert/Keep Mine | `Compositor/IO/ProjectController+ExternalChanges.swift`; `Compositor/IO/ProjectWatcher.swift`; ed5ddea,29f0bea | U,P | PASS: ExternalChangeTests ✔ | n/a | **VERIFIED_PARITY** | - | — | ExternalChangeTests pass; UI interaction journey |
-| FILE-18 | Files | Package thumbnails / Quick Look preview | `Compositor/IO/ImageExporter.swift`; 14aad18,4868465 | P | none | n/a | **PARTIAL** | Low | GAP-VER-02 | Nautilus/Dolphin show .comp thumbnails; double-click opens the project. |
+| FILE-18 | Files | Package thumbnails / Quick Look preview | `Compositor/IO/ImageExporter.swift`; 14aad18,4868465 | P | PASS: real Nautilus and KIO worker dispatch | Nautilus screenshot; Dolphin pending | **IMPLEMENTED_UNVERIFIED** | Low | GAP-VER-02 | With optional host integration installed, both Nautilus and Dolphin paint and refresh the saved preview; run test_dolphin_provider.py to finish GUI acceptance. |
 | FILE-19 | Files | PSD/PSB import: folders, masks, blend modes, shapes, text, adjustments, merged-only | `Compositor/IO/PSD/PSDReader.swift`; ac5aa88,b8e3cd1,b8cce6e,e6bcfa1 | U | PASS: PSDRoundTripTests ✔, PSBImportTests ✔, PSDAdjustmentTests ✔ | - | **IMPLEMENTED_UNVERIFIED** | - | — | PSDRoundTripTests,PSBImportTests,PSDAdjustmentTests pass; UI interaction journey |
 | FILE-20 | Files | PSD conversion sheet shown while reading | `Compositor/UI/PSDConversionSheet.swift`; cf1ae1d | S | PASS: PSDRoundTripTests ✔ | - | **IMPLEMENTED_UNVERIFIED** | - | — | PSDRoundTripTests pass; UI interaction journey |
 | FILE-21 | Files | Crop oversize PSD layers to the canvas | `Compositor/IO/PSD/PSDDocumentBuilder.swift`; 1fcf854 | U | PASS: CropToCanvasImportTests ✔ | n/a | **VERIFIED_PARITY** | - | — | CropToCanvasImportTests pass; UI interaction journey |
