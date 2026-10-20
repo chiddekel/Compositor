@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.3-linux-alpha.5" date="2026-10-20" type="development">
+      <description><p>Linux: document parity evidence and remaining verification gaps; Linux: add optional Nautilus and Dolphin project previews; Linux: add independent render parity corpus and project launch verification</p></description>
+    </release>
     <release version="1.5.3-linux-alpha.4" date="2026-10-20" type="development">
       <description><p>Linux: Smudge keeps up with a fast drag and releases faster; Linux: About shows 1.5.3 (49); the upstream gate fails when AppVersion.h is stale</p></description>
     </release>

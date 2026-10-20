@@ -1,3 +1,18 @@
+Compositor 1.5.3-linux-alpha.5 for Linux — signed Flatpak alpha, x86_64.
+
+- Optional Nautilus and Dolphin providers display saved project previews. Installation is user-scoped and documented in docs/render-parity-and-desktop-previews.md; host integration is not installed automatically by the Flatpak.
+- Added an independent 151-case render corpus covering blend modes, adjustments, filters, effects, transforms, text, shapes, color imports and synthetic RAW fixtures. Linux CPU/Vulkan outputs pass the comparison thresholds, including deep color samples.
+- Verified project launch through a GIO desktop entry, real Nautilus preview display/refresh, and KDE KIO worker dispatch.
+- Upstream app source, tests and Xcode project remain unchanged.
+
+Verification limits:
+
+- Independent macOS comparisons and real Dolphin GUI acceptance are pending their new GitHub Actions workflows; this release does not claim completed macOS visual/color parity.
+- All 994 Swift tests passed locally. The full native batch passed 34 of 36 journeys: Canvas Size failed focus validation and Image Size stalled during parallel execution. Both passed in isolated reruns; the parallel failure remains unresolved.
+- RAW fixtures are synthetic and do not establish every camera's rendering. Physical desktop input, broader Flatpak desktop delivery and cross-platform project round trips retain their separate acceptance checks.
+
+Previous release notes:
+
 Compositor 1.5.3-linux-alpha.4 for Linux — signed Flatpak alpha, x86_64.
 
 - Linux: Smudge keeps up with a fast drag and releases faster
