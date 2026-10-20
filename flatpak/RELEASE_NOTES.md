@@ -1,3 +1,10 @@
+Compositor 1.5.3-linux-alpha.4 for Linux — signed Flatpak alpha, x86_64.
+
+- Linux: Smudge keeps up with a fast drag and releases faster
+- Linux: About shows 1.5.3 (49); the upstream gate fails when AppVersion.h is stale
+
+Previous release notes:
+
 Compositor 1.5.3-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
 
 - RAW Develop and Add Noise/Grain now use upstream's own code unchanged

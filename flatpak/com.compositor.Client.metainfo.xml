@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.3-linux-alpha.4" date="2026-10-20" type="development">
+      <description><p>Linux: Smudge keeps up with a fast drag and releases faster; Linux: About shows 1.5.3 (49); the upstream gate fails when AppVersion.h is stale</p></description>
+    </release>
     <release version="1.5.3-linux-alpha.3" date="2026-10-19" type="development">
       <description><p>RAW Develop and Add Noise/Grain now use upstream's own code unchanged; Live Add Noise and Grain run on the GPU (Vulkan); Gaussian noise matches the exported file exactly; Projects tab bar: a dragged tab stays above its neighbours; UI checks now cover the Export As sheet and the command palette.</p></description>
     </release>
