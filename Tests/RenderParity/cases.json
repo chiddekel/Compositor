@@ -1,0 +1,608 @@
+[
+  {
+    "file": "adjustment/Add Noise--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Add Noise-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Add Noise-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Black & White--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Black & White-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Black & White-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Color Balance--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Color Balance-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Color Balance-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Curves--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Curves-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Curves-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Exposure--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Exposure-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Exposure-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Gaussian Blur--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Gaussian Blur-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Gaussian Blur-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Gradient Map--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Gradient Map-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Gradient Map-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Grain--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Grain-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Grain-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Hue-Saturation--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Hue-Saturation-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Hue-Saturation-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Invert-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Levels--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Levels-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Levels-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Motion Blur--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Motion Blur-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Motion Blur-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "blend/Color Burn-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Color Burn-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Color Dodge-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Color Dodge-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Color-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Color-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Darken-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Darken-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Difference-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Difference-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Divide-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Divide-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Exclusion-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Exclusion-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Hard Light-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Hard Light-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Hard Mix-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Hard Mix-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Hue-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Hue-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Lighten-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Lighten-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Linear Burn-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Linear Burn-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Linear Dodge (Add)-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Linear Dodge (Add)-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Linear Light-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Linear Light-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Luminosity-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Luminosity-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Multiply-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Multiply-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Normal-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Normal-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Overlay-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Overlay-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Pin Light-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Pin Light-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Saturation-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Saturation-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Screen-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Screen-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Soft Light-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Soft Light-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Subtract-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Subtract-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Vivid Light-100.png",
+    "category": "blend"
+  },
+  {
+    "file": "blend/Vivid Light-50.png",
+    "category": "blend"
+  },
+  {
+    "file": "color/cmyk-roundtrip.png",
+    "category": "color"
+  },
+  {
+    "file": "color/gray-alpha.png.png",
+    "category": "color"
+  },
+  {
+    "file": "color/highlights.tiff.png",
+    "category": "color",
+    "samples": "color/highlights.tiff.samples.json"
+  },
+  {
+    "file": "color/p3.png.png",
+    "category": "color"
+  },
+  {
+    "file": "color/ramp16.tiff.png",
+    "category": "color",
+    "samples": "color/ramp16.tiff.samples.json"
+  },
+  {
+    "file": "effect/inner-glow.png",
+    "category": "effect"
+  },
+  {
+    "file": "effect/inner-shadow.png",
+    "category": "effect"
+  },
+  {
+    "file": "effect/outer-glow.png",
+    "category": "effect"
+  },
+  {
+    "file": "effect/overlay.png",
+    "category": "effect"
+  },
+  {
+    "file": "effect/shadow.png",
+    "category": "effect"
+  },
+  {
+    "file": "effect/stroke.png",
+    "category": "effect"
+  },
+  {
+    "file": "export/png.png",
+    "category": "export"
+  },
+  {
+    "file": "filter/Add Noise-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Add Noise-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Black & White-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Black & White-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Bloom - Glow-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Bloom - Glow-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Camera Raw Filter-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Camera Raw Filter-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Color Balance-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Color Balance-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Curves-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Curves-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Dither-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Dither-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Exposure-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Exposure-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Gaussian Blur-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Gaussian Blur-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Gradient Map-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Gradient Map-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Grain-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Grain-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Lens Correction-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Lens Correction-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Motion Blur-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Motion Blur-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Progressive Blur-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Progressive Blur-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Scanlines-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Scanlines-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Tonal Contrast-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Tonal Contrast-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Vignette-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Vignette-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "raw/sensor-0.png",
+    "category": "raw"
+  },
+  {
+    "file": "raw/sensor-1.png",
+    "category": "raw"
+  },
+  {
+    "file": "raw/sensor-2.png",
+    "category": "raw"
+  },
+  {
+    "file": "raw/sensor-3.png",
+    "category": "raw"
+  },
+  {
+    "file": "raw/sensor-4.png",
+    "category": "raw"
+  },
+  {
+    "file": "shape/Ellipse.png",
+    "category": "shape"
+  },
+  {
+    "file": "shape/Line.png",
+    "category": "shape"
+  },
+  {
+    "file": "shape/Rectangle.png",
+    "category": "shape"
+  },
+  {
+    "file": "text/Inter-Bold-12.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Bold-24.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Bold-36.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Light-12.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Light-24.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Light-36.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Regular-12.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Regular-24.png",
+    "category": "text"
+  },
+  {
+    "file": "text/Inter-Regular-36.png",
+    "category": "text"
+  },
+  {
+    "file": "transform/0.37-high.png",
+    "category": "transform"
+  },
+  {
+    "file": "transform/0.37-nearest.png",
+    "category": "transform"
+  },
+  {
+    "file": "transform/1.0-high.png",
+    "category": "transform"
+  },
+  {
+    "file": "transform/1.0-nearest.png",
+    "category": "transform"
+  },
+  {
+    "file": "transform/2.63-high.png",
+    "category": "transform"
+  },
+  {
+    "file": "transform/2.63-nearest.png",
+    "category": "transform"
+  }
+]

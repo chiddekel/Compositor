@@ -346,6 +346,23 @@ let package = Package(
             // Same -export-dynamic as CompositorUpstreamTests: both merge into one test binary.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-export-dynamic"])]
         ),
+        .target(
+            name: "RenderParitySupport", dependencies: ["HostRun"], path: "Tests/RenderParitySupport",
+            publicHeadersPath: "include",
+            cxxSettings: [.unsafeFlags(["-I/usr/include/QtGui", "-I/usr/include/QtCore", "-DQT_GUI_LIB", "-DQT_CORE_LIB"])]
+        ),
+        .testTarget(
+            name: "RenderParityTests",
+            dependencies: ["Compositor", "RenderParitySupport", "AppKit", "CoreGraphics", "CoreImage", "ImageIO", "FoundationCompat"],
+            path: "Tests/RenderParity",
+            exclude: ["cases.json"],
+            swiftSettings: [.swiftLanguageMode(.v5),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat"])],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-export-dynamic"]),
+                .linkedLibrary("Qt6Widgets"), .linkedLibrary("Qt6Gui"), .linkedLibrary("Qt6Core"),
+                .linkedLibrary("Qt6DBus"), .linkedLibrary("Qt6Svg")]
+        ),
         .testTarget(
             name: "CompatTests",
             dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "CLibXML2", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision", "SwiftUI"],
