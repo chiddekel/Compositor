@@ -69,6 +69,7 @@ if [[ ! -f "$CMYK_FOLDER/Generic CMYK Profile.icc" ]]; then
 fi
 export COMPOSITOR_REQUIRE_SUBJECT_MODEL=1
 "$NATIVE_BUILD/test_imageio_color" --require-heif
+python3 tests/test_straight_png.py "$NATIVE_BUILD/libCompositorQtImageIO.so"
 "$NATIVE_BUILD/test_font_traits"
 "$NATIVE_BUILD/test_native_file_panels"
 "$NATIVE_BUILD/test_thumbnailer" "$NATIVE_BUILD/compositor-thumbnailer"
@@ -119,6 +120,8 @@ NATIVE_GATES=(
     "test --combo-smoke --transform-snap-probe"
     "test --combo-smoke --upstream-153-probe"
     "test --combo-smoke --upstream-154-probe"
+    "test --combo-smoke --font-history-probe"
+    "test --combo-smoke --channel-pack-probe"
     "test --combo-smoke --zoom-cursor-probe"
     "test --combo-smoke --keyboard-cursor-probe"
     "test --combo-smoke --layer-disjoint-probe"

@@ -56,6 +56,14 @@ final class PortablePNGCodec: ImageCodecBackend {
     // MARK: Decode
 
     func decode(_ data: Data) -> CGImage? {
+        decode(data, preservingStraightAlpha: false)
+    }
+
+    func decodeSource(_ data: Data) -> CGImage? {
+        decode(data, preservingStraightAlpha: parse(data)?.header.depth == 8)
+    }
+
+    private func decode(_ data: Data, preservingStraightAlpha: Bool) -> CGImage? {
         guard let p = parse(data), p.header.interlace == 0, let ch = Self.channels(p.header.colorType),
               [8, 16].contains(p.header.depth) || (p.header.colorType == 3 && [1, 2, 4, 8].contains(p.header.depth)) || (p.header.colorType == 0 && [1, 2, 4].contains(p.header.depth)),
               p.header.width > 0, p.header.height > 0, p.header.width * p.header.height <= 100_000_000,
@@ -126,9 +134,14 @@ final class PortablePNGCodec: ImageCodecBackend {
                 }
                 let o = (y * w + x) * 4
                 // Premultiply (rounded) for the compat's canonical storage.
-                out[o] = UInt8((r * a + 127) / 255); out[o + 1] = UInt8((g * a + 127) / 255)
-                out[o + 2] = UInt8((b * a + 127) / 255); out[o + 3] = UInt8(a)
+                out[o] = UInt8(preservingStraightAlpha ? r : (r * a + 127) / 255)
+                out[o + 1] = UInt8(preservingStraightAlpha ? g : (g * a + 127) / 255)
+                out[o + 2] = UInt8(preservingStraightAlpha ? b : (b * a + 127) / 255); out[o + 3] = UInt8(a)
             }
+        }
+        if preservingStraightAlpha {
+            return CGImage(width: w, height: h, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: CGDataProvider(data: out))
         }
         return CGImage(PortableImage(width: w, height: h, kind: .rgba, bytesPerRow: w * 4, bytes: out))
     }
@@ -141,7 +154,12 @@ final class PortablePNGCodec: ImageCodecBackend {
         let mask = image.isGrayPlane
         let ch = mask ? 1 : 4
         var filtered = [UInt8](); filtered.reserveCapacity(h * (w * ch + 1))
-        let px = image.portableImage.bytes, rowBytes = image.bytesPerRow
+        let straight = !mask && image.bitsPerComponent == 8 && image.bitsPerPixel == 32 &&
+            (image.alphaInfo == .last || image.alphaInfo == .first)
+        let px: [UInt8]
+        if straight { guard let raw = straightRGBA8Bytes(image) else { return nil }; px = raw }
+        else { px = image.portableImage.bytes }
+        let rowBytes = straight ? w * 4 : image.bytesPerRow
         for y in 0..<h {
             filtered.append(0)
             for x in 0..<w {
@@ -150,7 +168,7 @@ final class PortablePNGCodec: ImageCodecBackend {
                     let o = y * rowBytes + x * 4
                     let a = Int(px[o + 3])
                     // Un-premultiply for PNG's straight alpha.
-                    for c in 0..<3 { filtered.append(a == 0 ? 0 : UInt8(min(255, (Int(px[o + c]) * 255 + a / 2) / a))) }
+                    for c in 0..<3 { filtered.append(straight ? px[o + c] : a == 0 ? 0 : UInt8(min(255, (Int(px[o + c]) * 255 + a / 2) / a))) }
                     filtered.append(px[o + 3])
                 }
             }

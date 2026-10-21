@@ -17,6 +17,9 @@
 #include "DesktopProbeJourney.h"
 #include "InputProbeJourney.h"
 #include "Upstream154Journey.h"
+#include "FontHistoryJourney.h"
+#include "ChannelPackJourney.h"
+#include "MaskDragJourney.h"
 #include "OtherApplications.h"
 #include "compositor_host_run.h"
 #include "interfaces/IPlatformServices.h"
@@ -118,6 +121,23 @@ extern "C" int32_t compositor_session_viewport(uint64_t, double *);
 extern "C" int32_t compositor_install_subject_model(void);
 
 /// Tool combinations through the visible Qt rail, canvas events and inline text editor.
+// Exact pixel oracles exclude alignment snapping. At 100% its screen-space tolerance covers more document pixels
+// than the enlarged fit these fixtures used before upstream capped opening zoom. Dedicated snap cases opt in.
+static void setPixelOracleSnapping(SessionWindow &window, bool enabled) {
+    QPointer<QMenu> view = window.findChild<QMenu *>("appMenu.View");
+    if (!view) throw std::runtime_error("pixel oracle View menu missing");
+    QMetaObject::invokeMethod(view, "aboutToShow", Qt::DirectConnection);
+    QPointer<QAction> snap;
+    for (auto *action : view->actions()) if (action->text().remove('&') == QLatin1String("Snap")) snap = action;
+    if (!snap || !snap->isEnabled() || !snap->isCheckable()) throw std::runtime_error("pixel oracle Snap toggle missing");
+    if (snap->isChecked() != enabled) {
+        snap->trigger();
+        QApplication::processEvents();
+    }
+}
+
+static void disablePixelOracleSnapping(SessionWindow &window) { setPixelOracleSnapping(window, false); }
+
 extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     QApplication app(argc, argv);
     installJourneyUI(app);
@@ -130,6 +150,9 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     if (app.arguments().contains("--desktop-probe")) return desktopprobe::run(app);
     if (app.arguments().contains("--input-probe")) return inputprobe::run(app);
     if (app.arguments().contains("--upstream-154-probe")) return upstream154journey::run(app);
+    if (app.arguments().contains("--font-history-probe")) return fonthistoryjourney::run(app);
+    if (app.arguments().contains("--channel-pack-probe")) return channelpackjourney::run(app);
+    if (app.arguments().contains("--mask-drag-probe")) return maskdragjourney::run(app, disablePixelOracleSnapping);
     try {
         const auto check = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
         QTemporaryDir temporary;
@@ -163,6 +186,8 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
         };
         const auto mouse = [&](QWidget *target, QEvent::Type type, QPointF position,
                                Qt::MouseButton button, Qt::MouseButtons held, Qt::KeyboardModifiers modifiers) {
+            if (target == canvas && type == QEvent::MouseButtonPress && !app.arguments().contains("--transform-snap-probe"))
+                setPixelOracleSnapping(window, window.sessionState().value("tool").toString() == QLatin1String("crop"));
             QMouseEvent event(type, position, target->mapToGlobal(position.toPoint()), button, held, modifiers);
             QApplication::sendEvent(target, &event);
             QApplication::processEvents();
@@ -8449,6 +8474,7 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         const auto mouse = [&](QEvent::Type type, QPointF documentPoint, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
             auto *canvas = window.findChild<QWidget *>("editorCanvas");
             require(canvas, "preview canvas missing");
+            if (type == QEvent::MouseButtonPress) disablePixelOracleSnapping(window);
             const auto pos = window.documentToCanvasPoint(documentPoint);
             QMouseEvent event(type, pos, canvas->mapToGlobal(pos),
                 type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
@@ -9620,6 +9646,17 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         mouse(QEvent::MouseButtonPress, {32, 16});
         mouse(QEvent::MouseMove, {48, 16});
         const auto moved = frame();
+        if (moved == masked) {
+            double viewport[6] = {};
+            compositor_session_viewport(window.sessionHandle(), viewport);
+            qWarning() << "mask drag diagnostic: canvas=" << window.findChild<QWidget *>("editorCanvas")->size()
+                       << "zoom/dpr=" << viewport[0] << viewport[3] << "view=" << viewport[4] << viewport[5]
+                       << "transforming=" << window.sessionState().value("transforming")
+                       << "mask selected=" << window.sessionState().value("isMaskSelected")
+                       << "layers=" << window.sessionState().value("layers");
+            for (auto *field : window.findChildren<QLineEdit *>())
+                if (field->isVisible()) qWarning() << "mask drag field:" << field->accessibleName() << field->text();
+        }
         require(moved != masked, "unlinked mask remained stationary during drag");
         require(static_cast<uint8_t>(pixel(moved, 8, 16)[3]) == 255, "old mask hole remained covered");
         require(static_cast<uint8_t>(pixel(moved, 24, 16)[3]) == 0, "new mask hole missing during drag");
@@ -9955,6 +9992,7 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
             return nullptr;
         };
         const auto chooseFont = [&](const QString &query) {
+            const int beforePreviewSteps = editor->document()->availableUndoSteps();
             // The closed control only displays the current face in 1.5.4. Choose through the upstream search panel.
             QElapsedTimer delay; delay.start();
             upstream154journey::settle([&] { return delay.elapsed() >= 300; }, "font panel reopen delay did not finish");
@@ -9974,6 +10012,14 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
             for (QChar character : query) {
                 auto *field = search(); require(field, "font search field disappeared while typing");
                 field->setFocus(); upstream154journey::key(field, 0, QString(character));
+            }
+            // Exercise live highlights before committing, with time for the native editor to synchronize each one.
+            for (int key : {Qt::Key_Down, Qt::Key_Up}) {
+                upstream154journey::key(search(), key, {});
+                QElapsedTimer preview; preview.start();
+                upstream154journey::settle([&] { return preview.elapsed() >= 300; }, "font highlight did not settle");
+                require(editor->document()->availableUndoSteps() == beforePreviewSteps,
+                        "font highlight added a native undo step before the choice was committed");
             }
             upstream154journey::key(search(), Qt::Key_Return, QStringLiteral("\r"));
             upstream154journey::settle([&] { return popup() == nullptr; }, "font panel did not accept its selection");
@@ -11553,6 +11599,7 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
         require(canvas != nullptr, "editorCanvas missing");
         auto at = [&](double dx, double dy) { return window.documentToCanvasPoint(QPointF(dx, dy)); };
         auto drag = [&](QPointF from, QPointF to, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            disablePixelOracleSnapping(window);
             const bool pending = window.sessionState().value("transformPending").toBool();
             auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
                 QMouseEvent ev(type, pos, canvas->mapToGlobal(pos.toPoint()), button, buttons, mods);

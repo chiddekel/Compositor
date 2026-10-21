@@ -20,6 +20,17 @@
     }
 }
 
+extension Binding where Value: MutableCollection {
+    /// A binding to one collection element, read from the current collection so other edits remain intact.
+    public subscript(index: Value.Index) -> Binding<Value.Element> {
+        Binding<Value.Element>(get: { wrappedValue[index] }, set: { value in
+            var collection = wrappedValue
+            collection[index] = value
+            wrappedValue = collection
+        })
+    }
+}
+
 // Not `@MainActor`: these are plain boxed storage (no AppKit/UIKit thread affinity of their own), and modifier
 // closures that write through them (`.onChange`, `.focused`, ...) run wherever the Qt bridge calls back from.
 //

@@ -172,6 +172,8 @@ private struct State: Encodable {
         let error: String?
     }
     let textDraft: TextDraftState?
+    /// Font highlights and color-picker previews are transient; native text history records their committed result.
+    let textStylePreviewing: Bool
     /// Upstream's RAW Develop sheet is up (the shell's dialog closes when this turns false).
     let rawDevelopOpen: Bool
     /// Upstream's Photoshop conversion sheet is up (reading the file, or waiting for Import / Cancel).
@@ -957,12 +959,13 @@ final class UpstreamEditor {
                     case "png": return .png
                     case "exr": return .exr
                     case "tiff": return .tiff
+                    case "channelpack": return .channelPack
                     default: return lastExportFormat
                     }
                 }()
                 let chosen: (data: Data, format: ExportFormat)? = await withCheckedContinuation { continuation in
                     sizeAnswer = { continuation.resume(returning: $0 as? (data: Data, format: ExportFormat)) }
-                    exportAsSheet = ExportAsSheet(raster: raster, deepRaster: deepRaster, hdrRaster: hdrRaster, session: s,
+                    exportAsSheet = ExportAsSheet(raster: raster, deepRaster: deepRaster, hdrRaster: hdrRaster, snapshot: snapshot, session: s,
                                                   format: start) { [weak self] in
                         self?.finishExportAsSheet($0)
                     }
@@ -1602,6 +1605,7 @@ final class UpstreamEditor {
                     alignment: style.alignment.rawValue, boxSize: style.boxSize.map { [Double($0.width), Double($0.height)] },
                     padding: Double(LayerTextStyle.padding), editingLayer: draft.layerID != nil)
             },
+            textStylePreviewing: s.fontPreviewOriginal != nil || s.colorPicker != nil,
             rawDevelopOpen: importSession.showsRawDevelop,
             conversionSheetOpen: importSession.showsConversionSheet,
             floatingPanels: FloatingPanels.open(in: self),

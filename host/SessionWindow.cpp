@@ -1451,7 +1451,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         m_pumpedState = bytes;
         const auto currentState = QJsonDocument::fromJson(bytes).object();
         if (m_textEditor && (currentState.value("textDraft").toObject() != m_textDraft ||
-            !currentState.value("colorPickerTitle").toString().isEmpty() != m_textPreviewingColor)) syncTextEditor(false);
+            currentState.value("textStylePreviewing").toBool() != m_textPreviewingStyle)) syncTextEditor(false);
         if (!first) {
             const bool painting = m_upstreamCanvasDrag && (m_tool == Tool::Brush || m_tool == Tool::SpotHealing
                 || m_tool == Tool::CloneStamp || m_tool == Tool::Smear);
@@ -5266,7 +5266,7 @@ bool SessionWindow::canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *can
 void SessionWindow::syncTextEditor(bool requestFocus) {
     const auto state = sessionState();
     const QJsonObject draft = state.value("textDraft").toObject();
-    m_textPreviewingColor = !state.value("colorPickerTitle").toString().isEmpty();
+    m_textPreviewingStyle = state.value("textStylePreviewing").toBool();
     if (draft.isEmpty() || !m_canvasWidget || m_image.isNull()) {
         if (m_textEditor) m_textEditor->hide();
         return;
@@ -5345,7 +5345,7 @@ void SessionWindow::syncTextEditor(bool requestFocus) {
         m_textEditor->setPlainText(content);
         m_textUndoPosition = m_textEditor->document()->availableUndoSteps();
         m_textHistory.reset(m_textUndoPosition, draft);
-    } else if (!m_textPreviewingColor && !m_textHistory.matches(m_textUndoPosition, draft)) {
+    } else if (!m_textPreviewingStyle && !m_textHistory.matches(m_textUndoPosition, draft)) {
         // A block property gives formatting its own native undo step without
         // modifying glyphs, caret, text grouping, or the typing attributes.
         m_textHistory.discardAfter(m_textUndoPosition);

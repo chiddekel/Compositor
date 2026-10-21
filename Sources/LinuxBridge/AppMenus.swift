@@ -413,6 +413,7 @@ nonisolated public func compositorSessionAppMenuPerform(_ handle: UInt64, _ path
         case .pdf: request("exportPDF")
         case .exr: request("exportAs:exr")
         case .tiff: request("exportAs:tiff")
+        case .channelPack: request("exportAs:channelPack")
         case .png, nil: request("exportPNG")
         }
     }

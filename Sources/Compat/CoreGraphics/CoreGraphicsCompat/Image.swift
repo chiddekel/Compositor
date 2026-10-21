@@ -145,6 +145,8 @@ public final class CGImage: @unchecked Sendable {
     /// A CMYK image's own ink bytes (8 bits a channel, no alpha) and the intent it was made with. Its `nativeImage` is
     /// those inks converted to sRGB through its profile, so everything that draws it sees colours.
     private var inks: CGDataProvider?
+    /// Original unassociated samples stay available to ImageIO/vImage; drawing uses canonical premultiplied pixels.
+    private var sourceProvider: CGDataProvider?
     private let intent: CGColorRenderingIntent
     /// Filter-backed images can supply just the source pixels visible through a drawing context's clip.
     public var supportsRegionRendering: Bool { regionRenderer != nil }
@@ -184,6 +186,11 @@ public final class CGImage: @unchecked Sendable {
     }
 
     public var bytes: [UInt8] { portableImage.bytes }
+    var drawingIsPremultiplied: Bool {
+        alphaInfo == .premultipliedLast || alphaInfo == .premultipliedFirst ||
+            (bitsPerComponent == 8 && bitsPerPixel == 32 &&
+                [.last, .first, .noneSkipFirst, .noneSkipLast].contains(alphaInfo))
+    }
     /// One-byte-per-pixel gray plane (the compat's internal notion of a mask raster).
     public var isGrayPlane: Bool { space.model == .monochrome || alphaInfo == .only }
     /// Apple's meaning: a stencil image mask. An ordinary gray image is not one.
@@ -273,10 +280,32 @@ public final class CGImage: @unchecked Sendable {
             : bitsPerComponent == 32 && bitmapInfo.contains(.floatComponents) ? .float32
             : bitsPerComponent == 16 ? (bitmapInfo.contains(.floatComponents) ? .half : .uint16) : .uint8
         let expectedBytes = height * bytesPerRow
+        let rgba8 = kind == .rgba && bitsPerComponent == 8 && bitsPerPixel == 32
+        let unassociated = alphaInfo == .last || alphaInfo == .first
+        let skipsAlpha = alphaInfo == .noneSkipLast || alphaInfo == .noneSkipFirst
+        let first = alphaInfo == .first || alphaInfo == .premultipliedFirst || alphaInfo == .noneSkipFirst
+        let little = bitmapInfo.intersection(.byteOrderMask) == .byteOrder32Little
+        if rgba8 && (unassociated || skipsAlpha || first || little) { sourceProvider = provider }
         self.deferred = {
             var pixelBytes = provider.bytes
             if pixelBytes.count < expectedBytes {
                 pixelBytes.append(contentsOf: repeatElement(0, count: expectedBytes - pixelBytes.count))
+            }
+            if rgba8, bytesPerRow >= width * 4, unassociated || skipsAlpha || first || little {
+                for y in 0..<height { for x in 0..<width {
+                    let at = y * bytesPerRow + x * 4
+                    if little { pixelBytes.swapAt(at, at + 3); pixelBytes.swapAt(at + 1, at + 2) }
+                    if first {
+                        let alpha = pixelBytes[at]
+                        pixelBytes[at] = pixelBytes[at + 1]; pixelBytes[at + 1] = pixelBytes[at + 2]
+                        pixelBytes[at + 2] = pixelBytes[at + 3]; pixelBytes[at + 3] = alpha
+                    }
+                    if skipsAlpha { pixelBytes[at + 3] = 255 }
+                    else if unassociated {
+                        let alpha = Int(pixelBytes[at + 3])
+                        for channel in 0..<3 { pixelBytes[at + channel] = UInt8((Int(pixelBytes[at + channel]) * alpha + 127) / 255) }
+                    }
+                } }
             }
             return PortableImage(width: width, height: height, kind: kind, depth: depth, bytesPerRow: bytesPerRow, bytes: pixelBytes)
         }
@@ -339,6 +368,7 @@ public final class CGImage: @unchecked Sendable {
     /// The image's own bytes, at its own depth (as Apple's data provider); a CMYK image's inks.
     public var dataProvider: CGDataProvider? {
         if let inks { return inks }
+        if let sourceProvider { return sourceProvider }
         return CGDataProvider(data: nativeImage.bytes as [UInt8])
     }
 

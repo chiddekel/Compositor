@@ -2,7 +2,7 @@
   "upstream_remote": "upstream",
   "upstream_ref": "upstream/main",
   "ledger_base": "a1bd74c",
-  "ledger_to": "8e4b63b",
+  "ledger_to": "9fe0c72",
   "protected_roots": [
     "Compositor",
     "CompositorTests",
@@ -42,7 +42,7 @@
     "Compositor/UI/FontListPanel.swift": "Sources/Overrides/FontListPanel.swift (generated selectors by name; AppKit child-window hosting renders the original panel through Qt)",
     "Compositor/UI/LatinKeys.swift": "Sources/Overrides/LatinKeys.swift (generated: native keyboard-layout lookup replaces Carbon; upstream event normalization retained)"
   },
-  "status": "Integration of upstream 8e4b63b is in progress. Baseline 2f4cb15 has passed release, installation, deployment and macOS CI. New viewport, file-panel editing and keyboard-layout adaptations require targeted and full regression verification.",
+  "status": "Upstream 9fe0c72 integration checkpoint: 1,029 Swift Testing and 159 XCTest checks pass in the normal SDK contract run; its 39 native journeys are still running. Focused native Channel Pack, font-preview Undo/Redo and exact 100% mask movement pass. Compatibility adds collection bindings, straight RGBA PNG/vImage samples, bounded color-space handoff, transient style-history suppression and adaptive small-object handle reach. Source coverage passes for 160 upstream Swift files and 91 unchanged test files. Follow-up target fc02107 (RGB Split, filter layers, PSD artboards) has been observed but not merged. See docs/upstream-1.5.4-integration.md for evidence.",
   "drift": {
     "Sources/Overrides/ContentView.swift": {
       "mode": "generated",
@@ -81,7 +81,7 @@
       "upstream": [
         "Compositor/Rendering/TransformOverlay.swift"
       ],
-      "reason": "Linux patch: wider handle hit slop",
+      "reason": "Linux patch: adaptive mouse/touch handle reach that preserves a draggable interior",
       "generator": "scripts/gen-patched-overrides.py"
     },
     "Sources/Overrides/TypeControls.swift": {

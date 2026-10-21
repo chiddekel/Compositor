@@ -53,6 +53,7 @@ public final class CGColorSpace: @unchecked Sendable, Equatable {
         default: return nil
         }
         self.iccData = nil
+        retainConstructorResultForBorrowedBridge()
     }
 
     init(name: String, model: Model) {
@@ -76,6 +77,14 @@ public final class CGColorSpace: @unchecked Sendable, Equatable {
         }
         self.name = "kCGColorSpaceICCBased"
         self.iccData = iccData
+        retainConstructorResultForBorrowedBridge()
+    }
+
+    /// Keep an inline `Unmanaged.passUnretained(CGColorSpace(name: …)!)` argument alive until its receiver can
+    /// retain it: a Swift temporary can otherwise die before the format initializer runs. Keep only the latest result
+    /// on its creating thread; the receiving framework object takes its own ownership before another is made.
+    private func retainConstructorResultForBorrowedBridge() {
+        Thread.current.threadDictionary["Compositor.CGColorSpace.constructorResult"] = self
     }
 
     /// The space's ICC profile, as Core Graphics returns it for a profile-based space.

@@ -27,7 +27,7 @@ OUTPUTS = {
         'Only an explicit nonisolated deinit added: Swift 6.3.3 crashes emitting the generic Container\'s main-actor deinit.'),
     'Sources/Overrides/TransformOverlay.swift': (
         'Compositor/Rendering/TransformOverlay.swift', 'linux/patches/transform-overlay-linux.patch',
-        'Transform handles take the pointer from 16 points away rather than 10, 28 for a finger (the drawn squares stay 7 × 7).'),
+        'Transform handles use 16-point mouse or 28-point touch hit areas, capped to preserve a draggable interior on small objects. Drawn sizes are unchanged.'),
 }
 
 

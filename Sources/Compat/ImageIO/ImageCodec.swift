@@ -5,6 +5,7 @@
 // projects, exports and tests round-trip. A backend that does not know a format returns nil.
 
 import Foundation
+import Accelerate
 import CompositorColorManagement
 import CompatSupport
 #if canImport(Glibc)
@@ -38,6 +39,8 @@ public protocol ImageCodecBackend: AnyObject {
     func identify(_ data: Data) -> ImageInfo?
     /// Full decode to 8-bit premultiplied RGBA (or an 8-bit gray plane as a mask image).
     func decode(_ data: Data) -> CGImage?
+    /// A Core Graphics source image may retain straight source samples independently of its drawable raster.
+    func decodeSource(_ data: Data) -> CGImage?
     /// `quality` is 0...1 for lossy formats; `dpi` is written when the format can carry it.
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?) -> Data?
     /// Like `encode` but also records an EXIF orientation (1...8) in the file when the format can carry one.
@@ -45,6 +48,7 @@ public protocol ImageCodecBackend: AnyObject {
 }
 
 public extension ImageCodecBackend {
+    func decodeSource(_ data: Data) -> CGImage? { decode(data) }
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data? {
         encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi)
     }
@@ -86,6 +90,12 @@ public enum ImageCodecRegistry {
                 var deep: CompositorImageDecodeFn?
                 if let deepSym = dlsym(handle, "compositor_qt_imageio_deep_decode") { _ = unsafeBitCast(deepSym, to: DeepFunction.self)(&deep) }
                 host = CCallbackCodec(decode: decode, encode: encode, deepDecode: deep)
+                var straightDecode: CompositorImageDecodeFn?, straightEncode: CompositorImageEncodeFn?
+                if let straight = dlsym(handle, "compositor_qt_imageio_straight_functions"),
+                   unsafeBitCast(straight, to: Functions.self)(&straightDecode, &straightEncode) == 1 {
+                    (host as? CCallbackCodec)?.straightDecodeFn = straightDecode
+                    (host as? CCallbackCodec)?.straightEncodeFn = straightEncode
+                }
                 typealias CMYKFunctions = @convention(c) (UnsafeMutablePointer<CompositorCMYKDecodeFn?>?,
                                                           UnsafeMutablePointer<CompositorCMYKEncodeFn?>?) -> Int32
                 var cmykDecode: CompositorCMYKDecodeFn?, cmykEncode: CompositorCMYKEncodeFn?
@@ -110,6 +120,11 @@ public enum ImageCodecRegistry {
     }
     public static func encode(_ image: CGImage, typeIdentifier: String, quality: Double? = nil, dpi: Double? = nil, orientation: Int32 = 1) -> Data? {
         for b in backends { if let data = b.encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi, orientation: orientation) { return data } }
+        return nil
+    }
+
+    static func decodeSource(_ data: Data) -> CGImage? {
+        for backend in backends { if let image = backend.decodeSource(data) { return image } }
         return nil
     }
 
@@ -162,6 +177,8 @@ public typealias CompositorCMYKEncodeFn = @convention(c) (
 
 final class CCallbackCodec: ImageCodecBackend {
     let decodeFn: CompositorImageDecodeFn, encodeFn: CompositorImageEncodeFn
+    var straightDecodeFn: CompositorImageDecodeFn?
+    var straightEncodeFn: CompositorImageEncodeFn?
     /// The host's deep decode (16-bit and linear-float layouts), when it has one: used instead of the 8-bit decode so
     /// a file keeps its depth, as with Apple's ImageIO.
     var deepDecodeFn: CompositorImageDecodeFn?
@@ -171,13 +188,13 @@ final class CCallbackCodec: ImageCodecBackend {
     init(decode: @escaping CompositorImageDecodeFn, encode: @escaping CompositorImageEncodeFn,
          deepDecode: CompositorImageDecodeFn? = nil) { decodeFn = decode; encodeFn = encode; deepDecodeFn = deepDecode }
 
-    private func run(_ data: Data) -> (pixels: [UInt8], w: Int, h: Int, channels: Int, dpi: Double, orientation: Int32, uti: String)? {
+    private func run(_ data: Data, using decoder: CompositorImageDecodeFn? = nil) -> (pixels: [UInt8], w: Int, h: Int, channels: Int, dpi: Double, orientation: Int32, uti: String)? {
         var out: UnsafeMutablePointer<UInt8>?
         var w: Int32 = 0, h: Int32 = 0, channels: Int32 = 0, orientation: Int32 = 1
         var dpi: Double = 0
         var uti = [CChar](repeating: 0, count: 96)
         let rc = data.withUnsafeBytes { raw in
-            (deepDecodeFn ?? decodeFn)(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &out, &w, &h, &channels, &dpi, &orientation, &uti, uti.count)
+            (decoder ?? deepDecodeFn ?? decodeFn)(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &out, &w, &h, &channels, &dpi, &orientation, &uti, uti.count)
         }
         guard rc == 0, let out, w > 0, h > 0, [1, 4, 8, 16].contains(channels) else { return nil }
         defer { free(out) }
@@ -226,6 +243,15 @@ final class CCallbackCodec: ImageCodecBackend {
         let depth: PortableImage.Depth = r.channels == 8 ? .uint16 : r.channels == 16 ? .float32 : .uint8
         return CGImage(PortableImage(width: r.w, height: r.h, kind: kind, depth: depth, bytesPerRow: r.w * r.channels, bytes: r.pixels))
     }
+    func decodeSource(_ data: Data) -> CGImage? {
+        if let straightDecodeFn, let result = run(data, using: straightDecodeFn), result.channels == 4 {
+            return CGImage(width: result.w, height: result.h, bytesPerRow: result.w * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+                provider: CGDataProvider(data: result.pixels))
+        }
+        return decode(data)
+    }
+
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?) -> Data? {
         encode(image, typeIdentifier: typeIdentifier, quality: quality, dpi: dpi, orientation: 1)
     }
@@ -254,19 +280,26 @@ final class CCallbackCodec: ImageCodecBackend {
         }
         // The layout the file wants, as Apple's ImageIO writes it: EXR linear-light floats (converted from any depth),
         // PNG / TIFF at 16 bits from a 16-bit or half-float image (half clipped to 0...1), anything else at 8 bits.
-        let native = image.nativeImage
+        let straight = typeIdentifier == "public.png" && image.bitsPerComponent == 8 && image.bitsPerPixel == 32 &&
+            (image.alphaInfo == .last || image.alphaInfo == .first)
+        if straight && straightEncodeFn == nil { return nil }
+        let native = straight ? nil : image.nativeImage
         let channels: Int32
         let pixels: [UInt8]
-        if typeIdentifier == "com.ilm.openexr-image", !image.isGrayPlane {
-            let linear = native.premultipliedLinear()
+        if straight {
+            guard let raw = straightRGBA8Bytes(image) else { return nil }
+            channels = 4
+            pixels = raw
+        } else if typeIdentifier == "com.ilm.openexr-image", !image.isGrayPlane {
+            let linear = native!.premultipliedLinear()
             channels = 16
             pixels = linear.withUnsafeBytes { Array($0) }
-        } else if ["public.png", "public.tiff"].contains(typeIdentifier), !image.isGrayPlane, native.depth != .uint8 {
+        } else if ["public.png", "public.tiff"].contains(typeIdentifier), !image.isGrayPlane, native!.depth != .uint8 {
             channels = 8
-            if native.depth == .uint16, native.bytesPerRow == native.width * 8 {
-                pixels = native.bytes
+            if native!.depth == .uint16, native!.bytesPerRow == native!.width * 8 {
+                pixels = native!.bytes
             } else {
-                let values = native.premultipliedSRGB().map { UInt16(max(0, min(65535, ($0.isFinite ? $0 : 0) * 65535 + 0.5))) }
+                let values = native!.premultipliedSRGB().map { UInt16(max(0, min(65535, ($0.isFinite ? $0 : 0) * 65535 + 0.5))) }
                 pixels = values.withUnsafeBytes { Array($0) }
             }
         } else {
@@ -275,13 +308,23 @@ final class CCallbackCodec: ImageCodecBackend {
         }
         let rc = pixels.withUnsafeBufferPointer { px in
             typeIdentifier.withCString { uti in
-                encodeFn(px.baseAddress, Int32(image.width), Int32(image.height), channels, uti, quality ?? -1, dpi ?? 0, orientation, &out, &length)
+                (straight ? straightEncodeFn! : encodeFn)(px.baseAddress, Int32(image.width), Int32(image.height), channels, uti, quality ?? -1, dpi ?? 0, orientation, &out, &length)
             }
         }
         guard rc == 0, let out, length > 0 else { return nil }
         defer { free(out) }
         return Data(bytes: out, count: length)
     }
+}
+
+/// Source-sample conversion never goes through a drawing surface, which would erase RGB at zero alpha.
+func straightRGBA8Bytes(_ image: CGImage) -> [UInt8]? {
+    var format = vImage_CGImageFormat(bitsPerComponent: 8, bitsPerPixel: 32,
+        colorSpace: image.colorSpace.map(Unmanaged.passUnretained), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue))
+    var buffer = vImage_Buffer()
+    guard vImageBuffer_InitWithCGImage(&buffer, &format, nil, image, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { return nil }
+    defer { free(buffer.data) }
+    return Array(UnsafeBufferPointer(start: buffer.data.assumingMemoryBound(to: UInt8.self), count: image.width * image.height * 4))
 }
 
 /// Called by the Qt host at startup with its QImageReader/QImageWriter-backed callbacks.
@@ -296,6 +339,12 @@ public func compositor_imageio_register_cmyk(_ decode: CompositorCMYKDecodeFn?, 
 @_cdecl("compositor_imageio_register_deep")
 public func compositor_imageio_register_deep(_ decode: CompositorImageDecodeFn?) {
     (ImageCodecRegistry.host as? CCallbackCodec)?.deepDecodeFn = decode
+}
+
+@_cdecl("compositor_imageio_register_straight")
+public func compositor_imageio_register_straight(_ decode: CompositorImageDecodeFn?, _ encode: CompositorImageEncodeFn?) {
+    (ImageCodecRegistry.host as? CCallbackCodec)?.straightDecodeFn = decode
+    (ImageCodecRegistry.host as? CCallbackCodec)?.straightEncodeFn = encode
 }
 
 @_cdecl("compositor_imageio_register")

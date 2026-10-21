@@ -69,6 +69,7 @@ typedef int32_t (*CompositorImageEncodeFn)(const uint8_t *, int32_t, int32_t, in
 void compositor_imageio_register(CompositorImageDecodeFn, CompositorImageEncodeFn) __attribute__((weak));
 // The deep decode (16-bit and float layouts), registered beside the 8-bit one.
 void compositor_imageio_register_deep(CompositorImageDecodeFn) __attribute__((weak));
+void compositor_imageio_register_straight(CompositorImageDecodeFn, CompositorImageEncodeFn) __attribute__((weak));
 // CMYK JPEG and TIFF, as Apple's ImageIO keeps them: ink amounts (0 none, 255 full, four a pixel) and the embedded profile.
 typedef int32_t (*CompositorCMYKDecodeFn)(const uint8_t *, size_t, uint8_t **, int32_t *, int32_t *, uint8_t **, size_t *,
                                           double *, char *, size_t);
@@ -749,7 +750,8 @@ uint8_t *eightBitFromLinear(const float *pixels, size_t count) {
 // compat ImageIO uses as Apple's ImageIO keeps a file's depth); otherwise everything at 8 bits, as the codec ABI's
 // original decode callback always has.
 int32_t decodeAny(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
-                  int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity, bool deepAllowed) {
+                  int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity, bool deepAllowed,
+                  bool straight = false) {
     if (!data || !length || !out) return -1;
 #if defined(COMPOSITOR_HAS_OPENEXR)
     if (isEXR(data, length)) {
@@ -802,7 +804,7 @@ int32_t decodeAny(const uint8_t *data, size_t length, uint8_t **out, int32_t *wi
     QImage converted = gray ? image.convertToFormat(QImage::Format_Grayscale8)
                      : floating ? image.convertToFormat(QImage::Format_RGBA32FPx4_Premultiplied)
                      : deep ? image.convertToFormat(QImage::Format_RGBA64_Premultiplied)
-                            : image.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+                            : image.convertToFormat(straight ? QImage::Format_RGBA8888 : QImage::Format_RGBA8888_Premultiplied);
     const int ch = gray ? kLayoutGray8 : floating ? kLayoutRGBAFloat : deep ? kLayoutRGBA16 : kLayoutRGBA8;
     const size_t bytesPerLine = static_cast<size_t>(converted.width()) * ch;
     auto *pixels = static_cast<uint8_t *>(malloc(bytesPerLine * converted.height()));
@@ -825,6 +827,14 @@ int32_t decodeImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *
 int32_t decodeImageDeep(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
                         int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity) {
     return decodeAny(data, length, out, width, height, channels, dpi, orientation, uti, utiCapacity, true);
+}
+
+// Optional source-sample access. Keep the legacy canonical decoder unchanged for rendering clients.
+int32_t decodeStraightImage(const uint8_t *data, size_t length, uint8_t **out, int32_t *width, int32_t *height,
+                           int32_t *channels, double *dpi, int32_t *orientation, char *uti, size_t utiCapacity) {
+    static const uint8_t png[] = {137, 80, 78, 71, 13, 10, 26, 10};
+    if (!data || length < 33 || memcmp(data, png, sizeof(png)) || data[24] != 8) return -2;
+    return decodeAny(data, length, out, width, height, channels, dpi, orientation, uti, utiCapacity, false, true);
 }
 
 // A CMYK JPEG or TIFF as its inks and embedded profile (nullptr when it names none). Anything else: -2.
@@ -895,8 +905,8 @@ int32_t encodeCMYK(const uint8_t *inks, int32_t width, int32_t height, const uin
     return 0;
 }
 
-int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_t channels, const char *uti,
-                    double quality, double dpi, int32_t orientation, uint8_t **out, size_t *outLength) {
+int32_t encodeAny(const uint8_t *pixels, int32_t width, int32_t height, int32_t channels, const char *uti,
+                    double quality, double dpi, int32_t orientation, uint8_t **out, size_t *outLength, bool straight) {
 #if defined(COMPOSITOR_HAS_LIBHEIF)
     if (uti && pixels && width > 0 && height > 0 && out && outLength &&
         (!strcmp(uti, "public.heic") || !strcmp(uti, "public.heif") || !strcmp(uti, "public.avif")))
@@ -914,7 +924,8 @@ int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_
     if (channels == kLayoutGray8) {
         image = QImage(pixels, width, height, width, QImage::Format_Grayscale8).copy();
     } else if (channels == kLayoutRGBA8) {
-        image = QImage(pixels, width, height, width * 4, QImage::Format_RGBA8888_Premultiplied).copy();
+        image = QImage(pixels, width, height, width * 4,
+                       straight ? QImage::Format_RGBA8888 : QImage::Format_RGBA8888_Premultiplied).copy();
     } else if (channels == kLayoutRGBA16) {
         // A 16-bit PNG / TIFF, as Apple's ImageIO writes a 16-bit image.
         image = QImage(pixels, width, height, width * 8, QImage::Format_RGBA64_Premultiplied).copy();
@@ -950,6 +961,17 @@ int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_
     *out = copy;
     *outLength = static_cast<size_t>(bytes.size());
     return 0;
+}
+
+int32_t encodeImage(const uint8_t *pixels, int32_t width, int32_t height, int32_t channels, const char *uti,
+                    double quality, double dpi, int32_t orientation, uint8_t **out, size_t *outLength) {
+    return encodeAny(pixels, width, height, channels, uti, quality, dpi, orientation, out, outLength, false);
+}
+
+int32_t encodeStraightImage(const uint8_t *pixels, int32_t width, int32_t height, int32_t channels, const char *uti,
+                            double quality, double dpi, int32_t orientation, uint8_t **out, size_t *outLength) {
+    if (!uti || strcmp(uti, "public.png") || channels != kLayoutRGBA8) return -2;
+    return encodeAny(pixels, width, height, channels, uti, quality, dpi, orientation, out, outLength, true);
 }
 
 // ---- Text: real fonts for the compat text system (AppKit's NSLayoutManager / NSString measuring and drawing) ----
@@ -1243,6 +1265,7 @@ extern "C" int compositor_qt_imageio_install(void) {
     if (!compositor_imageio_register) return 0;
     compositor_imageio_register(decodeImage, encodeImage);
     if (compositor_imageio_register_deep) compositor_imageio_register_deep(decodeImageDeep);
+    if (compositor_imageio_register_straight) compositor_imageio_register_straight(decodeStraightImage, encodeStraightImage);
     if (compositor_imageio_register_cmyk) compositor_imageio_register_cmyk(decodeCMYK, encodeCMYK);
     return 1;
 }
@@ -1252,6 +1275,13 @@ extern "C" int compositor_qt_imageio_cmyk_functions(CompositorCMYKDecodeFn *deco
     if (!decode || !encode) return 0;
     *decode = decodeCMYK;
     *encode = encodeCMYK;
+    return 1;
+}
+
+extern "C" int compositor_qt_imageio_straight_functions(CompositorImageDecodeFn *decode, CompositorImageEncodeFn *encode) {
+    if (!decode || !encode) return 0;
+    *decode = decodeStraightImage;
+    *encode = encodeStraightImage;
     return 1;
 }
 

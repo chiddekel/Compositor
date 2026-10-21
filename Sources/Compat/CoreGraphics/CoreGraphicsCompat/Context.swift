@@ -714,8 +714,7 @@ public final class CGContext: @unchecked Sendable {
             if rc == 0 { return }
         }
 
-        drawSwift(image.portableImage, in: device, opacity: finalOpacity,
-                  premultiplied: image.alphaInfo == .premultipliedLast || image.alphaInfo == .premultipliedFirst)
+        drawSwift(image.portableImage, in: device, opacity: finalOpacity, premultiplied: image.drawingIsPremultiplied)
     }
 
     private static func bounds(of rect: CGRect, under t: CGAffineTransform) -> CGRect {
@@ -735,8 +734,7 @@ public final class CGContext: @unchecked Sendable {
         guard format == .rgba else { return }
         let device = Self.bounds(of: mediaBox, under: state.ctm)
         // PortableImage rows are top-down, matching `makeImage` / `NSBitmapImageRep.colorAt`.
-        drawSwift(image.portableImage, in: device, opacity: Double(state.alpha),
-                  premultiplied: image.alphaInfo == .premultipliedLast || image.alphaInfo == .premultipliedFirst)
+        drawSwift(image.portableImage, in: device, opacity: Double(state.alpha), premultiplied: image.drawingIsPremultiplied)
     }
 
     /// `opacity` is the caller's own; the context's alpha is applied by the backend from its tracked state.

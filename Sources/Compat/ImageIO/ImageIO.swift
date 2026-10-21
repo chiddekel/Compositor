@@ -59,7 +59,7 @@ public final class CGImageSource: @unchecked Sendable {
                              provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
             return cached
         }
-        cached = ImageCodecRegistry.decode(data)
+        cached = ImageCodecRegistry.decodeSource(data)
         return cached
     }
 }

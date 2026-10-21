@@ -358,7 +358,7 @@ private:
     int m_textUndoPosition = 0;
     int m_textFormatRevision = 0;
     bool m_textUndoCommandAdded = false;
-    bool m_textPreviewingColor = false;
+    bool m_textPreviewingStyle = false;
     QPointF m_textBoxAnchor;
     QRectF m_textBoxRect;
     // The document's size, and the scale the canvas image (m_image) is composited at (see desiredDisplayScale).

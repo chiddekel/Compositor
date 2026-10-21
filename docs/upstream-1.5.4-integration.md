@@ -6,7 +6,41 @@ the upstream target; Linux changes belong to the framework compatibility modules
 
 ## Updates after the published 1.5.4 baseline
 
-The pending merge advances protected sources to `8e4b63b`, five commits after `2f4cb15`.
+The foundation through `8e4b63b` is committed locally at `9fbb840`. The current merge
+advances protected sources to `9fe0c72`, which adds Channel Pack export. Its domain code,
+Export As controls and three original tests compile unchanged. Collection-element bindings,
+vImage image-buffer conversion and straight-RGBA ImageIO support live in the compatibility modules.
+Source images retain their original samples separately from their premultiplied drawing pixels,
+so RGB beneath zero alpha survives PNG export and source-sample extraction. A bounded per-thread
+constructor handoff keeps inline borrowed color-space arguments alive until vImage takes ownership.
+
+The normal SDK contract run has passed **1,029 Swift Testing checks** (981 main and 48 shared-state)
+and **159 XCTest checks**, plus native backend checks and source coverage. Its **39 native journeys
+are still running**: this is not yet a successful full-run result. Evidence:
+`/tmp/compositor-upstream9fe0c72-contract.log`.
+
+Focused native checks pass for Channel Pack's hidden named layers, four source bindings,
+transparent RGB file samples, remembered choices and source/history isolation
+(`/tmp/compositor-channel-pack-native4.log`). An independent PNG chunk/filter decoder also verifies
+zero/partial-alpha samples, DPI metadata and unchanged legacy premultiplied decoding; repeat with
+`python3 tests/test_straight_png.py /path/to/libCompositorQtImageIO.so` inside the SDK.
+
+Alpha.3 Linux CI run `39662326130` failed its font-picker Undo check; its release build
+`39662325005` succeeded. The bridge now reports transient text-style preview state, so native history
+records a font choice on commit. The native regression passes multiple highlights, Cancel, exact
+mixed-font restoration with one Undo and exact Redo (`/tmp/compositor-ci-font-history-positive2.log`).
+
+Opening at 100% also exposed the older Linux 16-point resize hit area covering a 32-pixel object's
+whole height. The generated override now limits hit reach to one third of the shortest edge,
+preserving a draggable interior and wider mouse/touch targets on larger objects. The mouse/touch
+geometry regression and exact live mask-coverage probe pass (`TouchTargetsTests` and
+`/tmp/compositor-mask-drag-focused-positive.log`). Pixel-oracle fixtures explicitly disable Snap;
+crop and dedicated snapping checks retain it. The previous full 8e4b63b run's seven native failures
+are recorded in `/tmp/compositor-upstream8e4b63-contract-final.log`; that run was nonzero.
+
+The next integration target is the newly observed upstream head `fc02107`: RGB Split, additional
+filter adjustment layers and Photoshop artboards. Those four follow-up commits are not merged yet.
+
 The upstream viewport now caps opening/import fitting at 100%, allows explicit Fit to enlarge,
 and preserves zoom while recentering after Image Size. Those algorithms compile unchanged;
 the existing EditorSession generator carries its updated explicit Fit call.
@@ -26,8 +60,9 @@ wayland-client; no additional source downloads are introduced.
 Current targeted verification passes: three upstream viewport tests; 17 keyboard, modal ownership
 and file-panel Swift tests; native Qt Open/Save clipboard and Undo/Redo; eight real X11 key-event
 cases and four Wayland keymap cases. The latter distinguish US, German and French layouts, shifted
-punctuation, and non-ASCII preservation. Source coverage accounts for 159 upstream files:
-131 unchanged, 21 generated, five replacements and two platform substitutions; all 11 coverage
+punctuation, and non-ASCII preservation. Current source coverage accounts for 160 upstream files:
+132 unchanged, 21 generated, five replacements and two platform substitutions, plus 91 unchanged test
+files and two generated test mirrors (`/tmp/compositor-upstream9fe0c72-source-coverage.json`); all 11 coverage
 fault tests pass. Full regression verification is still in progress.
 
 Evidence: `/tmp/compositor-upstream8e4b63-viewport.log`, `-targeted.log`, `-file-panels.log`,

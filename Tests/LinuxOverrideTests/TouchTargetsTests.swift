@@ -23,4 +23,26 @@ import Testing
         compositorSetTouchTargets(0)
         #expect(geometry.hit(nearCorner) == nil)
     }
+
+    @Test func smallObjectsKeepADraggableInteriorAtActualPixels() {
+        defer { compositorSetTouchTargets(0) }
+        for touch in [Int32(0), Int32(1)] {
+            compositorSetTouchTargets(touch)
+            for size in [CGSize(width: 64, height: 32), CGSize(width: 32, height: 16)] {
+                let transform = LayerTransform(origin: .zero, size: size)
+                let geometries = [
+                    TransformOverlayGeometry(transform: transform, viewport: CanvasViewport(), documentSize: size),
+                    TransformOverlayGeometry(corners: [CGPoint.zero, CGPoint(x: size.width, y: 0),
+                        CGPoint(x: size.width, y: size.height), CGPoint(x: 0, y: size.height)],
+                        viewport: CanvasViewport(), documentSize: size)
+                ]
+                for geometry in geometries {
+                    #expect(geometry.hit(.zero) == nil, "The center must move the object instead of grabbing an edge")
+                    let topHandle = CGPoint(x: 0, y: -size.height / 2)
+                    let resizes: Bool = { if case .resize(1)? = geometry.hit(topHandle) { return true }; return false }()
+                    #expect(resizes, "The actual resize handle must remain usable")
+                }
+            }
+        }
+    }
 }

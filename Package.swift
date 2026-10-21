@@ -213,7 +213,7 @@ let package = Package(
         .systemLibrary(name: "CLZMA", path: "Sources/CLZMA", pkgConfig: "liblzma"),
         .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers", "CSQLite", "CLZMA"], path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "Accelerate", path: "Sources/Compat/Accelerate",
+        .target(name: "Accelerate", dependencies: ["CoreGraphics"], path: "Sources/Compat/Accelerate",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "ImageIO", dependencies: ["CoreGraphics", "Accelerate", "UniformTypeIdentifiers", "CompatSupport", "CompositorColorManagement"],
                 path: "Sources/Compat/ImageIO", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
