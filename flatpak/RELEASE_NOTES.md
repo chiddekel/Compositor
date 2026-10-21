@@ -1,5 +1,6 @@
-Compositor 1.5.4-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+Compositor 1.5.4-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
+- Fixes the Flatpak build by installing the three license files present in the pinned Poppler-data archive.
 - Integrates upstream 1.5.4: pen pressure, searchable fonts, PDF import, new line styles and project format 15.
 - Adds Linux compatibility for tablet pressure, the font search panel and Poppler PDF rendering while preserving upstream Mac sources.
 - Verified 1,019 Swift tests, 154 XCTest checks and all 37 native journeys across the complete run and targeted reruns. See docs/upstream-1.5.4-integration.md for evidence and qualifications.
