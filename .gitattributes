@@ -1,2 +1,5 @@
 # PDF cross-reference records contain significant fixed-width whitespace.
 tests/fixtures/*.pdf binary
+
+# Upstream notice copies retain their exact whitespace and reStructuredText headings.
+third_party/licenses/vendored/*/** -whitespace conflict-marker-size=80

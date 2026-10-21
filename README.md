@@ -169,8 +169,10 @@ cmake --build build
 QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 ```
 
-Skia/OpenCV source isn't committed; `flatpak-builder` fetches and verifies it (pinned hashes in
-the manifest). See [`third_party/skia.pinned`](third_party/skia.pinned) / [`third_party/opencv.pinned`](third_party/opencv.pinned).
+Linux dependency source archives, including Skia's required dependencies and GN,
+are committed with pinned checksums and license notices. See
+[Vendored Linux dependencies](docs/vendored-linux-dependencies.md) for offline
+verification, build instructions and the update procedure.
 
 </details>
 

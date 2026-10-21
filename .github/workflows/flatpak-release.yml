@@ -46,6 +46,7 @@ jobs:
           flatpak-builder --user --install-deps-only --install-deps-from=flathub --assumeyes build/deps com.compositor.Client.yaml
       - name: Test the updater and release descriptors
         run: |
+          python3 scripts/check-vendored-sources.py
           bash scripts/test-flatpak-updates.sh
           python3 tests/test_flatpak_release.py
           python3 tests/test_linux_release_script.py

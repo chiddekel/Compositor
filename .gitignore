@@ -29,11 +29,12 @@ xcuserdata/
 .claude/settings.local.json
 BUILD_PLAN.md
 
-# Flatpak build artifacts (sources are fetched by flatpak-builder at build time)
+# Flatpak build artifacts (pinned dependency archives live in third_party/sources)
 .flatpak-builder/
 build-dir/
 build-flatpak/
 build-flatpak-minimal/
+build-vendored/
 linux/build/
 
 # Test scratch logs and Python bytecode
