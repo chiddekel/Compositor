@@ -406,7 +406,8 @@ let package = Package(
             // OtherApplications.h (Hide Others / Show All) uses xcb when its header is installed.
             linkerSettings: (FileManager.default.fileExists(atPath: "/usr/include/libheif/heif.h") ? [.linkedLibrary("heif")] : [])
                 + (FileManager.default.fileExists(atPath: "/usr/include/xcb/xcb.h") ? [.linkedLibrary("xcb")] : [])
-                + [.linkedLibrary("z"), .linkedLibrary("tiff")]
+                + [.linkedLibrary("z"), .linkedLibrary("tiff"), .linkedLibrary("xkbcommon"),
+                   .linkedLibrary("xkbcommon-x11"), .linkedLibrary("wayland-client")]
                 + (librawPrefix.map { prefix in [.unsafeFlags(["\(prefix)/lib/libraw_r.a"] + rawspeedLibraries), .linkedLibrary("gomp"), .linkedLibrary("z"), .linkedLibrary("jpeg")] } ?? [])
                 + (openexrLibraries.isEmpty ? [] : [.unsafeFlags(openexrLibraries), .linkedLibrary("zstd")])
                 + (lensfunPrefix.map { [.unsafeFlags(["\($0)/lib/liblensfun.a"]), .linkedLibrary("glib-2.0")] } ?? [])

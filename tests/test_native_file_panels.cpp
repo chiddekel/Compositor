@@ -7,6 +7,8 @@
 #include <QTimer>
 #include <QDebug>
 #include <QLineEdit>
+#include <QClipboard>
+#include <QKeyEvent>
 #include <QInputMethodEvent>
 #include <QAbstractItemView>
 #include <QItemSelectionModel>
@@ -51,6 +53,21 @@ int main(int argc, char **argv) {
                 auto *name = dialog->findChild<QLineEdit *>("fileNameEdit");
                 if (!name) { valid = false; static_cast<QDialog *>(dialog)->reject(); return; }
                 name->setFocus(); name->selectAll();
+                const auto shortcut = [&](int key, Qt::KeyboardModifiers modifiers = Qt::ControlModifier) {
+                    QKeyEvent press(QEvent::KeyPress, key, modifiers);
+                    QApplication::sendEvent(name, &press);
+                    QKeyEvent release(QEvent::KeyRelease, key, modifiers);
+                    QApplication::sendEvent(name, &release);
+                };
+                QInputMethodEvent edit; edit.setCommitString("panel-edit"); QApplication::sendEvent(name, &edit);
+                shortcut(Qt::Key_A); shortcut(Qt::Key_C);
+                valid = valid && QApplication::clipboard()->text() == "panel-edit";
+                shortcut(Qt::Key_X); valid = valid && name->text().isEmpty();
+                shortcut(Qt::Key_V); valid = valid && name->text() == "panel-edit";
+                shortcut(Qt::Key_Z); valid = valid && name->text().isEmpty();
+                shortcut(Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+                valid = valid && name->text() == "panel-edit";
+                name->selectAll();
                 QInputMethodEvent input; input.setCommitString(path); QApplication::sendEvent(name, &input);
                 }
                 auto *buttons = dialog->findChild<QDialogButtonBox *>();

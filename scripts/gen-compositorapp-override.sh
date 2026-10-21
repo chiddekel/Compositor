@@ -21,7 +21,12 @@ old = ".disabled(!session.canEditLayers || session.activeLayer?.adjustment == ni
 new = ".disabled(!session.canEditLayers || session.activeLayer?.adjustment?.kind.isEditable != true)"
 if body.count(old) != 1:
     raise SystemExit("error: review the Edit Adjustment gate after the upstream change")
-sys.stdout.write(body.replace(old, new))
+body = body.replace(old, new)
+# The compat application instance has its own type; native file dialogs are presented through handlers.
+body = body.replace("extension NSApplication {", "extension NSApplicationShared {")
+body = body.replace("NSApp.keyWindow is NSSavePanel", "NSSavePanel.activePanel != nil")
+body = body.replace("keyWindow is NSSavePanel", "NSSavePanel.activePanel != nil")
+sys.stdout.write(body)
 ')
     if ! printf '%s\n' "$BODY" | grep 'beginColorRange' >/dev/null; then
         BODY=$(printf '%s\n' "$BODY" | sed '/\.disabled(!session.canSelectSubject)/a\

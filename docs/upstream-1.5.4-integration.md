@@ -4,6 +4,41 @@ Target: `upstream/main` at `2f4cb15`, following `365b574` (1.5.3). Linux release
 Protected app sources, tests and the Xcode project remain identical to
 the upstream target; Linux changes belong to the framework compatibility modules, generated overrides and host adapters.
 
+## Updates after the published 1.5.4 baseline
+
+The pending merge advances protected sources to `8e4b63b`, five commits after `2f4cb15`.
+The upstream viewport now caps opening/import fitting at 100%, allows explicit Fit to enlarge,
+and preserves zoom while recentering after Image Size. Those algorithms compile unchanged;
+the existing EditorSession generator carries its updated explicit Fit call.
+
+Save/Open presentation marks the active AppKit file panel, restoring the previous panel after
+nested presentation. Generated application commands consult that marker; native Qt text controls
+keep their own clipboard and undo history. No document-history algorithm is duplicated.
+
+The generated LatinKeys override retains upstream's event translation and guards, replacing only
+Carbon layout lookup with `NSKeyboardLayout`. The Qt host supplies the person's Latin character
+from XKB: the current X11 device map or a compositor-provided Wayland `wl_keyboard` map. Shift is
+evaluated in that layout, including punctuation; a non-ASCII Latin-layout result is left unchanged.
+With only non-Latin layouts configured, the adapter uses a US fallback, as Qt's shortcuts do.
+Native text input remains unchanged. The SDK/runtime provide xkbcommon, xkbcommon-x11 and
+wayland-client; no additional source downloads are introduced.
+
+Current targeted verification passes: three upstream viewport tests; 17 keyboard, modal ownership
+and file-panel Swift tests; native Qt Open/Save clipboard and Undo/Redo; eight real X11 key-event
+cases and four Wayland keymap cases. The latter distinguish US, German and French layouts, shifted
+punctuation, and non-ASCII preservation. Source coverage accounts for 159 upstream files:
+131 unchanged, 21 generated, five replacements and two platform substitutions; all 11 coverage
+fault tests pass. Full regression verification is still in progress.
+
+Evidence: `/tmp/compositor-upstream8e4b63-viewport.log`, `-targeted.log`, `-file-panels.log`,
+`-keyboard.log` and `-contract.log`. To repeat the isolated layout acceptance, build the CMake
+`test_keyboard_layout` target and run `python3 tests/test_keyboard_layout.py` on the host.
+The default executable is `.build/linux-contract-native/test_keyboard_layout`;
+`COMPOSITOR_KEYBOARD_PROBE=/absolute/path/to/test_keyboard_layout` selects another build.
+It requires Xvfb, Weston, xkbcli, xkbcomp,
+X11/XTest libraries and the KDE 6.11 SDK. Every display and keymap is private to the tests.
+Wayland cases check actual compositor-provided keymaps; real injected key events are checked on X11.
+
 ## Architecture
 
 - Qt pen events pass through `ITabletHandler` and `compositor_canvas_tablet` to the original `CanvasView`. Pressure

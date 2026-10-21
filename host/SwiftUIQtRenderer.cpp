@@ -1,4 +1,5 @@
 #include <QKeyEvent>
+#include "QtKeyboardLayout.h"
 #include <QHash>
 #include <QFile>
 #include <QDir>
@@ -592,7 +593,8 @@ private:
         QString characters = typed.value(k);
         if (characters.isEmpty()) characters = (k >= 0x20 && k < 0x7f) ? QString(QChar(k)).toLower() : event->text();
         if (event->modifiers() & Qt::ShiftModifier && k >= 0x20 && k < 0x7f && !event->text().isEmpty()) characters = event->text();
-        const QJsonObject payload{{"characters", characters}, {"keyCode", codes.value(k, 0xffff)},
+        const int keyCode = codes.contains(k) ? codes.value(k) : appKitPrintableKeyCode(event);
+        const QJsonObject payload{{"characters", characters}, {"keyCode", keyCode},
                                   {"modifiers", appKitModifierBits(event->modifiers())}, {"repeat", event->isAutoRepeat()}};
         recordPointerTrace("key", this, m_handle, QPointF(codes.value(k, 0xffff), 0), appKitModifierBits(event->modifiers()), 0);
         QPointer<QWidget> self(this);

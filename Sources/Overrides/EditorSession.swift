@@ -1085,7 +1085,7 @@ final class EditorSession {
 
     func fit() {
         guard let document else { return }
-        viewport.fit(documentSize: document.size)
+        viewport.fit(documentSize: document.size, enlarging: true)
     }
 
     func zoom(to value: CGFloat, anchor: CGPoint? = nil) {

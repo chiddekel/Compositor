@@ -47,7 +47,7 @@ done
 
 cmake -S . -B "$NATIVE_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
     -DCOMPOSITOR_SKIA_ROOT="$SKIA_ROOT" -DCOMPOSITOR_SKIA_LIB="$SKIA_LIB"
-cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels
+cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels test_keyboard_layout
 "$NATIVE_BUILD/test_pressure_brush"
 python3 tests/test_pdf_backend.py "$NATIVE_BUILD/libCompositorPDFBackend.so"
 # Call the executable directly: CTest treats a missing Skia backend (77) as a skip, which is a failure here.
@@ -87,7 +87,7 @@ install -m644 Compositor/Resources/CameraRawTables.bin Compositor/Resources/Came
 # other's requests and sheets, or run late under load, so they run one test at a time after the rest. Everything else runs in parallel. (The parallel run used to deadlock: a main-queue preview render
 # waited for a thread of the concurrency pool that was itself waiting for the main queue; fixed in 9bf048b.)
 # A caller's own --filter/--skip (CI's subset) keeps the single serial run.
-SHARED_STATE_SUITES='ShellRequestOwnershipTests|PopUpRequestOwnershipTests|PopUpMenuTests|NativeAlertOwnershipTests|NativeFilePanelTests|ToolCombinationTests|ExternalChangeTests|ColorRangeTests'
+SHARED_STATE_SUITES='ShellRequestOwnershipTests|PopUpRequestOwnershipTests|PopUpMenuTests|NativeAlertOwnershipTests|NativeFilePanelTests|UpstreamPost154Tests|ToolCombinationTests|ExternalChangeTests|ColorRangeTests'
 selects_tests=0
 for argument in "$@"; do [[ $argument == --filter* || $argument == --skip* ]] && selects_tests=1; done
 if (( selects_tests )); then

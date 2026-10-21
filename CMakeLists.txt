@@ -362,8 +362,13 @@ if(Qt6_FOUND)
     # generates SessionWindow's moc (the SwiftPM build uses the committed
     # host/moc_SessionWindow.cpp instead, since SwiftPM cannot run moc).
     add_library(CompositorHostRun STATIC host/host_run.cpp host/DialogJourney.cpp host/InterchangeJourney.cpp host/SessionWindow.cpp host/SessionDialogs.cpp host/SizeDialog.cpp host/FilterDialog.cpp host/ImageExporters.cpp host/TabletHandler.cpp host/QtImageIO.cpp host/FlatpakUpdateService.cpp host/SwiftUIQtRenderer.cpp)
+    find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
+    pkg_check_modules(KEYBOARD_LAYOUT REQUIRED IMPORTED_TARGET xkbcommon xkbcommon-x11 wayland-client)
+    add_executable(test_keyboard_layout tests/test_keyboard_layout.cpp)
+    target_include_directories(test_keyboard_layout PRIVATE host)
+    target_link_libraries(test_keyboard_layout PRIVATE Qt6::GuiPrivate PkgConfig::KEYBOARD_LAYOUT)
     target_include_directories(CompositorHostRun PUBLIC host/include PRIVATE host)
-    target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets Qt6::DBus Qt6::Svg PRIVATE ZLIB::ZLIB TIFF::TIFF PkgConfig::LCMS2)
+    target_link_libraries(CompositorHostRun PUBLIC Qt6::Widgets Qt6::DBus Qt6::Svg PRIVATE Qt6::GuiPrivate PkgConfig::KEYBOARD_LAYOUT ZLIB::ZLIB TIFF::TIFF PkgConfig::LCMS2)
     # OtherApplications.h (Hide Others / Show All) uses xcb when its header is installed.
     pkg_check_modules(XCB QUIET IMPORTED_TARGET xcb)
     if(XCB_FOUND)

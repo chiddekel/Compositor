@@ -130,7 +130,21 @@ def plain(tip, note, rewrites=()):
     return make
 
 
+def latin_keys():
+    tip = 'Compositor/UI/LatinKeys.swift'
+    source = (root / tip).read_text().replace('import Carbon.HIToolbox\n', '')
+    marker = '    static func character(for keyCode: UInt16, shift: Bool) -> String? {'
+    start = source.index(marker)
+    # This is the final method; keep the entire event-normalization algorithm unchanged.
+    if not source.endswith('    }\n}\n'):
+        raise SystemExit(f'{tip}: review the keyboard-layout adapter after the upstream change')
+    source = source[:start] + marker + '\n        NSKeyboardLayout.latinCharacter(for: keyCode, shift: shift)\n    }\n}\n'
+    return header(tip, 'Only Carbon layout lookup is replaced by the host-provided AppKit keyboard-layout contract.\n'
+                       'Event normalization and the ASCII/non-ASCII guards remain upstream code.') + source
+
+
 OUTPUTS = {
+    'Sources/Overrides/LatinKeys.swift': latin_keys,
     'Sources/Overrides/FontListPanel.swift': plain(
         'Compositor/UI/FontListPanel.swift',
         'Tip\'s font search panel with selectors dispatched by name through compat AppKit.'),

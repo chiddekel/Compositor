@@ -1,6 +1,13 @@
 import Foundation
 import AppKit
 
+@_cdecl("compositor_keyboard_set_latin_character")
+nonisolated public func compositorKeyboardSetLatinCharacter(_ keyCode: Int32, _ shifted: Int32,
+                                                            _ characters: UnsafePointer<CChar>?) {
+    guard keyCode >= 0, keyCode < 0xffff, let characters else { return }
+    NSKeyboardLayout.recordLatinCharacter(String(cString: characters), for: UInt16(keyCode), shift: shifted != 0)
+}
+
 /// Upstream's own canvas view (EditorCanvas.swift's CanvasView), hosted headlessly for each session: the Qt canvas
 /// forwards its pointer events here, so every tool behaves as the Mac's does, and paints the view's overlay
 /// (TransformOverlay: handles, marching ants, crop, gradient line, lasso draft, guides, grid, snap lines) over the

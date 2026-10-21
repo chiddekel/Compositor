@@ -21,6 +21,7 @@
 #include "TabletHandler.h"
 #include "LayerItemDelegate.h"
 #include "QtPlatformServices.h"
+#include "QtKeyboardLayout.h"
 #include "EditorDialogs.h"
 #include "SwiftUIQtRenderer.h"
 #include "LucideIcons.h"
@@ -2217,7 +2218,7 @@ void SessionWindow::keyPressEvent(QKeyEvent *event) {
     if (!m_spaceHandActive && event->key() != Qt::Key_Space && !(event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
         && !event->text().isEmpty() && event->text().at(0).isPrint()) {
         const QByteArray characters = event->text().toUtf8();
-        compositor_canvas_key(m_sessionHandle, 0xffff, characters.constData(), chordBits(event->modifiers()), event->isAutoRepeat());
+        compositor_canvas_key(m_sessionHandle, appKitPrintableKeyCode(event), characters.constData(), chordBits(event->modifiers()), event->isAutoRepeat());
         invalidateOverlay();
         compositor_pump_main();
         syncToolFromSession();

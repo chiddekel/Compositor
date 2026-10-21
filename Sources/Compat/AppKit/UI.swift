@@ -70,6 +70,7 @@ extension NSApplication {
 }
 
 @MainActor open class NSSavePanel {
+    public private(set) static var activePanel: NSSavePanel?
     public var allowedContentTypes: [UTType] = []
     public var nameFieldStringValue = ""
     public var title = ""
@@ -82,7 +83,13 @@ extension NSApplication {
     public private(set) weak var presentationWindow: NSWindow?
     nonisolated(unsafe) public static var handler: ((NSSavePanel) -> NSApplication.ModalResponse)?
     public init() {}
-    public func runModal() -> NSApplication.ModalResponse { Self.handler?(self) ?? .cancel }
+    public func withActivePanel(_ action: () -> NSApplication.ModalResponse) -> NSApplication.ModalResponse {
+        let previous = NSSavePanel.activePanel
+        NSSavePanel.activePanel = self
+        defer { NSSavePanel.activePanel = previous }
+        return action()
+    }
+    public func runModal() -> NSApplication.ModalResponse { withActivePanel { Self.handler?(self) ?? .cancel } }
     public func begin() async -> NSApplication.ModalResponse { runModal() }
     public func beginSheetModal(for window: NSWindow) async -> NSApplication.ModalResponse {
         let previous = presentationWindow
@@ -99,7 +106,7 @@ open class NSOpenPanel: NSSavePanel {
     public var treatsFilePackagesAsDirectories = false
     public var urls: [URL] = []
     nonisolated(unsafe) public static var openHandler: ((NSOpenPanel) -> NSApplication.ModalResponse)?
-    public override func runModal() -> NSApplication.ModalResponse { Self.openHandler?(self) ?? .cancel }
+    public override func runModal() -> NSApplication.ModalResponse { withActivePanel { Self.openHandler?(self) ?? .cancel } }
 }
 
 /// Recent-documents bookkeeping; the Qt shell may mirror it into its own recent-files menu.
