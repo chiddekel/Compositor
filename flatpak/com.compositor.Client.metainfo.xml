@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.4-linux-alpha.3" date="2026-10-21" type="development">
+      <description><p>Vendor pinned Linux dependency sources, licenses and offline build documentation</p></description>
+    </release>
     <release version="1.5.4-linux-alpha.2" date="2026-10-21" type="development">
       <description><p>Fix Poppler-data license packaging for the upstream 1.5.4 Linux release.</p></description>
     </release>

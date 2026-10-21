@@ -1,3 +1,18 @@
+Compositor 1.5.4-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
+
+- Stores 29 pinned dependency source archives in the repository, including Skia's required dependencies and GN. Flatpak builds use local sources rather than live Git downloads.
+- Adds 109 unchanged upstream license and notice files, a source inventory, offline integrity checks in CI, and dependency update documentation. Notices and provenance are installed with the Flatpak.
+- Disables OpenCV's unused ADE download probe while retaining core, imgproc and dnn.
+- Retains the upstream 1.5.4 integration: pen pressure, searchable fonts, PDF import, line styles and project format 15.
+
+Verification:
+
+- All dependency modules built locally with Flatpak downloads disabled. OpenCV's final configuration also passed with the unused ADE probe disabled and no download attempts.
+- Archive checksums, pinned Skia/GN revisions, all readable notice copies, 17 release tests and protected upstream source checks pass.
+- The signed distributable and installation checks run in the release workflow before publication. Physical tablet/Wayland input and macOS comparisons remain unverified locally.
+
+Previous release notes:
+
 Compositor 1.5.4-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
 - Fixes the Flatpak build by installing the three license files present in the pinned Poppler-data archive.
