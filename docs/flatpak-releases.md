@@ -56,6 +56,47 @@ that exact application entry point with temporary, isolated settings, run:
 flatpak run com.compositor.Client --preferences-smoke
 ```
 
+## Watching builds
+
+The terminal dashboard shows the `GNU_Linux` and `linux-v*` GitHub Actions runs,
+their job steps, elapsed times and failures. It uses Python's standard library
+and your existing GitHub CLI login; it does not need additional Python packages.
+
+```sh
+gh auth login                       # only if gh is not already authenticated
+./scripts/watch-flatpak-build.py
+```
+
+Use **j/k** or arrow keys to select a workflow, **PgUp/PgDn** to scroll its steps,
+**r** to refresh, **o** to open the selected run on GitHub, and **q** to quit.
+The steps automatically follow the current build step or a failure. Scrolling
+switches to browsing; press **a** to follow the current step again.
+The display resizes with the terminal. `--ascii` and `NO_COLOR=1` support simpler
+terminals. The bar counts finished steps; it does not estimate compiler progress.
+If your shell exports `NO_COLOR`, use `env -u NO_COLOR ./scripts/watch-flatpak-build.py`
+to enable the color palette for this command.
+
+```sh
+./scripts/watch-flatpak-build.py --once                    # one text snapshot
+./scripts/watch-flatpak-build.py --run RUN_ID              # one workflow
+./scripts/watch-flatpak-build.py --run RUN_ID --plain --wait
+./scripts/watch-flatpak-build.py -vvv                     # maximum detail
+./scripts/watch-flatpak-build.py --once -vvv              # detailed text snapshot
+```
+
+Verbosity levels are cumulative: **-v** adds run/job IDs and step durations;
+**-vv** adds runner labels, full commit IDs, events and timestamps; **-vvv** adds
+request paths, cache hits, request counts and refresh timings. In the TUI, press
+**v** to cycle levels or **d** to toggle the request trace. Diagnostics are bounded
+and do not print authentication headers, tokens or environment variables.
+Live compiler output is not exposed by GitHub's job-log download API until the
+job finishes; use **o** to view GitHub's live log in the browser.
+
+`--wait` exits successfully only when that workflow succeeds; failure returns a
+nonzero exit status. API failures remain visible and are retried. Noninteractive
+terminals automatically use text mode. The dashboard is read-only: it does not
+start, cancel, delete, publish or rerun workflows.
+
 ## Publishing another alpha
 
 Preview whether committed changes need a release:
