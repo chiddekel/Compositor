@@ -19,6 +19,8 @@
 #include "Upstream154Journey.h"
 #include "FontHistoryJourney.h"
 #include "ChannelPackJourney.h"
+#include "DispersionJourney.h"
+#include "ArtboardJourney.h"
 #include "MaskDragJourney.h"
 #include "OtherApplications.h"
 #include "compositor_host_run.h"
@@ -151,6 +153,9 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     if (app.arguments().contains("--input-probe")) return inputprobe::run(app);
     if (app.arguments().contains("--upstream-154-probe")) return upstream154journey::run(app);
     if (app.arguments().contains("--font-history-probe")) return fonthistoryjourney::run(app);
+    if (app.arguments().contains("--dispersion-probe")) return dispersionjourney::run(app);
+    if (app.arguments().contains("--psd-artboard-probe")) return artboardjourney::run(app);
+    if (app.arguments().contains("--psd-artboard-conversion-probe")) return artboardjourney::runConversions(app);
     if (app.arguments().contains("--channel-pack-probe")) return channelpackjourney::run(app);
     if (app.arguments().contains("--mask-drag-probe")) return maskdragjourney::run(app, disablePixelOracleSnapping);
     try {
@@ -7117,6 +7122,9 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
         };
         const auto prepareHandles = [&] {
             reset(); tool("Move", "move");
+            // This checks the wider touch target on a large object. Small objects deliberately cap handle reach
+            // to retain a draggable interior; their geometry is covered separately by TouchTargetsTests.
+            command({{"action", "resizeImage"}, {"width", 200}, {"height", 200}});
             command({{"action", "setShowsTransformControls"}, {"enabled", true}});
             command({{"action", "setTransformAutoSelect"}, {"enabled", false}});
         };
@@ -10035,6 +10043,8 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
                 if (combo->isVisible()) qInfo("  visible combo %s: %s", qPrintable(combo->accessibleName()), qPrintable(combo->currentText()));
         }
         require(picker && picker->currentText() == "(Multiple)", "font picker lost mixed-selection state");
+        const auto beforeToolbarFonts = draft().value("fontRuns");
+        const int beforeToolbarSteps = editor->document()->availableUndoSteps();
         chooseFont(testFace);
         const QString chosenFace = draft().value("fontName").toString();
         require(!chosenFace.isEmpty() && QFontInfo(fontFor(chosenFace.toUtf8().constData(), 13)).family() == testFace
@@ -10042,7 +10052,14 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
                 "toolbar font did not apply to selected letters");
         require(editor->textCursor().selectedText() == editor->toPlainText(), "font toolbar lost native selection");
         require(editor->document()->isUndoAvailable(), "font toolbar cleared native typing undo");
-        editor->undo(); QApplication::processEvents();
+        // Undo immediately through the native responder, before the next periodic state sync. The committed
+        // font must get its own history step ahead of the existing typing edit.
+        QKeyEvent undoFont(QEvent::KeyPress, Qt::Key_Z, Qt::ControlModifier);
+        QApplication::sendEvent(editor, &undoFont); QApplication::processEvents();
+        if (draft().value("fontRuns").toArray().first().toObject().value("length").toInt() != 5)
+            qWarning() << "Font toolbar Undo:" << "before steps" << beforeToolbarSteps
+                       << "after steps" << editor->document()->availableUndoSteps()
+                       << "before runs" << beforeToolbarFonts << "after draft" << draft();
         require(draft().value("fontRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "native undo did not restore fonts before the toolbar change");
         editor->undo(); QApplication::processEvents();
@@ -10071,8 +10088,8 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(textFile.open(QIODevice::ReadOnly), "format-11 native manifest missing");
         textManifest = QJsonDocument::fromJson(textFile.readAll()).object(); textFile.close();
         const auto savedText = textManifest.value("layers").toArray().last().toObject().value("text").toObject();
-        // New saves use version 15 (line styles and caps); font runs arrived in version 11.
-        require(textManifest.value("version").toInt() == 15, "native save did not write current format 15");
+        // New saves use version 16 (filter adjustment layers); font runs arrived in version 11.
+        require(textManifest.value("version").toInt() == 16, "native save did not write current format 16");
         require(savedText.value("fontRuns").toArray() == chosenRuns, "format-11 save lost chosen font runs");
         require(savedText.value("colorRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "format-11 save lost overlapping color runs");

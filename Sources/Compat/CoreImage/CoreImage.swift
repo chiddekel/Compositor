@@ -649,11 +649,55 @@ private indirect enum Node {
                     out = input
                 }
             } else {
-                out = input
+                out = Self.executeProcessor(kernel, inputs: inputs, arguments: arguments, region: inter, env: env)
             }
             if env.linear { Gamma.map(&out, Gamma.toLinear) }
             return out.rect == region ? out : out.cropped(to: region)
         }
+    }
+}
+
+private extension Node {
+    /// Processor textures run top-down; Raster stores CI coordinates bottom-up. Each input retains its full ROI.
+    static func executeProcessor(_ kernel: CIImageProcessorKernel.Type, inputs: [Node],
+                                 arguments: [String: Any], region: CGRect, env: Env) -> Raster {
+        func texture(_ raster: Raster) -> MTLTexture {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float,
+                width: raster.width, height: raster.height, mipmapped: false)
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            let result = MTLTexture(descriptor: descriptor)
+            raster.data.withUnsafeBytes { bytes in
+                guard let base = bytes.baseAddress else { return }
+                for y in 0..<raster.height {
+                    result.replace(region: MTLRegionMake2D(0, y, raster.width, 1), mipmapLevel: 0,
+                        withBytes: base.advanced(by: (raster.height - 1 - y) * raster.width * 16), bytesPerRow: raster.width * 16)
+                }
+            }
+            return result
+        }
+        let processorInputs = inputs.enumerated().map { index, node in
+            let roi = kernel.roi(forInput: Int32(index), arguments: arguments, outputRect: region).integral
+            let raster = node.eval(roi, Env(linear: false, gpu: env.gpu))
+            return CIImageProcessorInput(region: roi, metalTexture: texture(raster))
+        }
+        let command = MTLCommandBuffer()
+        let target = texture(Raster(rect: region))
+        let output = CIImageProcessorOutput(region: region, metalTexture: target, metalCommandBuffer: command)
+        do { try kernel.process(with: processorInputs, arguments: arguments, output: output) }
+        catch { return Raster(rect: region) }
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { return Raster(rect: region) }
+        var result = Raster(rect: region)
+        let width = result.width, height = result.height
+        result.data.withUnsafeMutableBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            for y in 0..<height {
+                target.getBytes(base.advanced(by: (height - 1 - y) * width * 16), bytesPerRow: width * 16,
+                                from: MTLRegionMake2D(0, y, width, 1), mipmapLevel: 0)
+            }
+        }
+        return result
     }
 }
 
@@ -1236,7 +1280,7 @@ public final class CIImageProcessorOutput {
     }
 }
 
-open class CIImageProcessorKernel {
+nonisolated open class CIImageProcessorKernel: @unchecked Sendable {
     open class var outputFormat: CIFormat { .RGBAh }
     open class func formatForInput(at input: Int32) -> CIFormat { .RGBAh }
     open class func roi(forInput input: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect { outputRect }

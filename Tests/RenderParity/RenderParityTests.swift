@@ -93,6 +93,27 @@ struct RenderParityTests {
                     case .addNoise: adjustment.noiseAmount = 70; adjustment.noiseGaussian = amount < 0; adjustment.noiseMonochromatic = amount > 0
                     case .gaussianBlur: adjustment.gaussianRadius = amount > 0 ? 17 : 1
                     case .motionBlur: adjustment.resolvedMotionDistance = amount > 0 ? 35 : 2; adjustment.resolvedMotionAngle = amount
+                    case .progressiveBlur:
+                        var settings = adjustment.filterLayer
+                        settings.progressiveStart = CGPoint(x: width / 2, y: 12)
+                        settings.progressiveEnd = CGPoint(x: width / 2, y: height - 12)
+                        settings.progressiveFrom = amount > 0 ? 0 : 35
+                        settings.progressiveTo = amount > 0 ? 35 : 0
+                        settings.progressiveRadial = amount < 0
+                        adjustment.filterLayerSettings = settings
+                    case .bloomGlow:
+                        var settings = adjustment.filterLayer
+                        settings.bloomRadius = amount > 0 ? 35 : 2
+                        settings.bloomAmount = amount > 0 ? 80 : 10
+                        adjustment.filterLayerSettings = settings
+                    case .rgbSplit:
+                        var settings = adjustment.filterLayer
+                        settings.rgbSplitDistance = 35
+                        settings.rgbSplitBlur = amount < 0 ? 20 : 0
+                        settings.rgbSplitRadial = amount < 0
+                        settings.rgbSplitCenter = CGPoint(x: width / 2, y: height / 2)
+                        settings.rgbSplitAngle = amount
+                        adjustment.filterLayerSettings = settings
                     case .blackWhite: adjustment.blackWhite.reds = amount > 0 ? 200 : -100
                     case .colorBalance: adjustment.colorBalance.midCyanRed = amount * 2
                     case .invert: break
@@ -111,6 +132,8 @@ struct RenderParityTests {
                     settings.amount = 70; settings.gaussian = true; settings.monochromatic = true
                     settings.vignetteAmount = 80; settings.vignetteRoundness = -50
                     settings.bloomAmount = 80; settings.bloomRadius = 40
+                    settings.rgbSplitDistance = 35; settings.rgbSplitBlur = 20; settings.rgbSplitAngle = 37
+                    settings.rgbSplitRadial = true; settings.rgbSplitCenter = CGPoint(x: width / 2, y: height / 2)
                     settings.tonalAmount = 90; settings.distortion = 60
                     settings.curves.channels[0] = [CurvePoint(x: 0, y: 0), CurvePoint(x: 128, y: 200), CurvePoint(x: 255, y: 255)]
                     settings.exposure.exposure = 2

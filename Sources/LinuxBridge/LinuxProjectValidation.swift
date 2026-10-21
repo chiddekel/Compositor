@@ -32,6 +32,10 @@ enum LinuxProjectValidation {
                 if adjustment.kind == .gaussianBlur || adjustment.kind == .motionBlur || adjustment.kind == .addNoise {
                     guard manifest.version >= 9 else { throw ProjectError.invalid }
                 }
+                // Progressive Blur, Bloom / Glow and RGB Split layers arrived in version 16.
+                if [.progressiveBlur, .bloomGlow, .rgbSplit].contains(adjustment.kind) || adjustment.filterLayerSettings != nil {
+                    guard manifest.version >= 16 else { throw ProjectError.invalid }
+                }
             }
             // Layer masks arrived in version 4, folder masks in version 6.
             guard layer.maskFile == nil || (manifest.version >= (layer.isGroup == true ? 6 : 4)

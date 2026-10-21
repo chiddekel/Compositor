@@ -1998,6 +1998,13 @@ bool SessionWindow::eventFilter(QObject *watched, QEvent *event) {
             updateLayersPanel();
         });
     }
+    if (watched == m_textEditor && (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress)) {
+        // A floating font/color panel may just have committed, before the periodic state pump runs.
+        // Record that formatting before Qt handles typing or Undo against its native document.
+        const auto current = sessionState();
+        if (current.value("textDraft").toObject() != m_textDraft ||
+            current.value("textStylePreviewing").toBool() != m_textPreviewingStyle) syncTextEditor(false);
+    }
     if ((watched == m_canvasWidget || watched == m_textEditor) && event->type() == QEvent::ShortcutOverride) {
         // Canvas changes debounce the menu refresh. Validate before Qt matches a key equivalent, as AppKit does
         // on use, so an immediate Undo/Redo cannot be swallowed by the previous edit's disabled action.
@@ -2872,6 +2879,15 @@ void SessionWindow::handleShellRequests() {
     for (const QJsonValue &v : QJsonDocument::fromJson(bytes).array()) {
         const QString request = v.toString();
         if (request == QLatin1String("newCanvas")) newCanvasTab();
+        else if (request.startsWith(QLatin1String("adoptTab:"))) {
+            bool valid = false;
+            const uint64_t handle = request.mid(9).toULongLong(&valid);
+            if (valid && handle && std::none_of(m_documents.begin(), m_documents.end(),
+                                              [handle](const auto &document) { return document.handle == handle; })) {
+                refreshTabTitle();
+                addDocumentTab(handle, workspaceTabTitle(handle));
+            }
+        }
         else if (request == QLatin1String("open")) trigger("file.openProject");
         else if (request.startsWith(QLatin1String("open:"))) {
             // File > Open Recent: that project, no chooser.
@@ -3105,6 +3121,7 @@ void SessionWindow::createMenus() {
     auto *edit = menuBar()->addMenu(tr("Edit"));
     m_actUndo = edit->addAction(tr("Undo"), QKeySequence::Undo, this, [this] {
         if (m_textEditor && m_textEditor->isVisible()) {
+            syncTextEditor(false);
             m_textEditor->undo();
             refreshMenuTitles(sessionState());
             return;
@@ -3118,6 +3135,7 @@ void SessionWindow::createMenus() {
 
     m_actRedo = edit->addAction(tr("Redo"), QKeySequence::Redo, this, [this] {
         if (m_textEditor && m_textEditor->isVisible()) {
+            syncTextEditor(false);
             m_textEditor->redo();
             refreshMenuTitles(sessionState());
             return;

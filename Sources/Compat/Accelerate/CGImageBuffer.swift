@@ -51,6 +51,29 @@ public func vImageBuffer_InitWithCGImage(_ buffer: UnsafeMutablePointer<vImage_B
         return kvImageBufferSizeMismatch
     }
     let targetSpace = requested.colorSpace?.takeUnretainedValue() ?? image.colorSpace
+    // Layer assets retain 16-bit and HDR precision. Split Channels asks for straight sRGB8: divide by alpha
+    // before quantizing, and encode linear-light Float32 sources through the raster's color conversion.
+    if requested.bitsPerComponent == 8, requested.bitsPerPixel == 32, image.bitsPerComponent > 8,
+       image.alphaInfo == .premultipliedLast,
+       targetSpace == CGColorSpace(name: CGColorSpace.sRGB),
+       image.colorSpace == CGColorSpace(name: CGColorSpace.sRGB)
+        || image.colorSpace == CGColorSpace(name: CGColorSpace.extendedSRGB)
+        || image.colorSpace == CGColorSpace(name: CGColorSpace.extendedLinearSRGB) {
+        let samples = image.nativeImage.premultipliedSRGB()
+        var bytes = [UInt8](repeating: 0, count: samples.count)
+        for pixel in stride(from: 0, to: samples.count, by: 4) {
+            let alpha = samples[pixel + 3]
+            for channel in 0..<4 {
+                let value = channel == 3 ? alpha : alpha > 0 ? samples[pixel + channel] / alpha : 0
+                bytes[pixel + channel] = UInt8(min(255, max(0, ((value.isFinite ? value : 0) * 255).rounded())))
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(bytes)),
+              let converted = CGImage(width: image.width, height: image.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: image.width * 4, space: targetSpace!,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: provider) else { return kvImageInvalidParameter }
+        return vImageBuffer_InitWithCGImage(buffer, format, backgroundColor, converted, flags)
+    }
     guard targetSpace == image.colorSpace, let data = image.dataProvider?.data else { return kvImageInvalidParameter }
     let native = Int(requested.bitsPerComponent) == image.bitsPerComponent && Int(requested.bitsPerPixel) == image.bitsPerPixel &&
         requested.bitmapInfo == image.bitmapInfo

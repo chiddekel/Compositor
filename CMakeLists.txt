@@ -208,6 +208,13 @@ target_link_libraries(CompositorCoreRef PUBLIC CompositorCoreAbi)
 # the link line for its include path.
 
 find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+    # Independent pixel/ROI checks for the kernel used by the Metal API compatibility driver.
+    add_library(test_dispersion_backend SHARED EXCLUDE_FROM_ALL
+        backends/coreimage/Dispersion.cpp backends/coreimage/VulkanRaster.cpp)
+    target_link_libraries(test_dispersion_backend PRIVATE Vulkan::Vulkan)
+    set_target_properties(test_dispersion_backend PROPERTIES AUTOMOC OFF)
+endif()
 
 option(COMPOSITOR_ENABLE_SKIA_GPU "Link Skia Ganesh Vulkan into CompRenderer when the Skia build has it" OFF)
 

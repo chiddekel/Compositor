@@ -6,8 +6,9 @@ the upstream target; Linux changes belong to the framework compatibility modules
 
 ## Updates after the published 1.5.4 baseline
 
-The foundation through `8e4b63b` is committed locally at `9fbb840`. The current merge
-advances protected sources to `9fe0c72`, which adds Channel Pack export. Its domain code,
+The foundation through `8e4b63b` is committed locally at `9fbb840`. The Channel Pack checkpoint is committed locally at `4516b23`,
+through `9fe0c72`. A subsequent uncommitted merge advances protected sources to `fc02107`
+(RGB Split, filter layers and Photoshop artboard tabs), pending compilation and full regression. Channel Pack adds export. Its domain code,
 Export As controls and three original tests compile unchanged. Collection-element bindings,
 vImage image-buffer conversion and straight-RGBA ImageIO support live in the compatibility modules.
 Source images retain their original samples separately from their premultiplied drawing pixels,
@@ -16,7 +17,8 @@ constructor handoff keeps inline borrowed color-space arguments alive until vIma
 
 The normal SDK contract run has passed **1,029 Swift Testing checks** (981 main and 48 shared-state)
 and **159 XCTest checks**, plus native backend checks and source coverage. Its **39 native journeys
-are still running**: this is not yet a successful full-run result. Evidence:
+finished with 37 passes and 2 failures** (combination input-device hit area and the full font-toolbar Undo sequence).
+This is a failed full run; focused font checks alone do not establish that the CI failure is fixed. Evidence:
 `/tmp/compositor-upstream9fe0c72-contract.log`.
 
 Focused native checks pass for Channel Pack's hidden named layers, four source bindings,
@@ -38,8 +40,27 @@ geometry regression and exact live mask-coverage probe pass (`TouchTargetsTests`
 crop and dedicated snapping checks retain it. The previous full 8e4b63b run's seven native failures
 are recorded in `/tmp/compositor-upstream8e4b63-contract-final.log`; that run was nonzero.
 
-The next integration target is the newly observed upstream head `fc02107`: RGB Split, additional
-filter adjustment layers and Photoshop artboards. Those four follow-up commits are not merged yet.
+The four follow-up commits through `fc02107` are merged in the working tree. The complete Linux
+host builds successfully (`/tmp/compositor-fc02107-build.log`, 203.37 seconds). The original
+`MetalDispersion.swift` compiles through the Metal API adapter, which executes spectral gathers
+through the Vulkan raster backend with a CPU fallback. Core Image processor evaluation supplies
+each input's requested region and converts between top-down texture rows and bottom-up CI rasters.
+The independent backend test passed on CPU and hardware Vulkan:
+`/tmp/compositor-fc02107-dispersion.log` (`tests/test_dispersion.py`), including its CMake CI target
+(`/tmp/compositor-fc02107-dispersion-cmake.log`). The native `--dispersion-probe` passed spectral
+preview, Cancel, exact commit/Undo/Redo and Split to Layers
+(`/tmp/compositor-fc02107-dispersion-native.log`). The native `--psd-artboard-probe` passed normal
+import and atomic replacement, tab names, individual canvas dimensions and pixel placement
+(`/tmp/compositor-fc02107-artboards-native.log`). Replacement imports stage boards before
+installing any document; the ABI registers newly created workspace tabs and queues adoption by
+their owning Qt window. The original filter/artboard tests and final full run remain pending.
+The Vulkan canvas override takes the new `GPUAdjustment` implementation directly from upstream.
+Generated session and project-validation adapters carry the artboard import and format-16 rules.
+Channel extraction converts deep sRGB assets to straight samples before quantization, keeping
+their color at low alpha. The dispersion translation is derived from the upstream MIT-licensed
+kernel; the repository's LICENSE applies. New sun/rainbow SVG adapters are original project assets;
+the reused wind glyph retains the Lucide license in `third_party/lucide/LICENSE`.
+The compute boundary and test commands are documented in [linux-dispersion.md](linux-dispersion.md).
 
 The upstream viewport now caps opening/import fitting at 100%, allows explicit Fit to enlarge,
 and preserves zoom while recentering after Image Size. Those algorithms compile unchanged;
@@ -156,3 +177,22 @@ Review the integration with `git diff linux-v1.5.3-linux-alpha.5..linux-v1.5.4-l
 - macOS/Xcode builds are unavailable on this Linux host; the protected-source gate verifies exact upstream content.
 - Poppler and the native libraries were built and tested in the SDK; a complete distributable Flatpak image was not built.
 - Variable-pressure strokes use the CPU fallback; uniform strokes retain the existing CPU/Vulkan selection.
+
+### Final fc02107 checkpoint before 1.5.5
+
+The normal contract run in `/tmp/compositor-fc02107-contract3.log` passed 988 main Swift tests,
+48 shared-state Swift tests and 160 XCTest cases. Its native phase was interrupted to repair
+second-artboard conversion-sheet ownership; it is not a full native acceptance result.
+The new native conversion regression reproduced a hidden second-board prompt before the fix
+(`/tmp/compositor-fc02107-artboard-conversion-before.log`). After task-local import ownership and
+the generated workspace attachment hook, all four normal/replacement Accept/Cancel cases pass,
+including source pixels/history and tab isolation
+(`/tmp/compositor-fc02107-artboard-conversion-after.log`). The original two artboard tests and
+five image-sample XCTest cases also pass (`/tmp/compositor-fc02107-artboard-routing-tests.log`).
+The font regression now sends immediate native Undo before the next state-pump tick. It passed
+the complete font/typing history sequence in the frozen snapshot; that snapshot then failed its
+stale format-15 assertion. The assertion now expects upstream format 16.
+
+Upstream subsequently published 1.5.5 through `9ff443d`: version metadata, a Channel Pack PNG
+writer using Compression's raw DEFLATE API, and the update feed. That follow-up integration and
+the final complete native run remain pending at this checkpoint.

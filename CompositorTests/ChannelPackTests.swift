@@ -70,4 +70,32 @@ struct ChannelPackTests {
         #expect(ChannelPack.defaultSource(for: .red, in: layers) == .black)
         #expect(ChannelPack.defaultSource(for: .alpha, in: layers) == .white)
     }
+
+    /// Image › Split Channels turns a layer into a folder of Red, Green, Blue and Alpha, in its place, which Channel
+    /// Pack fills its channels from without being asked; undo puts the layer back.
+    @Test func splitChannelsMakesLayersChannelPackPacksBack() async throws {
+        let session = EditorSession()
+        session.createDocument(width: 8, height: 4)
+        let context = try #require(CGContext(data: nil, width: 8, height: 4, bitsPerComponent: 8, bytesPerRow: 32,
+                                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.6, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 8, height: 4))
+        session.addPixelLayer(try #require(context.makeImage()), at: .zero, name: "Texture", editName: "Add")
+        #expect(session.canSplitChannels)
+        session.splitChannels()
+        let layers = try #require(session.document?.layers)
+        #expect(layers.map(\.name) == ["Texture", "Alpha", "Blue", "Green", "Red"])
+        #expect(layers[0].isGroup && layers.dropFirst().allSatisfy { $0.parentID == layers[0].id })
+        #expect(session.activeLayer?.name == "Red")
+
+        let snapshot = try #require(session.projectSnapshot())
+        let sources = ChannelPack.Channel.allCases.map { ChannelPack.defaultSource(for: $0, in: snapshot.manifest.layers) }
+        let packed = try await ImageExporter.shared.channelPack(snapshot, sources: sources, width: 8, height: 4)
+        let pixel = try firstPixel(packed.data)
+        #expect(abs(Int(pixel[0]) - 51) <= 1 && abs(Int(pixel[1]) - 153) <= 1 && pixel[2] == 255 && pixel[3] == 255, "\(pixel)")
+
+        session.undo()
+        #expect(session.document?.layers.map(\.name) == ["Texture"])
+    }
 }

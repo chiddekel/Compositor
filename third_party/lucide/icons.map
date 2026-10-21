@@ -1,4 +1,7 @@
 # SF Symbol name (as upstream writes it) -> Lucide icon (lucide-static 0.544.0)
+aqi.medium wind
+sun.max custom/sun
+rainbow custom/rainbow
 arrow.up.left.and.arrow.down.right move-diagonal-2
 rectangle.dashed square-dashed
 circle.dashed circle-dashed

@@ -32,4 +32,5 @@ void compositor_motion_row(const float *source, size_t width, size_t height,
 #ifdef __cplusplus
 }
 #endif
+#include "Dispersion.h"
 #endif

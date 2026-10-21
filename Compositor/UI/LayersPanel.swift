@@ -41,7 +41,12 @@ struct LayersPanel: View {
                     .help("Group selected layers (⌘G)").accessibilityLabel("New folder").disabled(!session.layersLookEditable)
                 LayerMaskMenu(session: session)
                 Menu {
-                    ForEach(AdjustmentKind.allCases, id: \.self) { kind in
+                    // The Image menu's adjustments, then the Filter menu's filters.
+                    ForEach(AdjustmentKind.imageAdjustments, id: \.self) { kind in
+                        Button(kind.rawValue) { session.addAdjustment(kind) }
+                    }
+                    Divider()
+                    ForEach(AdjustmentKind.filters, id: \.self) { kind in
                         Button(kind.rawValue) { session.addAdjustment(kind) }
                     }
                 } label: { Image(systemName: "circle.lefthalf.filled").footerHitArea() }

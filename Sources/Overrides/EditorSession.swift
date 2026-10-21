@@ -912,6 +912,12 @@ final class EditorSession {
                     let imported: PSDImport
                     do {
                         let parsed = try await ImageImporter.shared.loadPhotoshop(url, remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
+                        // Artboards each open as a document of their own, in tabs the workspace makes.
+                        if let boards = parsed.artboards(), !boards.isEmpty, let opensArtboard {
+                            endPSDReading()
+                            for board in boards { await opensArtboard(board.document, board.name) }
+                            continue
+                        }
                         psdProfile = parsed.cmykProfile
                         // Only a background: Photoshop writes no layer records, just the merged image, so that is
                         // what comes in, as one layer.
@@ -1013,6 +1019,31 @@ final class EditorSession {
         let continuation = conversionContinuation
         conversionContinuation = nil
         continuation?.resume(returning: confirmed)
+    }
+
+    /// Opens each artboard of a Photoshop file as a document of its own; set by the workspace, which makes the tabs.
+    /// Without it (no workspace), a file with artboards imports as one canvas, as one without them does.
+    @ObservationIgnored var opensArtboard: ((PSDDocument, String) async -> Void)?
+
+    /// One Photoshop artboard's layers as this tab's document, after the conversion report when there's anything in it.
+    func importArtboard(_ parsed: PSDDocument, named name: String) async {
+        do {
+            beginPSDReading(title: "Open “\(name)”?", confirmTitle: "Import")
+            let imported: PSDImport
+            do {
+                let assets = try await ImageImporter.shared.photoshopAssets(parsed)
+                imported = try PSDDocumentBuilder.makeImport(parsed, assets: assets)
+            } catch {
+                endPSDReading()
+                throw error
+            }
+            guard await finishPSDReading(imported.conversions) else { return }
+            let startsDocument = document == nil
+            try insertPhotoshop(imported, named: name)
+            if startsDocument, let profile = parsed.cmykProfile { proofProfile = CMYK.adopt(profile) }
+        } catch {
+            importError = [importError, "\(name): \(error.localizedDescription)"].compactMap { $0 }.joined(separator: "\n\n")
+        }
     }
 
     func insertPhotoshop(_ imported: PSDImport, named: String, centeredAt point: CGPoint? = nil) throws {

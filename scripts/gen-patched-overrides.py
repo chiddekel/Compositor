@@ -17,6 +17,9 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 
 OUTPUTS = {
+    'Sources/Overrides/ProjectWorkspace.swift': (
+        'Compositor/Document/ProjectWorkspace.swift', 'linux/patches/project-workspace-linux.patch',
+        'Register newly created artboard sessions with the importing native window; upstream tab/import algorithms are unchanged.'),
     'Sources/Overrides/ContentView.swift': (
         'Compositor/ContentView.swift', 'linux/patches/content-view-linux.patch',
         'The Qt shell renders toolHeaders, toolRail and statusBar on their own (internal here), shows Color Range in its\n'

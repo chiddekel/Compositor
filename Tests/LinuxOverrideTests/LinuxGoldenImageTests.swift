@@ -182,9 +182,10 @@ struct LinuxGoldenImageTests {
     @Test(arguments: AdjustmentKind.allCases)
     func adjustments(_ kind: AdjustmentKind) async throws {
         let image = try await adjustment(kind)
-        // Noise and grain take their pattern from the layer (a new one each run), so they are held to the same
-        // look — each channel's mean and spread — rather than the same pixels.
-        if kind == .addNoise || kind == .grain { try matchesStatistics(image, "adjustment", kind.rawValue) }
+        // Noise and grain take their pattern from the layer (a new one each run). RGB Split's per-pixel sin hash
+        // also varies with GPU transcendental precision. Compare their mean/spread here; the RGB Split tests
+        // separately check spectral direction, streaks, radial center, alpha and ROI on both CPU and Vulkan.
+        if kind == .addNoise || kind == .grain || kind == .rgbSplit { try matchesStatistics(image, "adjustment", kind.rawValue) }
         else { try matchesBaseline(image, "adjustment", kind.rawValue) }
     }
 
@@ -208,7 +209,11 @@ struct LinuxGoldenImageTests {
 
     /// Content-Aware Fill fills a selection from the pixels around it: with no selection there is nothing to render.
     @Test(arguments: FilterKind.allCases.filter { $0 != .contentAwareFill })
-    func filters(_ kind: FilterKind) throws { try matchesBaseline(try filter(kind), "filter", kind.rawValue) }
+    func filters(_ kind: FilterKind) throws {
+        let image = try filter(kind)
+        if kind == .rgbSplit { try matchesStatistics(image, "filter", kind.rawValue) }
+        else { try matchesBaseline(image, "filter", kind.rawValue) }
+    }
 
     @Test(arguments: LayerEffectKind.allCases)
     func effects(_ kind: LayerEffectKind) async throws { try matchesBaseline(try await effect(kind), "effect", kind.rawValue) }

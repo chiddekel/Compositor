@@ -376,7 +376,14 @@ nonisolated public func compositorSessionCommand(_ handle: UInt64, _ json: Unsaf
               envelope["action"] as? String == "textRestore" else { return -1 }
     }
     return Int32(withEntry(handle) { entry in
+        let knownTabs = Set(Workspace.shared.tabs.map(\.id))
         let code = entry.editor.command(data)
+        if entry.workspaceTabID != nil {
+            for tab in Workspace.shared.tabs where !knownTabs.contains(tab.id) {
+                let newHandle = handleForWorkspaceTab(tab.id) ?? registerWorkspaceTab(tab)
+                if newHandle != 0 { ShellProjects.pending.append(.init(name: "adoptTab:\(newHandle)", handle: handle)) }
+            }
+        }
         if code == 0 { entry.rendered = nil }
         entry.noteStrokeProgress()
         return Int64(code)

@@ -45,9 +45,12 @@ for input in "$SKIA_ROOT/include/core/SkCanvas.h" "$SKIA_LIB" "$(dirname "$SKIA_
     fi
 done
 
-cmake -S . -B "$NATIVE_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
+cmake -S . -B "$NATIVE_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER="$(command -v clang)" -DCMAKE_CXX_COMPILER="$(command -v clang++)" \
     -DCOMPOSITOR_SKIA_ROOT="$SKIA_ROOT" -DCOMPOSITOR_SKIA_LIB="$SKIA_LIB"
-cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels test_keyboard_layout
+cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_dispersion_backend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels test_keyboard_layout
+python3 tests/test_dispersion.py "$NATIVE_BUILD/libtest_dispersion_backend.so"
+python3 tests/make_artboard_fixture.py --check
 "$NATIVE_BUILD/test_pressure_brush"
 python3 tests/test_pdf_backend.py "$NATIVE_BUILD/libCompositorPDFBackend.so"
 # Call the executable directly: CTest treats a missing Skia backend (77) as a skip, which is a failure here.
@@ -122,6 +125,9 @@ NATIVE_GATES=(
     "test --combo-smoke --upstream-154-probe"
     "test --combo-smoke --font-history-probe"
     "test --combo-smoke --channel-pack-probe"
+    "test --combo-smoke --dispersion-probe"
+    "solo test --combo-smoke --psd-artboard-probe"
+    "solo test --combo-smoke --psd-artboard-conversion-probe"
     "test --combo-smoke --zoom-cursor-probe"
     "test --combo-smoke --keyboard-cursor-probe"
     "test --combo-smoke --layer-disjoint-probe"

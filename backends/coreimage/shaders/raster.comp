@@ -11,10 +11,46 @@ layout(std430,binding=2) readonly buffer Mask { vec4 mask[]; };
 layout(std430,binding=3) readonly buffer Background { vec4 background[]; };
 layout(std430,binding=4) readonly buffer Values { vec4 values[]; };
 
+float parameter(uint i) { return values[i/4][i%4]; }
+vec4 dispersionTap(vec2 q) {
+    vec2 size=vec2(parameter(16),parameter(17));
+    vec2 texel=vec2(q.x-parameter(13),parameter(15)*(q.y-parameter(14)));
+    uint sides=uint(parameter(8));
+    if ((texel.x<0 && (sides&1u)==0) || (texel.x>size.x && (sides&2u)==0) ||
+        (texel.y<0 && (sides&4u)==0) || (texel.y>size.y && (sides&8u)==0)) return vec4(0);
+    vec2 at=clamp(texel-0.5,vec2(0),size-1);
+    uvec2 lo=uvec2(floor(at)), hi=min(lo+1u,uvec2(size)-1u);
+    vec2 t=fract(at); uint w=uint(size.x);
+    return mix(mix(source[lo.y*w+lo.x],source[lo.y*w+hi.x],t.x),
+               mix(source[hi.y*w+lo.x],source[hi.y*w+hi.x],t.x),t.y);
+}
+vec4 dispersion(uvec2 pixel) {
+    vec2 at=vec2(parameter(11),parameter(12))+vec2(float(pixel.x)+0.5,parameter(15)*(float(pixel.y)+0.5));
+    vec2 axis=parameter(7)!=0 ? (at-vec2(parameter(0),parameter(1)))/max(parameter(6),1.0)
+                                         : vec2(parameter(2),parameter(3));
+    vec2 spread=axis*parameter(4), streak=axis*parameter(5);
+    uint n=max(uint(parameter(9)),1u), m=max(uint(parameter(10)),1u);
+    float jitter=fract(sin(dot(vec2(pixel),vec2(12.9898,78.233)))*43758.5453);
+    vec3 color=vec3(0), alpha=vec3(0), total=vec3(0);
+    for (uint i=0;i<n;++i) {
+        float t=n==1 ? 0 : (float(i)+jitter)/float(n)*2-1;
+        vec3 weight=vec3(smoothstep(-0.3,1.0,t),1-smoothstep(0.0,1.0,abs(t))+0.05,smoothstep(-0.3,1.0,-t));
+        for (uint j=0;j<m;++j) {
+            float v=m==1 ? 0 : (float(j)+jitter)/float(m);
+            vec4 c=dispersionTap(at-spread*t-streak*v);
+            color+=weight*c.rgb; alpha+=weight*c.a; total+=weight;
+        }
+    }
+    color/=total; alpha/=total;
+    float a=max(alpha.r,max(alpha.g,alpha.b));
+    return vec4(min(color,vec3(a)),a);
+}
+
 void main() {
     uvec2 p=gl_GlobalInvocationID.xy;
     if (p.x>=u.width || p.y>=u.height) return;
     uint i=p.y*u.width+p.x;
+    if (u.operation==10) { destination[i]=dispersion(p); return; }
     // Absent inputs are bound to small placeholder buffers: read only what the operation uses.
     const vec4 bg=u.operation<=2?background[i]:vec4(0);
     const vec4 m=u.operation==2?mask[i]:vec4(0);

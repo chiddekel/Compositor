@@ -105,6 +105,8 @@ final class CanvasView: NSView {
     private var gradientDrag: GradientHandle?
     /// The end of Progressive Blur's line being dragged, while its panel is open.
     private var progressiveDrag: GradientHandle?
+    /// RGB Split's center being dragged.
+    private var rgbSplitDrag = false
     private var antsTimer: Timer?
     private var modifierMonitor: Any?
     private var sampleClickMonitor: Any?
@@ -1781,6 +1783,13 @@ final class CanvasView: NSView {
             beginProgressiveDrag(at: point)
             return
         }
+        if session.filterEdit?.kind == .rgbSplit, session.filterEdit?.settings.rgbSplitRadial == true, !spaceHeld,
+           let document = session.document {
+            session.moveRGBSplitCenter(to: session.viewport.documentPoint(from: point, documentSize: document.size))
+            rgbSplitDrag = true
+            synchronizeDisplay()
+            return
+        }
         if session.levels?.sampleMode != nil, !spaceHeld, let document = session.document {
             session.sampleLevels(at: session.viewport.documentPoint(from: point, documentSize: document.size))
             FloatingPanelController.refocus(NSUserInterfaceItemIdentifier("levelsPanel"))
@@ -1873,6 +1882,11 @@ final class CanvasView: NSView {
         }
         if session.filterEdit?.cameraRawDrag != nil, let document = session.document {
             session.dragCameraRaw(to: session.viewport.documentPoint(from: point, documentSize: document.size))
+            return
+        }
+        if rgbSplitDrag, let document = session.document {
+            session.moveRGBSplitCenter(to: session.viewport.documentPoint(from: point, documentSize: document.size))
+            synchronizeDisplay()
             return
         }
         if let handle = progressiveDrag, let settings = session.filterEdit?.settings, let document = session.document {
@@ -2088,6 +2102,11 @@ final class CanvasView: NSView {
         window?.invalidateCursorRects(for: self)
     }
     override func mouseUp(with event: NSEvent) {
+        if rgbSplitDrag {
+            rgbSplitDrag = false
+            FloatingPanelController.refocus(NSUserInterfaceItemIdentifier("filterPanel"))
+            return
+        }
         if progressiveDrag != nil {
             progressiveDrag = nil
             // The panel keeps the keyboard, for Return and Escape.

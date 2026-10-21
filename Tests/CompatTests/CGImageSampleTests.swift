@@ -4,6 +4,37 @@ import ImageIO
 import Accelerate
 
 final class CGImageSampleTests: XCTestCase {
+    func testDeepChannelConversionDividesBeforeQuantizing() throws {
+        // A nearly clear pixel has enough precision in the layer to retain its straight channel values.
+        // Quantizing its premultiplied samples first would turn all three colors into zero.
+        let cases: [(PortableImage.Depth, [UInt8])] = [
+            (.uint16, [UInt16(26), 77, 128, 256].withUnsafeBytes { Array($0) }),
+            (.half, [Float16(0.001), 0.002, 0.003, 0.004].withUnsafeBytes { Array($0) }),
+            (.float32, [Float(0.001), 0.002, 0.003, 0.004].withUnsafeBytes { Array($0) }),
+        ]
+        for (depth, bytes) in cases {
+            let source = CGImage(PortableImage(width: 1, height: 1, kind: .rgba, depth: depth,
+                                               bytesPerRow: bytes.count, bytes: bytes))
+            var format = vImage_CGImageFormat(bitsPerComponent: 8, bitsPerPixel: 32,
+                colorSpace: Unmanaged.passUnretained(CGColorSpace(name: CGColorSpace.sRGB)!),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue))
+            var buffer = vImage_Buffer()
+            XCTAssertEqual(vImageBuffer_InitWithCGImage(&buffer, &format, nil, source, 0), kvImageNoError)
+            guard let data = buffer.data else { return XCTFail("No channel samples for \(depth)") }
+            defer { free(data) }
+            let converted = data.assumingMemoryBound(to: UInt8.self)
+            if depth == .uint16 { XCTAssertEqual(Array(UnsafeBufferPointer(start: converted, count: 4)), [26, 77, 128, 1]) }
+            else if depth == .half {
+                XCTAssertEqual(converted[0], 64); XCTAssertEqual(converted[1], 128); XCTAssertEqual(converted[2], 191)
+            } else {
+                // Float32 assets are linear light: straight .25 encodes near sRGB .537.
+                XCTAssertLessThanOrEqual(abs(Int(converted[0]) - 137), 1)
+                XCTAssertLessThanOrEqual(abs(Int(converted[1]) - 188), 1)
+                XCTAssertLessThanOrEqual(abs(Int(converted[2]) - 225), 1)
+            }
+        }
+    }
+
     func testVImageFormatOwnsItsColorSpaceUntilReplaced() {
         var space: CGColorSpace? = CGColorSpace(name: CGColorSpace.sRGB)
         weak var observed = space

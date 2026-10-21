@@ -256,7 +256,14 @@ final class UpstreamEditor {
     }
     /// Replacement imports keep the current document/history intact until every file succeeds.
     private(set) var replacementImportSession: EditorSession?
-    var importSession: EditorSession { replacementImportSession ?? session }
+    private var artboardImportSession: EditorSession?
+    var importSession: EditorSession {
+        if let artboardImportSession, artboardImportSession.showsConversionSheet || artboardImportSession.showsRawDevelop {
+            return artboardImportSession
+        }
+        return replacementImportSession ?? session
+    }
+    func observeArtboardImport(_ importing: EditorSession) { artboardImportSession = importing }
     /// Distinguishes reloading the same document ID from editing that document.
     var persistenceGeneration = UUID()
     private(set) var error: String?
@@ -663,8 +670,12 @@ final class UpstreamEditor {
         // Image); otherwise the files come in as layers, as a drop onto the canvas does.
         case "importFiles":
             guard let paths = command.paths, !paths.isEmpty else { return fail(-1, "paths required") }
+            let previousImportSession = artboardImportSession
+            defer { artboardImportSession = previousImportSession }
             ImportPrompts.install(on: s)
-            await s.importImages(paths.map { URL(fileURLWithPath: $0) })
+            await ImportPrompts.$artboardOwner.withValue(self) {
+                await s.importImages(paths.map { URL(fileURLWithPath: $0) })
+            }
             if let message = s.importError {
                 s.importError = nil   // reported to the shell; left set, it would block editing
                 return fail(-5, message)
@@ -1209,6 +1220,29 @@ final class UpstreamEditor {
         let staged = EditorSession()
         staged.confirmConversions = session.confirmConversions
         staged.confirmRawDevelop = session.confirmRawDevelop
+        let owningTab = Workspace.shared.tabs.first { $0.session === session }
+        var firstArtboardName: String?
+        var additionalArtboards: [(name: String, session: EditorSession)] = []
+        var cancelledArtboard = false
+        if owningTab != nil {
+            // Stage every artboard before replacing anything. Each board still uses upstream's importer and
+            // conversion prompts; cancellation or a later file failure preserves the existing document and tabs.
+            staged.opensArtboard = { [weak self, weak staged] parsed, name in
+                guard let self, let staged, !cancelledArtboard, staged.importError == nil else { return }
+                let target = staged.document == nil ? staged : EditorSession()
+                let previousImportSession = self.artboardImportSession
+                self.artboardImportSession = target
+                defer { self.artboardImportSession = previousImportSession }
+                target.confirmConversions = staged.confirmConversions
+                target.confirmRawDevelop = staged.confirmRawDevelop
+                ImportPrompts.install(on: target)
+                await target.importArtboard(parsed, named: name)
+                if let message = target.importError { staged.importError = message; return }
+                guard target.document != nil else { cancelledArtboard = true; return }
+                if target === staged { firstArtboardName = name }
+                else { additionalArtboards.append((name, target)) }
+            }
+        }
         replacementImportSession = staged
         session.isProjectBusy = true
         var folders: [URL] = []
@@ -1233,10 +1267,12 @@ final class UpstreamEditor {
         }
         for file in files {
             let before = staged.history.currentRevision
+            let beforeArtboards = additionalArtboards.count
             await staged.importImages([file])
             if let message = staged.importError { return fail(-5, message) }
+            if cancelledArtboard { return fail(-7, "cancelled") }
             // Upstream skips a cancelled RAW/Photoshop input. A replacement must abort the entire staged batch.
-            guard staged.history.currentRevision != before else { return fail(-7, "cancelled") }
+            guard staged.history.currentRevision != before || additionalArtboards.count != beforeArtboards else { return fail(-7, "cancelled") }
             if staged.filterEdit?.kind == .cameraRaw {
                 cameraRawLayer = staged.activeLayerID
                 staged.cancelFilter()   // The batch continues; reopen on the installed document after success.
@@ -1258,7 +1294,23 @@ final class UpstreamEditor {
         session.selectedLayerIDs = staged.selectedLayerIDs
         session.collapsedGroupIDs = staged.collapsedGroupIDs
         session.viewport = staged.viewport
+        session.proofProfile = staged.proofProfile
         session.endEdit()
+        if let owningTab {
+            if let firstArtboardName { owningTab.defaultName = firstArtboardName }
+            for board in additionalArtboards {
+                let tab = Workspace.shared.addTab(reuseEmpty: false)
+                tab.defaultName = board.name
+                tab.session.beginEdit("Import Photoshop File")
+                tab.session.document = board.session.document
+                tab.session.activeLayerID = board.session.activeLayerID
+                tab.session.selectedLayerIDs = board.session.selectedLayerIDs
+                tab.session.collapsedGroupIDs = board.session.collapsedGroupIDs
+                tab.session.viewport = board.session.viewport
+                tab.session.proofProfile = board.session.proofProfile
+                tab.session.endEdit()
+            }
+        }
         persistenceGeneration = UUID()
         replacementImportSession = nil
         session.isProjectBusy = false

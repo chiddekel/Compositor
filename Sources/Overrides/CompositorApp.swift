@@ -348,8 +348,13 @@ struct CompositorApp: App {
                 }
                 CommandMenu("Layer") {
                     Menu("New Adjustment Layer") {
-                        ForEach(AdjustmentKind.allCases, id: \.self) { kind in
+                        // The Image menu's adjustments, then the Filter menu's filters.
+                        ForEach(AdjustmentKind.imageAdjustments, id: \.self) { kind in
                             Button(kind.rawValue + (kind.isEditable ? "…" : "")) { session.addAdjustment(kind) }
+                        }
+                        Divider()
+                        ForEach(AdjustmentKind.filters, id: \.self) { kind in
+                            Button(kind.rawValue + "…") { session.addAdjustment(kind) }
                         }
                     }.disabled(!session.canEditLayers || session.document == nil)
                     Button("Edit Adjustment…") {

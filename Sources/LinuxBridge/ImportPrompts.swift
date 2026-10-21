@@ -9,6 +9,15 @@ import UniformTypeIdentifiers
 /// Without one, `EditorSession`'s test hooks answer instead (`confirmConversions` through the shell's plain prompt,
 /// `confirmRawDevelop` with the camera's own settings).
 enum ImportPrompts {
+    /// The command's owner follows newly created artboard sessions across awaits without using global tab focus.
+    @TaskLocal static var artboardOwner: UpstreamEditor?
+
+    @MainActor static func attachArtboardSession(_ session: EditorSession) {
+        guard let owner = artboardOwner else { return }
+        owner.observeArtboardImport(session)
+        install(on: session)
+    }
+
     /// Shell callback: a JSON array of {"layer","message"} and its length; returns non-zero to go ahead.
     typealias ConversionPrompt = @convention(c) (UnsafePointer<UInt8>?, Int) -> Int32
     nonisolated(unsafe) static var conversionPrompt: ConversionPrompt?

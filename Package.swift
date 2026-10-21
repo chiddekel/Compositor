@@ -133,6 +133,7 @@ let package = Package(
                 "LiveMaskRenderer.swift",
                 "MetalBrushCoverage.swift",
                 "MetalCameraRawLookup.swift",
+                "MetalDispersion.swift",
                 "MetalLayerEffects.swift",
                 "MetalWarp.swift",
                 "NavigatorGeometry.swift",
@@ -225,9 +226,9 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "CoreVideo", path: "Sources/Compat/CoreVideo", swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // Metal type surface for Linux (CPU-backed MTLTexture/Device) so tip GPUCanvasTests compile.
-        .target(name: "Metal", dependencies: ["CoreGraphics"], path: "Sources/Compat/Metal",
+        .target(name: "Metal", dependencies: ["CoreGraphics", "CoreImageKernels"], path: "Sources/Compat/Metal",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
-        .target(name: "CoreImageKernels", path: "backends/coreimage", exclude: ["shaders/raster.comp", "shaders/raster_fused.comp", "shaders/raster_ops.glsl"], sources: ["Gaussian.c", "GaussianFFT.c", "Motion.c", "VulkanRaster.cpp"],
+        .target(name: "CoreImageKernels", path: "backends/coreimage", exclude: ["shaders/raster.comp", "shaders/raster_fused.comp", "shaders/raster_ops.glsl"], sources: ["Gaussian.c", "GaussianFFT.c", "Motion.c", "Dispersion.cpp", "VulkanRaster.cpp"],
                 publicHeadersPath: "include", cSettings: [.unsafeFlags(["-ffp-contract=off"])], linkerSettings: [.linkedLibrary("vulkan")]),
         .target(name: "CoreImage", dependencies: ["CoreGraphics", "CoreVideo", "CompatSupport", "CoreImageKernels", "Metal"], path: "Sources/Compat/CoreImage",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
@@ -283,6 +284,7 @@ let package = Package(
                      // Tip 1.4.9 Sparkle user driver (its own AppKit update alert); Linux updates through Flatpak.
                      "IO/UpdateDriver.swift",
                      "Document/EditorSession.swift",
+                     "Document/ProjectWorkspace.swift",
                      "Document/SmudgeLiquify.swift",
                      "Document/ColorRangeSelection.swift",
                      "Rendering/MetalBrushCoverage.swift",

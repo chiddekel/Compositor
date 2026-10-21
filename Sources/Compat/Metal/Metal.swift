@@ -58,15 +58,16 @@ public final class MTLTexture {
     public let height: Int
     public let pixelFormat: MTLPixelFormat
     public var usage: MTLTextureUsage
-    /// Premultiplied RGBA8 (or R8), top-left rows — writable by CIContext.render on Linux.
+    /// Native pixel bytes, top-left rows. Float textures contain four IEEE Float32 samples per texel.
     public var rgbaBytes: [UInt8]
+    public var bytesPerPixel: Int { pixelFormat == .rgba32Float ? 16 : pixelFormat == .r8Unorm ? 1 : 4 }
 
     public init(descriptor: MTLTextureDescriptor) {
         width = descriptor.width
         height = descriptor.height
         pixelFormat = descriptor.pixelFormat
         usage = descriptor.usage
-        let bpp = pixelFormat == .r8Unorm ? 1 : 4
+        let bpp = pixelFormat == .rgba32Float ? 16 : pixelFormat == .r8Unorm ? 1 : 4
         rgbaBytes = [UInt8](repeating: 0, count: max(1, width * height * bpp))
     }
 
@@ -80,7 +81,7 @@ public final class MTLTexture {
 
     public func getBytes(_ pointer: UnsafeMutableRawPointer, bytesPerRow: Int, from region: MTLRegion, mipmapLevel: Int) {
         _ = mipmapLevel
-        let bpp = pixelFormat == .r8Unorm ? 1 : 4
+        let bpp = bytesPerPixel
         let srcRow = width * bpp
         rgbaBytes.withUnsafeBytes { src in
             guard let base = src.baseAddress else { return }
@@ -94,7 +95,7 @@ public final class MTLTexture {
 
     public func replace(region: MTLRegion, mipmapLevel: Int, withBytes pointer: UnsafeRawPointer, bytesPerRow: Int) {
         _ = mipmapLevel
-        let bpp = pixelFormat == .r8Unorm ? 1 : 4
+        let bpp = bytesPerPixel
         let dstRow = width * bpp
         rgbaBytes.withUnsafeMutableBytes { dest in
             guard let base = dest.baseAddress else { return }
@@ -145,18 +146,36 @@ public final class MTLComputeCommandEncoder {
         self.threadgroupsPerGrid = threadgroupsPerGrid
         self.threadsPerThreadgroup = threadsPerThreadgroup
     }
+    public func dispatchThreads(_ threadsPerGrid: MTLSize, threadsPerThreadgroup: MTLSize) {
+        dispatchThreadgroups(MTLSize(width: (threadsPerGrid.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
+                                    height: (threadsPerGrid.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
+                                    depth: threadsPerGrid.depth), threadsPerThreadgroup: threadsPerThreadgroup)
+    }
     public func endEncoding() { ended = true }
 }
 
+public enum MTLCommandBufferStatus { case notEnqueued, committed, completed, error }
+
 public final class MTLCommandBuffer {
     public private(set) var computeEncoders: [MTLComputeCommandEncoder] = []
+    public private(set) var status: MTLCommandBufferStatus = .notEnqueued
+    public private(set) var error: Error?
     public init() {}
     public func makeComputeCommandEncoder() -> MTLComputeCommandEncoder? {
         let encoder = MTLComputeCommandEncoder()
         computeEncoders.append(encoder)
         return encoder
     }
-    public func commit() {}
+    public func commit() {
+        status = .committed
+        do {
+            for encoder in computeEncoders { try MetalCompute.execute(encoder) }
+            status = .completed
+        } catch {
+            self.error = error
+            status = .error
+        }
+    }
     public func waitUntilCompleted() {}
     public func waitUntilScheduled() {}
 }

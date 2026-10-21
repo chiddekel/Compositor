@@ -308,22 +308,15 @@ struct ExportAsSheet: View {
         if chosen { menu.buttonStyle(.borderedProminent) } else { menu.buttonStyle(.bordered) }
     }
 
-    /// A channel's source: one of the document's layers or groups (top first, indented inside their groups), or solid
-    /// black or white.
+    /// A channel's source: one of the document's layers or groups, top first, or solid black or white.
     private func channelPicker(_ index: Int, channel: ChannelPack.Channel) -> some View {
         let layers = snapshot?.manifest.layers ?? []
-        let parents = Dictionary(uniqueKeysWithValues: layers.map { ($0.id, $0.parentID) })
-        func depth(_ id: UUID) -> Int {
-            var count = 0, next = parents[id] ?? nil
-            while let parent = next { count += 1; next = parents[parent] ?? nil }
-            return count
-        }
         return Picker(channel.rawValue, selection: $channels[index]) {
             Text("Black").tag(ChannelPack.Source.black)
             Text("White").tag(ChannelPack.Source.white)
             Divider()
             ForEach(layers.reversed().filter { $0.adjustment == nil }, id: \.id) { layer in
-                Text(String(repeating: "    ", count: depth(layer.id)) + layer.name).tag(ChannelPack.Source.layer(layer.id))
+                Text(layer.name).tag(ChannelPack.Source.layer(layer.id))
             }
         }
         .labelsHidden().frame(width: 260)

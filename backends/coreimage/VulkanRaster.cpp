@@ -236,7 +236,8 @@ struct CompositorVulkanRaster {
                 const float *source,const float *background,const float *mask,const float *parameters,float *output,
                 uint32_t uploadMask) {
         const size_t bytes=size_t(width)*height*16;
-        const std::array<VkDeviceSize,5> sizes{bytes,bytes,mask?bytes:16,background?bytes:16,80};
+        const size_t sourceBytes=operation==10?size_t(parameters[16])*size_t(parameters[17])*16:bytes;
+        const std::array<VkDeviceSize,5> sizes{sourceBytes,bytes,mask?bytes:16,background?bytes:16,80};
         for (uint32_t i=0;i<5;++i) {
             if (sizes[i]>properties.limits.maxStorageBufferRange) throw std::runtime_error("Raster buffer too large");
             if (buffers[i] && buffers[i]->capacity>=sizes[i]) continue;
@@ -258,15 +259,16 @@ struct CompositorVulkanRaster {
         const uint32_t bindings[3]{0,3,2};
         for (uint32_t i=0;i<3;++i) {
             if (!inputs[i]) { inputBytes[i]=0; continue; }
-            if (!(uploadMask&(1u<<i)) && inputBytes[i]==bytes) continue;
+            const size_t count=i==0?sourceBytes:bytes;
+            if (!(uploadMask&(1u<<i)) && inputBytes[i]==count) continue;
             auto &buffer=buffers[bindings[i]];
-            std::memcpy(buffer->mapped,inputs[i],bytes);
+            std::memcpy(buffer->mapped,inputs[i],count);
             buffer->flush();
-            inputBytes[i]=bytes;
-            uploadBytes+=bytes;
+            inputBytes[i]=count;
+            uploadBytes+=count;
         }
         if (parameters) {
-            std::memcpy(buffers[4]->mapped,parameters,operation==3?80:operation==9?48:operation==7?16:32);
+            std::memcpy(buffers[4]->mapped,parameters,(operation==3 || operation==10)?80:operation==9?48:operation==7?16:32);
             buffers[4]->flush();
         }
         const uint32_t u[4]{width,height,operation,channel};
@@ -522,9 +524,11 @@ extern "C" int compositor_vulkan_raster_render_graph(CompositorVulkanRaster *c,u
 extern "C" int compositor_vulkan_raster_render_cached(CompositorVulkanRaster *c,uint32_t width,uint32_t height,
     uint32_t operation,uint32_t channel,const float *source,const float *background,
     const float *mask,const float *parameters,float *output,uint32_t uploadMask,uint64_t *generation) {
-    if (!width || !height || width>65536 || height>65536 || !source || !output || operation<1 || operation>9 ||
+    if (!width || !height || width>65536 || height>65536 || !source || !output || operation<1 || operation>10 ||
         ((operation==1 || operation==2) && !background) || (operation==2 && (!mask || (channel!=0 && channel!=3 && channel!=4))) ||
-        ((operation==3 || operation==4 || operation==7 || operation==8 || operation==9) && !parameters)) return -1;
+        ((operation==3 || operation==4 || operation==7 || operation==8 || operation==9 || operation==10) && !parameters)) return -1;
+    if (operation==10 && (!(parameters[16]>=1 && parameters[16]<=65536) ||
+                         !(parameters[17]>=1 && parameters[17]<=65536))) return -1;
     if (!c) return -2;
     std::lock_guard<std::mutex> guard(c->lock);
     if (!c->usable) return -2;
