@@ -160,6 +160,16 @@ public final class NSBitmapImageRep: NSImageRep, @unchecked Sendable {
     public var cgImage: CGImage? { image }
     public var pixelsWide: Int { image.width }
     public var pixelsHigh: Int { image.height }
+    public func getPixel(_ pixel: UnsafeMutablePointer<Int>, atX x: Int, y: Int) {
+        let raster = image
+        let samples = raster.isGrayPlane ? 1 : 4
+        guard x >= 0, y >= 0, x < raster.width, y < raster.height else {
+            for channel in 0..<samples { pixel[channel] = 0 }
+            return
+        }
+        let bytes = raster.portableImage.bytes, offset = y * raster.bytesPerRow + x * samples
+        for channel in 0..<samples { pixel[channel] = Int(bytes[offset + channel]) }
+    }
     func pixelColor(x: Int, y: Int) -> NSColor? {
         guard x >= 0, y >= 0, x < image.width, y < image.height else { return nil }
         let bytes = image.portableImage.bytes, i = y * image.bytesPerRow

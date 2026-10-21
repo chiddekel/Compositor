@@ -131,6 +131,9 @@ def plain(tip, note, rewrites=()):
 
 
 OUTPUTS = {
+    'Sources/Overrides/FontListPanel.swift': plain(
+        'Compositor/UI/FontListPanel.swift',
+        'Tip\'s font search panel with selectors dispatched by name through compat AppKit.'),
     'Sources/Overrides/KeyboardShortcuts.swift': keyboard_shortcuts,
     'Sources/Overrides/ProjectWindowBridge.swift': project_window_bridge,
     'Sources/Overrides/BlendModePicker.swift': plain(
@@ -142,7 +145,9 @@ OUTPUTS = {
         'Tip\'s file through scripts/objc_selectors.py: the font pop-up\'s action reaches its Coordinator by name. The Qt\n'
         'shell draws the NSPopUpButton as a Picker, each face in its own font (compat SwiftUI NativeLowering). Linux\n'
         'Foundation\'s NSAttributedString has no init(): the empty string is made with init(string: "").',
-        rewrites=[('return NSAttributedString()', 'return NSAttributedString(string: "")')]),
+        rewrites=[('return NSAttributedString()', 'return NSAttributedString(string: "")'),
+                  ('final class FixedWidthPopUpButton: NSPopUpButton {',
+                   'final class FixedWidthPopUpButton: NSPopUpButton, NSCustomPopUpPresenting {')]),
     'Sources/Overrides/ProjectTabs.swift': plain(
         'Compositor/UI/ProjectTabs.swift',
         'Tip\'s file through scripts/objc_selectors.py: the overflow menu\'s items reach the anchor by name; the Qt shell\n'

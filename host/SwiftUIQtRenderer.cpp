@@ -53,6 +53,7 @@ extern "C" void compositor_end_layer_drag(int32_t copied);
 #include <QMessageBox>
 #include <QLabel>
 #include <QComboBox>
+#include <QScreen>
 #include <QLineEdit>
 #include <QPainter>
 #include <QPaintEvent>
@@ -3296,6 +3297,28 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             return keys;
         }();
         auto *field = new SwiftUITextField(handlerKeys.contains(QStringLiteral("onSubmit")));
+        if (handlerKeys.contains(QStringLiteral("fieldCommand"))) {
+            class FieldCommandFilter : public QObject {
+            public:
+                std::function<bool(QKeyEvent *)> command;
+                explicit FieldCommandFilter(QObject *owner) : QObject(owner) { owner->installEventFilter(this); }
+                bool eventFilter(QObject *, QEvent *event) override {
+                    return event->type() == QEvent::KeyPress && command && command(static_cast<QKeyEvent *>(event));
+                }
+            };
+            auto *filter = new FieldCommandFilter(field);
+            filter->command = [handle, panel, id](QKeyEvent *event) {
+                const QString command = event->key() == Qt::Key_Down ? QStringLiteral("moveDown:")
+                    : event->key() == Qt::Key_Up ? QStringLiteral("moveUp:")
+                    : event->key() == Qt::Key_Escape ? QStringLiteral("cancelOperation:") : QString();
+                if (command.isEmpty()) return false;
+                const auto p = panel.toUtf8(), n = id.toUtf8(), payload = jsonFragment(command);
+                const int result = compositor_session_dispatch_swiftui_drop_event(handle, p.constData(), n.constData(),
+                    "fieldCommand", reinterpret_cast<const uint8_t *>(payload.constData()), size_t(payload.size()));
+                if (result > 0) QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
+                return result > 0;
+            };
+        }
         field->setPlaceholderText(strings.value("placeholder").toString());
         // TextField's title is its label for assistive technology, shown or not.
         field->setAccessibleName(strings.value("placeholder").toString());
@@ -3517,7 +3540,21 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             }
             widget = segContainer;
         } else {
-            auto *combo = new QComboBox;
+            class HostedPopUpButton : public QComboBox {
+            public:
+                std::function<void()> present;
+                void showPopup() override { if (present) present(); else QComboBox::showPopup(); }
+            };
+            auto *combo = new HostedPopUpButton;
+            if (bools.value("customPopup").toBool()) {
+                combo->present = [handle, panel, id, combo] {
+                    const QRect anchor(combo->mapToGlobal(QPoint(0, 0)), combo->size());
+                    const QRect screen = combo->screen()->availableGeometry();
+                    const QJsonObject geometry{{"anchor", QJsonArray{anchor.x(), -anchor.y() - anchor.height(), anchor.width(), anchor.height()}},
+                        {"screen", QJsonArray{screen.x(), -screen.y() - screen.height(), screen.width(), screen.height()}}};
+                    dispatch(handle, panel, id, QStringLiteral("popupOpen"), QJsonDocument(geometry).toJson(QJsonDocument::Compact));
+                };
+            }
             // macOS pop-up button: the up/down chevron at the right edge says it opens a menu.
             combo->setStyleSheet("QComboBox { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 3px 4px 3px 8px; min-height: 18px; } "
                                  "QComboBox::drop-down { border: none; width: 18px; subcontrol-origin: padding; subcontrol-position: center right; } "
@@ -4214,9 +4251,10 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
         auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
         if (field && current->isAncestorOf(field)) colorField = field;
     }
-    if (panel == "KeyboardShortcutsSheet" && current) {
+    if ((panel == "KeyboardShortcutsSheet" || panel.startsWith(QLatin1String("NativeWindow:"))) && current) {
         auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
-        if (field && current->isAncestorOf(field) && field->placeholderText() == "Search shortcuts") search = field;
+        if (field && current->isAncestorOf(field)
+            && (panel.startsWith(QLatin1String("NativeWindow:")) || field->placeholderText() == "Search shortcuts")) search = field;
     }
     if (panel == "SelectionAmountSheet" && current) {
         auto *field = qobject_cast<QLineEdit *>(QApplication::focusWidget());
@@ -4265,8 +4303,9 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
         built->setProperty("swiftUIHandle", QVariant::fromValue<qulonglong>(sessionHandle));
         built->setProperty("swiftUITree", bytes);
         if (search) {
+            const QString placeholder = search->placeholderText();
             const int cursor = search->cursorPosition(), selection = search->selectionStart(), length = search->selectedText().size();
-            for (auto *field : built->findChildren<QLineEdit *>()) if (field->placeholderText() == "Search shortcuts") {
+            for (auto *field : built->findChildren<QLineEdit *>()) if (field->placeholderText() == placeholder) {
                 QTimer::singleShot(0, field, [field, cursor, selection, length] {
                     if (!field->isVisible()) return;
                     field->setFocus(Qt::OtherFocusReason);

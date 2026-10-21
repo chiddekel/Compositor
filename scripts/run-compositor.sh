@@ -25,6 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKIA_BRIDGE="${COMPOSITOR_SKIA_BRIDGE:-"$ROOT/build/lib/libCompositorSkiaBridge.so"}"
 IMAGEIO_BACKEND="${COMPOSITOR_IMAGEIO_BACKEND:-"$ROOT/build/lib/libCompositorQtImageIO.so"}"
+PDF_BACKEND="${COMPOSITOR_PDF_BACKEND:-"$ROOT/.build/linux-contract-native/libCompositorPDFBackend.so"}"
 
 # The SDK version must match the manifest's runtime-version exactly — the binary links against whatever Qt that
 # SDK ships, and a mismatched host SDK (e.g. a different major/minor Qt) fails at dynamic-link time with a missing
@@ -89,7 +90,7 @@ Exec=$ROOT/scripts/run-compositor.sh %F
 Icon=com.compositor.Client
 Terminal=false
 Categories=Graphics;Photography;2DGraphics;RasterGraphics;
-MimeType=application/x-compositor-project;image/png;image/jpeg;image/heic;image/heif;image/tiff;image/webp;
+MimeType=application/x-compositor-project;application/pdf;image/png;image/jpeg;image/heic;image/heif;image/tiff;image/webp;
 Keywords=photo;editor;image;layers;compositing;
 EOF
 
@@ -147,7 +148,7 @@ for arg in "$@"; do
     fi
 done
 
-ENV_EXPORTS="export COMPOSITOR_SKIA_BRIDGE='$SKIA_BRIDGE'; export COMPOSITOR_IMAGEIO_BACKEND='$IMAGEIO_BACKEND';"
+ENV_EXPORTS="export COMPOSITOR_SKIA_BRIDGE='$SKIA_BRIDGE'; export COMPOSITOR_IMAGEIO_BACKEND='$IMAGEIO_BACKEND'; export COMPOSITOR_PDF_BACKEND='$PDF_BACKEND';"
 if [[ "$OFFSCREEN" -eq 1 ]]; then
     ENV_EXPORTS+=" export QT_QPA_PLATFORM=offscreen;"
 fi

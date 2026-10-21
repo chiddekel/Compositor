@@ -191,6 +191,8 @@ final class EditorSession {
     @ObservationIgnored var brushAnchor: CGPoint?
     /// The pointer itself, so a smoothed stroke can catch up to it when the button is released.
     @ObservationIgnored var brushPointer: CGPoint?
+    /// The pen's latest pressure in this stroke; 1 for a mouse. Events that carry none (the release) keep it.
+    @ObservationIgnored var brushPressure: CGFloat = 1
     @ObservationIgnored var maskDistortPreviewCache: MaskDistortPreviewCache?
     /// The last rounded rectangle drawn for a transform in progress, by layer, with the size it was drawn at.
     @ObservationIgnored var shapeTransformPreviewCache: [UUID: (size: CGSize, image: CGImage)] = [:]
@@ -239,6 +241,9 @@ final class EditorSession {
     var shapeSmoothing = false
     /// A Line shape's thickness in document pixels.
     var shapeLineWidth: Double = 4
+    /// A Line shape's dash pattern and the finish on its ends (and on each dash).
+    var shapeLineStyle = ShapeLineStyle.solid
+    var shapeLineCap = ShapeLineCap.square
     /// The shape being dragged out with the Shape tool, before it becomes a layer.
     var shapeDraft: ShapeDraft?
     var selectionModeChoice = SelectionMode.replace
@@ -853,7 +858,7 @@ final class EditorSession {
         while !pendingImports.isEmpty {
           let request = pendingImports.removeFirst()
           let psdOnly = request.files.allSatisfy { PSDReader.matches($0.0) }
-          beginEdit(psdOnly ? "Import Photoshop File" : "Import Images")
+          beginEdit(psdOnly ? "Import Photoshop File" : "Import")
           // No document: the first successful image determines the canvas, regardless of drop point.
           let point = document == nil ? nil : request.point
           for (url, scoped) in request.files {
@@ -890,6 +895,17 @@ final class EditorSession {
                     let asset = try await ImageImporter.shared.decodeSVG(url, fitting: document?.size,
                                                                          remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
                     insert(asset, centeredAt: point)
+                } else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .pdf) == true {
+                    // Every page, each its own layer with page 1 on top, fitted to the canvas. A new canvas is the
+                    // first page at 300 DPI, so it keeps the page's print size.
+                    let pages = try await ImageImporter.shared.decodePDF(url, fitting: document?.size,
+                                                                         remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
+                    if document == nil, let first = pages.first {
+                        document = CanvasDocument(width: first.image.width, height: first.image.height,
+                                                  resolution: ImageImporter.pdfResolution)
+                        viewport.fit(documentSize: document!.size)
+                    }
+                    for page in pages.reversed() { insert(page, centeredAt: point) }
                 } else if PSDReader.matches(url) {
                     beginPSDReading(title: "Open “\(url.lastPathComponent)”?", confirmTitle: "Import")
                     let imported: PSDImport
@@ -936,7 +952,7 @@ final class EditorSession {
     }
 
     func insert(_ asset: ImportedImage, centeredAt point: CGPoint? = nil) {
-        beginEdit("Import Image")
+        beginEdit("Import")
         defer { endEdit() }
         if document == nil {
             document = CanvasDocument(width: asset.image.width, height: asset.image.height)

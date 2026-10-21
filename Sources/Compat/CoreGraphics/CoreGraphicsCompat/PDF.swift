@@ -11,16 +11,28 @@ public final class CGDataConsumer: @unchecked Sendable {
 public enum CGPDFBox: Sendable {
     case mediaBox, cropBox, bleedBox, trimBox, artBox
 }
+public let kCGPDFContextMediaBox = "MediaBox"
+
+struct PDFPageRecord {
+    let box: CGRect
+    let image: CGImage?
+    let fills: String
+}
 
 public final class CGPDFPage: @unchecked Sendable {
     let mediaBox: CGRect
     /// Raster embedded in the page (compat; Apple exposes drawing only via `drawPDFPage`).
-    public let image: CGImage?
+    public var image: CGImage? { storedImage ?? embeddedPage?()?.image }
+    private let storedImage: CGImage?
+    private var embeddedPage: (() -> CGPDFPage?)?
     let fills: [(rect: CGRect, color: CGColor)]
+    private var native: NativePDFDocument?
+    private var nativeIndex = 0
+    public private(set) var rotationAngle: Int32 = 0
 
     init(mediaBox: CGRect, image: CGImage?, fills: [(rect: CGRect, color: CGColor)] = []) {
         self.mediaBox = mediaBox
-        self.image = image
+        storedImage = image
         self.fills = fills
     }
 
@@ -28,15 +40,69 @@ public final class CGPDFPage: @unchecked Sendable {
         _ = box
         return mediaBox
     }
+    convenience init(document: NativePDFDocument, index: Int, box: CGRect, rotation: Int32, embeddedPage: (() -> CGPDFPage?)? = nil) {
+        self.init(mediaBox: box, image: nil)
+        native = document; nativeIndex = index; rotationAngle = rotation
+        self.embeddedPage = embeddedPage
+    }
+    public func getDrawingTransform(_ box: CGPDFBox, rect: CGRect, rotate: Int32, preserveAspectRatio: Bool) -> CGAffineTransform {
+        let source = getBoxRect(box)
+        let angle = -CGFloat(rotationAngle + rotate) * .pi / 180
+        let rotation = CGAffineTransform(rotationAngle: angle)
+        let turned = source.applying(rotation)
+        var sx = rect.width / turned.width, sy = rect.height / turned.height
+        if preserveAspectRatio { sx = min(sx, sy); sy = sx }
+        return CGAffineTransform(a: rotation.a * sx, b: rotation.b * sy, c: rotation.c * sx, d: rotation.d * sy,
+            tx: rect.minX + (rect.width - turned.width * sx) / 2 - turned.minX * sx,
+            ty: rect.minY + (rect.height - turned.height * sy) / 2 - turned.minY * sy)
+    }
+    func drawNative(in context: CGContext) -> Bool {
+        guard let native else { return false }
+        // Splash interpolates embedded images even at their original pixel size. Preserve the existing exact,
+        // nearest-neighbor path for the simple one-image pages this compatibility exporter writes.
+        if context.interpolationQuality == .none, rotationAngle == 0, let page = embeddedPage?() {
+            context.drawPDFPage(page)
+            return true
+        }
+        let ctm = context.ctm
+        let width = max(1, Int(ceil(mediaBox.width * hypot(ctm.a, ctm.b))))
+        let height = max(1, Int(ceil(mediaBox.height * hypot(ctm.c, ctm.d))))
+        if let image = native.render(nativeIndex, width: width, height: height) {
+            // An axis-aligned PDF raster is already in device pixel order; preserve exact nearest-neighbor
+            // export roundtrips through the same blit used by the original compatibility PDF reader.
+            if abs(ctm.b) < 1e-10, abs(ctm.c) < 1e-10, ctm.a > 0, ctm.d > 0 {
+                context.drawPDFImage(image, mediaBox: mediaBox)
+            } else { context.draw(image, in: mediaBox) }
+        }
+        return true
+    }
 }
 
 public final class CGPDFDocument: @unchecked Sendable {
     private let pages: [CGPDFPage]
-    public var numberOfPages: Int { pages.count }
+    private var lockedPageCount = 0
+    public private(set) var isEncrypted = false
+    public var isUnlocked: Bool { !isEncrypted }
+    public var numberOfPages: Int { isEncrypted ? lockedPageCount : pages.count }
 
     public init?(_ provider: CGDataProvider) {
-        guard let parsed = PDFParser.parse(provider.bytes) else { return nil }
-        self.pages = parsed
+        if let native = NativePDFDocument(provider.bytes) {
+            isEncrypted = native.isLocked
+            lockedPageCount = max(1, native.count)
+            pages = (0..<max(0, native.count)).compactMap { index in
+                guard let info = native.page(index) else { return nil }
+                return CGPDFPage(document: native, index: index, box: info.box, rotation: info.rotation,
+                    embeddedPage: native.count == 1 ? { PDFParser.rasterExport(provider.bytes) } : nil)
+            }
+        } else {
+            guard !NativePDFDocument.isAvailable else { return nil }
+            guard let parsed = PDFParser.parse(provider.bytes) else { return nil }
+            self.pages = parsed
+        }
+    }
+    public convenience init?(_ url: CFURL) {
+        guard let bytes = try? Data(contentsOf: url), let provider = CGDataProvider(data: bytes) else { return nil }
+        self.init(provider)
     }
 
     public func page(at index: Int) -> CGPDFPage? {
@@ -53,6 +119,9 @@ enum PDFRecording {
         var image: CGImage?
         var drawRect: CGRect?
         var fills = ""
+        var pageBox: CGRect?
+        var pages: [PDFPageRecord] = []
+        var url: URL?
     }
     private static var boxes: [ObjectIdentifier: Entry] = [:]
     private static let lock = NSLock()
@@ -79,12 +148,35 @@ enum PDFRecording {
         lock.unlock()
         guard let entry else { return }
         let pdf: Data
-        if let image = entry.image {
-            pdf = PDFWriter.document(image: image, mediaBox: entry.mediaBox, fills: entry.fills)
+        if entry.pages.count > 1 {
+            pdf = PDFWriter.document(pages: entry.pages)
+        } else if let image = entry.image {
+            pdf = PDFWriter.document(image: image, mediaBox: entry.pageBox ?? entry.mediaBox, fills: entry.fills)
         } else {
-            pdf = PDFWriter.empty(mediaBox: entry.mediaBox, fills: entry.fills)
+            pdf = PDFWriter.empty(mediaBox: entry.pageBox ?? entry.mediaBox, fills: entry.fills)
         }
         entry.consumer.data.setData(pdf)
+        if let url = entry.url { try? pdf.write(to: url, options: .atomic) }
+    }
+    static func setURL(_ url: URL, for context: CGContext) {
+        lock.lock(); defer { lock.unlock() }
+        boxes[ObjectIdentifier(context)]?.url = url
+    }
+    static func beginPage(_ context: CGContext, info: CFDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        guard var entry = boxes[ObjectIdentifier(context)] else { return }
+        entry.image = nil; entry.drawRect = nil; entry.fills = ""; entry.pageBox = nil
+        if let data = info?[kCGPDFContextMediaBox] as? Data, data.count == MemoryLayout<CGRect>.size {
+            let box = data.withUnsafeBytes { $0.loadUnaligned(as: CGRect.self) }
+            if box.width.isFinite, box.height.isFinite, box.width > 0, box.height > 0 { entry.pageBox = box }
+        }
+        boxes[ObjectIdentifier(context)] = entry
+    }
+    static func endPage(_ context: CGContext) {
+        lock.lock(); defer { lock.unlock() }
+        guard var entry = boxes[ObjectIdentifier(context)] else { return }
+        entry.pages.append(PDFPageRecord(box: entry.pageBox ?? entry.mediaBox, image: entry.image, fills: entry.fills))
+        boxes[ObjectIdentifier(context)] = entry
     }
 
     /// Preserve the export page's solid matte before its image, without changing CMYK image/profile data.
@@ -100,6 +192,11 @@ enum PDFRecording {
 }
 
 extension CGContext {
+    public convenience init?(_ url: CFURL, mediaBox: UnsafeMutablePointer<CGRect>, _ auxiliaryInfo: CFDictionary?) {
+        guard let consumer = CGDataConsumer(data: NSMutableData()) else { return nil }
+        self.init(consumer: consumer, mediaBox: mediaBox, auxiliaryInfo)
+        PDFRecording.setURL(url, for: self)
+    }
     public convenience init?(consumer: CGDataConsumer, mediaBox: UnsafeMutablePointer<CGRect>,
                             _ auxiliaryInfo: CFDictionary?) {
         _ = auxiliaryInfo
@@ -109,12 +206,13 @@ extension CGContext {
         PDFRecording.begin(self, consumer: consumer, mediaBox: box)
     }
 
-    public func beginPDFPage(_ pageInfo: CFDictionary?) { _ = pageInfo }
-    public func endPDFPage() {}
+    public func beginPDFPage(_ pageInfo: CFDictionary?) { PDFRecording.beginPage(self, info: pageInfo) }
+    public func endPDFPage() { PDFRecording.endPage(self) }
 
     public func closePDF() { PDFRecording.finish(self) }
 
     public func drawPDFPage(_ page: CGPDFPage) {
+        if page.drawNative(in: self) { return }
         saveGState()
         defer { restoreGState() }
         for fill in page.fills {
@@ -129,6 +227,49 @@ extension CGContext {
 }
 
 private enum PDFWriter {
+    static func document(pages: [PDFPageRecord]) -> Data {
+        var objects = [Data("1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n".utf8), Data()]
+        var kids: [String] = []
+        func add(_ body: String) { objects.append(Data(body.utf8)) }
+        func stream(_ id: Int, dictionary: String, bytes: [UInt8]) {
+            var data = Data("\(id) 0 obj<< \(dictionary) /Length \(bytes.count) >>stream\n".utf8)
+            data.append(contentsOf: bytes); data.append(Data("\nendstream\nendobj\n".utf8)); objects.append(data)
+        }
+        for page in pages {
+            let id = objects.count + 1, contentID = id + 1, imageID = id + 2, maskID = id + 3
+            kids.append("\(id) 0 R")
+            var content = page.fills
+            if page.image != nil {
+                content += String(format: "q %.6f 0 0 %.6f %.6f %.6f cm /Im0 Do Q\n", Double(page.box.width),
+                                  Double(page.box.height), Double(page.box.minX), Double(page.box.minY))
+            }
+            let resource = page.image == nil ? "" : "/Resources << /XObject << /Im0 \(imageID) 0 R >> >>"
+            add("\(id) 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [\(page.box.minX) \(page.box.minY) \(page.box.maxX) \(page.box.maxY)] \(resource) /Contents \(contentID) 0 R >>endobj\n")
+            stream(contentID, dictionary: "", bytes: Array(content.utf8))
+            guard let image = page.image else { continue }
+            let width = image.width, height = image.height
+            if image.colorSpace?.model == .cmyk, let profile = image.colorSpace?.iccData, let inks = image.dataProvider?.bytes {
+                let packed = (0..<height).flatMap { Array(inks[($0 * image.bytesPerRow)..<($0 * image.bytesPerRow + width * 4)]) }
+                stream(imageID, dictionary: "/Type /XObject /Subtype /Image /Width \(width) /Height \(height) /ColorSpace [/ICCBased \(maskID) 0 R] /BitsPerComponent 8 /Filter /FlateDecode", bytes: Zlib.stored(packed))
+                stream(maskID, dictionary: "/N 4 /Alternate /DeviceCMYK /Filter /FlateDecode", bytes: Zlib.stored(Array(profile)))
+            } else {
+                let bytes = image.portableImage.bytes, bpp = max(1, image.bitsPerPixel / 8)
+                var rgb = [UInt8](), alpha = [UInt8]()
+                for y in 0..<height { for x in 0..<width {
+                    let offset = y * image.bytesPerRow + x * bpp, a = bpp >= 4 ? bytes[offset + 3] : 255
+                    alpha.append(a)
+                    for channel in 0..<3 {
+                        let value = bytes[offset + (bpp >= 3 ? channel : 0)]
+                        rgb.append(a == 0 ? 0 : UInt8(min(255, Int(value) * 255 / Int(a))))
+                    }
+                } }
+                stream(imageID, dictionary: "/Type /XObject /Subtype /Image /Width \(width) /Height \(height) /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask \(maskID) 0 R /Filter /FlateDecode", bytes: Zlib.stored(rgb))
+                stream(maskID, dictionary: "/Type /XObject /Subtype /Image /Width \(width) /Height \(height) /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode", bytes: Zlib.stored(alpha))
+            }
+        }
+        objects[1] = Data("2 0 obj<< /Type /Pages /Kids [\(kids.joined(separator: " "))] /Count \(pages.count) >>endobj\n".utf8)
+        return assemble(objects)
+    }
     static func empty(mediaBox: CGRect, fills: String = "") -> Data {
         document(rgb: nil, width: 0, height: 0, mediaBox: mediaBox, alpha: nil, fills: fills)
     }
@@ -252,13 +393,33 @@ private enum PDFWriter {
 }
 
 private enum PDFParser {
+    /// Recognizes the exporter's full-page raster plus optional solid mattes. Additional operators, compressed
+    /// content, rotations or different resources stay with the general PDF engine rather than losing content.
+    static func rasterExport(_ bytes: [UInt8]) -> CGPDFPage? {
+        guard let text = String(bytes: bytes, encoding: .isoLatin1), !text.contains("/Rotate"),
+              text.contains("/Im0 5 0 R"), text.contains("/Contents 4 0 R"),
+              let box = mediaBox(in: text), let content = pageContent(in: text) else { return nil }
+        let n = "[-+0-9.]+"
+        let fill = "q\\s+(?:" + n + "\\s+){3}rg\\s+(?:" + n + "\\s+){4}re\\s+f\\s+Q\\s*"
+        let drawing = content.replacingOccurrences(of: "^(?:\\s*" + fill + ")*", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = "^q\\s+(" + n + ")\\s+0\\s+0\\s+(" + n + ")\\s+0\\s+0\\s+cm\\s+/Im0\\s+Do\\s+Q$"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: drawing, range: NSRange(drawing.startIndex..., in: drawing)),
+              let xr = Range(match.range(at: 1), in: drawing), let yr = Range(match.range(at: 2), in: drawing),
+              let width = Double(drawing[xr]), let height = Double(drawing[yr]),
+              abs(width - box.width) < 1e-6, abs(height - box.height) < 1e-6,
+              let page = parse(bytes)?.first, page.image != nil else { return nil }
+        return page
+    }
+
     static func parse(_ bytes: [UInt8]) -> [CGPDFPage]? {
         guard let text = String(bytes: bytes, encoding: .isoLatin1), text.hasPrefix("%PDF") else { return nil }
         guard let media = mediaBox(in: text) else { return nil }
         let fills = pageFills(in: text)
         guard let width = intField("/Width ", in: text),
               let height = intField("/Height ", in: text),
-              width > 0, height > 0 else {
+              width > 0, height > 0, width <= 32768, height <= 32768, width * height <= 512_000_000 else {
             return [CGPDFPage(mediaBox: media, image: nil, fills: fills)]
         }
         let streams = flateStreams(in: bytes)
@@ -298,14 +459,20 @@ private enum PDFParser {
 
     /// The page-content rectangle fills emitted by our exporter, separate from binary image/profile streams.
     private static func pageFills(in text: String) -> [(rect: CGRect, color: CGColor)] {
-        guard let reference = text.range(of: "/Contents ") else { return [] }
+        guard let content = pageContent(in: text) else { return [] }
+        return fills(in: content)
+    }
+    private static func pageContent(in text: String) -> String? {
+        guard let reference = text.range(of: "/Contents ") else { return nil }
         let parts = text[reference.upperBound...].split(maxSplits: 3, whereSeparator: { $0.isWhitespace }).prefix(3)
         guard parts.count == 3, parts.last == "R",
               let object = Int(parts[parts.startIndex]), let generation = Int(parts[parts.index(after: parts.startIndex)]),
               let objectStart = text.range(of: "\(object) \(generation) obj"),
               let streamStart = text[objectStart.upperBound...].range(of: "stream\n"),
-              let streamEnd = text[streamStart.upperBound...].range(of: "endstream") else { return [] }
-        let content = String(text[streamStart.upperBound..<streamEnd.lowerBound])
+              let streamEnd = text[streamStart.upperBound...].range(of: "endstream") else { return nil }
+        return String(text[streamStart.upperBound..<streamEnd.lowerBound])
+    }
+    private static func fills(in content: String) -> [(rect: CGRect, color: CGColor)] {
         let number = "([-+0-9.]+)"
         let pattern = "q\\s+" + Array(repeating: number, count: 3).joined(separator: "\\s+")
             + "\\s+rg\\s+" + Array(repeating: number, count: 4).joined(separator: "\\s+") + "\\s+re\\s+f\\s+Q"

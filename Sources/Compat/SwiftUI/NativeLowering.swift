@@ -73,6 +73,48 @@ import Observation
 
     /// One offscreen window per tree (never shown, never key): the lowered views' `window`.
     private static var windows: [String: NSWindow] = [:]
+    public static func childWindows(in scopes: Set<String>) -> [NSWindow] {
+        scopes.flatMap { windows[$0]?.childWindows ?? [] }.filter(\.isVisible)
+    }
+    public static func childWindow(_ number: Int) -> NSWindow? {
+        windows.values.flatMap(\.childWindows).first { $0.windowNumber == number && $0.isVisible }
+    }
+    public static func dismissChildWindow(_ number: Int) {
+        guard let window = childWindow(number) else { return }
+        act { window.resignKey(); window.orderOut(nil); window.parent?.removeChildWindow(window) }
+    }
+    public static func childWindowNode(_ number: Int) -> RenderNode? {
+        guard let window = childWindow(number), let view = window.contentView else { return nil }
+        func hierarchy(_ view: NSView, path: String) -> RenderNode {
+            var node: RenderNode
+            if type(of: view) == NSView.self || view is NSVisualEffectView {
+                node = RenderNode(kind: "ZStack")
+                node.stringParams["alignment"] = "topLeading"
+                node.children = view.subviews.enumerated().filter { !$0.element.isHidden }.map { index, child in
+                    var part = hierarchy(child, path: "\(path)/\(index)")
+                    let y = view.isFlipped ? child.frame.midY : view.bounds.height - child.frame.midY
+                    part.modifiers.append(.position(x: child.frame.midX, y: y))
+                    return part
+                }
+                if view is NSVisualEffectView {
+                    node.modifiers.append(.background(Color(nsColor: NSColor(white: 0.16, alpha: 1)).name))
+                }
+                if let layer = view.layer {
+                    if let fill = layer.backgroundColor { node.modifiers.append(.background(Color(nsColor: NSColor(cgColor: fill)).name)) }
+                    if let border = layer.borderColor, layer.borderWidth > 0 {
+                        node.modifiers.append(.border(Color(nsColor: NSColor(cgColor: border)).name, layer.borderWidth))
+                    }
+                    if layer.cornerRadius > 0 { node.modifiers.append(.cornerRadius(layer.cornerRadius)) }
+                }
+            } else if let scroll = view as? NSScrollView {
+                node = decorate(scrollNode(scroll, path: path, preservesFrame: true), for: scroll)
+            } else { node = lower(view, path: path) }
+            node.modifiers.append(.frame(width: view.frame.width, height: view.frame.height, minWidth: nil,
+                                         minHeight: nil, maxWidth: nil, maxHeight: nil, alignment: "center"))
+            return node
+        }
+        return hierarchy(view, path: "childWindow/\(number)")
+    }
     private static func window(for scope: String) -> NSWindow {
         if let window = windows[scope] { return window }
         let window = LoweringWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600), styleMask: [], backing: .buffered, defer: true)
@@ -185,6 +227,22 @@ import Observation
             }
         }
         var node = resolved(picker, path: path)
+        if popUp is any NSCustomPopUpPresenting {
+            node.boolParams["customPopup"] = true
+            node.handlers["popupOpen"] = { payload in
+                act {
+                    if let info = payload as? [String: Any], let anchor = info["anchor"] as? [Double], anchor.count == 4,
+                       let screen = info["screen"] as? [Double], screen.count == 4,
+                       (anchor + screen).allSatisfy(\.isFinite), let window = popUp.window {
+                        NSScreen.main = NSScreen(frame: CGRect(x: screen[0], y: screen[1], width: screen[2], height: screen[3]))
+                        popUp.setFrameSize(CGSize(width: anchor[2], height: anchor[3]))
+                        let local = popUp.convert(popUp.bounds, to: nil)
+                        window.frame.origin = CGPoint(x: anchor[0] - local.minX, y: anchor[1] - local.minY)
+                    }
+                    _ = popUp.accessibilityPerformPress()
+                }
+            }
+        }
         // A pop-up whose intrinsic width is open (a fixed-width font menu) takes the width it is given.
         if popUp.intrinsicContentSize.width < 0 {
             node.modifiers.append(.frame(width: nil, height: nil, minWidth: nil, minHeight: nil, maxWidth: .infinity,
@@ -218,16 +276,29 @@ import Observation
                 set: { value in
                     act {
                         field.stringValue = value
-                        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+                        let notification = Notification(name: NSControl.textDidChangeNotification, object: field)
+                        field.delegate?.controlTextDidChange(notification)
+                        NotificationCenter.default.post(notification)
                     }
                 })
             node = resolved(TextField(field.placeholderString ?? "", text: text)
-                .onSubmit { act { field.sendAction(field.action, to: field.target) } }, path: path)
+                .onSubmit { act {
+                    if field.delegate?.control(field, textView: NSTextView(), doCommandBy: Selector("insertNewline:")) != true {
+                        field.sendAction(field.action, to: field.target)
+                    }
+                } }, path: path)
+            node.modifiers.append(.resultSink("fieldCommand", { payload in
+                guard let command = payload as? String else { return 0 }
+                var handled = false
+                act { handled = field.delegate?.control(field, textView: NSTextView(), doCommandBy: Selector(command)) ?? false }
+                return handled ? 1 : 0
+            }))
         } else {
             node = resolved(Text(field.stringValue), path: path)
             if field.lineBreakMode == .byTruncatingTail || field.maximumNumberOfLines == 1 { node.modifiers.append(.lineLimit(1)) }
         }
         if let font = field.font { node.modifiers.append(.font(fontToken(font))) }
+        if field.window?.editedField === field { node.boolParams["focused"] = true }
         if let color = field.textColor { node.modifiers.append(.foregroundStyle(Color(nsColor: color).name)) }
         return node
     }
@@ -307,7 +378,7 @@ import Observation
     }
     private static var scrollGeometry: [ObjectIdentifier: ScrollGeometry] = [:]
 
-    private static func scrollNode(_ scroll: NSScrollView, path: String) -> RenderNode {
+    private static func scrollNode(_ scroll: NSScrollView, path: String, preservesFrame: Bool = false) -> RenderNode {
         scrollGeometry = scrollGeometry.filter { $0.value.scroll != nil }
         let key = ObjectIdentifier(scroll)
         let geometry = scrollGeometry[key] ?? ScrollGeometry(scroll)
@@ -340,7 +411,10 @@ import Observation
             guard let width = number("width"), let height = number("height"), width > 0, height > 0,
                   let x = number("x"), let y = number("y") else { return }
             let pending = scroll.contentView._pendingVisibleRect
-            scroll.setFrameSize(CGSize(width: width, height: height))
+            // An absolutely positioned child keeps its outer AppKit frame. Qt reports the viewport excluding its
+            // scrollers; feeding that width back into the outer frame would shrink it on every panel refresh.
+            if preservesFrame { scroll.contentView.setFrameSize(CGSize(width: width, height: height)) }
+            else { scroll.setFrameSize(CGSize(width: width, height: height)) }
             scroll.layoutSubtreeIfNeeded()
             if let documentWidth = number("documentWidth"), let documentHeight = number("documentHeight") {
                 let size = CGSize(width: documentWidth, height: documentHeight)

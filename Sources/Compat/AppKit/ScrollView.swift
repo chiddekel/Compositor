@@ -80,6 +80,7 @@ public enum NSBorderType: Int, Sendable { case noBorder, lineBorder, bezelBorder
     public enum Elasticity: Int, Sendable { case automatic, none, allowed }
 
     public let contentView: NSClipView
+    public var contentSize: NSSize { contentView.bounds.size }
     public var drawsBackground = true
     public var borderType: NSBorderType = .bezelBorder
     public var hasVerticalScroller = false

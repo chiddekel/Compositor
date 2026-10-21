@@ -1,8 +1,8 @@
-# Compositor project format, versions 1–14
+# Compositor project format, versions 1–15
 
 A `.comp` project is a directory package containing `manifest.json` and an `images/` directory of PNG assets (or OpenEXR for HDR layers). macOS presents the directory as a document package. The Linux host reuses the upstream `ProjectStore` and Codable manifest with its existing Qt/OpenEXR codec backends.
 
-The manifest identifies `com.compositor.project`, version `14` for new saves (versions `1`–`13` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
+The manifest identifies `com.compositor.project`, version `15` for new saves (versions `1`–`14` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
 
 Embedded PNG/OpenEXR assets preserve source pixels and transparency; transforms remain separate. Projects survive moving or deleting imported source photos. The macOS implementation saves using coordinated atomic package replacement. Linux captures an immutable snapshot, uses upstream `ProjectStore` to write a private staged package, and keeps Qt's destination installation and portal fallback. The store retains 16-bit PNG and HDR OpenEXR pixels; Qt preflights asset dimensions and cumulative budgets and checks encoded file sizes before installation. Opening validates and decodes the entire package before installing its snapshot. Unsupported versions, invalid metadata, missing assets, unsafe paths, and oversized data are rejected before replacing the live document.
 
@@ -43,7 +43,7 @@ Version 11 adds optional `fontRuns` to text metadata. Each run has UTF-16 `locat
 Later fields are optional and not gated on the version, so older readers ignore them and keep the pixels or the linked mask as they were:
 
 - `maskPlacement` and `maskLinked`: an unlinked mask (`maskLinked` false; missing means linked) keeps its own transform in `maskPlacement`, a document-space rectangle like the layer transform, and no longer follows the layer when it moves. Both require a `maskFile`.
-- `shape`: a layer made with the Shape tool keeps its style (`kind`, `red`/`green`/`blue`, `cornerRadius` in document pixels, and for lines `lineWidth` plus `start` and `end` as fractions of the layer box) so it redraws cleanly when scaled. Its PNG is still an ordinary raster; once anything else changes those pixels the metadata is dropped.
+- `shape`: a layer made with the Shape tool keeps its style (`kind`, `red`/`green`/`blue`, `cornerRadius` in document pixels, and for lines `lineWidth` plus `start` and `end` as fractions of the layer box, and optional `lineStyle` and `lineCap` (version 15)) so it redraws cleanly when scaled. Its PNG is still an ordinary raster; once anything else changes those pixels the metadata is dropped.
 
 ### Editable text
 
@@ -58,3 +58,5 @@ Version 12 lets a layer's image file be a 16-bit PNG: a 16-bit layer, which keep
 Version 13 lets a layer's image file be OpenEXR, named `<layer UUID>.exr`: an HDR layer, whose pixels hold light brighter than white as half floats in extended sRGB (white is 1). It is shown, and for now edited, through a copy clipped to white and rounded to 8 bits with a fine noise, made again on load. An EXR whose values all stay within white loads as a 16-bit layer. Masks stay 8-bit PNG. Files declaring versions 1–12 cannot contain EXR images, and older app builds reject v13.
 
 Version 14 adds optional `smoothing` to a layer’s `shape` style. True draws rectangle corners with Figma-style 60% smoothing (the iOS squircle match); false or missing keeps circular corners. Radius stays in document pixels, and smoothing reduces when the corners have insufficient room. Drawing previews and scaled redraws use the same geometry. Files declaring versions 1–13 cannot enable smoothing, and older app builds reject v14.
+
+Version 15 lets a line carry `lineStyle` (`Solid`, `Dashed`, `Long Dash` or `Dotted`, with dashes measured in multiples of the line's width) and `lineCap` (`Square` or `Round`, applied to the line's ends and to every dash and dot) in its `shape` style. Missing means solid with round caps, as every line was before version 15 (new lines start square-capped); other shape kinds cannot carry them. Files declaring 1–14 cannot contain them, and older app builds reject v15 rather than failing to read the unknown values.

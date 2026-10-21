@@ -16,6 +16,10 @@ enum LinuxProjectValidation {
             if layer.shape?.smoothing == true {
                 guard manifest.version >= 14 else { throw ProjectError.invalid }
             }
+            // A line's dashes and caps arrived in version 15, and only lines have them.
+            if let shape = layer.shape, shape.lineStyle != nil || shape.lineCap != nil {
+                guard manifest.version >= 15, shape.kind == .line else { throw ProjectError.invalid }
+            }
             if let text = layer.text {
                 // Per-letter colors arrived in version 10, per-letter faces in version 11.
                 guard text.isValid,

@@ -133,6 +133,9 @@ extension View {
             $0.modifiers.append(.background(style.name))
         }
     }
+    public func background<S: Shape>(_ style: AnyShapeStyle, in shape: S) -> some View {
+        background(style.token, in: shape)
+    }
     public func opacity(_ value: Double) -> some View { modified { $0.modifiers.append(.opacity(value)) } }
     public func border(_ style: ShapeStyle, width: Double = 1) -> some View { modified { $0.modifiers.append(.border(style.name, width)) } }
     public func disabled(_ value: Bool) -> some View {

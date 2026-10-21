@@ -315,6 +315,40 @@ modules:
          url: https://github.com/opencv/opencv/archive/refs/tags/4.14.0.tar.gz
          sha256: ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e
 
+  - name: poppler-data
+    buildsystem: simple
+    build-commands:
+      - make install prefix=/app
+      - install -Dm644 -t /app/share/licenses/com.compositor.Client/poppler-data COPYING COPYING.adobe COPYING.gpl2 COPYING.gpl3
+    sources:
+      - type: archive
+        url: https://poppler.freedesktop.org/poppler-data-0.4.12.tar.gz
+        sha256: c835b640a40ce357e1b83666aabd95edffa24ddddd49b8daff63adb851cdab74
+
+  - name: poppler
+    buildsystem: cmake-ninja
+    post-install:
+      - install -Dm644 COPYING /app/share/licenses/com.compositor.Client/poppler/COPYING
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DENABLE_QT5=OFF
+      - -DENABLE_QT6=ON
+      - -DENABLE_CPP=OFF
+      - -DENABLE_GLIB=OFF
+      - -DENABLE_GOBJECT_INTROSPECTION=OFF
+      - -DENABLE_UTILS=OFF
+      - -DBUILD_MANUAL_TESTS=OFF
+      - -DBUILD_QT6_TESTS=OFF
+      - -DENABLE_BOOST=OFF
+      - -DENABLE_NSS3=OFF
+      - -DENABLE_GPGME=OFF
+      - -DENABLE_LIBCURL=OFF
+    sources:
+      - type: archive
+        url: https://poppler.freedesktop.org/poppler-26.10.0.tar.xz
+        sha256: 6792cb7c69205007ad87d2e936cecc5b3a31fac29ab54ffc3175fdb6b2a6ce35
+
   # ───────────────────────── Module 3: Compositor app ─────────────────────
   - name: compositor
     buildsystem: simple
@@ -352,6 +386,7 @@ modules:
       # through it) and Qt's image codecs + text engine. Without them the canvas stays empty.
       - install -Dm755 build/libCompositorSkiaBridge.so /app/lib/libCompositorSkiaBridge.so
       - install -Dm755 build/libCompositorQtImageIO.so /app/lib/libCompositorQtImageIO.so
+      - install -Dm755 build/libCompositorPDFBackend.so /app/lib/libCompositorPDFBackend.so
       # (f) Install hicolor icons (sourced from the macOS AppIcon set).
       - |
         for s in 16 32 64 128 256 512; do

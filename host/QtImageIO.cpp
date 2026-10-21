@@ -1137,6 +1137,17 @@ extern "C" int64_t compositor_qt_font_names(char *out, size_t capacity) {
     return bytes.size();
 }
 
+// Resolve a document's PostScript/full font name through the same installed-face aliases used when drawing it.
+extern "C" int64_t compositor_qt_font_family(const char *name, char *out, size_t capacity) {
+    if (!qGuiApp || !name) return -1;
+    const auto &aliases = installedFontAliases();
+    const auto found = aliases.constFind(fontNameKey(QString::fromUtf8(name)));
+    if (found == aliases.constEnd()) return -1;
+    const QByteArray family = QRawFont::fromFont(found.value()).familyName().toUtf8();
+    if (out && capacity >= size_t(family.size())) memcpy(out, family.constData(), size_t(family.size()));
+    return family.size();
+}
+
 // An SVG drawn by Qt's SVG image plugin: its declared size in `declaredWidth/Height`, and — when `width` and `height`
 // are positive — the drawing at exactly that size in `out` (premultiplied RGBA8, malloc'd, the caller frees). 0 on success.
 extern "C" int32_t compositor_qt_svg_render(const uint8_t *data, size_t length, int32_t width, int32_t height, uint8_t **out,

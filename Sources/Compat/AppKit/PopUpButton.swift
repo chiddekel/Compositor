@@ -1,5 +1,8 @@
 import Foundation
 
+/// A pop-up whose subclass presents a child window in place of its menu.
+@MainActor public protocol NSCustomPopUpPresenting: AnyObject {}
+
 /// A pop-up button, as AppKit's: a button showing its menu's selected item, which opens the menu when pressed and sends
 /// its action once an item is chosen. The menu is the view's `menu`; its delegate hears the menu open, highlight items
 /// and close, in AppKit's order (`openMenu` / `highlight` / `choose` / `closeMenu`, driven by whoever draws the menu).

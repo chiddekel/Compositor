@@ -14,11 +14,14 @@ struct BrushCoverageRequest {
     let settled: [SIMD4<Float>]
     let tail: [SIMD4<Float>]
     let permanent: [Float]
+    var dynamics: [SIMD4<Float>] = []
+    var cap: [Float] = []
 }
 
 struct BrushCoverageResult {
     let permanent: [Float]
     let preview: [UInt8]
+    var cap: [Float] = []
 }
 
 enum BrushCoverageFailure: Error { case invalidInput, unavailable }

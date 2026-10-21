@@ -13,6 +13,16 @@ open class NSFont: @unchecked Sendable {
         public static let bold = Weight(rawValue: 0.4), heavy = Weight(rawValue: 0.56), black = Weight(rawValue: 0.62)
     }
     public let fontName: String
+    public var familyName: String? {
+        if let family = InstalledFonts.familyName(fontName) { return family }
+        if let family = TextBackend.familyName(fontName) { return family }
+        // Qt's catalog names each non-regular face Family-Style; preserve families containing hyphens by matching
+        // the longest installed family prefix before treating the final component as the style.
+        let families = NSFontManager.shared.availableFonts.filter { candidate in
+            fontName.hasPrefix(candidate + "-")
+        }
+        return families.max(by: { $0.count < $1.count }) ?? fontName.split(separator: "-").first.map(String.init)
+    }
     public let pointSize: CGFloat
     /// Traits of the system font factories, retained for native text and SwiftUI lowering.
     public let _systemWeightName: String?
@@ -404,5 +414,26 @@ extension String {
 public final class NSFontManager: @unchecked Sendable {
     public static let shared = NSFontManager()
     /// Every installed face by the name `NSFont(name:size:)` takes — sorted, as AppKit lists them.
-    public var availableFonts: [String] { TextBackend.fontNames }
+    public var availableFonts: [String] {
+        let postScript = InstalledFonts.postScriptNames
+        return postScript.isEmpty ? TextBackend.fontNames : postScript
+    }
+    public func availableMembers(ofFontFamily family: String) -> [[Any]]? {
+        let key = family.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let aliases: [String: [String]] = [
+            "helvetica": ["Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique"],
+            "courier": ["Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"],
+            "times": ["Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic"]
+        ]
+        let resolved = InstalledFonts.contains(family) ? TextBackend.familyName(family) : nil
+        let resolvedKey = resolved?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let installed = InstalledFonts.members(ofFamily: family)
+        let faces = aliases[key] ?? (!installed.isEmpty ? installed : availableFonts.filter {
+            let name = $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            return name == key || name.hasPrefix(key + "-")
+                || resolvedKey.map { name == $0 || name.hasPrefix($0 + "-") } == true
+        })
+        guard !faces.isEmpty else { return nil }
+        return faces.sorted().map { [$0, $0, 5, 0] }
+    }
 }

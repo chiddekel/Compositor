@@ -834,7 +834,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     resize(ParityMetrics::WindowDefaultWidth, ParityMetrics::WindowDefaultHeight);
     setMinimumSize(ParityMetrics::WindowMinWidth, ParityMetrics::WindowMinHeight);
     setAcceptDrops(true);
-    m_tabletHandler = std::make_unique<PressureModulatedTabletHandler>();
+    m_tabletHandler = std::make_unique<UpstreamTabletHandler>();
     applyDarkTheme();
 
     // Central canvas widget:
@@ -1338,6 +1338,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
             syncOptionsFromSession();
             updateOptionsBar();
             refreshImage();
+            updateFloatingPanels();
         } else if (panel == "LayersPanel") {
             updateLayersPanel();
             refreshLayers();
@@ -1780,7 +1781,18 @@ void SessionWindow::updateFloatingPanelsPass() {
                 // A dialog swatch's picker must be a child of its modal sheet to receive native input.
                 if (auto *modal = QApplication::activeModalWidget(); modal && modal->parentWidget() == this) owner = modal;
             }
-            auto *window = new QDialog(owner, Qt::Tool);
+            const bool popup = it.value().contains("popupWidth");
+            class HostedChildDialog : public QDialog {
+            public:
+                using QDialog::QDialog;
+                std::function<void()> dismissed;
+            protected:
+                void hideEvent(QHideEvent *event) override {
+                    QDialog::hideEvent(event);
+                    if (dismissed && !property("closingFromSession").toBool()) QTimer::singleShot(0, this, dismissed);
+                }
+            };
+            auto *window = new HostedChildDialog(owner, popup ? Qt::Popup : Qt::Tool);
             window->setObjectName("floatingPanel." + panel);
             window->setAttribute(Qt::WA_DeleteOnClose, false);
             window->setModal(false);
@@ -1788,18 +1800,27 @@ void SessionWindow::updateFloatingPanelsPass() {
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSizeConstraint(QLayout::SetFixedSize);   // sized by the upstream view, as NSPanel fits its content
             // The window's close button is the panel's: upstream's onClose (e.g. cancel the effect edit).
-            connect(window, &QDialog::finished, this, [this, panel, window] {
+            const auto dismiss = [this, panel, window] {
                 if (window->property("closingFromSession").toBool()) return;
+                window->setProperty("closingFromSession", true);
                 sendCommandQuiet({{"action", "closeFloatingPanel"}, {"kind", panel}});
                 refreshImage();
                 refreshLayers();
                 updateFloatingPanels();
-            });
+            };
+            connect(window, &QDialog::finished, this, dismiss);
+            if (popup) window->dismissed = dismiss;
             entry.window = window;
             entry.content = nullptr;
             // Beside the canvas's top-right, left of the Layers panel (upstream's automatic placement).
             const QPoint anchor = mapToGlobal(QPoint(width() - 340 - 280, 120));
             window->move(panel == QLatin1String("ColorPickerSheet") && m_colorPickerPosition ? *m_colorPickerPosition : anchor);
+            if (popup) {
+                const auto size = QSize(qRound(it.value().value("popupWidth").toDouble()),
+                                        qRound(it.value().value("popupHeight").toDouble()));
+                window->setFixedSize(size);
+                window->move(qRound(it.value().value("popupX").toDouble()), qRound(it.value().value("popupY").toDouble()));
+            }
         }
         const QString title = it.value().value("title").toString();
         if (entry.title != title) { entry.title = title; entry.window->setWindowTitle(title); }
@@ -3023,9 +3044,9 @@ void SessionWindow::createMenus() {
         }
     })->setObjectName("file.openProject");
 
-    // Upstream's Import Images… sets session.showsImporter; its .fileImporter imports the picked files as layers (or,
+    // Upstream's Import… sets session.showsImporter; its .fileImporter imports the picked files as layers (or,
     // into an empty tab, as a document the size of the first).
-    file->addAction(tr("Import Images…"), this, [this] {
+    file->addAction(tr("Import…"), this, [this] {
         const QStringList paths = m_platform.files->chooseImagesToImport();
         if (!paths.isEmpty()) importWithUpstream(paths, false);
     })->setObjectName("file.importImages");
@@ -4211,8 +4232,24 @@ void SessionWindow::canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas)
 
 void SessionWindow::canvasTabletEvent(QTabletEvent *event, QWidget *canvas) {
     Q_UNUSED(canvas);
-    tabletEvent(event);
-    if (m_canvasWidget && !(event->type() == QEvent::TabletMove && isBrushStrokeActive())) m_canvasWidget->update();
+    if (!event || !m_sessionHandle) return;
+    const int kind = event->type() == QEvent::TabletPress ? 0 : event->type() == QEvent::TabletRelease ? 2
+        : event->buttons().testFlag(Qt::LeftButton) ? 1 : 3;
+    syncViewportGeometry();
+    applyCanvasCursor(m_tabletHandler->dispatch(*event, m_sessionHandle, chordBits(event->modifiers())));
+    event->accept();
+    compositor_pump_main();
+    if (kind == 1 && isBrushStrokeActive()) { scheduleStrokeRefresh(); updateInvalidOverlay(); return; }
+    invalidateOverlay();
+    refreshImage();
+    if (kind == 0 || kind == 2) {
+        syncToolFromSession();
+        syncTextEditor();
+        refreshLayers();
+        updateOptionsBar();
+    }
+    if (m_tool == Tool::Gradient || m_tool == Tool::Shape) syncCanvasDrafts();
+    if (m_canvasWidget) m_canvasWidget->update();
 }
 
 void SessionWindow::canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas) {
@@ -5431,7 +5468,7 @@ void SessionWindow::mouseReleaseEvent(QMouseEvent *event) {
     m_samplingPicker = false;
 }
 
-/// A pen is a mouse here, as on the Mac (upstream's canvas takes no pressure): ignored, Qt delivers it as mouse events.
+/// Pen samples on the canvas are handled by canvasTabletEvent; elsewhere Qt can deliver ordinary mouse events.
 void SessionWindow::tabletEvent(QTabletEvent *event) {
     event->ignore();
 }

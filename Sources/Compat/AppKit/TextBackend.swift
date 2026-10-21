@@ -9,6 +9,27 @@ import Glibc
 /// test runner) loads the same functions from the Qt image-codec library, as `ImageCodec` does for images. Without
 /// either, the text system keeps its approximate built-in layout.
 public enum TextBackend {
+    private typealias FamilyFn = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int) -> Int64
+    private static let familyFn: FamilyFn? = {
+        let paths = [ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? "",
+                     "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"]
+        for path in paths where !path.isEmpty {
+            guard let library = dlopen(path, RTLD_NOW | RTLD_LOCAL) else { continue }
+            guard let symbol = dlsym(library, "compositor_qt_font_family") else { dlclose(library); continue }
+            return unsafeBitCast(symbol, to: FamilyFn.self)
+        }
+        return nil
+    }()
+    static func familyName(_ name: String) -> String? {
+        guard let familyFn else { return nil }
+        return name.withCString { name in
+            let count = familyFn(name, nil, 0)
+            guard count > 0, count <= 64 * 1024 else { return nil }
+            var buffer = [CChar](repeating: 0, count: Int(count) + 1)
+            guard familyFn(name, &buffer, Int(count)) == count else { return nil }
+            return String(cString: buffer)
+        }
+    }
     public typealias LayoutFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Double, Double, Double, Double,
                                                 UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?) -> Int32
     public typealias RenderFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Double, Double, Double, Double, Int32, Double,
@@ -34,22 +55,31 @@ public enum TextBackend {
 
     /// The installed faces as the Qt text engine names them ("Family", "Family-Style"), for font menus
     /// (NSFontManager.availableFonts). Empty when the engine isn't there (then the menu falls back to the font files).
-    static let fontNames: [String] = {
+    private static let fontNamesLock = NSLock()
+    nonisolated(unsafe) private static var cachedFontNames: [String]?
+    static var fontNames: [String] {
+        fontNamesLock.lock(); defer { fontNamesLock.unlock() }
+        if let cachedFontNames { return cachedFontNames }
         #if canImport(Glibc)
         typealias NamesFn = @convention(c) (UnsafeMutablePointer<CChar>?, Int) -> Int64
         let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
         for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
-            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_font_names") else { continue }
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else { continue }
+            defer { dlclose(handle) }
+            guard let sym = dlsym(handle, "compositor_qt_font_names") else { continue }
             let names = unsafeBitCast(sym, to: NamesFn.self)
             let size = names(nil, 0)
             guard size > 0 else { return [] }
             var buffer = [CChar](repeating: 0, count: Int(size) + 1)
             guard names(&buffer, Int(size)) == size else { return [] }
-            return String(cString: buffer).split(separator: "\n").map(String.init)
+            let result = String(cString: buffer).split(separator: "\n").map(String.init)
+            // A catalog requested before the Qt application exists must remain retryable at first presentation.
+            if !result.isEmpty { cachedFontNames = result }
+            return result
         }
         #endif
         return []
-    }()
+    }
 
     typealias MetricsFn = @convention(c) (UnsafePointer<CChar>?, Double, UnsafeMutablePointer<Double>?,
                                           UnsafeMutablePointer<Double>?, UnsafeMutablePointer<Double>?) -> Int32

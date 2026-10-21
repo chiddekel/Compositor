@@ -22,19 +22,21 @@ final class MetalBrushCoverage {
         let width: Int, height: Int
         var permanent: [Float]
         var preview: [UInt8]
-        init(width: Int, height: Int) {
+        var cap: [Float]
+        init(width: Int, height: Int, capped: Bool) {
             self.width = width; self.height = height
             permanent = [Float](repeating: 0, count: width * height)
             preview = [UInt8](repeating: 0, count: width * height)
+            cap = capped ? [Float](repeating: 0, count: width * height) : []
         }
     }
 
-    func tile(width: Int, height: Int) throws -> Tile {
+    func tile(width: Int, height: Int, capped: Bool = false) throws -> Tile {
         guard (1...256).contains(width), (1...256).contains(height) else { throw ExportError.render }
-        return Tile(width: width, height: height)
+        return Tile(width: width, height: height, capped: capped)
     }
 
-    func render(_ tiles: [(Tile, CGRect, CGContext)], settled: [SIMD4<Float>], tail: [SIMD4<Float>],
+    func render(_ tiles: [(Tile, CGRect, CGContext)], settled: [BrushSegment], tail: [BrushSegment],
                 mapping: CGAffineTransform, settings: BrushSettings, canvas: CGSize) throws {
         guard !tiles.isEmpty else { return }
         // For hard tips and small soft tips, a Vulkan submission and fence per tile costs more than
@@ -47,7 +49,8 @@ final class MetalBrushCoverage {
             BrushCoverageRequest(
                 width: Int(rect.width), height: Int(rect.height), origin: rect.origin.applying(mapping), mapping: mapping, canvas: canvas,
                 radius: Float(settings.diameter / 2), hardness: Float(settings.hardness), antialiasWidth: scale,
-                spacing: spacing, settled: settled, tail: tail, permanent: tile.permanent)
+                spacing: spacing, settled: settled.map(\.line), tail: tail.map(\.line), permanent: tile.permanent,
+                dynamics: settings.pressureSize || settings.pressureOpacity ? (settled + tail).map(\.dynamics) : [], cap: tile.cap)
         }
         // A wide dab touches several tiles: on the CPU kernel they are computed side by side, one per core.
         var computed = [Result<BrushCoverageResult, Error>?](repeating: nil, count: requests.count)
@@ -72,6 +75,7 @@ final class MetalBrushCoverage {
         for (tile, result, context, count) in results {
             tile.permanent = result.permanent
             tile.preview = result.preview
+            tile.cap = result.cap
             // CGContext owns its memory so makeImage's copy-on-write snapshots stay immutable.
             guard let destination = context.data else { throw ExportError.render }
             result.preview.withUnsafeBufferPointer { _ = memcpy(destination, $0.baseAddress!, min(count, $0.count)) }

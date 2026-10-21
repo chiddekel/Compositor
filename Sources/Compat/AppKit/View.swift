@@ -88,7 +88,41 @@ public final class NSTrackingArea {
 }
 
 @MainActor open class NSView: NSResponder, @unchecked Sendable {
-    open var frame: CGRect { didSet { if frame.size != oldValue.size { needsLayout = true } } }
+    open var frame: CGRect {
+        didSet {
+            if frame.size != oldValue.size {
+                needsLayout = true
+                resizeSubviews(withOldSize: oldValue.size)
+            }
+        }
+    }
+    /// AppKit's springs and struts: flexible margins and dimensions share a parent's size change in proportion
+    /// to their previous lengths. This also keeps absolutely positioned child-window content anchored on resize.
+    open func resizeSubviews(withOldSize oldSize: CGSize) {
+        let dx = frame.width - oldSize.width, dy = frame.height - oldSize.height
+        guard dx.isFinite, dy.isFinite else { return }
+        func axis(_ origin: CGFloat, _ length: CGFloat, _ parent: CGFloat, _ delta: CGFloat,
+                  _ flexible: [Bool]) -> (CGFloat, CGFloat) {
+            let lengths = [max(0, origin), max(0, length), max(0, parent - origin - length)]
+            let total = zip(lengths, flexible).reduce(CGFloat.zero) { $0 + ($1.1 ? $1.0 : 0) }
+            let count = flexible.filter { $0 }.count
+            guard count > 0 else { return (origin, length) }
+            func share(_ index: Int) -> CGFloat {
+                guard flexible[index] else { return 0 }
+                return delta * (total > 0 ? lengths[index] / total : 1 / CGFloat(count))
+            }
+            return (origin + share(0), max(0, length + share(1)))
+        }
+        for child in subviews {
+            let mask = child.autoresizingMask, rect = child.frame
+            guard !mask.isEmpty, child.translatesAutoresizingMaskIntoConstraints else { continue }
+            let x = axis(rect.minX, rect.width, oldSize.width, dx,
+                         [mask.contains(.minXMargin), mask.contains(.width), mask.contains(.maxXMargin)])
+            let y = axis(rect.minY, rect.height, oldSize.height, dy,
+                         [mask.contains(.minYMargin), mask.contains(.height), mask.contains(.maxYMargin)])
+            child.frame = CGRect(x: x.0, y: y.0, width: x.1, height: y.1)
+        }
+    }
     private var boundsOverride: CGRect?
     public var bounds: CGRect {
         get { boundsOverride ?? CGRect(origin: .zero, size: frame.size) }
@@ -316,7 +350,9 @@ public final class NSTrackingArea {
     }
     /// As AppKit's: this view's constraints place its subviews and guides, then `layout()` runs; then the same for
     /// each subview that needs it.
+    private var hasUpdatedTrackingAreas = false
     open func layoutSubtreeIfNeeded() {
+        let updateTracking = needsLayout || !hasUpdatedTrackingAreas
         if needsLayout {
             updateConstraints()
             for child in subviews { child.updateConstraints() }
@@ -324,6 +360,7 @@ public final class NSTrackingArea {
             layout()
             needsLayout = false
         }
+        if updateTracking { updateTrackingAreas(); hasUpdatedTrackingAreas = true }
         for child in subviews { child.layoutSubtreeIfNeeded() }
     }
     open func layout() {}
@@ -637,6 +674,20 @@ public enum NSAccessibility {
     /// Title-bar appearance: drawn by the window manager on Linux, so only recorded.
     public var titleVisibility: TitleVisibility = .visible
     public var titlebarAppearsTransparent = false
+    public var isOpaque = true
+    public var backgroundColor: NSColor = .clear
+    public var hasShadow = true
+    public private(set) weak var parent: NSWindow?
+    public private(set) var childWindows: [NSWindow] = []
+    public func addChildWindow(_ window: NSWindow, ordered: OrderingMode) {
+        window.parent?.removeChildWindow(window)
+        childWindows.append(window)
+        window.parent = self
+    }
+    public func removeChildWindow(_ window: NSWindow) {
+        childWindows.removeAll { $0 === window }
+        if window.parent === self { window.parent = nil }
+    }
     open var canBecomeKey: Bool { true }
     open var canBecomeMain: Bool { true }
     /// Called as the window stops being key (the host reports focus moving away).
@@ -737,6 +788,9 @@ public enum NSAccessibility {
 }
 
 public struct NSScreen {
+    public init(frame: CGRect = CGRect(x: 0, y: 0, width: 1440, height: 900), backingScaleFactor: CGFloat = 1) {
+        self.frame = frame; self.backingScaleFactor = backingScaleFactor
+    }
     public var frame = CGRect(x: 0, y: 0, width: 1440, height: 900)
     /// The part of the screen windows go in (no menu bar or dock on the hosts this runs on: the whole frame).
     public var visibleFrame: CGRect { frame }
@@ -849,6 +903,8 @@ extension NSControl {
     public static let textDidEndEditingNotification = Notification.Name("NSControlTextDidEndEditingNotification")
 }
 @MainActor open class NSControl: NSView {
+    public enum FocusRingType { case `default`, none, exterior }
+    public var focusRingType: FocusRingType = .default
     public var doubleValue = 0.0, floatValue: Float = 0, intValue: Int32 = 0
     public var stringValue = "", isEnabled = true
     public var target: AnyObject?
@@ -878,6 +934,14 @@ extension NSTextFieldDelegate {
 /// A text field. Focusing an editable one puts the window's field editor in the responder chain, holding the field's
 /// text (`currentEditor()`); when focus moves on, the text comes back and the delegate hears the editing ended.
 @MainActor open class NSTextField: NSControl {
+    public var cell: NSTextFieldCell? = NSTextFieldCell()
+    public var attributedStringValue: NSAttributedString {
+        get { NSAttributedString(string: stringValue, attributes: font.map { [.font: $0] } ?? [:]) }
+        set {
+            stringValue = newValue.string
+            if newValue.length > 0, let face = newValue.attribute(.font, at: 0, effectiveRange: nil) as? NSFont { font = face }
+        }
+    }
     open override func draw(_ dirtyRect: CGRect) { drawField() }
     open var isEditable = true
     open var isSelectable = true
@@ -934,6 +998,7 @@ extension NSControl {
 }
 
 @MainActor open class NSButton: NSControl {
+    public var refusesFirstResponder = false
     open override func draw(_ dirtyRect: CGRect) { drawButton() }
     public enum BezelStyle: UInt, Sendable {
         case automatic = 0, push, flexiblePush, disclosure, circular, helpButton, smallSquare, toolbar, accessoryBarAction
@@ -1056,6 +1121,7 @@ extension NSTableViewDataSource {
                           dropOperation: NSTableView.DropOperation) -> Bool { false }
 }
 @MainActor public protocol NSTableViewDelegate: AnyObject {
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView?
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat
     func tableViewSelectionDidChange(_ notification: Notification)
@@ -1063,6 +1129,7 @@ extension NSTableViewDataSource {
     func tableView(_ tableView: NSTableView, shouldTypeSelectFor event: NSEvent, withCurrentSearch search: String?) -> Bool
 }
 extension NSTableViewDelegate {
+    public func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { nil }
     public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { nil }
     public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { tableView.rowHeight }
     public func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {
@@ -1271,7 +1338,15 @@ extension NSTableViewDelegate {
     open func view(atColumn column: Int, row: Int, makeIfNecessary: Bool) -> NSView? {
         if let cached = rowViews[row] { return cached }
         guard makeIfNecessary, row >= 0, row < numberOfRows else { return nil }
-        let view = delegate?.tableView(self, viewFor: column < tableColumns.count ? tableColumns[column] : nil, row: row) ?? NSView()
+        let content = delegate?.tableView(self, viewFor: column < tableColumns.count ? tableColumns[column] : nil, row: row) ?? NSView()
+        let view: NSView
+        if let rowView = delegate?.tableView(self, rowViewForRow: row) {
+            rowView.addSubview(content)
+            rowView.frame = rect(ofRow: row)
+            content.frame = rowView.bounds
+            rowView.layout()
+            view = rowView
+        } else { view = content }
         view.frame = rect(ofRow: row)
         rowViews[row] = view
         addSubview(view)

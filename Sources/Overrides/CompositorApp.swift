@@ -70,7 +70,7 @@ struct CompositorApp: App {
                             .disabled(RecentProjects.shared.urls.isEmpty)
                     }
                         .disabled(!applicationDelegate.projects.canStart)
-                    Button("Import Images…") { session.showsImporter = true }
+                    Button("Import…") { session.showsImporter = true }
                         .disabled(session.levels != nil || session.showsBusy || session.isImporting || session.showsNewDocument)
                 }
                 CommandGroup(replacing: .saveItem) {

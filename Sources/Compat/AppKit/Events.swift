@@ -14,6 +14,12 @@ public final class CGEvent: @unchecked Sendable {
     public let virtualKey: CGKeyCode
     public var mouseButton: CGMouseButton = .left
     public var flags = CGEventFlags()
+    private var doubleFields: [CGEventField: Double] = [:]
+    private var integerFields: [CGEventField: Int64] = [:]
+    public func setDoubleValueField(_ field: CGEventField, value: Double) { doubleFields[field] = value }
+    public func setIntegerValueField(_ field: CGEventField, value: Int64) { integerFields[field] = value }
+    public func getDoubleValueField(_ field: CGEventField) -> Double { doubleFields[field] ?? 0 }
+    public func getIntegerValueField(_ field: CGEventField) -> Int64 { integerFields[field] ?? 0 }
     public init?(keyboardEventSource source: AnyObject?, virtualKey: CGKeyCode, keyDown: Bool) {
         type = keyDown ? .keyDown : .keyUp; self.virtualKey = virtualKey; location = .zero
     }
@@ -26,6 +32,8 @@ public final class CGEvent: @unchecked Sendable {
     }
 }
 public typealias CGEventType = CGEvent.EventType
+public enum CGEventField: Hashable, Sendable { case mouseEventPressure, mouseEventSubtype }
+public enum CGEventMouseSubtype: UInt32, Sendable { case `default` = 0, tabletPoint = 1, tabletProximity = 2 }
 public enum CGMouseButton: UInt32, Sendable { case left = 0, right = 1, center = 2 }
 public struct CGEventFlags: OptionSet, Sendable {
     public let rawValue: UInt64
@@ -52,6 +60,7 @@ public final class NSEvent: @unchecked Sendable {
         public static let leftMouseDragged = EventTypeMask(type: .leftMouseDragged), rightMouseDown = EventTypeMask(type: .rightMouseDown)
         public static let rightMouseUp = EventTypeMask(type: .rightMouseUp), rightMouseDragged = EventTypeMask(type: .rightMouseDragged)
         public static let cursorUpdate = EventTypeMask(type: .cursorUpdate)
+        public static let tabletPoint = EventTypeMask(type: .tabletPoint), tabletProximity = EventTypeMask(type: .tabletProximity)
     }
     public struct ModifierFlags: OptionSet, Hashable, Sendable {
         public let rawValue: UInt
@@ -112,6 +121,8 @@ public final class NSEvent: @unchecked Sendable {
                   timestamp: 0, windowNumber: 0)
         keyCode = cgEvent.virtualKey
         self.cgEvent = cgEvent
+        pressure = Float(cgEvent.getDoubleValueField(.mouseEventPressure))
+        subtype = SubType(rawValue: Int16(clamping: cgEvent.getIntegerValueField(.mouseEventSubtype)))
         if type != .keyDown, type != .keyUp, type != .flagsChanged {
             // Core Graphics positions run down from the main screen's top edge; AppKit's run up from its bottom.
             let screenHeight = Thread.isMainThread ? MainActor.assumeIsolated { NSScreen.main?.frame.height ?? 0 } : 0

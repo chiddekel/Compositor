@@ -9,6 +9,7 @@ import AppKit
     let view: CanvasView
     let window: NSWindow
     init(session: EditorSession) {
+        PenInput.install()
         view = CanvasView(session: session)
         window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
                           backing: .buffered, defer: false)
@@ -27,7 +28,7 @@ import AppKit
     }
     /// A pointer event (returns the cursor code, see cursorCode): `kind` 0 press, 1 drag, 2 release, 3 move (no button), 4 double press; `modifiers` in
     /// ShortcutChord bits as the shell sends them (Ctrl 1 → ⌘, Alt 2 → ⌥, Meta 4 → ⌃, Shift 8).
-    func mouse(kind: Int, x: Double, y: Double, modifiers: Int, clickCount: Int) {
+    func mouse(kind: Int, x: Double, y: Double, modifiers: Int, clickCount: Int, pressure: Double? = nil) {
         NSEvent.applyChordModifiers(modifiers)
         var flags: NSEvent.ModifierFlags = []
         if modifiers & 1 != 0 { flags.insert(.command) }
@@ -54,7 +55,12 @@ import AppKit
         NSEvent.mouseLocation = window.convertPoint(toScreen: location)
         guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                                             clickCount: max(1, clickCount), pressure: 1) else { return }
+                                             clickCount: max(1, clickCount), pressure: Float(pressure ?? 1)) else { return }
+        if pressure != nil {
+            event.subtype = .tabletPoint
+            event.pointingDeviceType = .pen
+        }
+        guard NSEvent.filterThroughLocalMonitors(event) != nil else { return }
         if kind >= 5 { event.buttonNumber = 2 }
         switch type {
         case .otherMouseDown: view.otherMouseDown(with: event)
@@ -248,6 +254,20 @@ nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _
         WarpStroke.timeSlicesLiveStrokes = kind == 0 || kind == 1 || kind == 4
         UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers), clickCount: Int(clickCount))
         entry.noteStrokeProgress()   // the brush painted: the shell redraws just that area mid-stroke
+        return Int64(UpstreamCanvas.cursorCode(NSCursor.current))
+    })
+}
+
+/// Tablet events use the same upstream canvas dispatch as the mouse, retaining the pen's pressure.
+@_cdecl("compositor_canvas_tablet")
+nonisolated public func compositorCanvasTablet(_ handle: UInt64, _ kind: Int32, _ x: Double, _ y: Double,
+                                               _ modifiers: Int32, _ pressure: Double) -> Int32 {
+    guard pressure.isFinite else { return -1 }
+    return Int32(withEntry(handle) { entry in
+        WarpStroke.timeSlicesLiveStrokes = kind == 0 || kind == 1
+        UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers),
+                                                   clickCount: 1, pressure: min(1, max(0, pressure)))
+        entry.noteStrokeProgress()
         return Int64(UpstreamCanvas.cursorCode(NSCursor.current))
     })
 }

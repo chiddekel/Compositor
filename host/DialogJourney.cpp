@@ -1,4 +1,5 @@
 #include "CompositorUIFont.h"
+#include "QtTextFont.h"
 // Qt event-loop journey, invoked by the Swift composition root with --dialog-smoke.
 // Uses actual menu actions, modal controls, codecs, and the real Swift session.
 #include "SessionWindow.h"
@@ -15,6 +16,7 @@
 #include "UIAuditJourney.h"
 #include "DesktopProbeJourney.h"
 #include "InputProbeJourney.h"
+#include "Upstream154Journey.h"
 #include "OtherApplications.h"
 #include "compositor_host_run.h"
 #include "interfaces/IPlatformServices.h"
@@ -127,6 +129,7 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     if (app.arguments().contains("--ui-audit-probe")) return uiauditjourney::run(app);
     if (app.arguments().contains("--desktop-probe")) return desktopprobe::run(app);
     if (app.arguments().contains("--input-probe")) return inputprobe::run(app);
+    if (app.arguments().contains("--upstream-154-probe")) return upstream154journey::run(app);
     try {
         const auto check = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
         QTemporaryDir temporary;
@@ -4546,7 +4549,10 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                           == (variant == 0 || variant == 3 ? 255 : 0),
                       "Shape corner does not distinguish its geometry");
                 if (variant == 3) check(after.pixelColor(9, 32).alpha() == 0, "Line filled its bounding box");
-                unchangedOutside(before, after, QRect(6, 8, 36, 28));
+                // A square cap's diagonal corner reaches halfWidth * (|dx| + |dy|) / length beyond an endpoint.
+                // Upstream 1.5.4 defaults to square caps; the old two-pixel round-cap margin is too small here.
+                const int reach = variant == 3 ? int(std::ceil(2.0 * (32.0 + 24.0) / std::hypot(32.0, 24.0))) : 2;
+                unchangedOutside(before, after, QRect(8 - reach, 10 - reach, 32 + 2 * reach, 24 + 2 * reach));
                 key(canvas, Qt::Key_Z, Qt::ControlModifier);
                 check(pixels() == before && window.sessionState().value("layers") == beforeLayers
                           && window.sessionState().value("activeLayerID") == beforeActive,
@@ -9948,6 +9954,30 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
                 if (combo->isVisible() && combo->accessibleName() == "Font") return combo;
             return nullptr;
         };
+        const auto chooseFont = [&](const QString &query) {
+            // The closed control only displays the current face in 1.5.4. Choose through the upstream search panel.
+            QElapsedTimer delay; delay.start();
+            upstream154journey::settle([&] { return delay.elapsed() >= 300; }, "font panel reopen delay did not finish");
+            auto *control = fontPicker(); require(control, "font control disappeared before opening its panel");
+            control->showPopup();
+            const auto popup = [&]() -> QDialog * {
+                for (auto *dialog : window.findChildren<QDialog *>())
+                    if (dialog->isVisible() && dialog->objectName().startsWith(QLatin1String("floatingPanel.NativeWindow:"))) return dialog;
+                return nullptr;
+            };
+            const auto search = [&]() -> QLineEdit * {
+                if (auto *dialog = popup()) for (auto *field : dialog->findChildren<QLineEdit *>())
+                    if (field->isVisible() && field->placeholderText() == QLatin1String("Search Fonts")) return field;
+                return nullptr;
+            };
+            upstream154journey::settle([&] { return search() != nullptr; }, "font search panel did not open");
+            for (QChar character : query) {
+                auto *field = search(); require(field, "font search field disappeared while typing");
+                field->setFocus(); upstream154journey::key(field, 0, QString(character));
+            }
+            upstream154journey::key(search(), Qt::Key_Return, QStringLiteral("\r"));
+            upstream154journey::settle([&] { return popup() == nullptr; }, "font panel did not accept its selection");
+        };
         // A mixed selection must advertise that state, including when the user
         // chooses the first letter's existing face for the rest of the selection.
         cursor = editor->textCursor(); cursor.select(QTextCursor::Document); editor->setTextCursor(cursor);
@@ -9959,10 +9989,10 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
                 if (combo->isVisible()) qInfo("  visible combo %s: %s", qPrintable(combo->accessibleName()), qPrintable(combo->currentText()));
         }
         require(picker && picker->currentText() == "(Multiple)", "font picker lost mixed-selection state");
-        const int faceIndex = picker->findText(testFace);
-        require(faceIndex >= 0, "font picker omitted installed face");
-        picker->setCurrentIndex(faceIndex); QApplication::processEvents();
-        require(draft().value("fontName").toString() == testFace && draft().value("fontRuns").toArray().isEmpty(),
+        chooseFont(testFace);
+        const QString chosenFace = draft().value("fontName").toString();
+        require(!chosenFace.isEmpty() && QFontInfo(fontFor(chosenFace.toUtf8().constData(), 13)).family() == testFace
+                    && draft().value("fontRuns").toArray().isEmpty(),
                 "toolbar font did not apply to selected letters");
         require(editor->textCursor().selectedText() == editor->toPlainText(), "font toolbar lost native selection");
         require(editor->document()->isUndoAvailable(), "font toolbar cleared native typing undo");
@@ -9975,16 +10005,13 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
                 "typing undo after formatting lost metadata");
         editor->redo(); QApplication::processEvents(); editor->redo(); QApplication::processEvents();
         require(draft().value("content").toString() == QString::fromUtf8("A😀Bé🦊DEF") &&
-                draft().value("fontName").toString() == testFace && draft().value("fontRuns").toArray().isEmpty(),
+                draft().value("fontName").toString() == chosenFace && draft().value("fontRuns").toArray().isEmpty(),
                 "native redo did not restore typing and toolbar formatting");
         cursor = editor->textCursor(); cursor.setPosition(1); cursor.setPosition(3, QTextCursor::KeepAnchor);
         editor->setTextCursor(cursor); QApplication::processEvents();
         picker = fontPicker(); require(picker != nullptr, "font picker disappeared");
-        int otherIndex = 0;
-        while (otherIndex < picker->count() && (picker->itemText(otherIndex) == testFace || picker->itemText(otherIndex) == "(Multiple)")) ++otherIndex;
-        require(otherIndex < picker->count(), "second installed font missing");
-        const QString otherFace = picker->itemText(otherIndex);
-        picker->setCurrentIndex(otherIndex); QApplication::processEvents();
+        const QString otherFace = QStringLiteral("Helvetica-Bold");
+        chooseFont(QStringLiteral("Helvetica Bold"));
         const QJsonArray chosenRuns = draft().value("fontRuns").toArray();
         require(chosenRuns.size() == 1 && chosenRuns.first().toObject().value("location").toInt() == 1 &&
                 chosenRuns.first().toObject().value("length").toInt() == 2 &&
@@ -9998,8 +10025,8 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(textFile.open(QIODevice::ReadOnly), "format-11 native manifest missing");
         textManifest = QJsonDocument::fromJson(textFile.readAll()).object(); textFile.close();
         const auto savedText = textManifest.value("layers").toArray().last().toObject().value("text").toObject();
-        // New saves use version 14 (smooth corners, 9f1d158); font runs arrived in version 11.
-        require(textManifest.value("version").toInt() == 14, "native save did not write current format 14");
+        // New saves use version 15 (line styles and caps); font runs arrived in version 11.
+        require(textManifest.value("version").toInt() == 15, "native save did not write current format 15");
         require(savedText.value("fontRuns").toArray() == chosenRuns, "format-11 save lost chosen font runs");
         require(savedText.value("colorRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "format-11 save lost overlapping color runs");

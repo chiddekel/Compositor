@@ -47,7 +47,9 @@ done
 
 cmake -S . -B "$NATIVE_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
     -DCOMPOSITOR_SKIA_ROOT="$SKIA_ROOT" -DCOMPOSITOR_SKIA_LIB="$SKIA_LIB"
-cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels
+cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels
+"$NATIVE_BUILD/test_pressure_brush"
+python3 tests/test_pdf_backend.py "$NATIVE_BUILD/libCompositorPDFBackend.so"
 # Call the executable directly: CTest treats a missing Skia backend (77) as a skip, which is a failure here.
 "$NATIVE_BUILD/test_patch_pixels"
 "$NATIVE_BUILD/test_raw_lens"
@@ -57,6 +59,7 @@ cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBr
 
 export COMPOSITOR_SKIA_BRIDGE="$NATIVE_BUILD/libCompositorSkiaBridge.so"
 export COMPOSITOR_IMAGEIO_BACKEND="$NATIVE_BUILD/libCompositorQtImageIO.so"
+export COMPOSITOR_PDF_BACKEND="$NATIVE_BUILD/libCompositorPDFBackend.so"
 export QT_QPA_PLATFORM=offscreen
 # The default CMYK profile the app installs on first run (third_party/color): upstream's CMYK tests proof and export
 # through "Generic CMYK Profile", which macOS always has. A profile already in place (a developer's own) is kept.
@@ -115,6 +118,7 @@ NATIVE_GATES=(
     "test --combo-smoke --transform-gestures-probe"
     "test --combo-smoke --transform-snap-probe"
     "test --combo-smoke --upstream-153-probe"
+    "test --combo-smoke --upstream-154-probe"
     "test --combo-smoke --zoom-cursor-probe"
     "test --combo-smoke --keyboard-cursor-probe"
     "test --combo-smoke --layer-disjoint-probe"

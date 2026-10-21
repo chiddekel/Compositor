@@ -8,6 +8,9 @@ nonisolated private func nativeCoverage(_ request: BrushCoverageRequest, context
           request.settled.count <= 2048, request.tail.count <= 2048 - request.settled.count,
           request.permanent.count == request.width * request.height else { throw BrushCoverageFailure.invalidInput }
     let all = request.settled + request.tail
+    if !request.dynamics.isEmpty || !request.cap.isEmpty {
+        return try pressureCoverage(request)
+    }
     let segments = all.map { CompositorBrushSegment(x0: $0.x, y0: $0.y, x1: $0.z, y1: $0.w) }
     var uniforms = CompositorBrushUniforms(a: Float(request.mapping.a), b: Float(request.mapping.b),
         c: Float(request.mapping.c), d: Float(request.mapping.d),
@@ -82,7 +85,8 @@ final class VulkanBrushCoverage: BrushCoverageComputing {
     }
     deinit { compositor_vulkan_brush_destroy(context) }
     func render(_ request: BrushCoverageRequest) throws -> BrushCoverageResult {
-        try nativeCoverage(request, context: context, accelerated: true)
+        guard request.dynamics.isEmpty, request.cap.isEmpty else { throw BrushCoverageFailure.unavailable }
+        return try nativeCoverage(request, context: context, accelerated: true)
     }
 }
 
@@ -91,6 +95,9 @@ extension VulkanBrushCoverage: BrushCoverageBatching {
     /// submission and fence wait per tile cost more than the CPU kernel for a wide soft tip.
     func renderAll(_ requests: [BrushCoverageRequest]) throws -> [BrushCoverageResult] {
         guard let first = requests.first else { return [] }
+        if requests.contains(where: { !$0.dynamics.isEmpty || !$0.cap.isEmpty }) {
+            throw BrushCoverageFailure.unavailable
+        }
         let all = first.settled + first.tail
         guard requests.allSatisfy({ $0.settled == first.settled && $0.tail == first.tail }),
               all.count <= 2048, requests.allSatisfy({ (1...256).contains($0.width) && (1...256).contains($0.height)

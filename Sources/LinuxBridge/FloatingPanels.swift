@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import AppKit
 
 /// Upstream's floating panels. On the Mac, `ContentView` watches the session and shows an `NSPanel`
 /// (`FloatingPanel`) for each editing task — a layer effect, … — and runs the task's cancel when the panel's close
@@ -12,6 +14,10 @@ enum FloatingPanels {
         let title: String
         let placement: String
         let dockedWidth: Double?
+        var popupWidth: Double? = nil
+        var popupHeight: Double? = nil
+        var popupX: Double? = nil
+        var popupY: Double? = nil
 
         @MainActor init(panel: String, title: String, placement: FloatingPanelPlacement = .automatic) {
             self.panel = panel
@@ -39,6 +45,12 @@ enum FloatingPanels {
     @MainActor static func open(in editor: UpstreamEditor) -> [Open] {
         let session = editor.session
         var panels: [Open] = []
+        for window in NativeLowering.childWindows(in: editor.nativePanelScopes) {
+            var panel = Open(panel: "NativeWindow:\(window.windowNumber)", title: window.title)
+            panel.popupWidth = window.frame.width; panel.popupHeight = window.frame.height
+            panel.popupX = window.frame.minX; panel.popupY = -window.frame.maxY
+            panels.append(panel)
+        }
         if let editing = session.effectsEditing { panels.append(Open(panel: "EffectsSheet", title: editing.kind.rawValue)) }
         if let picker = session.colorPicker { panels.append(Open(panel: "ColorPickerSheet", title: picker.target.title)) }
         if session.colorRange != nil { panels.append(Open(panel: "ColorRangeSheet", title: "Color Range")) }
@@ -57,6 +69,10 @@ enum FloatingPanels {
 
     /// The panel's close button: what ContentView sets as that panel's `onClose`.
     @MainActor static func close(_ panel: String, in editor: UpstreamEditor) {
+        if panel.hasPrefix("NativeWindow:"), let number = Int(panel.dropFirst("NativeWindow:".count)) {
+            NativeLowering.dismissChildWindow(number)
+            return
+        }
         let session = editor.session
         switch panel {
         case "EffectsSheet": if session.effectsEditing != nil { session.finishEffectsEditing(commit: false) }

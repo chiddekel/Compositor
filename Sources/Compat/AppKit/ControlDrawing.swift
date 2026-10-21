@@ -200,7 +200,16 @@ extension NSTableView {
         }()
         let selection = focused ? NSColor.selectedContentBackgroundColor : NSColor.unemphasizedSelectedContentBackgroundColor
         context.setFillColor(selection.cgColor)
-        for row in selectedRowIndexes where row < numberOfRows { context.fill(rect(ofRow: row)) }
+        for row in selectedRowIndexes where row < numberOfRows {
+            let rect = rect(ofRow: row)
+            if let custom = delegate?.tableView(self, rowViewForRow: row) {
+                custom.frame = CGRect(origin: .zero, size: rect.size)
+                context.saveGState()
+                context.translateBy(x: rect.minX, y: rect.minY)
+                custom.drawSelection(in: custom.bounds)
+                context.restoreGState()
+            } else { context.fill(rect) }
+        }
         guard showsDropIndicator, dropRow >= 0 else { return }
         context.setStrokeColor(NSColor.controlAccentColor.cgColor)
         context.setLineWidth(2)

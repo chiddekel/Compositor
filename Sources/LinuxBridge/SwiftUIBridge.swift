@@ -35,6 +35,7 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
 /// registry for it so a later Qt-side interaction can dispatch back to the right closure by node id.
 @MainActor func resolvePanel(_ panel: String, entry: Entry) -> RenderNodeWire? {
     let scope = entry.panelScope(panel)
+    if !panel.hasPrefix("NativeWindow:") { entry.editor.nativePanelScopes.insert(scope) }
     entry.renderedPanels.insert(panel)
     // .onAppear / .onChange actions run after a resolve and usually change the @State it was built from (a field
     // seeding its text on appear); SwiftUI would render again, so resolve again until the tree settles.
@@ -54,8 +55,9 @@ nonisolated public func compositorSessionLayersPanelWidth(_ handle: UInt64, _ wi
             StateStore.discard(scope: scope)
             ChangeTracker.discard(scope: scope)
             NativeLowering.discard(scope: scope)
-            entry.actionHandlers[panel] = [:]
-            entry.resultHandlers[panel] = [:]
+            entry.actionHandlers.removeValue(forKey: panel)
+            entry.resultHandlers.removeValue(forKey: panel)
+            entry.renderedPanels.remove(panel)
             return nil
         }
         node.assignIDs()
@@ -108,6 +110,9 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
 }
 
 @MainActor private func resolvePanelTree(_ panel: String, entry: Entry) -> RenderNode? {
+    if panel.hasPrefix("NativeWindow:"), let number = Int(panel.dropFirst("NativeWindow:".count)) {
+        return NativeLowering.childWindowNode(number)
+    }
     let session = entry.editor.session
     let resolved: RenderNode
     switch panel {

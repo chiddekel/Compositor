@@ -13,6 +13,12 @@ typedef struct {
     uint32_t width, height, settled_count, segment_count;
 } CompositorBrushUniforms;
 typedef struct { float x0, y0, x1, y1; } CompositorBrushSegment;
+typedef struct { float radius0, radius1, strength0, strength1; } CompositorBrushDynamics;
+// Variable-tip pressure coverage, matching upstream's continuousBrush. The optional cap stores the firmest press
+// for soft opacity dynamics. Input and output buffers are disjoint; invalid input leaves outputs untouched.
+int compositor_brush_pressure_cpu(const CompositorBrushUniforms *uniforms,
+    const CompositorBrushSegment *segments, const CompositorBrushDynamics *dynamics, size_t segment_count,
+    const float *permanent, const float *cap, size_t pixel_count, float *next, float *next_cap, uint8_t *preview);
 typedef struct CompositorVulkanBrush CompositorVulkanBrush;
 // Each call processes one <=256x256 tile and <=2048 centerline segments.
 // Input/output permanent arrays have width*height floats; preview has that many

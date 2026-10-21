@@ -106,7 +106,7 @@ let package = Package(
         .target(name: "CompositorBrushBackend", path: "backends/brush",
             exclude: ["shaders/continuous_brush.comp", "shaders/warp_smudge.comp", "shaders/warp_liquify.comp",
                 "shaders/warp_smudge_packed.comp", "shaders/warp_liquify_packed.comp", "shaders/warp_formats.glsl", "shaders/warp_precision.glsl"],
-            sources: ["BrushCoverageCPU.cpp", "VulkanBrushCoverage.cpp", "VulkanSmudge.cpp"],
+            sources: ["BrushCoverageCPU.cpp", "PressureBrushCoverage.cpp", "VulkanBrushCoverage.cpp", "VulkanSmudge.cpp"],
             publicHeadersPath: "include", linkerSettings: [.linkedLibrary("vulkan")]),
         // The portable C pixel kernels (file-map "Keep" tier), reused verbatim from
         // the macOS source tree. The same .c files are ALSO built by CMakeLists.txt
@@ -234,6 +234,8 @@ let package = Package(
         // CoreText: single-line drawing over the Qt text engine (upstream's Dither ASCII glyphs).
         .target(name: "CoreText", dependencies: ["AppKit", "CoreGraphics"], path: "Sources/Compat/CoreText",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
+        .target(name: "PDFKit", dependencies: ["CoreGraphics"], path: "Sources/Compat/PDFKit",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         // CryptoKit: SHA256 with Apple's API over a portable implementation (upstream's ProjectDigest).
         .target(name: "CryptoKit", path: "Sources/Compat/CryptoKit"),
         .target(name: "UniformTypeIdentifiers", path: "Sources/Compat/UniformTypeIdentifiers",
@@ -291,6 +293,7 @@ let package = Package(
                      "Rendering/InlineTextEditor.swift",
                      "Rendering/TransformOverlay.swift",
                      "UI/ProjectTabs.swift",
+                     "UI/FontListPanel.swift",
                      "UI/LayerMaskMenu.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
@@ -311,7 +314,7 @@ let package = Package(
         // Upstream's own test suite, unmodified (Swift Testing), run against the module above.
         .testTarget(
             name: "CompositorUpstreamTests",
-            dependencies: ["Compositor", "CompositorKernels", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal"],
+            dependencies: ["Compositor", "CompositorKernels", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal", "PDFKit"],
             path: "CompositorTests",
             // Upstream tests that cannot run on Linux yet (Objective-C selectors and swizzling in the test itself, the
             // real layer table, the app's own window): listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.

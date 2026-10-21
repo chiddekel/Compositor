@@ -44,6 +44,7 @@ square.and.arrow.up share
 square.on.circle custom/square-on-circle
 circle circle
 circle.fill custom/circle-fill
+pencil.tip.crop.circle custom/pen-pressure
 triangle.fill custom/triangle-fill
 rectangle.inset.filled custom/rectangle-inset-filled
 square.bottomhalf.filled custom/square-bottomhalf-filled

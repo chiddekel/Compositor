@@ -9,7 +9,13 @@ enum InstalledFonts {
     static func contains(_ name: String) -> Bool {
         let key = normalized(name)
         if coreFamilies.contains(where: { key == $0 || key.hasPrefix($0 + "-") }) { return true }
-        return names.contains(key)
+        return catalog.aliases[key] != nil
+    }
+
+    static func familyName(_ name: String) -> String? { catalog.aliases[normalized(name)] }
+    static var postScriptNames: [String] { catalog.faces.values.flatMap { $0 }.sorted() }
+    static func members(ofFamily family: String) -> [String] {
+        catalog.faces[normalized(familyName(family) ?? family)]?.sorted() ?? []
     }
 
     private static func normalized(_ name: String) -> String {
@@ -22,8 +28,12 @@ enum InstalledFonts {
         "sfprodisplay", "sfmono", "avenir", "avenirnext", "georgia", "verdana", "trebuchetms", "tahoma", "futura",
     ].map { $0.lowercased() }
 
-    private static let names: Set<String> = {
-        var found = Set<String>()
+    private struct Catalog {
+        var aliases: [String: String] = [:]
+        var faces: [String: Set<String>] = [:]
+    }
+    private static let catalog: Catalog = {
+        var found = Catalog()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let bundled = Bundle.main.bundleURL.appendingPathComponent("../share/compositor/fonts").standardizedFileURL.path
         let checkout = FileManager.default.currentDirectoryPath + "/third_party/fonts/inter"
@@ -35,7 +45,11 @@ enum InstalledFonts {
                 let lower = relative.lowercased()
                 guard lower.hasSuffix(".ttf") || lower.hasSuffix(".otf") || lower.hasSuffix(".ttc") || lower.hasSuffix(".otc") else { continue }
                 guard let data = FileManager.default.contents(atPath: root + "/" + relative) else { continue }
-                for name in fontNames(in: data) { found.insert(normalized(name)) }
+                for face in fontFaces(in: data) {
+                    guard let family = face.family else { continue }
+                    for name in face.names { found.aliases[normalized(name)] = family }
+                    if let name = face.postScript { found.faces[normalized(family), default: []].insert(name) }
+                }
             }
         }
         return found
@@ -43,6 +57,15 @@ enum InstalledFonts {
 
     /// Names (IDs 1 family, 4 full, 6 PostScript) of every face in a TrueType/OpenType file or collection.
     static func fontNames(in data: Data) -> [String] {
+        fontFaces(in: data).flatMap(\.names)
+    }
+
+    private struct Face {
+        var names: [String] = []
+        var family: String?
+        var postScript: String?
+    }
+    private static func fontFaces(in data: Data) -> [Face] {
         let bytes = [UInt8](data)
         func u16(_ o: Int) -> Int { o + 1 < bytes.count ? Int(bytes[o]) << 8 | Int(bytes[o + 1]) : 0 }
         func u32(_ o: Int) -> Int { o + 3 < bytes.count ? u16(o) << 16 | u16(o + 2) : 0 }
@@ -51,8 +74,10 @@ enum InstalledFonts {
             let count = min(u32(8), 256)
             faces = (0..<count).map { u32(12 + 4 * $0) }
         }
-        var result: [String] = []
+        var result: [Face] = []
         for face in faces {
+            var parsed = Face()
+            var preferred: [Int: (rank: Int, text: String)] = [:]
             let tables = min(u16(face + 4), 512)
             for t in 0..<tables {
                 let record = face + 12 + 16 * t
@@ -62,15 +87,23 @@ enum InstalledFonts {
                 for r in 0..<count {
                     let entry = table + 6 + 12 * r
                     let platform = u16(entry), nameID = u16(entry + 6)
-                    guard [1, 4, 6].contains(nameID) else { continue }
+                    guard [1, 4, 6, 16].contains(nameID) else { continue }
                     let length = u16(entry + 8), start = strings + u16(entry + 10)
                     guard start >= 0, length > 0, start + length <= bytes.count else { continue }
                     let raw = Data(bytes[start..<start + length])
                     let text = (platform == 0 || platform == 3) ? String(data: raw, encoding: .utf16BigEndian)
                                                                : String(data: raw, encoding: .macOSRoman)
-                    if let text, !text.isEmpty { result.append(text) }
+                    if let text, !text.isEmpty {
+                        parsed.names.append(text)
+                        // Prefer English Unicode names while retaining every localized alias for lookup.
+                        let rank = (platform == 3 || platform == 0 ? 2 : 0) + (u16(entry + 4) == 0x409 ? 1 : 0)
+                        if preferred[nameID] == nil || rank > preferred[nameID]!.rank { preferred[nameID] = (rank, text) }
+                    }
                 }
             }
+            parsed.family = preferred[16]?.text ?? preferred[1]?.text
+            parsed.postScript = preferred[6]?.text
+            result.append(parsed)
         }
         return result
     }

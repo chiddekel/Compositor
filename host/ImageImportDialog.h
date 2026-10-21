@@ -22,20 +22,20 @@ public:
 
     explicit ImageImportDialog(const QString &filter, QWidget *parent = nullptr,
                                ImageChooser images = {}, FolderChooser folder = {}) : QDialog(parent) {
-        setWindowTitle(tr("Import Images"));
+        setWindowTitle(tr("Import"));
         setObjectName("imageImportDialog");
         resize(560, 330);
         auto *layout = new QVBoxLayout(this);
-        auto *description = new QLabel(tr("Choose images or folders. Images directly inside each folder are imported in name order."), this);
+        auto *description = new QLabel(tr("Choose files or folders. Importable files directly inside each folder are imported in name order."), this);
         description->setWordWrap(true);
         layout->addWidget(description);
         m_sources = new QListWidget(this);
         m_sources->setObjectName("import.sources");
-        m_sources->setAccessibleName(tr("Images and folders to import"));
+        m_sources->setAccessibleName(tr("Files and folders to import"));
         m_sources->setSelectionMode(QAbstractItemView::ExtendedSelection);
         layout->addWidget(m_sources, 1);
         auto *row = new QHBoxLayout;
-        auto *addImages = new QPushButton(tr("Add Images…"), this);
+        auto *addImages = new QPushButton(tr("Add Files…"), this);
         addImages->setObjectName("import.addImages");
         auto *addFolder = new QPushButton(tr("Add Folder…"), this);
         addFolder->setObjectName("import.addFolder");
@@ -53,7 +53,7 @@ public:
         connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         connect(addImages, &QPushButton::clicked, this, [this, filter, images] {
-            addSources(images ? images() : QFileDialog::getOpenFileNames(this, tr("Add Images"), QString(), filter));
+            addSources(images ? images() : QFileDialog::getOpenFileNames(this, tr("Add Files"), QString(), filter));
         });
         connect(addFolder, &QPushButton::clicked, this, [this, folder] {
             const QString path = folder ? folder() : QFileDialog::getExistingDirectory(this, tr("Add Folder"));

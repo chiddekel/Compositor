@@ -62,6 +62,23 @@ else()
     endif()
 endif()
 
+# ── PDF ────────────────────────────────────────────────────────────────
+if(Qt6_FOUND)
+    find_package(PkgConfig REQUIRED)
+    # Prefer the local SDK build, then Flatpak's vendored prefix. PDF stays behind a C ABI and below the domain.
+    set(ENV{PKG_CONFIG_PATH} "${CMAKE_SOURCE_DIR}/build/poppler/install/lib/pkgconfig:/app/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    pkg_check_modules(POPPLER_QT6 IMPORTED_TARGET poppler-qt6)
+    if(POPPLER_QT6_FOUND)
+        add_library(CompositorPDFBackend SHARED backends/pdf/PDFBackend.cpp)
+        target_link_libraries(CompositorPDFBackend PRIVATE PkgConfig::POPPLER_QT6 Qt6::Gui)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        add_test(NAME CompositorCore.PDFBackend COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tests/test_pdf_backend.py" $<TARGET_FILE:CompositorPDFBackend>)
+        install(TARGETS CompositorPDFBackend LIBRARY DESTINATION lib)
+    elseif(COMPOSITOR_REQUIRE_VENDORED_DEPS)
+        message(FATAL_ERROR "PDF import requires the manifest's Poppler module or scripts/build-poppler.sh")
+    endif()
+endif()
+
 # ── SKIA ───────────────────────────────────────────────────────────────
 # Skia root and static library. Defaults to local build/skia-src if present,
 # or /app (Flatpak SDK), or user-provided cache variables.
@@ -368,6 +385,8 @@ endif()
 
 # ── Tests ──────────────────────────────────────────────────────────────
 enable_testing()
+add_executable(test_pressure_brush tests/test_pressure_brush.cpp backends/brush/BrushCoverageCPU.cpp backends/brush/PressureBrushCoverage.cpp)
+add_test(NAME CompositorCore.PressureBrush COMMAND test_pressure_brush)
 
 add_executable(test_composite_over tests/test_composite_over.cpp)
 target_link_libraries(test_composite_over PRIVATE CompositorCoreShim CompositorCoreRef)

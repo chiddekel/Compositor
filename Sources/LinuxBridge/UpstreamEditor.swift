@@ -246,6 +246,7 @@ private func rgb(_ color: PaletteColor) -> [Double] { [Double(color.red), Double
 /// Result codes shared with the C ABI: 0 ok, -1 invalid argument, -2 no document, -3 busy, -4 unsupported version,
 /// -5 operation failed, -6 unknown handle, -7 command not supported by this bridge yet.
 final class UpstreamEditor {
+    var nativePanelScopes: Set<String> = []
     let session: EditorSession
     private lazy var standaloneProjects = ProjectController(session: session)
     var nativeProjects: ProjectController {

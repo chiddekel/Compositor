@@ -1257,12 +1257,9 @@ final class CanvasView: NSView {
             guard let ends = session.shapeLineEnds else { context.restoreGState(); return }
             let thickness = max(1, CGFloat(session.shapeLineWidth) * scale)
             context.setStrokeColor(session.foregroundColor.nsColor.cgColor)
-            context.setLineWidth(thickness)
-            context.setLineCap(.round)
             // Exactly the two points being dragged between, so the start never shifts.
-            context.move(to: center(ends.start))
-            context.addLine(to: center(ends.end))
-            context.strokePath()
+            context.strokeShapeLine(from: center(ends.start), to: center(ends.end), width: thickness,
+                                    style: draft.lineStyle, cap: draft.lineCap)
         } else {
             context.addPath(draft.kind.path(in: rect, cornerRadius: draft.cornerRadius * scale, smoothing: draft.smoothing))
             context.fillPath()
@@ -1744,6 +1741,12 @@ final class CanvasView: NSView {
         brushPointer = convert(event.locationInWindow, from: nil)
         updateBrushCursor()
     }
+    /// A pen's pressure on a tablet, 0–1. A mouse, or a trackpad's Force Touch, has none: it paints at full pressure,
+    /// as it does in Photoshop.
+    static func penPressure(_ event: NSEvent) -> CGFloat? {
+        event.subtype == .tabletPoint ? CGFloat(event.pressure) : nil
+    }
+
     override func mouseDown(with event: NSEvent) {
         session.effectSelection = nil
         optionHeld = event.modifierFlags.contains(.option)
@@ -1829,10 +1832,10 @@ final class CanvasView: NSView {
             brushPointer = point
             // Shift paints a straight line on from where the last stroke ended, as in Photoshop.
             if event.modifierFlags.contains(.shift), let from = session.shiftLineStart() {
-                session.beginBrush(at: from)
-                session.continueBrush(at: pixel)
+                session.beginBrush(at: from, pressure: Self.penPressure(event))
+                session.continueBrush(at: pixel, pressure: Self.penPressure(event))
             } else {
-                session.beginBrush(at: pixel)
+                session.beginBrush(at: pixel, pressure: Self.penPressure(event))
             }
             brushAxisAnchor = event.modifierFlags.contains(.shift) ? pixel : nil
             brushAxisHorizontal = nil
@@ -1976,7 +1979,7 @@ final class CanvasView: NSView {
                 brushAxisHorizontal = nil
             }
             brushLastPixel = pixel
-            session.continueBrush(at: pixel)
+            session.continueBrush(at: pixel, pressure: Self.penPressure(event))
             synchronizeDisplay()
             return
         }

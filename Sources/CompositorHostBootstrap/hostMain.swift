@@ -277,8 +277,8 @@ struct HostBootstrap {
             try check(unavailable == CGSize(width: 320, height: 240), "headless hosting lost its unknown-size fallback")
             print("Qt hosting measurement smoke OK (text, generated/window limits, Auto Layout updates, inherited font, wrapping, controls, unknown fallback)")
             let names = NSFontManager.shared.availableFonts
-            guard let sansName = ["DejaVu Sans", "Liberation Sans", "Noto Sans"].first(where: { names.contains($0) }),
-                  let monoName = ["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"].first(where: { names.contains($0) }),
+            guard let sansName = ["DejaVuSans", "LiberationSans", "NotoSans-Regular", "DejaVu Sans", "Liberation Sans", "Noto Sans"].first(where: { names.contains($0) }),
+                  let monoName = ["DejaVuSansMono", "LiberationMono", "NotoSansMono-Regular", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"].first(where: { names.contains($0) }),
                   let sans = NSFont(name: sansName, size: 32), let mono = NSFont(name: monoName, size: 32) else {
                 throw NSError(domain: "TextBackendSmoke", code: 2, userInfo: [NSLocalizedDescriptionKey: "Required installed sans/mono test fonts missing: \(names.prefix(20))"])
             }

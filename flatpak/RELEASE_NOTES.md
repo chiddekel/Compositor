@@ -1,3 +1,16 @@
+Compositor 1.5.4-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream 1.5.4: pen pressure, searchable fonts, PDF import, new line styles and project format 15.
+- Adds Linux compatibility for tablet pressure, the font search panel and Poppler PDF rendering while preserving upstream Mac sources.
+- Verified 1,019 Swift tests, 154 XCTest checks and all 37 native journeys across the complete run and targeted reruns. See docs/upstream-1.5.4-integration.md for evidence and qualifications.
+
+Verification limits:
+
+- Physical tablet/Wayland input and macOS comparisons were not tested locally. Variable pressure uses the CPU fallback.
+- A complete Flatpak image was not built locally; the release workflow builds, tests and signs it before publication.
+
+Previous release notes:
+
 Compositor 1.5.3-linux-alpha.5 for Linux — signed Flatpak alpha, x86_64.
 
 - Optional Nautilus and Dolphin providers display saved project previews. Installation is user-scoped and documented in docs/render-parity-and-desktop-previews.md; host integration is not installed automatically by the Flatpak.

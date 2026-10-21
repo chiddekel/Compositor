@@ -228,6 +228,22 @@ extension Toggle where Label == Text {
     public init(_ title: String, isOn: Binding<Bool>) { self.init(isOn: isOn) { Text(title) } }
 }
 
+public struct ToggleStyleConfiguration {
+    @Binding public var isOn: Bool
+    public let label: AnyView
+    init(isOn: Binding<Bool>, label: AnyView) { _isOn = isOn; self.label = label }
+}
+public protocol ToggleStyle {
+    associatedtype Body: View
+    typealias Configuration = ToggleStyleConfiguration
+    @ViewBuilder func makeBody(configuration: Configuration) -> Body
+}
+extension Toggle {
+    public func toggleStyle<S: ToggleStyle>(_ style: S) -> some View {
+        style.makeBody(configuration: ToggleStyleConfiguration(isOn: isOn, label: AnyView(label)))
+    }
+}
+
 public struct Slider<Value: BinaryFloatingPoint>: View, PrimitiveView {
     let value: Binding<Value>
     let bounds: ClosedRange<Value>

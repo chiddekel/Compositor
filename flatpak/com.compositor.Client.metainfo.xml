@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.4-linux-alpha.1" date="2026-10-21" type="development">
+      <description><p>Upstream 1.5.4 on Linux: pen pressure for brush size and opacity, searchable font previews, PDF pages imported as layers, new line styles and caps, and project format 15.</p></description>
+    </release>
     <release version="1.5.3-linux-alpha.5" date="2026-10-20" type="development">
       <description><p>Linux: document parity evidence and remaining verification gaps; Linux: add optional Nautilus and Dolphin project previews; Linux: add independent render parity corpus and project launch verification</p></description>
     </release>
