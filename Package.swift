@@ -212,6 +212,9 @@ let package = Package(
         .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3"),
         .systemLibrary(name: "CLibXML2", path: "Sources/CLibXML2", pkgConfig: "libxml-2.0"),
         .systemLibrary(name: "CLZMA", path: "Sources/CLZMA", pkgConfig: "liblzma"),
+        .systemLibrary(name: "CZlib", path: "Sources/CZlib", pkgConfig: "zlib"),
+        .target(name: "Compression", dependencies: ["CZlib"], path: "Sources/Compat/Compression",
+                swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "FoundationCompat", dependencies: ["UniformTypeIdentifiers", "CSQLite", "CLZMA"], path: "Sources/Compat/FoundationCompat",
                 swiftSettings: [.unsafeFlags(["-swift-version", "5"])]),
         .target(name: "Accelerate", dependencies: ["CoreGraphics"], path: "Sources/Compat/Accelerate",
@@ -258,7 +261,7 @@ let package = Package(
         // Xcode's own settings apply: Swift 5 mode, default actor isolation MainActor, approachable concurrency.
         .target(
             name: "Compositor",
-            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal", "ColorSync"] + ["CompositorKernels", "CompositorDitherKernel", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompositorCameraRawBackend", "CompatSupport"],
+            dependencies: ["CoreGraphics", "AppKit", "SwiftUI", "Combine", "Sparkle", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "CryptoKit", "CoreText", "Metal", "ColorSync", "Compression"] + ["CompositorKernels", "CompositorDitherKernel", "CompositorBrushBackend", "CompositorEffectsBackend", "CompositorVisionBackend", "CompositorSelectionBackend", "CompositorCameraRawBackend", "CompatSupport"],
             path: "Sources/UpstreamCore",
             exclude: ["Rendering/AdjustPixels.c",
                      "Rendering/AdjustPixels.h",
@@ -316,7 +319,7 @@ let package = Package(
         // Upstream's own test suite, unmodified (Swift Testing), run against the module above.
         .testTarget(
             name: "CompositorUpstreamTests",
-            dependencies: ["Compositor", "CompositorKernels", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal", "PDFKit"],
+            dependencies: ["Compositor", "CompositorKernels", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal", "PDFKit", "Compression"],
             path: "CompositorTests",
             // Upstream tests that cannot run on Linux yet (Objective-C selectors and swizzling in the test itself, the
             // real layer table, the app's own window): listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
@@ -370,7 +373,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CompatTests",
-            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "CLibXML2", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision", "SwiftUI"],
+            dependencies: ["CoreGraphics", "CompatSupport", "CompositorBrushBackend", "AppKit", "FoundationCompat", "CSQLite", "CLibXML2", "UniformTypeIdentifiers", "Accelerate", "ImageIO", "CoreImage", "CoreVideo", "Vision", "SwiftUI", "Compression"],
             path: "Tests/CompatTests"
         ),
         // ENG-2 composition root, inverted: a Swift `@main` bootstraps the Swift

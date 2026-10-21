@@ -58,4 +58,4 @@ jobs:
         run: |
           flatpak-builder --run --filesystem="$PWD" build-ci-sdk com.compositor.Client.yaml \
             bash "$PWD/scripts/linux-contract-tests.sh" \
-              --filter 'ToolCombinationTests|PendingGradientTests|LayerEffectsBackendTests|UpstreamEditorTests|HistoryTests|TouchTargetsTests|HostingMeasurementTests|LayoutDimensionBoundsTests|LayersPanelWidthTests|WarpCommitParityTests|RawDevelopCapabilityTests|FilterTests|SpotHealingTests|NativeScrollGeometryTests|NativeTableKeyboardTests|SystemFontTests|NativeMaskGeometryTests|FloatingPanelTests|ColourManagementTests|HeicTiffImportTests'
+              --filter 'ToolCombinationTests|PendingGradientTests|LayerEffectsBackendTests|UpstreamEditorTests|HistoryTests|TouchTargetsTests|HostingMeasurementTests|LayoutDimensionBoundsTests|LayersPanelWidthTests|WarpCommitParityTests|RawDevelopCapabilityTests|FilterTests|SpotHealingTests|NativeScrollGeometryTests|NativeTableKeyboardTests|SystemFontTests|NativeMaskGeometryTests|FloatingPanelTests|ColourManagementTests|HeicTiffImportTests|CompressionCompatTests|ChannelPackTests|PSDArtboardTests|FilterLayerTests|AdjustmentLayerTests'

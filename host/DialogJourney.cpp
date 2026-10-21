@@ -279,6 +279,98 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
             command({{"action", "setShowsTransformControls"}, {"enabled", false}});
             command({{"action", "deselect"}});
         };
+        const auto inputTargets = [&] {
+            // Exercise the application input filter through the handle it actually widens, rather than reading a flag.
+            QPointingDevice finger("smoke touchscreen", 101, QInputDevice::DeviceType::TouchScreen,
+                                   QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position, 10, 0);
+            QPointingDevice pen("smoke pen", 102, QInputDevice::DeviceType::Stylus,
+                                QPointingDevice::PointerType::Pen,
+                                QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1, 1);
+            const auto touch = [&](QWidget *receiver) {
+                const QPointF position(20, 20);
+                QTouchEvent event(QEvent::TouchBegin, &finger, Qt::NoModifier,
+                                  {QEventPoint(1, QEventPoint::State::Pressed, position, receiver->mapToGlobal(position.toPoint()))});
+                QApplication::sendEvent(receiver->window()->windowHandle(), &event);
+                QTouchEvent end(QEvent::TouchEnd, &finger, Qt::NoModifier,
+                                {QEventPoint(1, QEventPoint::State::Released, position, receiver->mapToGlobal(position.toPoint()))});
+                QApplication::sendEvent(receiver->window()->windowHandle(), &end);
+            };
+            const auto tablet = [&](QWidget *receiver) {
+                const QPointF position(20, 20);
+                QTabletEvent event(QEvent::TabletPress, &pen, position, receiver->mapToGlobal(position.toPoint()),
+                                   0.5, 0, 0, 0, 0, 0, Qt::NoModifier, Qt::LeftButton, Qt::LeftButton);
+                QApplication::sendEvent(receiver, &event);
+                QTabletEvent end(QEvent::TabletRelease, &pen, position, receiver->mapToGlobal(position.toPoint()),
+                                 0, 0, 0, 0, 0, 0, Qt::NoModifier, Qt::LeftButton, Qt::NoButton);
+                QApplication::sendEvent(receiver, &end);
+            };
+            const auto prepareHandles = [&] {
+                reset(); tool("Move", "move");
+                // This checks the wider touch target on a large object. Small objects deliberately cap handle reach
+                // to retain a draggable interior; their geometry is covered separately by TouchTargetsTests.
+                command({{"action", "resizeImage"}, {"width", 200}, {"height", 200}});
+                command({{"action", "setShowsTransformControls"}, {"enabled", true}});
+                command({{"action", "setTransformAutoSelect"}, {"enabled", false}});
+                // The native canvas refresh runs on its event timer. Wait for its cached document rectangle before
+                // calculating a pointer position; the session already has 200 pixels while the host may still show 64.
+                pump([&] {
+                    const double scale = window.sessionState().value("zoom").toDouble() / canvas->devicePixelRatioF();
+                    return std::abs(window.canvasTargetRect().width() - 200 * scale) < 0.01;
+                }, "input-device fixture did not reach the native canvas");
+            };
+            const auto grabNearCorner = [&](Qt::MouseEventSource source, bool shouldGrab,
+                                            const QPointingDevice *device = QPointingDevice::primaryPointingDevice()) {
+                const auto before = window.sessionState().value("layers").toArray().first().toObject().value("transform");
+                const QPointF start = at(0, 0) + QPointF(-22, 0);
+                const auto send = [&](QEvent::Type type, QPointF position, Qt::MouseButton button, Qt::MouseButtons held) {
+                    QMouseEvent event(type, position, position, canvas->mapToGlobal(position.toPoint()), button, held,
+                                      Qt::NoModifier, source, device);
+                    QApplication::sendEvent(canvas, &event); QApplication::processEvents();
+                };
+                send(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+                check(window.sessionState().value("transforming").toBool(), "input-device press did not start a transform");
+                // Move past the document-edge snap distance as well as the drag threshold.
+                send(QEvent::MouseMove, start + QPointF(24, 24), Qt::NoButton, Qt::LeftButton);
+                send(QEvent::MouseButtonRelease, start + QPointF(24, 24), Qt::LeftButton, Qt::NoButton);
+                check(!window.sessionState().value("transforming").toBool(), "input-device handle release left an edit open");
+                const auto after = window.sessionState().value("layers").toArray().first().toObject().value("transform");
+                check(after != before, "input-device drag did not change geometry");
+                // Move can drag the active layer from outside its bounds. A handle grab resizes it; a body drag only moves.
+                if ((after.toObject().value("size") != before.toObject().value("size")) != shouldGrab)
+                    qWarning() << "input target mismatch: source=" << int(source) << "pointer=" << int(device->pointerType())
+                               << "expected resize=" << shouldGrab << "start=" << start
+                               << "before=" << before << "after=" << after
+                               << "zoom=" << window.sessionState().value("zoom");
+                check((after.toObject().value("size") != before.toObject().value("size")) == shouldGrab,
+                      "touch/mouse/pen input chose the wrong transform hit region");
+                key(canvas, Qt::Key_Z, Qt::ControlModifier);
+                check(window.sessionState().value("layers").toArray().first().toObject().value("transform") == before,
+                      "input-device drag Undo did not restore its geometry");
+            };
+            for (auto source : {Qt::MouseEventSynthesizedByQt, Qt::MouseEventSynthesizedBySystem, Qt::MouseEventSynthesizedByApplication}) {
+                prepareHandles(); touch(&window); grabNearCorner(source, true);
+                qInfo("touch: finger -> synthesized mouse source %d keeps large targets OK", int(source));
+                prepareHandles(); touch(&window); tablet(&window); grabNearCorner(source, false);
+                prepareHandles(); touch(&window); grabNearCorner(source, false, &pen);
+                qInfo("touch: pen -> synthesized mouse source %d restores normal targets OK", int(source));
+            }
+            prepareHandles(); touch(&window); grabNearCorner(Qt::MouseEventNotSynthesized, false);
+            qInfo("touch: real mouse restores normal targets OK");
+            prepareHandles();
+            {
+                SessionWindow second;
+                second.resize(1200, 900); second.show(); QApplication::processEvents();
+                touch(&second);
+            }
+            QApplication::setActiveWindow(&window); QApplication::processEvents();
+            grabNearCorner(Qt::MouseEventSynthesizedByQt, true);
+            qInfo("touch: second-window touch survives window destruction OK");
+            // Finish with ordinary hit regions for the next test process or a later QApplication.
+            grabNearCorner(Qt::MouseEventNotSynthesized, false);
+            qInfo("Qt touch input smoke OK (synthetic device events; physical-device verification remains separate)");
+        };
+        if (app.arguments().contains("--touch-targets-probe")) { inputTargets(); return 0; }
+
         const auto gradient = [&](QPointF from, QPointF to) {
             tool("Gradient", "gradient");
             drag(from, to);
@@ -7096,83 +7188,7 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
         checkTool("Gradient", "gradient");
         qInfo("combo: refused shortcut during stroke -> release -> recovery OK");
 
-        // Exercise the application input filter through the handle it actually widens, rather than reading a flag.
-        QPointingDevice finger("smoke touchscreen", 101, QInputDevice::DeviceType::TouchScreen,
-                               QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position, 10, 0);
-        QPointingDevice pen("smoke pen", 102, QInputDevice::DeviceType::Stylus,
-                            QPointingDevice::PointerType::Pen,
-                            QInputDevice::Capability::Position | QInputDevice::Capability::Pressure, 1, 1);
-        const auto touch = [&](QWidget *receiver) {
-            const QPointF position(20, 20);
-            QTouchEvent event(QEvent::TouchBegin, &finger, Qt::NoModifier,
-                              {QEventPoint(1, QEventPoint::State::Pressed, position, receiver->mapToGlobal(position.toPoint()))});
-            QApplication::sendEvent(receiver->window()->windowHandle(), &event);
-            QTouchEvent end(QEvent::TouchEnd, &finger, Qt::NoModifier,
-                            {QEventPoint(1, QEventPoint::State::Released, position, receiver->mapToGlobal(position.toPoint()))});
-            QApplication::sendEvent(receiver->window()->windowHandle(), &end);
-        };
-        const auto tablet = [&](QWidget *receiver) {
-            const QPointF position(20, 20);
-            QTabletEvent event(QEvent::TabletPress, &pen, position, receiver->mapToGlobal(position.toPoint()),
-                               0.5, 0, 0, 0, 0, 0, Qt::NoModifier, Qt::LeftButton, Qt::LeftButton);
-            QApplication::sendEvent(receiver, &event);
-            QTabletEvent end(QEvent::TabletRelease, &pen, position, receiver->mapToGlobal(position.toPoint()),
-                             0, 0, 0, 0, 0, 0, Qt::NoModifier, Qt::LeftButton, Qt::NoButton);
-            QApplication::sendEvent(receiver, &end);
-        };
-        const auto prepareHandles = [&] {
-            reset(); tool("Move", "move");
-            // This checks the wider touch target on a large object. Small objects deliberately cap handle reach
-            // to retain a draggable interior; their geometry is covered separately by TouchTargetsTests.
-            command({{"action", "resizeImage"}, {"width", 200}, {"height", 200}});
-            command({{"action", "setShowsTransformControls"}, {"enabled", true}});
-            command({{"action", "setTransformAutoSelect"}, {"enabled", false}});
-        };
-        const auto grabNearCorner = [&](Qt::MouseEventSource source, bool shouldGrab,
-                                        const QPointingDevice *device = QPointingDevice::primaryPointingDevice()) {
-            const auto before = window.sessionState().value("layers").toArray().first().toObject().value("transform");
-            const QPointF start = at(0, 0) + QPointF(-22, 0);
-            const auto send = [&](QEvent::Type type, QPointF position, Qt::MouseButton button, Qt::MouseButtons held) {
-                QMouseEvent event(type, position, position, canvas->mapToGlobal(position.toPoint()), button, held,
-                                  Qt::NoModifier, source, device);
-                QApplication::sendEvent(canvas, &event); QApplication::processEvents();
-            };
-            send(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
-            check(window.sessionState().value("transforming").toBool(), "input-device press did not start a transform");
-            // Move past the document-edge snap distance as well as the drag threshold.
-            send(QEvent::MouseMove, start + QPointF(24, 24), Qt::NoButton, Qt::LeftButton);
-            send(QEvent::MouseButtonRelease, start + QPointF(24, 24), Qt::LeftButton, Qt::NoButton);
-            check(!window.sessionState().value("transforming").toBool(), "input-device handle release left an edit open");
-            const auto after = window.sessionState().value("layers").toArray().first().toObject().value("transform");
-            check(after != before, "input-device drag did not change geometry");
-            // Move can drag the active layer from outside its bounds. A handle grab resizes it; a body drag only moves.
-            check((after.toObject().value("size") != before.toObject().value("size")) == shouldGrab,
-                  "touch/mouse/pen input chose the wrong transform hit region");
-            key(canvas, Qt::Key_Z, Qt::ControlModifier);
-            check(window.sessionState().value("layers").toArray().first().toObject().value("transform") == before,
-                  "input-device drag Undo did not restore its geometry");
-        };
-        for (auto source : {Qt::MouseEventSynthesizedByQt, Qt::MouseEventSynthesizedBySystem, Qt::MouseEventSynthesizedByApplication}) {
-            prepareHandles(); touch(&window); grabNearCorner(source, true);
-            qInfo("touch: finger -> synthesized mouse source %d keeps large targets OK", int(source));
-            prepareHandles(); touch(&window); tablet(&window); grabNearCorner(source, false);
-            prepareHandles(); touch(&window); grabNearCorner(source, false, &pen);
-            qInfo("touch: pen -> synthesized mouse source %d restores normal targets OK", int(source));
-        }
-        prepareHandles(); touch(&window); grabNearCorner(Qt::MouseEventNotSynthesized, false);
-        qInfo("touch: real mouse restores normal targets OK");
-        prepareHandles();
-        {
-            SessionWindow second;
-            second.resize(1200, 900); second.show(); QApplication::processEvents();
-            touch(&second);
-        }
-        QApplication::setActiveWindow(&window); QApplication::processEvents();
-        grabNearCorner(Qt::MouseEventSynthesizedByQt, true);
-        qInfo("touch: second-window touch survives window destruction OK");
-        // Finish with ordinary hit regions for the next test process or a later QApplication.
-        grabNearCorner(Qt::MouseEventNotSynthesized, false);
-        qInfo("Qt touch input smoke OK (synthetic device events; physical-device verification remains separate)");
+        inputTargets();
 
         // Upstream CameraRawSlider's sizeThatFits must reach its lowered Qt slider, including after layout.
         reset();

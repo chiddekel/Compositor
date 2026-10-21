@@ -1,7 +1,6 @@
+import Compression
 import CoreGraphics
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 
 /// Game textures pack four grayscale maps into one image's red, green, blue and alpha (metallic, ambient occlusion,
 /// detail and smoothness, say). Export As › Channel Pack writes one from layers, keeping a pixel's color where its
@@ -54,16 +53,49 @@ nonisolated enum ChannelPack {
         return image
     }
 
-    /// A PNG of straight RGBA, so color under transparent pixels survives.
-    static func png(_ image: CGImage, resolution: Double) throws -> Data {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
-            throw ExportError.encode
+    /// Straight RGBA bytes as a PNG, written here rather than by Image I/O: macOS 26's encoder lost the color under
+    /// fully transparent pixels (macOS 27's kept it), and a packed texture needs it on every version. Each row is
+    /// stored unfiltered and the whole compressed, as the format allows; the file is sRGB at `resolution`.
+    static func png(_ bytes: [UInt8], width: Int, height: Int, resolution: Double) throws -> Data {
+        var raw = [UInt8]()
+        raw.reserveCapacity((width * 4 + 1) * height)
+        for row in 0..<height {
+            raw.append(0) // no filter
+            raw.append(contentsOf: bytes[(row * width * 4)..<((row + 1) * width * 4)])
         }
-        CGImageDestinationAddImage(destination, image, [kCGImagePropertyDPIWidth: resolution,
-                                                        kCGImagePropertyDPIHeight: resolution] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { throw ExportError.encode }
-        return data as Data
+        // Compression's zlib is raw deflate: the zlib stream PNG wants adds a header and an Adler-32 checksum.
+        var deflated = [UInt8](repeating: 0, count: raw.count + raw.count / 100 + 1024)
+        let size = compression_encode_buffer(&deflated, deflated.count, raw, raw.count, nil, COMPRESSION_ZLIB)
+        guard size > 0 else { throw ExportError.encode }
+        var a: UInt32 = 1, b: UInt32 = 0
+        for byte in raw { a = (a + UInt32(byte)) % 65521; b = (b + a) % 65521 }
+        let stream = [0x78, 0x9C] + deflated[0..<size] + bigEndian((b << 16) | a)
+
+        var file = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        func chunk(_ type: String, _ payload: [UInt8]) {
+            let body = Array(type.utf8) + payload
+            file.append(contentsOf: bigEndian(UInt32(payload.count)) + body + bigEndian(crc32(body)))
+        }
+        // 8 bits a channel, RGBA, no interlacing.
+        chunk("IHDR", bigEndian(UInt32(width)) + bigEndian(UInt32(height)) + [8, 6, 0, 0, 0])
+        chunk("sRGB", [0])
+        let perMeter = UInt32(max(1, (resolution / 0.0254).rounded()))
+        chunk("pHYs", bigEndian(perMeter) + bigEndian(perMeter) + [1])
+        chunk("IDAT", stream)
+        chunk("IEND", [])
+        return file
+    }
+
+    private static func bigEndian(_ value: UInt32) -> [UInt8] {
+        [UInt8(value >> 24), UInt8(value >> 16 & 0xFF), UInt8(value >> 8 & 0xFF), UInt8(value & 0xFF)]
+    }
+
+    private static let crcTable: [UInt32] = (0..<256).map { index in
+        (0..<8).reduce(UInt32(index)) { crc, _ in crc & 1 == 1 ? 0xEDB8_8320 ^ (crc >> 1) : crc >> 1 }
+    }
+
+    private static func crc32(_ bytes: [UInt8]) -> UInt32 {
+        ~bytes.reduce(UInt32(0xFFFF_FFFF)) { crcTable[Int(($0 ^ UInt32($1)) & 0xFF)] ^ ($0 >> 8) }
     }
 
     /// An image read as grayscale at `width` × `height`: drawn over black, so transparency counts as black, and weighed
@@ -133,7 +165,7 @@ extension ImageExporter {
         }
         let bytes = ChannelPack.interleave(planes, width: width, height: height)
         let resolution = snapshot.manifest.resolution ?? 72
-        return (try ChannelPack.png(try ChannelPack.image(bytes, width: width, height: height), resolution: resolution),
+        return (try ChannelPack.png(bytes, width: width, height: height, resolution: resolution),
                 try ChannelPack.image(bytes, width: width, height: height, opaque: true))
     }
 }

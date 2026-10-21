@@ -1,4 +1,4 @@
-import Accelerate
+import Compression
 import AppKit
 import ImageIO
 import Testing
@@ -15,19 +15,25 @@ struct ChannelPackTests {
         return try #require(context.makeImage())
     }
 
-    /// The first pixel of a PNG as written: straight RGBA, without multiplying color by alpha on the way.
+    /// The first pixel of a Channel Pack PNG exactly as stored, read here rather than through Image I/O, whose decoding
+    /// of color under transparent pixels differs between macOS versions; Image I/O must still open the file.
     private func firstPixel(_ data: Data) throws -> [UInt8] {
         let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
-        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
-        var format = vImage_CGImageFormat(bitsPerComponent: 8, bitsPerPixel: 32,
-                                          colorSpace: Unmanaged.passUnretained(CGColorSpace(name: CGColorSpace.sRGB)!),
-                                          bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
-                                          version: 0, decode: nil, renderingIntent: .defaultIntent)
-        var buffer = vImage_Buffer()
-        #expect(vImageBuffer_InitWithCGImage(&buffer, &format, nil, image, vImage_Flags(kvImageNoFlags)) == kvImageNoError)
-        defer { free(buffer.data) }
-        let bytes = buffer.data.assumingMemoryBound(to: UInt8.self)
-        return (0..<4).map { bytes[$0] }
+        #expect(CGImageSourceCreateImageAtIndex(source, 0, nil) != nil, "a PNG macOS can open")
+        let bytes = [UInt8](data)
+        var offset = 8, stream = [UInt8]()
+        while offset + 8 <= bytes.count {
+            let length = bytes[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) }
+            let type = String(bytes: bytes[offset + 4..<offset + 8], encoding: .ascii)
+            if type == "IDAT" { stream += bytes[offset + 8..<offset + 8 + length] }
+            offset += 12 + length
+        }
+        // A zlib stream: two header bytes, raw deflate, then a four-byte checksum.
+        let deflated = Array(stream[2..<(stream.count - 4)])
+        var raw = [UInt8](repeating: 0, count: 1 << 16)
+        let size = compression_decode_buffer(&raw, raw.count, deflated, deflated.count, nil, COMPRESSION_ZLIB)
+        #expect(size > 4 && raw[0] == 0, "an unfiltered first row")
+        return Array(raw[1...4])
     }
 
     private func document(alpha: CGFloat) throws -> EditorSession {
