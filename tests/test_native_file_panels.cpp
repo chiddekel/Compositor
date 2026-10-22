@@ -43,6 +43,22 @@ int main(int argc, char **argv) {
                 if (!dialog->isVisible()) continue;
                 if (seen != dialog) { ++dialogs; seen = dialog; }
                 if (submitted) { if (dialogs > 1) { valid = false; static_cast<QDialog *>(dialog)->reject(); } return; }
+                if (!acted && !cancel) {
+                    // Initial directory loading can clear fileNameEdit after it becomes visible. Type only after
+                    // the real fixture row is present, so a queued Open click cannot race that initialization.
+                    if (dialog->viewMode() != QFileDialog::Detail) dialog->setViewMode(QFileDialog::Detail);
+                    if (dialog->directory().absolutePath() != temp.path()) {
+                        dialog->setDirectory(temp.path());
+                        return;
+                    }
+                    auto *view = dialog->findChild<QAbstractItemView *>("treeView");
+                    if (!view) return;
+                    const QString fixture = project ? QStringLiteral("existing.comp") : QFileInfo(image).fileName();
+                    bool listed = false;
+                    for (int row = 0; row < view->model()->rowCount(view->rootIndex()); ++row)
+                        listed |= view->model()->index(row, 0, view->rootIndex()).data().toString() == fixture;
+                    if (!listed) return;
+                }
                 if (!acted) {
                 acted = true;
                 valid = valid && dialog->parentWidget() == &owner
@@ -83,7 +99,18 @@ int main(int argc, char **argv) {
         QTimer deadline; deadline.setSingleShot(true); deadline.setInterval(3000);
         QObject::connect(&deadline, &QTimer::timeout, [&] {
             expired = true;
-            for (auto *widget : QApplication::topLevelWidgets()) if (auto *dialog = qobject_cast<QDialog *>(widget)) dialog->reject();
+            for (auto *widget : QApplication::topLevelWidgets()) if (auto *dialog = qobject_cast<QDialog *>(widget)) {
+                if (auto *panel = qobject_cast<QFileDialog *>(dialog)) {
+                    auto *name = panel->findChild<QLineEdit *>("fileNameEdit");
+                    qWarning() << "file panel deadline" << "acted" << acted << "submitted" << submitted
+                               << "valid" << valid << "directory" << panel->directory().absolutePath()
+                               << "selected" << panel->selectedFiles() << "field" << (name ? name->text() : QString())
+                               << "focus" << (QApplication::focusWidget() ? QApplication::focusWidget()->objectName() : QString());
+                    if (auto *buttons = panel->findChild<QDialogButtonBox *>()) for (auto *button : buttons->buttons())
+                        qWarning() << "file panel button" << button->text() << button->isEnabled();
+                }
+                dialog->reject();
+            }
         });
         inspect.start(); deadline.start();
         QByteArray output(shortBuffer ? 1 : 4096, '\0');

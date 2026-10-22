@@ -13,13 +13,20 @@ injected only into that copy. It uses the runner's Xcode on Apple-silicon macOS 
 The older manual guide's Intel/macOS 15 requirement is incorrect for this upstream
 version; the project targets arm64 and macOS 26.
 
-The corpus contains 151 images: every blend mode at two opacities, every adjustment
+The corpus contains 162 images: every blend mode at two opacities, every adjustment
 at three settings (Invert has no settings), nonautomatic filters at two settings, six effects, transforms,
 nine text face/size combinations, shapes, color imports, five synthetic Bayer DNGs
 and PNG export. The 16-bit and HDR imports also emit full-precision channel samples.
 Synthetic RAW fixtures exercise reproducible decoding; they do not establish the
 look of every supported camera. Content-aware filling and subject segmentation
 retain their separate existing acceptance procedures.
+
+The 1.5.5 macOS run completed all 162 exports, including native development of all
+five synthetic RAW inputs. Export success is separate from comparison success:
+the first complete comparison exposed Bloom compositing and unflipped text drawing
+differences, along with remaining RAW, dither, blur and font rasterization differences.
+The category thresholds remain unchanged; consult the comparison artifacts rather
+than interpreting a successful exporter as a passing cross-platform parity gate.
 
 Both platforms use the same bundled Inter font files and SWOP ICC profile. Missing
 font faces, missing renders, changed inputs, different upstream revisions, wrong

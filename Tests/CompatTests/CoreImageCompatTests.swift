@@ -42,6 +42,22 @@ final class CoreImageCompatTests: XCTestCase {
         for i in 0..<8 { XCTAssertEqual(Int(back.portableImage.bytes[i]), Int(image.portableImage.bytes[i]), accuracy: 1) }
     }
 
+    func testBloomPreservesTranslucentSourceAndExtendsHalo() {
+        // The macOS oracle retains the source alpha inside the square and draws glow beyond its edge.
+        let image = rgba(33, 33) { x, y in
+            (8...24).contains(x) && (8...24).contains(y) ? (80, 40, 20, 160) : (0, 0, 0, 0)
+        }
+        let input = CIImage(cgImage: image)
+        let original = render(input, unmanaged, 33, 33)
+        for intensity in [0.8, 1.6] {
+            let glow = render(input.applyingFilter("CIBloom", parameters: [
+                kCIInputRadiusKey: 2, kCIInputIntensityKey: intensity]), unmanaged, 33, 33)
+            XCTAssertEqual(px(glow, 16, 16), px(original, 16, 16))
+            XCTAssertGreaterThan(px(glow, 6, 16)[3], 0)
+            XCTAssertEqual(px(glow, 8, 16)[3], 160)
+        }
+    }
+
     func testBlendWithMaskMixesBackgroundAndInput() {
         let fg = rgba(3, 1) { _, _ in (200, 0, 0, 255) }
         let bg = rgba(3, 1) { _, _ in (0, 0, 100, 255) }

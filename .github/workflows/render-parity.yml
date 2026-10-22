@@ -6,6 +6,7 @@ on:
     branches: [GNU_Linux]
     paths:
       - 'Tests/RenderParity/**'
+      - 'tests/test_native_file_panels.cpp'
       - 'scripts/*parity*'
       - 'Sources/**'
       - 'backends/**'

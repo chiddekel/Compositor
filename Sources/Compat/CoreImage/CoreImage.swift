@@ -501,8 +501,7 @@ private indirect enum Node {
             return RasterFilters.variableBlur(n.eval(region.insetBy(dx: -pad, dy: -pad), env),
                                               mask: mask.eval(region, Env(linear: false)), radius: radius, output: region)
         case .bloom(let n, let radius, let intensity):
-            // CIBloom: adds a blurred, intensity-scaled copy of the image back onto itself — a screen-like glow
-            // that brightens highlights without touching midtones/shadows much (their blurred neighborhood is dark).
+            // Preserve source highlights and alpha wherever they exceed the blurred glow.
             let pad = ceil(radius * 3)
             let source = n.eval(region, env)
             let blurred = RasterFilters.gaussian(n.eval(region.insetBy(dx: -pad, dy: -pad), env), sigma: radius, output: region)

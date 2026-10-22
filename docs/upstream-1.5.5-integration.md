@@ -60,7 +60,7 @@ four normal/replacement Accept/Cancel cases after the fix. See
   22 generated adapters, five replacements and two platform files. Of 95 upstream test files,
   93 compile unchanged and two have generated Linux mirrors; the coverage audit reports no errors.
 - The dashboard's 16 tests and release tools' 17 tests pass. Release descriptor generation
-  for `linux-v1.5.5-linux-alpha.1` succeeds.
+  for `linux-v1.5.5-linux-alpha.2` succeeds.
 - The corrected full combination journey passes, followed by RAW lens, text backend, all six
   group/folder rotation cases and grid controls/restart persistence. The final script exits 0:
   `/tmp/compositor155-native-final.log`. Together with the initial 41 passing gates, this covers
@@ -76,7 +76,8 @@ four normal/replacement Accept/Cancel cases after the fix. See
 - The image contains the project license, vendored notices and pinned source inventory.
 - Signing, installation checks, Pages deployment and the GitHub Latest label are handled by
   `.github/workflows/flatpak-release.yml` after the Linux tag is pushed.
-- Physical tablet input and a current macOS pixel comparison have not been verified locally.
+- Physical tablet input remains unverified. Current macOS comparison evidence and
+  its remaining failures are described below.
 
 ### Native input fixture correction
 
@@ -131,5 +132,64 @@ crop/active area explicitly on 512-pixel sensor frames. A native `CIRAWFilter` p
 actual development before the Mac app build; metadata recognition alone is insufficient.
 An independent TIFF structure test checks the string termination, crop and strip bounds.
 All seven parity tests and a real 162-case Linux export pass with the revised inputs
-(`/tmp/compositor155-alpha2-parity-local.log`). Native Mac RAW acceptance is being rechecked
-before tagging `1.5.5-linux-alpha.2`.
+(`/tmp/compositor155-alpha2-parity-local.log`). GitHub run `39703686160`, Mac job
+`119578815754`, subsequently passed the native RAW preflight and exported all 162
+reference images from the unchanged upstream renderer.
+
+The first comparison against those actual Mac images fails the existing parity
+thresholds. It exposed additive Bloom compositing and unconditional glyph flipping
+in the Linux compatibility layer, as well as RAW development, dither, blur, font
+rasterization and smaller numeric differences. The thresholds have not been loosened.
+Completing the exporter is not a claim that the complete cross-platform comparison passes.
+
+### Corrections verified against the Mac oracle
+
+Bloom now adds `intensity * max(blurred - source, 0)` to each premultiplied source
+component, including alpha, instead of adding the complete blurred image. The five
+Bloom cases pass the unchanged category thresholds on both CPU and Vulkan. The
+three adjustment cases have mean Delta E 0.00004, 0.01460 and 0.02559, down from
+roughly 7–21 before correction. A regression checks preserved translucent source
+pixels and an extended halo at intensities 0.8 and 1.6. Only the two affected Bloom
+goldens were updated; unrelated noise/grain baselines were preserved.
+
+Text glyph images are now flipped only when the current graphics context is
+flipped, preserving the production text layer's y-down drawing while matching
+the oracle's unflipped text orientation. Font rasterization still differs.
+
+Both complete comparisons pass 121 of 162 cases and fail 41. The category results
+are identical for CPU and Vulkan:
+
+| Category | Passing / total |
+| --- | --- |
+| Adjustments | 33 / 43 |
+| Blends | 42 / 48 |
+| Color / deep samples | 5 / 5 |
+| Effects | 6 / 6 |
+| Export | 0 / 1 |
+| Filters | 29 / 36 |
+| RAW | 0 / 5 |
+| Shapes | 0 / 3 |
+| Text | 0 / 9 |
+| Transforms | 6 / 6 |
+
+Actual Mac references are from [run 39703686160](https://github.com/chiddekel/Compositor/actions/runs/39703686160).
+Local reports: `/tmp/compositor155-oracle-bloom-intensity-diff/report.json` (CPU)
+and `/tmp/compositor155-oracle-final-vulkan-diff/report.json` (Vulkan). The remaining
+gate failures are retained as alpha limitations rather than hidden by new tolerances.
+
+After these corrections, the full Swift/XCTest rerun passes 988 parallel Swift
+tests, 48 serial Swift tests and all 165 XCTest cases, including the new Bloom
+regression (`/tmp/compositor155-final-swift-configured.log`). An initial rerun omitted
+the contract runner's required CMYK profile setup and failed nine profile-presence
+assertions; the successful rerun installs that fixture in an isolated test profile.
+The freshly linked application also passes startup, native text rendering, the
+complete filter-control probe and font history (`/tmp/compositor155-oracle-native.log`).
+
+### File-picker CI readiness
+
+The standalone native file-panel test could type before Qt finished loading the initial
+directory. A failing trace showed the filename had subsequently been cleared and Open
+disabled. The fixture now waits for its actual directory row before exercising the same
+clipboard, Undo/Redo, Unicode input and submission assertions. The timeout stays at three
+seconds, with diagnostic state emitted on failure. Twelve fresh-process runs pass in the
+dependency-only Flatpak environment (`/tmp/compositor155-file-panel-fixed-{1..12}.log`).

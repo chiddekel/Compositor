@@ -245,8 +245,10 @@ open class NSTextContainer {
             context.saveGState()
             // CGContext draws an image with its first row at the rect's max y; in this y-down space that is upside
             // down, so flip about the rect to put the first row at the top.
-            context.translateBy(x: 0, y: rect.minY + rect.maxY)
-            context.scaleBy(x: 1, y: -1)
+            if NSGraphicsContext.current?.isFlipped == true {
+                context.translateBy(x: 0, y: rect.minY + rect.maxY)
+                context.scaleBy(x: 1, y: -1)
+            }
             context.draw(image, in: rect)
             context.restoreGState()
             return
