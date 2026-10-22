@@ -1,3 +1,23 @@
+Compositor 1.5.5-linux-alpha.1 for GNU/Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream 1.5.5 while preserving the upstream app, test and Xcode sources.
+- Adds RGB Split with CPU and Vulkan rendering, filter adjustment layers, Split to Layers, and Photoshop artboards opening in separate tabs. Saved projects use format 16.
+- Channel Pack preserves RGB samples underneath transparent pixels using upstream's PNG writer and a Linux Compression adapter.
+- Fixes native font Undo ordering and conversion sheets belonging to later Photoshop artboards. Canceling an import preserves the original document and tabs.
+- Adds a terminal workflow dashboard: `python3 scripts/watch-flatpak-build.py -vvv` shows jobs, steps, timings and detailed failure logs. See docs/flatpak-releases.md.
+- Retains the vendored dependency archives and upstream licenses; application dependency builds use local sources.
+
+Verification:
+
+- Passed 1,036 Swift tests and 164 XCTest cases. All 42 native journeys are covered across the full batch and corrected combination rerun; the initial batch passed all six wand stress rounds.
+- Built all dependencies and the full Flatpak application with downloads disabled; all 15 CMake tests passed.
+- Ran the packaged image against KDE Platform: session startup, RGB Split, Channel Pack, all artboard conversion Accept/Cancel cases and font history passed.
+- Verified all 29 source archives and installed the project license, vendored notices and source inventory. The dashboard's 16 tests and release tools' 17 tests pass.
+
+Validation details are recorded in docs/upstream-1.5.5-integration.md. Physical tablet input and a current macOS pixel comparison remain unverified locally. RGB Split's pseudorandom samples can differ between CPU and Vulkan; its image comparison checks aggregate error and spread.
+
+Previous release notes:
+
 Compositor 1.5.4-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
 
 - Stores 29 pinned dependency source archives in the repository, including Skia's required dependencies and GN. Flatpak builds use local sources rather than live Git downloads.

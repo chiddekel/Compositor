@@ -1,5 +1,9 @@
 # Upstream 1.5.4 integration on GNU/Linux
 
+The current integration and acceptance results are in [the 1.5.5 tracker](upstream-1.5.5-integration.md).
+It resolves the font Undo and input-fixture failures recorded here and validates the complete local Flatpak.
+The evidence below describes the earlier 1.5.4 checkpoints.
+
 Target: `upstream/main` at `2f4cb15`, following `365b574` (1.5.3). Linux release: `1.5.4-linux-alpha.1` on `GNU_Linux`.
 Protected app sources, tests and the Xcode project remain identical to
 the upstream target; Linux changes belong to the framework compatibility modules, generated overrides and host adapters.

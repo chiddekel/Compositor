@@ -1,7 +1,8 @@
 # Upstream 1.5.5 on GNU/Linux
 
 The current protected target is `9ff443dbf3acabe5734b8068924cc1ab680f80f2` (`upstream/main`,
-1.5.5). The integration retains upstream source unchanged. Local Flatpak validation and publication are pending.
+1.5.5). The integration retains upstream source unchanged. Local GNU/Linux acceptance is
+complete. The Flatpak release workflow builds and signs the published artifacts.
 
 The preceding checkpoint, `432de5c`, integrates RGB Split, filter adjustment layers, Channel Pack,
 Split to Layers, and Photoshop artboard tabs through `fc02107`. Its evidence and remaining checks
@@ -65,8 +66,16 @@ four normal/replacement Accept/Cancel cases after the fix. See
   `/tmp/compositor155-native-final.log`. Together with the initial 41 passing gates, this covers
   all 42 native journeys across the batch and rerun, rather than claiming one clean full batch.
   The initial batch passed all six repeated wand rounds; the rerun used the normal single round.
-- The current offline Flatpak dependency rebuild is in progress; application build/run and
-  release publication remain pending.
+- All dependency modules and the complete Flatpak application built with downloads disabled.
+  All 15 CMake tests passed. Final metadata finishing succeeded using the system AppStream tools:
+  `/tmp/compositor155-flatpak-finish.log`.
+- The packaged binary passed five checks against `org.kde.Platform` using `flatpak build --runtime`:
+  session startup, RGB Split, Channel Pack, all four artboard conversion Accept/Cancel cases,
+  and font history (`/tmp/compositor155-runtime-checks.log`). The build sandbox reports missing
+  host font-directory/portal integration; normal installed desktop launch is a separate release check.
+- The image contains the project license, vendored notices and pinned source inventory.
+- Signing, installation checks, Pages deployment and the GitHub Latest label are handled by
+  `.github/workflows/flatpak-release.yml` after the Linux tag is pushed.
 - Physical tablet input and a current macOS pixel comparison have not been verified locally.
 
 ### Native input fixture correction
@@ -81,3 +90,18 @@ coverage remains in `TouchTargetsTests`.
 sources and second-window destruction (`/tmp/compositor155-touch-final.log`). The temporary
 device/geometry traces were removed. The successful full combination rerun and remaining backend checks
 are recorded in `/tmp/compositor155-native-final.log`.
+
+## Local build environment
+
+The first build passed compilation and all 15 CMake tests, then failed metadata composition:
+the Homebrew `appstreamcli` on this machine lacked its Compose addon. The complete system
+installation succeeded. No global configuration was changed:
+
+```sh
+PATH=/usr/bin:/bin:/usr/sbin:/sbin flatpak-builder --user --disable-download \
+  --disable-rofiles-fuse --force-clean --jobs=6 build-flatpak com.compositor.Client.yaml
+```
+
+The initial failure is in `/tmp/compositor155-flatpak-build.log`; the successful retry is in
+`/tmp/compositor155-flatpak-finish.log`. The retry rebuilt the application stage while reusing
+all dependency caches.
