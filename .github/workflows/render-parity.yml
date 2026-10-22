@@ -61,6 +61,13 @@ jobs:
           path: .build/parity-inputs
       - name: Render with upstream macOS APIs
         run: python3 scripts/render-parity.py --inputs .build/parity-inputs --output .build/parity-mac
+      - name: Preserve macOS XCTest failure details
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-mac-test-results
+          path: .build/parity-mac.test-results.json
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: always()
         with:

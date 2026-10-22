@@ -105,3 +105,21 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin flatpak-builder --user --disable-download \
 The initial failure is in `/tmp/compositor155-flatpak-build.log`; the successful retry is in
 `/tmp/compositor155-flatpak-finish.log`. The retry rebuilt the application stage while reusing
 all dependency caches.
+
+## GitHub parity exporter follow-up
+
+Both Verify runs and the upstream guard passed for `dec953a`. The macOS parity exporter
+failed before writing its first reference image; the ordinary macOS unit and screenshot tests
+passed. Its disposable test app inherited the production sandbox while writing outside the
+container. The exporter now overrides sandbox/signing entitlements only for that disposable
+copy and retains a bounded XCTest failure summary. The protected production project and
+entitlements are unchanged.
+
+The corpus catalog also needed the 11 newly integrated filter/adjustment cases. A local run
+of the existing `RenderParityTests` binary exported all 162 cases successfully, and its files
+and deep sample sidecars exactly match the updated catalog. The six comparison tests pass.
+Evidence: `/tmp/compositor155-parity-catalog-check.log`.
+
+The first alpha.1 signing workflow was cancelled before publication while the exporter is
+revalidated. No alpha.1 GitHub release was published. A new candidate will carry these harness
+fixes; the application code and completed local Flatpak acceptance are unchanged.

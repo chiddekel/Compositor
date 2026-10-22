@@ -66,10 +66,29 @@ def render(args):
             for key in ('COMPOSITOR_PARITY_OUTPUT', 'COMPOSITOR_PARITY_INPUT'):
                 ET.SubElement(variables, 'EnvironmentVariable', key=key, value=env[key], isEnabled='YES')
             tree.write(scheme)
-            run('xcodebuild', 'test', '-project', str(source / 'Compositor.xcodeproj'), '-scheme', 'Compositor',
-                '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', str(workspace / 'DerivedData'),
-                '-only-testing:CompositorTests/RenderParityTests', 'CODE_SIGN_IDENTITY=-',
-                'SWIFT_OPTIMIZATION_LEVEL=-O', env=env, cwd=source)
+            result = workspace / 'RenderParity.xcresult'
+            try:
+                # Only this disposable oracle app needs direct access to the shared fixture/output directories.
+                # The protected production project and its sandbox entitlements remain untouched.
+                run('xcodebuild', 'test', '-project', str(source / 'Compositor.xcodeproj'), '-scheme', 'Compositor',
+                    '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', str(workspace / 'DerivedData'),
+                    '-resultBundlePath', str(result), '-only-testing:CompositorTests/RenderParityTests',
+                    'CODE_SIGN_IDENTITY=-', 'ENABLE_APP_SANDBOX=NO', 'CODE_SIGN_ENTITLEMENTS=',
+                    'SWIFT_OPTIMIZATION_LEVEL=-O', env=env, cwd=source)
+            finally:
+                if result.exists():
+                    try:
+                        summary = subprocess.run(['xcrun', 'xcresulttool', 'get', 'test-results', 'summary',
+                                                  '--path', str(result)], capture_output=True, text=True, check=True)
+                        details = json.loads(summary.stdout)
+                        diagnostics = {key: details[key] for key in
+                                       ('title', 'result', 'totalTestCount', 'passedTests', 'failedTests',
+                                        'skippedTests', 'testFailures') if key in details}
+                        output.with_name(output.name + '.test-results.json').write_text(
+                            json.dumps(diagnostics, indent=2) + '\n')
+                        print(json.dumps(diagnostics, indent=2), flush=True)
+                    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                        print(f'Could not extract XCTest summary: {error}', flush=True)
     elif platform.system() == 'Linux':
         run('swift', 'test', '-c', 'release', '--scratch-path', str(args.scratch), '--jobs', str(args.jobs),
             '--filter', 'RenderParityTests', env=env, cwd=ROOT)

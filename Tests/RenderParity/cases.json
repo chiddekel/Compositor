@@ -24,6 +24,18 @@
     "category": "adjustment"
   },
   {
+    "file": "adjustment/Bloom - Glow--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Bloom - Glow-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Bloom - Glow-35.png",
+    "category": "adjustment"
+  },
+  {
     "file": "adjustment/Color Balance--35.png",
     "category": "adjustment"
   },
@@ -133,6 +145,30 @@
   },
   {
     "file": "adjustment/Motion Blur-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Progressive Blur--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Progressive Blur-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Progressive Blur-35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/RGB Split--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/RGB Split-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/RGB Split-35.png",
     "category": "adjustment"
   },
   {
@@ -487,6 +523,14 @@
   },
   {
     "file": "filter/Progressive Blur-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/RGB Split-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/RGB Split-extreme.png",
     "category": "filter"
   },
   {
