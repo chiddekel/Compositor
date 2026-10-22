@@ -1,0 +1,710 @@
+#pragma once
+
+#include <array>
+#include <optional>
+
+// SessionWindow — a moc'd Qt window that drives the Swift editor core through the
+// compositor_session_* C ABI, built by SwiftPM (with a committed moc output) and
+// linked into the Swift `@main` composition root.
+//
+// This is distinct from MainWindow (the C++-main, C-kernels Qt shell): MainWindow
+// is the "Rewrite Linux UI" workspace shell exercising the portable C kernels
+// directly (no Swift), built via CMake for the C++-only build path. SessionWindow
+// proves the architecture the Flatpak build ships — a moc'd Q_OBJECT Qt window
+// created from compositor_host_run (the Swift-@main Qt entry) that calls back into
+// the Swift core and paints the composited RGBA via QImage. As the Qt UI tier
+// grows, MainWindow's shell will be rewired to drive compositor_session_* through
+// this same link.
+//
+// Private C++ header in host/ (NOT host/include/, the Swift-importable C module),
+// found via same-directory include.
+
+#include <QMainWindow>
+#include <functional>
+#include <QImage>
+#include <QString>
+#include <QStringList>
+#include <QPointF>
+#include <QJsonObject>
+#include <QElapsedTimer>
+#include <QHash>
+#include <QSet>
+#include <QKeySequence>
+#include <QAction>
+#include <QPointer>
+#include <QDialog>
+#include "interfaces/IPlatformServices.h"
+#include "ParityMetrics.h"
+#include "ParityPalette.h"
+#include "NativeTextHistory.h"
+
+class QTreeView;
+class QTimer;
+class QMimeData;
+class QStandardItemModel;
+class QStandardItem;
+class QSlider;
+class QComboBox;
+class QPushButton;
+class QToolButton;
+class QCheckBox;
+class QMenu;
+class QColor;
+class QAction;
+class QStackedWidget;
+class QTabBar;
+class QLabel;
+class QToolBar;
+class QSpinBox;
+class QPainter;
+class QKeyEvent;
+#include <vector>
+#include <memory>
+#include <QMap>
+#include <QVector>
+#include <QRectF>
+
+class ITabletHandler;
+class SessionCanvasWidget;
+
+class SessionWindow : public QMainWindow {
+    Q_OBJECT
+
+public:
+    // Platform services are injected (DIP); omitted members fall back to the Qt implementations.
+    explicit SessionWindow(QWidget *parent = nullptr, PlatformServices services = {});
+    ~SessionWindow() override;
+
+    // Document management
+    void initDemoDocument();
+    void createNewDocument(int width, int height);
+    bool hasDocument() const { return m_hasDocument; }
+    // Exposes the Swift session handle so a debug-only caller (host_run.cpp's COMPOSITOR_GRAB_SWIFTUI_TREE path)
+    // can render a SwiftUI-compat panel standalone, against this same session, without a second one.
+    uint64_t sessionHandle() const { return m_sessionHandle; }
+
+    // File operations (IO milestone)
+    bool exportPNG(const QString &path);
+    bool exportJPEG(const QString &path, int quality = 85);
+    bool exportTIFF(const QString &path);
+    bool exportWebP(const QString &path, int quality = 85);
+    bool importImage(const QString &path);
+    // Upstream's importer (PSD/PSB with layers and text, RAW, HEIC): replace = open as the document, else add layers.
+    bool importWithUpstream(const QStringList &paths, bool replace);
+    void newCanvasTab();
+    void refreshTabTitle();
+    bool saveProject(const QString &path);
+    bool writeProjectPackage(const QString &path);   // saveProject without noting it as recent
+    bool loadProject(const QString &path);
+    void openStartupFiles(const QStringList &paths);
+    bool readProjectPackage(const QString &path, bool recovery = false);    // loadProject without noting it as recent
+
+    // Command Palette (Ctrl+Shift+P / F1)
+    void showCommandPalette();
+
+    // Layer Multi-Selection (R22)
+    void deleteSelectedLayers();
+
+    // Crash-Recovery Autosave (R61)
+    bool performAutosave();
+    bool startProjectSave(const QString &path, bool autosave, std::function<void(bool)> completion = {}, bool markSaved = true, uint64_t sourceHandle = 0);
+    bool isProjectSaveInProgress() const { return m_savingDocuments.contains(m_sessionHandle); }
+    bool startAutosave();
+    bool hasAutosaveRecovery() const;
+    bool recoverAutosave();
+    void clearAutosave();
+    QString autosaveDirectory() const;
+
+    // Snapshot of the Swift editor core's state JSON (test hook: reads the same
+    // bytes the dock renders, through the real C ABI).
+    QJsonObject sessionState() const;
+
+    // Paint a stroke from the current palette (diameter/hardness/opacity/color)
+    // through brushBegin/brushMove/brushEnd. Public so smokes can drive the
+    // same code path the mouse handlers use.
+    void paintStroke(double x1, double y1, double x2, double y2);
+    // Same commands the CloneStamp/SpotHealing branches of mousePressEvent send; factored out so smoke tests exercise
+    // the exact wire protocol without simulating screen-space mouse events.
+    void setCloneSource(double x, double y);
+    void cloneStroke(double x1, double y1, double x2, double y2);
+    void healStroke(double x1, double y1, double x2, double y2);
+
+    enum class Tool {
+        Move = 0,    // V (default)
+        Marquee,     // M (Rectangle / Ellipse mode)
+        Lasso,       // L (Freehand / Polygonal mode)
+        Magic,       // W (Wand / Object mode)
+        Crop,        // C
+        Brush,       // B (Eraser is a mode: E)
+        SpotHealing, // J
+        CloneStamp,  // S
+        Smear,       // R (Liquify / Blur / Smudge mode)
+        Gradient,    // G
+        Shape,       // U (Rectangle / Ellipse / Line mode)
+        Type,        // T
+        Eyedropper,  // I
+        Hand,        // H (Space temporary hand)
+        Zoom,        // Z
+        Idle,
+        // Compatibility aliases
+        Eraser = Brush,
+        RectSelect = Marquee,
+        EllipseSelect = Marquee,
+        MagicWand = Magic,
+        Blur = Smear
+    };
+
+    enum class MarqueeMode { Rectangle, Ellipse };
+    enum class LassoMode { Freehand, Polygonal };
+    enum class MagicMode { Wand, Object };
+    enum class BrushToolMode { Paint, Erase };
+    enum class SmearMode { Liquify, Blur, Smudge };
+    enum class SpotHealingMode { ContentAware, CreateTexture, ProximityMatch };
+    enum class ShapeMode { Rectangle, Ellipse, Line };
+
+    /// User intent: commit/refuse drafts like upstream `EditorSession.selectTool`, then mirror the session.
+    void setTool(Tool tool);
+    Tool currentTool() const { return m_tool; }
+
+    void setMarqueeMode(MarqueeMode mode);
+    MarqueeMode marqueeMode() const { return m_marqueeMode; }
+    void cycleMarqueeMode();
+
+    void setLassoMode(LassoMode mode);
+    LassoMode lassoMode() const { return m_lassoMode; }
+    void cycleLassoMode();
+
+    void setMagicMode(MagicMode mode);
+    MagicMode magicMode() const { return m_magicMode; }
+    void toggleMagicMode();
+
+    void setBrushToolMode(BrushToolMode mode);
+    BrushToolMode brushToolMode() const { return m_brushToolMode; }
+
+    void setSmearMode(SmearMode mode);
+    SmearMode smearMode() const { return m_smearMode; }
+
+    void setSpotHealingMode(SpotHealingMode mode);
+    SpotHealingMode spotHealingMode() const { return m_spotHealingMode; }
+
+    void setShapeMode(ShapeMode mode);
+    ShapeMode shapeMode() const { return m_shapeMode; }
+    void cycleShapeMode();
+
+    // Pending Crop controls
+    void applyCrop();
+    void cancelCrop();
+    bool hasPendingCrop() const { return m_hasPendingCrop; }
+    QRectF pendingCropRect() const { return m_pendingCropRect; }
+
+    // Space-hand controls
+    bool isSpaceHandActive() const { return m_spaceHandActive; }
+
+    bool sendCommand(const QJsonObject &command);
+    /// Upstream's floating panels (layer effects, …): shown as non-modal tool windows while the session says so.
+    void updateFloatingPanels();
+    /// ContentView's welcome: upstream's New Canvas sheet over the canvas while the tab has no document.
+    void updateWelcome();
+    void installAppMenus();
+    void showAboutPanel();
+    bool routesToUpstreamCanvas() const;
+    void sendUpstreamCanvasMouse(int kind, QMouseEvent *event, int clickCount, bool refresh = true);
+    void applyCanvasCursor(int cursor);
+    void refreshCanvasCursor(int modifierBits);
+    void flushPendingDrag();
+    std::vector<std::unique_ptr<QMouseEvent>> m_pendingDrags;   // ordered pointer samples awaiting delivery
+    void syncAppMenus();
+    void performAppMenu(const QString &path);
+    void performPaletteCommand(const QString &id);
+    void refreshAfterMenuAction();
+    /// Cmd/Ctrl+T: enter persistent Free Transform (layer or selection). Clears leftover Ctrl from the chord so the
+    /// first handle drag scales/rotates instead of distorting (Linux maps Ctrl → ⌘). Enter applies; Esc resets.
+    void enterFreeTransform();
+    /// Enter while Free Transform is open: commit the edit.
+    void applyFreeTransform();
+    /// Esc while Free Transform is open: cancel and restore pre-edit geometry.
+    void resetFreeTransform();
+    /// Mac ProjectController.begin: commit pending Free Transform (and clear crop) before package snapshot.
+    void prepareDocumentForProjectIO(uint64_t handle = 0);
+    void handleShellRequests();
+    void showPopUpMenu();
+    void installTouchTargets();
+    void exportPNGWithUpstream();
+    void exportPDFWithUpstream();
+    void exportAsWithUpstream(const QString &startFormat = QString());
+    /// Tip Canvas Only (F): hide toolbars/layers/status; black canvas surround.
+    void applyCanvasOnly(bool on);
+    void updateNavigator();
+    void positionNavigator();
+    void positionWelcome();
+    /// Upstream's .fileImporter / the welcome's Open project, when the session asks for them.
+    void handleSessionFileRequests();
+    void updateFloatingPanelsPass();
+    void syncDockedFloatingPanels();
+    /// Upstream's alerts ("Couldn’t paint", "Couldn’t crop"): shown when the session raises one.
+    void showSessionAlert();
+    /// A key in upstream's ShortcutChord form: one lowercase key and Command 1 / Option 2 / Control 4 / Shift 8 bits.
+    struct CanvasChord { QString key; int modifiers; bool operator==(const CanvasChord &o) const { return key == o.key && modifiers == o.modifiers; } };
+    /// Upstream's keyboard shortcuts as the Keyboard Shortcuts editor saved them: onto the menus, and canvas keys
+    /// translated back to the ones the shell handles (ShortcutSettings.canvasEvent).
+    void applyShortcutSettings();
+    static CanvasChord chordFromKeyEvent(const QKeyEvent *event);
+    static int qtKeyForChord(const QString &key);
+    static Qt::KeyboardModifiers modifiersForChord(int bits);
+    void updateOptionsBar();
+    void updateToolRail();
+    void updateLayersPanel();
+
+protected:
+    bool event(QEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void moveEvent(QMoveEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void tabletEvent(QTabletEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
+    /// Files (first readable one) or an image dropped on the window or the tab bar, imported into the current tab.
+    bool importDroppedMime(const QMimeData *mime, bool newTab = false);
+    /// Upstream ProjectWorkspace.receive: files dropped while the editor cannot take them wait, in order, for their
+    /// project, and are imported once it can (rather than refused).
+    struct PendingDrop { uint64_t handle = 0; bool newTab = false; QStringList paths; QImage image; };
+    bool importDrop(const PendingDrop &drop);
+    void drainPendingDrops();
+    QList<PendingDrop> m_pendingDrops;
+    QTimer *m_pendingDropTimer = nullptr;
+public:
+    int pendingDropCount() const { return int(m_pendingDrops.size()); }
+private:
+    void closeEvent(QCloseEvent *event) override;
+public:
+    void restoreWindowPlacement();
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
+
+public:
+    // Drags the window when the menu bar's or header bar's empty background is clicked-and-dragged — the native
+    // window has no title bar (see setWindowFlag(Qt::FramelessWindowHint) in the constructor), so this is the
+    // window's only way to move. Installed on menuBar() (empty area only — menu titles still open), on
+    // m_headerToolBar and on its "header.dragArea" spacer; child buttons (traffic lights, New, tabs, zoom) keep
+    // working normally.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
+    friend class SessionCanvasWidget;
+    void canvasPaintEvent(QPaintEvent *event, QWidget *canvas);
+    void canvasMousePressEvent(QMouseEvent *event, QWidget *canvas);
+    void canvasMouseMoveEvent(QMouseEvent *event, QWidget *canvas);
+    void canvasMouseReleaseEvent(QMouseEvent *event, QWidget *canvas);
+    bool canvasMouseDoubleClickEvent(QMouseEvent *event, QWidget *canvas);
+    void canvasTabletEvent(QTabletEvent *event, QWidget *canvas);
+    void canvasDragEnterEvent(QDragEnterEvent *event, QWidget *canvas);
+    void canvasDragMoveEvent(QDragMoveEvent *event, QWidget *canvas);
+    void canvasDragLeaveEvent(QDragLeaveEvent *event, QWidget *canvas);
+    void canvasDropEvent(QDropEvent *event, QWidget *canvas);
+    void updateMaskAloneBadge(const QJsonObject &state);
+    void ensureMaskAloneBadge();
+    void scheduleToolRailRefresh();
+    QWidget *makeCanvasPill(const QString &name, const QString &symbol, const QString &title, const QString &closeLabel,
+                            const QString &closeHelp, QLabel **detail, std::function<void()> close);
+    void setCanvasDropTargetActive(bool active);
+    void paintCanvasDropAccent(QPainter &p, QWidget *canvas);
+    QRectF canvasTargetRect() const;
+    QPointF documentToCanvasPoint(const QPointF &docPoint) const;
+    // CanvasRulerNSView: the rulers' drawing and guide drags (vertical = the left ruler).
+    void paintRuler(QWidget *ruler, bool vertical);
+    void rulerMousePress(QMouseEvent *event, QWidget *ruler, bool vertical);
+    void rulerMouseMove(QMouseEvent *event, QWidget *ruler);
+    void rulerMouseRelease(QMouseEvent *event, QWidget *ruler);
+
+private:
+    void createMenus();
+    void refreshMenuTitles(const QJsonObject &state);
+    void swapPaletteColors();
+    void resetPaletteColors();
+    void setBackgroundColor(const QColor &color);
+    void pickBackgroundColor();
+    // The palette is the session's (upstream ColorPalette.swift): these read it back into the Qt views, push a color
+    // into it, and present the color picker upstream's UI asked for (EditorSession.colorPicker).
+    void syncPaletteFromSession();
+    void sendPaletteColor(const QColor &color, bool background);
+    bool m_presentingColorPicker = false;
+    bool m_railFitChecked = false;
+    bool m_layersRefreshQueued = false;
+    QTimer *m_rescalePoll = nullptr;         // polls a background display render (refreshImage)
+    int m_shownTabModified = -1;            // the modified flag the tab bar last showed
+    QByteArray m_shownLayerListKey;          // what the legacy layer model was last built from (refreshLayers)
+    QTimer *m_panelThrottle = nullptr;       // refreshPanels() mid-drag
+    QElapsedTimer m_panelThrottleClock;
+    void refreshPanels();
+    bool filterSliderIsDown() const;
+    void refreshDirtyPanels();
+    void queueLayersRefresh();
+    // Gradient / Shape tools: the pending gradient line (x0,y0,x1,y1), which end is being dragged (1 start, 2 end),
+    // and the shape draft being dragged (kind, box, line ends) — all in document pixels, read back from the session.
+    QVector<double> m_gradientLine;
+    int m_gradientHandle = 0;
+    QRectF m_shapeRect;
+    QString m_shapeKind;
+    QVector<double> m_shapeLine;
+    // Type tool: the inline editor over the session's text draft, the draft it shows, and a text box being dragged.
+    class QPlainTextEdit *m_textEditor = nullptr;
+    class QSyntaxHighlighter *m_textHighlighter = nullptr;
+    QJsonObject m_textDraft;
+    bool m_syncingText = false;
+    NativeTextHistory m_textHistory;
+    int m_textUndoPosition = 0;
+    int m_textFormatRevision = 0;
+    bool m_textUndoCommandAdded = false;
+    bool m_textPreviewingStyle = false;
+    QPointF m_textBoxAnchor;
+    QRectF m_textBoxRect;
+    // The document's size, and the scale the canvas image (m_image) is composited at (see desiredDisplayScale).
+    QSize m_docSize;
+    double m_displayScale = 1.0;
+    bool m_rescalePending = false;
+    int64_t m_shownRenderRevision = -1;   // compositor_session_render_revision of m_image
+    uint64_t m_shownRenderHandle = 0;   // refreshImage queues one refreshLayers per event-loop turn   // the opening-size fit to the tool rail runs once
+    void showSizeDialog(bool imageSize);
+    void showFilterDialog(const QString &kind);
+    /// Image menu adjustments: Levels / HueSat sheets or FilterSheet (not a new adjustment layer).
+    void openImageAdjustment(const QString &kind);
+    /// Layer > New Adjustment Layer…: addAdjustment + upstream floating editor.
+    void openNewAdjustmentLayer(const QString &kind);
+    void showAdjustDialog(const QString &kind);
+    QPointF documentPoint(const QPointF &windowPoint) const;
+    void refreshImage();
+    // Coalesces mid-stroke redraws to one render per frame; see scheduleStrokeRefresh() in SessionWindow.cpp.
+    void scheduleStrokeRefresh();
+    bool isBrushStrokeActive() const;
+    void retireRenderedPanel(QWidget *panel);
+    void syncCanvasDrafts();
+    int docWidth() const;
+    int docHeight() const;
+    double desiredDisplayScale() const;
+    QImage renderDisplayImage(double scale);
+    QImage fullResolutionImage();
+    void presentSwiftUISheet(const QString &panel, uint64_t handle = 0);
+    static SessionWindow *windowForSession(uint64_t handle);
+    void pumpWhileBusy();
+
+    void endBusy();
+    bool sendCommandQuiet(const QJsonObject &command);   // no status-bar error (probing, e.g. "text here?")
+    void syncTextEditor(bool requestFocus = true);
+    void layoutTextEditor();
+    void refreshLayers();
+    void setOpacityFromSlider(int value);
+    void setBrushDiameter(int value);
+    void setBrushHardness(int value);
+    void setBrushOpacity(int value);
+    void setBlurRadius(double value);
+    void setBrushColor(const QColor &color);
+    void setBlendModeFromCombo(int index);
+    void pickBrushColor();
+    QStringList blendModes() const;
+    bool setLayerFlag(const char *action, bool on);
+    void selectRegion(bool rectangle);
+    void applyDarkTheme();
+    void setupHeaderBar();
+    void setupOptionsBar();
+    void syncToolFromSession();
+    /// Shell-only mirror of the session tool (and crop rect). Never sends selectTool / textFinish.
+    void applyToolLocally(Tool tool);
+    /// User-driven tool change: finish textDraft if needed, selectTool, then applyToolLocally from session.
+    void requestTool(Tool tool);
+    Tool toolFromSessionState(const QJsonObject &state) const;
+    const char *sessionNameForTool(Tool tool) const;
+    void syncCropFromSession(const QJsonObject &state);
+    void syncOptionsFromSession();
+    void syncBrushFromSession();
+    void updateStatusTelemetry();
+    void fitCanvas();
+    void actualPixels();
+    void zoomStep(int step);
+    void syncViewportGeometry();
+    double viewportZoom() const;
+    void changeViewport(int op, double a = 0, double b = 0, double c = 0);
+    void canvasWheelEvent(QWheelEvent *event);
+    void canvasMagnify(const QPointF &position, double magnification);
+
+    // Document tabs: each open document owns its own Swift session handle. m_sessionHandle always mirrors
+    // m_documents[m_activeDocumentIndex].handle — the rest of this class keeps addressing m_sessionHandle
+    // unchanged, and tab switching just repoints it and refreshes the UI from the newly active document.
+    struct DocumentTab {
+        uint64_t handle = 0;
+        QString title;
+        QString filePath;
+        double zoomLevel = 0.0;
+        QPointF panOffset{0, 0};
+    };
+    void addDocumentTab(uint64_t handle, const QString &title, const QString &filePath = QString());
+    bool switchToDocumentTab(int index);
+    void releaseDocumentSessions();
+    void closeDocumentTab(int index);
+    // Upstream ProjectController.confirmReplacement: "Save changes to …?" Save / Cancel / Don't Save for the tab at
+    // index (made current first, as upstream does). True when closing may proceed.
+    bool confirmDocumentClose(int index, bool closingWindow = false);
+    // Starts saving the captured tab; completion updates only that tab. True when accepted.
+    bool saveCurrentDocument(bool forceChoosePath);
+    bool isDocumentModified(uint64_t handle) const;
+
+    QWidget *m_canvasWidget = nullptr;
+    QImage m_image;
+    uint64_t m_sessionHandle = 0;
+    std::vector<DocumentTab> m_documents;
+    int m_activeDocumentIndex = -1;
+    QSet<uint64_t> m_savingDocuments;
+    QString m_lastProjectSaveError;
+    QSet<uint64_t> m_closeAfterSave;
+    bool m_closeWindowAfterSave = false;
+    bool m_painting = false;
+    bool m_middleDrag = false;   // middle button held: upstream CanvasView pans, or with Ctrl/Meta zooms (1.4.9)
+    /// The session's tool as last read (sessionState().tool): a mirror for the shell's own drawing and routing, written
+    /// only by applyToolLocally with what the session reports. The rail is upstream's ToolRail, drawn from the session.
+    Tool m_tool = Tool::Move;
+    MarqueeMode m_marqueeMode = MarqueeMode::Rectangle;
+    LassoMode m_lassoMode = LassoMode::Freehand;
+    MagicMode m_magicMode = MagicMode::Wand;
+    BrushToolMode m_brushToolMode = BrushToolMode::Paint;
+    SmearMode m_smearMode = SmearMode::Liquify;
+    SpotHealingMode m_spotHealingMode = SpotHealingMode::ContentAware;
+    ShapeMode m_shapeMode = ShapeMode::Rectangle;
+    QRectF m_pendingCropRect;
+    bool m_hasPendingCrop = false;
+    QString m_cropRatio = "Free";
+    Tool m_preSpaceTool = Tool::Move;
+    bool m_spaceHandActive = false;
+    bool m_hasDocument = false;
+
+    QPointF m_dragStart;
+    QPointF m_currentPoint;
+    std::vector<QPointF> m_lassoPoints;
+    // The source's own point/offset live server-side (EditorSession.cloneSource/cloneOffset); this only tracks
+    // whether one has been set, so a stroke before an Option-click is refused with a message instead of a silent no-op.
+    bool m_hasCloneSource = false;
+    QString m_brushMode = "Paint";
+    QTreeView *m_layersView = nullptr;
+    QStandardItemModel *m_layerModel = nullptr;
+    QSlider *m_opacity = nullptr;
+    QLabel *m_opacityLabel = nullptr;
+    QLabel *m_layerCountLabel = nullptr;
+    QComboBox *m_blend = nullptr;
+    QPushButton *m_brushColorButton = nullptr;
+    QSlider *m_brushDiameterSlider = nullptr;
+    QSlider *m_brushHardnessSlider = nullptr;
+    QSlider *m_brushOpacitySlider = nullptr;
+    QCheckBox *m_visibleCheck = nullptr;
+    QCheckBox *m_maskCheck = nullptr;
+    QColor m_brushColor = ParityPalette::defaultForeground();
+    QColor m_backgroundColor = ParityPalette::defaultBackground();
+    QPushButton *m_bgColorButton = nullptr;
+    QPushButton *m_fgPaletteButton = nullptr;   // the Qt fallback rail's foreground swatch (m_brushColorButton is the options bar's)
+    int m_brushDiameter = 16;
+    int m_brushHardness = 100;
+    int m_brushOpacity = 100;
+    double m_blurRadius = 5.0;   // tip Blur brush radius (px), apart from Strength
+    bool m_syncingLayers = false;
+    QMap<Tool, QAction *> m_toolActions;
+    std::unique_ptr<ITabletHandler> m_tabletHandler;
+    QTimer *m_autosaveTimer = nullptr;
+    QTimer *m_mainPumpTimer = nullptr;   // drains Swift's main queue under Qt (see constructor)
+    int m_commandDepth = 0;   // compositor_session_command calls in progress (the wait pump can nest events inside one)
+    bool m_busy = false;      // busy cursor / status shown by pumpWhileBusy
+    bool m_showingAlert = false;
+    QByteArray m_appliedShortcuts;                       // the state's "shortcuts" last applied
+    QHash<QAction *, QList<QKeySequence>> m_defaultShortcuts;   // each remapped menu action's own shortcuts
+    QList<std::pair<CanvasChord, CanvasChord>> m_canvasRemap;  // pressed chord -> the original chord it now stands for
+    QList<CanvasChord> m_canvasBlocked;                  // originals reassigned elsewhere (pressing them does nothing)
+    bool m_translatingKey = false;
+    struct FloatingPanelWindow {
+        QPointer<QDialog> window;
+        QWidget *content = nullptr;
+        QString title, placement;
+        double dockedWidth = 0;
+    };
+    QHash<QString, FloatingPanelWindow> m_floatingPanels;   // panel name -> its window (updateFloatingPanels)
+    std::optional<QPoint> m_colorPickerPosition;   // the picker reopens where it was last left
+    bool m_updatingFloatingPanels = false, m_floatingPanelsDirty = false;
+    bool m_panelsSuppressedByMinimization = false;
+    QTimer *m_floatingPanelDragTimer = nullptr;   // throttles updateFloatingPanels during DragGesture drags
+    bool m_floatingPanelDragBypass = false;
+    QByteArray m_pumpedState;
+    std::array<double, 6> m_pumpedViewport{};   // what the pump last saw of the viewport
+    QTimer *m_strokeRefreshTimer = nullptr;
+    QElapsedTimer m_strokeFrameClock;            // when the last stroke frame started (frame pacing)
+    std::vector<uint8_t> m_strokeRegionBuffer;   // reused between stroke frames: no per-frame allocation
+    QToolBar *m_headerToolBar = nullptr;
+    QToolBar *m_optionsToolBar = nullptr;
+    QToolBar *m_toolsBar = nullptr;
+    QAction *m_paletteAction = nullptr;
+    QDockWidget *m_layersDock = nullptr;
+    QDockWidget *m_adjustmentsDock = nullptr;
+    QStackedWidget *m_optionsStack = nullptr;
+    QAction *m_optionsStackAction = nullptr;
+    QAction *m_swiftUIOptionsAction = nullptr;
+    QWidget *m_swiftUIOptionsContainer = nullptr;
+    QWidget *m_swiftUICurrentToolHeader = nullptr;
+    QWidget *m_swiftUIToolRailContainer = nullptr;
+    QWidget *m_swiftUICurrentToolRail = nullptr;
+    QWidget *m_legacyLayersPanel = nullptr;
+    QStackedWidget *m_layersStack = nullptr;
+    QWidget *m_swiftUILayersContainer = nullptr;
+    QWidget *m_swiftUICurrentLayersPanel = nullptr;
+    bool m_layersResizeQueued = false;
+    QWidget *m_swiftUIStatusBarContainer = nullptr;
+    QWidget *m_swiftUICurrentStatusBar = nullptr;
+    QWidget *m_welcomeContent = nullptr;
+    QWidget *m_navigatorContent = nullptr;
+    bool m_canvasOnly = false;
+    bool m_canvasOnlySavedTools = true, m_canvasOnlySavedOptions = true, m_canvasOnlySavedLayers = true, m_canvasOnlySavedStatus = true;
+    QString m_lastRevealedLayerId;
+    QWidget *m_maskAloneBadge = nullptr;
+    QLabel *m_maskAloneNameLabel = nullptr;
+    QTimer *m_railRefreshTimer = nullptr;   // coalesces rail refreshes during a canvas drag
+    bool m_railRefreshPending = false;
+    QWidget *m_proofBadge = nullptr;      // View › CMYK › Proof Colors pill
+    QLabel *m_proofNameLabel = nullptr;
+    QWidget *m_gamutBadge = nullptr;      // View › CMYK › Gamut Warning pill
+    QLabel *m_gamutNameLabel = nullptr;
+    bool m_canvasDropTargetActive = false;
+    // Canvas chrome from the session (syncCanvasChrome): rulers, layout grid, guides, snap lines.
+    void syncCanvasChrome(const QJsonObject &state);
+    QWidget *m_rulerCorner = nullptr, *m_rulerH = nullptr, *m_rulerV = nullptr;
+    bool m_showsRulers = false, m_showsGrid = false, m_showsGuides = false, m_canEditGuides = false;
+    bool m_showsPixelGrid = true;   // View > Pixel Grid (800% and above)
+    bool m_guideDragging = false;   // a guide drag this shell started (ruler or canvas)
+    bool m_guideDragVertical = false;
+    QVector<QPair<bool, double>> m_guides;   // vertical?, document position
+    QVector<double> m_snapXs, m_snapYs;
+    QByteArray m_appMenusJson;
+    QTimer *m_appMenusSyncTimer = nullptr;   // syncAppMenus() once the session settles
+    bool m_handlingShellRequests = false;
+    int m_panelPollTick = 0;
+    bool m_colorPickerOpen = false, m_samplingPicker = false;
+    bool m_colorRangeOpen = false;
+    bool m_upstreamCanvasDrag = false;
+    /// After Ctrl+T: ignore Control on canvas mouse until Ctrl is released (else the chord's leftover Ctrl→⌘ distorts).
+    bool m_suppressCanvasCommand = false;
+    QByteArray m_cursorPicture;
+    // Upstream's overlay as last drawn (canvas-sized, premultiplied): repainted only where its views are invalid
+    // (setNeedsDisplay), wholly when anything else may have changed it (m_overlayCacheValid false, the viewport moved).
+    QImage m_overlayCache;
+    bool m_overlayCacheValid = false;
+    std::array<double, 6> m_overlayViewport{};
+    void invalidateOverlay() { m_overlayCacheValid = false; }
+    void updateInvalidOverlay();   // repaints the part of the canvas whose overlay views asked to be redrawn
+    QStringList m_appMenuShape;
+    QList<QMenu *> m_appMenus, m_legacyMenus;
+    QHash<QString, QAction *> m_appMenuActions;
+    bool m_handlingFileRequests = false;
+    QTabBar *m_documentTabBar = nullptr;
+    std::function<int(int)> m_documentTabNaturalWidth;
+    QToolButton *m_tabOverflowButton = nullptr;
+    void refreshTabOverflow();
+    QLabel *m_statusZoomLabel = nullptr;
+    QLabel *m_statusDimsLabel = nullptr;
+    QLabel *m_statusProfileLabel = nullptr;
+    QLabel *m_statusHintsLabel = nullptr;
+    QPointF m_zoomDragStart;
+    double m_zoomDragZoom = 1.0;
+    bool m_zoomDragMoved = false;
+    PlatformServices m_platform;
+
+    // Dynamic menu action pointers for macOS parity
+    QAction *m_actUndo = nullptr;
+    QAction *m_actRedo = nullptr;
+    QAction *m_actCut = nullptr;
+    QAction *m_actCopy = nullptr;
+    QAction *m_actCopyMerged = nullptr;
+    QAction *m_actPaste = nullptr;
+    QAction *m_actFillFG = nullptr;
+    QAction *m_actFillBG = nullptr;
+    QAction *m_actClearSelection = nullptr;
+    QAction *m_actContentAwareFill = nullptr;
+    QAction *m_actSelectAll = nullptr;
+    QAction *m_actDeselect = nullptr;
+    QAction *m_actInverse = nullptr;
+    QAction *m_actLayerPixels = nullptr;
+    QAction *m_actSelectSubject = nullptr;
+    QAction *m_actMaskBlackAreas = nullptr;
+    QAction *m_actExpandSelection = nullptr;
+    QAction *m_actContractSelection = nullptr;
+    QAction *m_actFeatherSelection = nullptr;
+    QAction *m_actInvert = nullptr;
+    QAction *m_actTransform = nullptr;
+    QAction *m_actDuplicate = nullptr;
+    QAction *m_actClippingMask = nullptr;
+    QAction *m_actGroupLayers = nullptr;
+    QAction *m_actMoveOutOfFolder = nullptr;
+    QAction *m_actNewBlankLayer = nullptr;
+    QAction *m_actRenameLayer = nullptr;
+    QAction *m_actShowHideLayer = nullptr;
+    QAction *m_actMoveLayerUp = nullptr;
+    QAction *m_actMoveLayerDown = nullptr;
+    QAction *m_actMerge = nullptr;
+    QAction *m_actFlipLayerH = nullptr;
+    QAction *m_actFlipLayerV = nullptr;
+    QAction *m_actDelete = nullptr;
+
+    // One-shot canvas pixel request (Levels eyedroppers): receives the document point of the next click.
+    std::function<void(const QPointF &)> m_pixelSampler;
+
+    // Move / Transform tool state. Geometry is in document pixels; rotation in degrees.
+public:
+    struct LayerGeometry {
+        QString id;
+        double x = 0, y = 0, w = 0, h = 0, rotation = 0;
+        bool valid = false, isGroup = false, visible = true;
+    };
+private:
+    LayerGeometry m_activeGeometry;
+    std::vector<LayerGeometry> m_layerGeometries;  // document order, bottom first
+    QSpinBox *m_xSpin = nullptr;
+    QSpinBox *m_ySpin = nullptr;
+    QSpinBox *m_wSpin = nullptr;
+    QSpinBox *m_hSpin = nullptr;
+    QSpinBox *m_angleSpin = nullptr;
+    QCheckBox *m_linkCheck = nullptr;
+    QCheckBox *m_autoSelectCheck = nullptr;
+    QCheckBox *m_showControlsCheck = nullptr;
+    /// Cancel / Apply for a pending Free Transform (Ctrl+T); hidden until transforming.
+    QPushButton *m_transformCancelBtn = nullptr;
+    QPushButton *m_transformApplyBtn = nullptr;
+    void updateTransformCommitControls();
+    int m_transformHandle = -1;  // -1 none, 0-7 resize (TL,T,TR,R,BR,B,BL,L), 8 rotate, 9 move body
+    LayerGeometry m_transformStart;
+    /// A pending distortion's corners (document px, TL TR BR BL), from the session; empty when not distorting.
+    QVector<QPointF> m_distortCorners;
+    bool m_distortDrag = false;   // the Move tool's current drag distorts (upstream TransformDrag, in the bridge)
+    void syncDistortFromSession();
+    LayerGeometry m_transformDraft;
+    // Selection tools: combine mode (New/Add/Subtract) and lasso style.
+    QString m_selectionMode = "New";
+    bool m_polygonalLasso = false;
+    bool m_polyActive = false;
+    qint64 m_lastPolyClick = 0;
+    void syncTransformFields();
+    void applyTransformFields(int changedField);
+
+    // Tool parameter state
+    int m_magicTolerance = 32;
+    bool m_magicContiguous = true;
+    bool m_magicSampleAll = false;
+    bool m_cloneAligned = true;
+    bool m_cloneSampleAll = false;
+    QString m_gradientType = "Linear";
+    int m_gradientOpacity = 100;
+    bool m_gradientReverse = false;
+    int m_shapeStrokeWidth = 1;
+    int m_shapeRadius = 0;
+    int m_typeFontSize = 24;
+    QString m_typeFontFamily;
+    int m_typeAlignment = 0;
+    int m_eyedropperSampleSize = 1;
+    bool m_eyedropperSampleAll = false;
+    int m_cropHandle = -1;
+    QPointF m_panStart;
+
+};

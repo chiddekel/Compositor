@@ -1,0 +1,9 @@
+{
+  "KPlugin": {
+    "Name": "Compositor project previews and folders",
+    "Description": "Saved Compositor previews; ordinary folders use KDE's directory thumbnailer",
+    "MimeTypes": ["application/x-compositor-project", "inode/directory"]
+  },
+  "CacheThumbnail": false,
+  "ThumbnailerVersion": 1
+}

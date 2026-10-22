@@ -1,0 +1,61 @@
+name: linux swift tests
+
+# The Linux contracts that must hold on every push: tools used one after another leave the editor usable
+# (ToolCombinationTests), pending gradients finish before dependent commands (PendingGradientTests), layer effects
+# match upstream's renderer (LayerEffectsBackendTests), and upstream's editor runs
+# unmodified under the compat layer (UpstreamEditorTests), including initial-canvas Undo (HistoryTests).
+# Build the manifest's pinned dependency modules so pixel
+# assertions exercise the real Skia and ImageIO backends. These suites are
+# the ones a change to the Qt shell or the compat layer most often breaks. Same Flatpak SDK as development (see
+# scripts/run-compositor.sh), so what passes here passes there.
+on:
+  push:
+    branches: [GNU_Linux]
+  pull_request:
+    branches: [GNU_Linux]
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify vendored dependency sources and notices
+        run: python3 scripts/check-vendored-sources.py
+
+      # The runner's source-coverage audit lists upstream/main's Compositor tree.
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/robbietilton/Compositor.git
+          git fetch upstream main
+
+      - name: Install the manifest's SDK and extension dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --assumeyes --install-deps-from=flathub --install-deps-only \
+            build-ci-sdk com.compositor.Client.yaml
+
+      - name: Cache pinned native dependencies
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: contract-native-${{ hashFiles('com.compositor.Client.yaml') }}
+
+      - name: Build dependency modules inside the manifest's SDK
+        run: |
+          flatpak-builder --user --force-clean --disable-rofiles-fuse --jobs="$(nproc)" --stop-at=compositor \
+            build-ci-sdk com.compositor.Client.yaml
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: contract-swiftpm-${{ hashFiles('com.compositor.Client.yaml', 'Package.swift', 'Package.resolved') }}
+
+      - name: Contract tests and native Qt tool combination journey
+        run: |
+          flatpak-builder --run --filesystem="$PWD" build-ci-sdk com.compositor.Client.yaml \
+            bash "$PWD/scripts/linux-contract-tests.sh" \
+              --filter 'ToolCombinationTests|PendingGradientTests|LayerEffectsBackendTests|UpstreamEditorTests|HistoryTests|TouchTargetsTests|HostingMeasurementTests|LayoutDimensionBoundsTests|LayersPanelWidthTests|WarpCommitParityTests|RawDevelopCapabilityTests|FilterTests|SpotHealingTests|NativeScrollGeometryTests|NativeTableKeyboardTests|SystemFontTests|NativeMaskGeometryTests|FloatingPanelTests|ColourManagementTests|HeicTiffImportTests|CompressionCompatTests|ChannelPackTests|PSDArtboardTests|FilterLayerTests|AdjustmentLayerTests|LayerSearchIntegrationTests|CanvasSizeBridgeTests|GroupTests|UpdateCheckTests|CompositorTests'

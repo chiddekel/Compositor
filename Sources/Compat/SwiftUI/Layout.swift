@@ -1,0 +1,222 @@
+// The layout containers: generic nodes the Qt renderer maps straight onto QVBoxLayout/QHBoxLayout/etc. Adding a
+// new one here benefits every panel that uses it — never a per-panel Qt reimplementation.
+
+public struct VStack<Content: View>: View, PrimitiveView {
+    let alignment: HorizontalAlignment, spacing: Double?
+    let content: Content
+    public init(alignment: HorizontalAlignment = .center, spacing: Double? = nil, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment; self.spacing = spacing; self.content = content()
+    }
+    public var _childViews: [any View] { [content] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "VStack")
+        node.stringParams["alignment"] = alignment.name
+        if let spacing { node.doubleParams["spacing"] = spacing }
+        node.children = children
+        return node
+    }
+}
+
+public struct HStack<Content: View>: View, PrimitiveView {
+    let alignment: VerticalAlignment, spacing: Double?
+    let content: Content
+    public init(alignment: VerticalAlignment = .center, spacing: Double? = nil, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment; self.spacing = spacing; self.content = content()
+    }
+    public var _childViews: [any View] { [content] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "HStack")
+        node.stringParams["alignment"] = alignment.name
+        if let spacing { node.doubleParams["spacing"] = spacing }
+        node.children = children
+        return node
+    }
+}
+
+public typealias LazyVStack<Content: View> = VStack<Content>
+public typealias LazyHStack<Content: View> = HStack<Content>
+
+public struct ZStack<Content: View>: View, PrimitiveView {
+    let alignment: Alignment
+    let content: Content
+    public init(alignment: Alignment = .center, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment; self.content = content()
+    }
+    public var _childViews: [any View] { [content] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "ZStack")
+        node.stringParams["alignment"] = alignment.name
+        node.children = children
+        return node
+    }
+}
+
+public struct Spacer: View, PrimitiveView {
+    let minLength: Double?
+    public init(minLength: Double? = nil) { self.minLength = minLength }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "Spacer")
+        if let minLength { node.doubleParams["minLength"] = minLength }
+        return node
+    }
+}
+
+public struct Divider: View, PrimitiveView {
+    public init() {}
+    public func _makeNode(children: [RenderNode]) -> RenderNode { RenderNode(kind: "Divider") }
+}
+
+/// A scrollable, row-per-element list — the Qt renderer treats it exactly like `ScrollView` + `VStack` (a
+/// `QScrollArea` of stacked rows); real SwiftUI's selection/row-styling behavior isn't modeled yet.
+public struct List<Data: RandomAccessCollection, ID: Hashable, Content: View>: View, PrimitiveView {
+    let data: Data
+    let content: (Data.Element) -> Content
+    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping (Data.Element) -> Content) {
+        self.data = data; self.content = content
+    }
+    public var _childViews: [any View] { data.map { content($0) } }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "ScrollView")
+        node.boolParams["vertical"] = true
+        var stack = RenderNode(kind: "VStack")
+        stack.doubleParams["spacing"] = 0   // rows sit edge to edge; a list's own spacing is its rows' business
+        stack.children = children + [RenderNode(kind: "Spacer")]
+        node.children = [stack]
+        return node
+    }
+}
+extension List where Data.Element: Identifiable, ID == Data.Element.ID {
+    public init(_ data: Data, @ViewBuilder content: @escaping (Data.Element) -> Content) {
+        self.init(data, id: \.id, content: content)
+    }
+}
+
+public struct ScrollView<Content: View>: View, PrimitiveView {
+    let axes: Axis.Set
+    let content: Content
+    public init(_ axes: Axis.Set = .vertical, @ViewBuilder content: () -> Content) {
+        self.axes = axes; self.content = content()
+    }
+    public var _childViews: [any View] { [content] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "ScrollView")
+        node.boolParams["horizontal"] = axes.contains(.horizontal)
+        node.boolParams["vertical"] = axes.contains(.vertical)
+        node.children = children
+        return node
+    }
+}
+
+/// `scrollTo(_:)`: asks the reader's scroll view to show the view with that `.id`. The request waits for the reader's
+/// next resolve (SwiftUI scrolls on its next update too), which hands it to the host as `scrollTarget`.
+public struct ScrollViewProxy {
+    let key: String
+    init(key: String = "") { self.key = key }
+    public func scrollTo(_ id: AnyHashable, anchor: UnitPoint? = nil) { ScrollTargets.requests[key] = "\(id.base)" }
+}
+
+/// Pending `scrollTo` requests, by reader (its tree and place).
+enum ScrollTargets { nonisolated(unsafe) static var requests: [String: String] = [:] }
+
+public struct ScrollViewReader<Content: View>: View, PrimitiveView {
+    let content: (ScrollViewProxy) -> Content
+    public init(@ViewBuilder content: @escaping (ScrollViewProxy) -> Content) {
+        self.content = content
+    }
+    /// The reader's place: its tree and the view it is resolved under.
+    private var key: String { "\(StateStore.currentScope ?? "")|\(ViewResolver.currentViewPath)" }
+    public var _childViews: [any View] { [content(ScrollViewProxy(key: key))] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "ScrollViewReader")
+        if let target = ScrollTargets.requests.removeValue(forKey: key) { node.stringParams["scrollTarget"] = target }
+        node.children = children
+        return node
+    }
+}
+
+public struct Axis: Sendable {
+    public struct Set: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let horizontal = Set(rawValue: 1 << 0), vertical = Set(rawValue: 1 << 1)
+    }
+}
+
+public struct GeometryProxy: Sendable {
+    public var size: CGSize
+    var namedFrames: [String: CGRect]
+    public init(size: CGSize, namedFrames: [String: CGRect] = [:]) {
+        self.size = size
+        self.namedFrames = namedFrames
+    }
+    public func frame(in space: CoordinateSpace) -> CGRect {
+        guard let name = space.name else { return CGRect(origin: .zero, size: size) }
+        return namedFrames[name] ?? CGRect(origin: .zero, size: size)
+    }
+}
+
+/// `GeometryReader` cannot know the real Qt layout size at Swift-tree-build time; it resolves its content with a
+/// zero-size proxy today (the Qt renderer re-lays-out the resolved children itself once mounted). Panels using it
+/// for frame math will need a real measurement round-trip in a later phase.
+/// `Grid`: its rows' cells line up in columns as wide as their widest cell (the Qt renderer's QGridLayout).
+public struct Grid<Content: View>: View, PrimitiveView {
+    let alignment: Alignment, horizontalSpacing: Double?, verticalSpacing: Double?
+    let content: Content
+    public init(alignment: Alignment = .center, horizontalSpacing: Double? = nil, verticalSpacing: Double? = nil,
+                @ViewBuilder content: () -> Content) {
+        self.alignment = alignment; self.horizontalSpacing = horizontalSpacing; self.verticalSpacing = verticalSpacing
+        self.content = content()
+    }
+    public var _childViews: [any View] { [content] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "Grid")
+        node.stringParams["alignment"] = alignment.name
+        if let horizontalSpacing { node.doubleParams["horizontalSpacing"] = horizontalSpacing }
+        if let verticalSpacing { node.doubleParams["verticalSpacing"] = verticalSpacing }
+        node.children = children
+        return node
+    }
+}
+
+public struct GridRow<Content: View>: View, PrimitiveView {
+    let alignment: VerticalAlignment
+    let content: Content
+    public init(alignment: VerticalAlignment = .center, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment; self.content = content()
+    }
+    public var _childViews: [any View] { [content] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "GridRow")
+        node.stringParams["alignment"] = alignment.name
+        node.children = children
+        return node
+    }
+}
+
+/// Views whose content depends on the size they are given (GeometryReader): resolved with the size the shell last
+/// reported for that place in the tree (GeometrySizes), and re-resolved when it reports a new one.
+protocol _GeometryReading {
+    func _content(size: CGSize) -> any View
+}
+
+public struct GeometryReader<Content: View>: View, PrimitiveView, _GeometryReading {
+    let content: (GeometryProxy) -> Content
+    public init(@ViewBuilder content: @escaping (GeometryProxy) -> Content) { self.content = content }
+    public var _childViews: [any View] { [content(GeometryProxy(size: .zero))] }
+    func _content(size: CGSize) -> any View { content(GeometryProxy(size: size)) }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "GeometryReader")
+        node.children = children
+        return node
+    }
+}
+
+/// The sizes the shell reported for GeometryReaders, by place (scope and tree path).
+public enum GeometrySizes {
+    nonisolated(unsafe) static var sizes: [String: CGSize] = [:]
+    /// Scopes (panels) a reader reported a new size in since their last resolve. A size changes what the panel's body
+    /// computes beyond the reader itself (a preference read by `onPreferenceChange`, FilterSheet's title column), so
+    /// the host rebuilds the whole panel, not only the reader's content.
+    nonisolated(unsafe) static var changedScopes: Set<String> = []
+    public static func takeChanged(_ scope: String) -> Bool { changedScopes.remove(scope) != nil }
+}

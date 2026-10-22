@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Compositor
+GenericName=Image Editor
+Comment=A free, open-source, Photoshop-style image editor
+Exec=compositor %F
+Icon=com.compositor.Client
+Terminal=false
+StartupWMClass=com.compositor.Client
+Categories=Graphics;Photography;2DGraphics;RasterGraphics;
+MimeType=application/x-compositor-project;application/pdf;image/png;image/jpeg;image/heic;image/heif;image/tiff;image/webp;
+Keywords=photo;editor;image;layers;compositing;
+Actions=NewCanvas;
+
+[Desktop Action NewCanvas]
+Name=New Canvas…
+Exec=compositor --new-canvas
