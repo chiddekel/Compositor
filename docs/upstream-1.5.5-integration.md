@@ -1,8 +1,81 @@
 # Upstream 1.5.5 on GNU/Linux
 
-The current protected target is `9ff443dbf3acabe5734b8068924cc1ab680f80f2` (`upstream/main`,
-1.5.5). The integration retains upstream source unchanged. Local GNU/Linux acceptance is
-complete. The Flatpak release workflow builds and signs the published artifacts.
+The current protected target is `551a35fc06fb8429fed3b99b175e31681875f580` (`upstream/main`,
+1.5.5). The integration retains upstream source unchanged. This follow-up is implemented and
+locally validated; the later results for `9ff443d` describe the preceding published checkpoint.
+The Flatpak release workflow builds and signs the published artifacts.
+
+## Follow-up through 551a35f
+
+The original Layers header now searches names and filters image, shape, text, folder, adjustment
+and selected layers. Matching folders retain their contents; filtering also governs table selection
+and drag rows. Linux generates only the Objective-C selector adaptation for the original search
+field delegate. Generic SwiftUI compatibility supplies symbol-bearing toggles and reserved icon
+width; Qt renders these controls through its normal toggle renderer.
+Native field border, bezel, background and focus-ring settings cross the same bridge. Explicit
+field fonts override the shell's input stylesheet, so the original search opens with keyboard
+focus, a frameless 13-point field and its original outer border.
+
+The update service suppresses automatic checks when either XCTest environment marker is present,
+matching upstream's test-host behavior. Manual update checks remain available. The Linux delegate's
+test-host predicate is nonisolated because it only reads process environment and class metadata.
+
+Canvas Size must preserve zoom through both Linux command routes, including the native sheet.
+`CanvasSizeBridgeTests` exercises both routes with Undo/Redo; the original upstream test checks
+the document operation separately. `LayerSearchIntegrationTests` checks table row ownership,
+Escape handling, type symbols, selection filters and history isolation.
+
+The focused run passes 26 Swift tests in five suites. Before the fix, both native command routes
+changed zoom from 1.75 to 1.0; after passing `keepingZoom: true`, both pass. Evidence:
+`/tmp/compositor551-focused-before-canvas-fix2.log` and
+`/tmp/compositor551-focused-after-canvas-fix.log`. Source coverage accounts for all 163 upstream
+Swift files (133 unchanged, 23 generated, five replaced, two platform files) and 96 upstream
+test files (94 unchanged, two generated mirrors). The private-bus update service tests pass.
+The native search journey passes typing/focus, case-insensitive rows, both Escape actions, every
+filter symbol, Selected/All and history isolation. It first reproduced stale text on Escape and
+a removed field held on screen by Qt focus protection. Handled native commands now permit the
+delegate's replacement text; a field retired by the view model releases Qt editing focus after
+the refresh returns. Cleanup is limited to handled native commands: the full run caught an overly
+broad focus release in Grid Settings, and its control-ownership and separate-process persistence
+tests pass after that correction. The native Canvas Size journey also passes all units/anchors, crop/re-expand
+and Undo/Redo while retaining a zoom above 100 percent. Evidence:
+`/tmp/compositor551-final-field-font-checks.log`.
+
+Final acceptance:
+
+- All 1,043 Swift tests pass (995 parallel, 48 serial), together with all 165 XCTest cases.
+- All 43 native journeys passed in the full batch. Its final Grid Settings check failed before
+  the focus correction; final affected reruns pass layer search, font history, Canvas Size,
+  the complete UI audit and Grid Settings controls/restart. This is coverage across the batch
+  and final reruns, rather than claiming one clean full batch on the final revision.
+- The UI audit covers 23 tool states, 22 floating panels, four sheets, Export As, Command Palette,
+  12 adjustment layers and CMYK pills, without elided text, empty buttons or missing symbols.
+- The dependency/application builds used local sources with downloads disabled. The final retained
+  application rebuild replayed the manifest commands after checking 868 source inputs; regenerated
+  shader headers have identical executable words. All 15 CMake tests pass.
+- The final packaged binary passes nine KDE Platform checks: startup, preferences, text backend,
+  layer search, font history, Canvas Size, UI audit, Grid Settings and its separate-process restart.
+  Grid persistence uses the updater-only `XCTestBundlePath` marker; upstream deliberately disables
+  preference reads/writes under `XCTestConfigurationFilePath`.
+- Metadata finishing succeeds and retains executable Build ID
+  `da693e0c7e9336dc0816b7186a47b08cfeb44c49`. The installed Lucide notice matches its source license.
+- Protected content, every generator, shader headers, override drift, version and all ledgers pass.
+  Source coverage's 11 fault tests, protected-content's seven fault tests and 17 release-tool tests pass.
+- Regular Linux CI includes the new regression suites. Signed-release installation checks include
+  native layer search and Canvas Size before publication as Latest.
+
+Logs: `/tmp/compositor551-full-contract.log`, `/tmp/compositor551-final-field-font-checks.log`,
+`/tmp/compositor551-packaged-app-final-replay.log`,
+`/tmp/compositor551-platform-production-defaults-checks.log`, and
+`/tmp/compositor551-integrity.log`.
+
+The four added stock icons are unmodified Lucide 0.544.0 SVGs under the existing ISC license in
+`third_party/lucide`; the active-filter circle is a local SVG. The Flatpak installs the Lucide notice
+at `/app/share/licenses/com.compositor.Client/Lucide-LICENSE`. No dependency version changed.
+
+The preceding full parity workflow's Linux job timed out after 150 minutes and reported missing
+hardware Camera Raw and canvas backends on the GitHub runner. It did not produce Linux comparison
+artifacts. This is unresolved validation, separate from the successful published release build.
 
 The preceding checkpoint, `432de5c`, integrates RGB Split, filter adjustment layers, Channel Pack,
 Split to Layers, and Photoshop artboard tabs through `fc02107`. Its evidence and remaining checks

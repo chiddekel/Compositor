@@ -1,3 +1,23 @@
+Compositor 1.5.5-linux-alpha.3 for GNU/Linux — signed Flatpak alpha, x86_64.
+
+- Integrates current upstream through `551a35f` while retaining the original app, tests and Xcode sources.
+- Adds layer name search and filters for images, shapes, text, folders, adjustments and selected layers. Matching folders retain their contents; selection and drag rows follow the filtered list.
+- Preserves zoom when changing Canvas Size through the native sheet and command bridge.
+- Suppresses automatic Flatpak update checks in test hosts, matching upstream's behavior.
+- Fixes search refresh on the first Escape and closes the field on the second Escape. Filter toggles retain their labels, symbols and bindings through generic compatibility controls.
+- Retains pinned, vendored dependency sources and licenses. Installs the Lucide ISC notice for the bundled icons.
+
+Verification:
+
+- Passed all 1,043 Swift tests and 165 XCTest cases. All 43 native journeys are covered by the full batch and final affected reruns, including Grid Settings controls and separate-process persistence after its focus correction.
+- Built the Flatpak from local sources with downloads disabled; the final application rebuild passed all 15 CMake tests.
+- The packaged binary passed nine KDE Platform checks, including native search with automatic focus and frameless 13-point text, Canvas Size zoom, font history, the full UI audit and Grid Settings persistence.
+- Protected-source, generator, shader, override-drift, version, ledger, source-coverage and release-tool checks pass. Signed-release installation now checks native search and Canvas Size before the workflow marks the release Latest.
+
+The preceding release's independent macOS comparison passed 121 of 162 cases on each backend. Existing RAW, dither, blur, font rasterization and numeric differences remain documented in docs/upstream-1.5.5-integration.md. Physical tablet input remains unverified. This remains an alpha port.
+
+Previous release notes:
+
 Compositor 1.5.5-linux-alpha.2 for GNU/Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream 1.5.5 while preserving the upstream app, test and Xcode sources.

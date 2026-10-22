@@ -921,7 +921,7 @@ final class UpstreamEditor {
             guard let options, let snapshot = s.projectSnapshot() else { break }
             do {
                 let resized = try await CanvasResizer.shared.resize(snapshot, to: options)
-                s.applyDocumentSize(resized, actionName: "Canvas Size")
+                s.applyDocumentSize(resized, actionName: "Canvas Size", keepingZoom: true)
             } catch { return fail(-5, "Couldn’t change canvas size: \(error.localizedDescription)") }
         case "imageSizeSheet":
             guard let document = s.document else { return fail(-2, "no document") }
@@ -1127,7 +1127,7 @@ final class UpstreamEditor {
             var options = CanvasSizeOptions(width: width, height: height, anchor: Int(anchor))
             if command.enabled == true { options.fill = CanvasExtensionColor(red: p["red"] ?? 0, green: p["green"] ?? 0, blue: p["blue"] ?? 0) }
             guard let resized = try? await CanvasResizer.shared.resize(snapshot, to: options) else { return fail(-5, "canvas resize failed") }
-            s.applyDocumentSize(resized, actionName: "Canvas Size")
+            s.applyDocumentSize(resized, actionName: "Canvas Size", keepingZoom: true)
         case "cropCanvas":
             guard let width = command.width, let height = command.height, let snapshot = s.projectSnapshot() else { return fail(-1, "invalid crop") }
             let options = CanvasSizeOptions(width: width, height: height, contentOffset: CGPoint(x: -(command.x ?? 0), y: -(command.y ?? 0)))

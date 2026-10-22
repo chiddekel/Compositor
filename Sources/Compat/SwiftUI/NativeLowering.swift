@@ -298,6 +298,12 @@ import Observation
             if field.lineBreakMode == .byTruncatingTail || field.maximumNumberOfLines == 1 { node.modifiers.append(.lineLimit(1)) }
         }
         if let font = field.font { node.modifiers.append(.font(fontToken(font))) }
+        if field.isEditable {
+            node.boolParams["nativeFieldBordered"] = field.isBordered || field.isBezeled
+            node.boolParams["nativeFieldBezeled"] = field.isBezeled
+            node.boolParams["nativeFieldDrawsBackground"] = field.drawsBackground || field.isBezeled
+            node.boolParams["nativeFieldFocusRing"] = field.focusRingType != .none
+        }
         if field.window?.editedField === field { node.boolParams["focused"] = true }
         if let color = field.textColor { node.modifiers.append(.foregroundStyle(Color(nsColor: color).name)) }
         return node

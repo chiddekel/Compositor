@@ -176,6 +176,9 @@ OUTPUTS = {
         'Compositor/UI/NativeLayerList.swift',
         'Tip\'s file through scripts/objc_selectors.py: menus, buttons and the table reach their targets by name. The\n'
         'Qt shell draws the table as pixels and hands it the pointer and keys as AppKit events (compat NativeLowering).'),
+    'Sources/Overrides/LayerSearchControls.swift': plain(
+        'Compositor/UI/LayerSearchControls.swift',
+        'Original layer search, type filters and field delegate; Escape is dispatched by selector name.'),
     'Sources/Overrides/CommandPaletteView.swift': command_palette_view,
     'Sources/Overrides/SliderSnap.swift': slider_snap,
     'Sources/Overrides/CameraRawSlider.swift': plain(

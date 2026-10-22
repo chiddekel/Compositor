@@ -1912,8 +1912,19 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
             // Compat font tokens: "<base>[+weight:<w>][+bold][+monospacedDigit][+design:<d>]", base a text style or
             // "system:<size>". Set with setFont, so it reaches every child that has no font of its own (SwiftUI's
             // environment font).
+            const auto applyFont = [&](const QFont &font) {
+                widget->setFont(font);
+                if (auto *field = qobject_cast<QLineEdit *>(widget)) {
+                    // Explicit framework fonts also override the shell's input stylesheet.
+                    const bool pixels = font.pixelSize() > 0;
+                    const double size = pixels ? font.pixelSize() : font.pointSizeF();
+                    if (size > 0) field->setStyleSheet(field->styleSheet()
+                        + QStringLiteral(" QLineEdit { font-size: %1%2; }")
+                            .arg(size).arg(pixels ? QStringLiteral("px") : QStringLiteral("pt")));
+                }
+            };
             if (auto named = nativeFontForToken(strings.value("name").toString(), widget->font())) {
-                widget->setFont(*named);
+                applyFont(*named);
                 continue;
             }
             const QStringList parts = strings.value("name").toString().split(QLatin1Char('+'));
@@ -1938,7 +1949,7 @@ void applyModifiers(QWidget *widget, const QJsonArray &modifiers) {
                 else if (part == QLatin1String("design:monospaced")) font.setFamilies(QFontDatabase::systemFont(QFontDatabase::FixedFont).families());
                 else if (part.startsWith(QLatin1String("family:"))) font = fontFor(part.mid(7).toUtf8().constData(), font.pixelSize() > 0 ? font.pixelSize() : font.pointSizeF());   // Font.custom(_:size:)
             }
-            widget->setFont(font);
+            applyFont(font);
         } else if (kind == "rotationEffect") {
             // A symbol image turned (SwiftUI rotates about its centre).
             if (auto *label = qobject_cast<QLabel *>(widget); label && !label->pixmap().isNull()) {
@@ -3278,9 +3289,23 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = button;
     } else if (kind == "Toggle") {
         auto *checkBox = new QCheckBox;
-        if (!children.isEmpty()) {
-            const QJsonObject label = children.first().toObject();
-            if (label.value("kind").toString() == "Text") checkBox->setText(label.value("stringParams").toObject().value("text").toString());
+        QString title, symbol;
+        std::function<void(const QJsonObject &)> findLabel = [&](const QJsonObject &label) {
+            const QString labelKind = label.value("kind").toString();
+            const auto parameters = label.value("stringParams").toObject();
+            if (labelKind == QLatin1String("Text") && title.isEmpty()) title = parameters.value("text").toString();
+            if (labelKind == QLatin1String("Image") && symbol.isEmpty()
+                && parameters.value("source").toString().startsWith(QLatin1String("system:")))
+                symbol = parameters.value("source").toString().mid(7);
+            for (const auto &child : label.value("children").toArray()) findLabel(child.toObject());
+        };
+        for (const auto &child : children) findLabel(child.toObject());
+        checkBox->setText(title);
+        if (!symbol.isEmpty()) {
+            const double reserved = node.value("doubleParams").toObject().value("labelReservedIconWidth").toDouble(16);
+            const int width = qRound(std::clamp(reserved, 0.0, 256.0));
+            checkBox->setIcon(renderToolVectorIcon(symbol, 16, QColor(0xf5, 0xf5, 0xf7)));
+            checkBox->setIconSize(QSize(width, 16));
         }
         checkBox->setChecked(bools.value("isOn").toBool());
         checkBox->setStyleSheet(
@@ -3309,7 +3334,7 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 }
             };
             auto *filter = new FieldCommandFilter(field);
-            filter->command = [handle, panel, id](QKeyEvent *event) {
+            filter->command = [handle, panel, id, current = QPointer<SwiftUITextField>(field)](QKeyEvent *event) {
                 const QString command = event->key() == Qt::Key_Down ? QStringLiteral("moveDown:")
                     : event->key() == Qt::Key_Up ? QStringLiteral("moveUp:")
                     : event->key() == Qt::Key_Escape ? QStringLiteral("cancelOperation:") : QString();
@@ -3317,7 +3342,15 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 const auto p = panel.toUtf8(), n = id.toUtf8(), payload = jsonFragment(command);
                 const int result = compositor_session_dispatch_swiftui_drop_event(handle, p.constData(), n.constData(),
                     "fieldCommand", reinterpret_cast<const uint8_t *>(payload.constData()), size_t(payload.size()));
-                if (result > 0) QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
+                if (result > 0) {
+                    // The native delegate owns a handled command's replacement text (for example Escape clears
+                    // a search). Let the next refresh install it even while the Qt field retains keyboard focus.
+                    if (current) {
+                        current->setProperty("swiftuiTyped", false);
+                        current->setProperty("swiftuiFieldCommandPending", true);
+                    }
+                    QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
+                }
                 return result > 0;
             };
         }
@@ -3331,7 +3364,18 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         // a new value set from elsewhere (New Canvas's preset menu writes the focused Width field), as SwiftUI's does.
         QObject::connect(field, &QLineEdit::textEdited, field, [field] { field->setProperty("swiftuiTyped", true); });
         QObject::connect(field, &QLineEdit::editingFinished, field, [field] { field->setProperty("swiftuiTyped", false); });
-        field->setStyleSheet("QLineEdit { background-color: #28282b; color: #ffffff; border: 1px solid #444448; border-radius: 4px; padding: 2px 4px; } QLineEdit:focus { border-color: #007aff; }");
+        const bool bordered = bools.value("nativeFieldBordered").toBool(true);
+        const bool bezeled = bools.value("nativeFieldBezeled").toBool(true);
+        const bool background = bools.value("nativeFieldDrawsBackground").toBool(true);
+        const bool focusRing = bools.value("nativeFieldFocusRing").toBool(true);
+        field->setFrame(bordered);
+        field->setStyleSheet(QStringLiteral("QLineEdit { background-color: %1; color: #ffffff; border: %2; border-radius: %3px; padding: %4; } QLineEdit:focus { border: %5; }")
+            .arg(background ? QStringLiteral("#28282b") : QStringLiteral("transparent"),
+                 bordered ? QStringLiteral("1px solid #444448") : QStringLiteral("none"))
+            .arg(bezeled ? 4 : 0)
+            .arg(bezeled ? QStringLiteral("2px 4px") : QStringLiteral("0px"),
+                 bordered && focusRing ? QStringLiteral("1px solid #007aff")
+                     : bordered ? QStringLiteral("1px solid #444448") : QStringLiteral("none")));
         if (handlerKeys.contains(QStringLiteral("focused"))) new TextFieldFocusFilter(field, handle, panel, id);
         // SwiftUI can focus a newly presented field (inline rename), not only observe Qt's focus changes.
         if (bools.value("focused").toBool()) {
@@ -4195,6 +4239,20 @@ static void refreshEditingControlState(QWidget *current, const QJsonObject &root
         for (const auto &child : node.value("children").toArray()) collect(child.toObject(), active);
     };
     collect(root, true);
+    if (refreshText) {
+        auto *focused = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+        if (focused && current->isAncestorOf(focused) && focused->property("swiftuiFieldCommandPending").toBool()
+            && !focused->property("swiftuiTyped").toBool()
+            && !fields.contains(focused->property("swiftUINode").toString())) {
+            // A handled native command can remove the field from the model. End Qt editing after this refresh
+            // returns, so focus protection no longer holds the retired field's panel on screen.
+            QTimer::singleShot(0, focused, [focused] {
+                if (focused->hasFocus() && !focused->property("swiftuiTyped").toBool()) focused->clearFocus();
+            });
+        }
+        if (focused && fields.contains(focused->property("swiftUINode").toString()))
+            focused->setProperty("swiftuiFieldCommandPending", false);
+    }
     auto widgets = current->findChildren<QWidget *>(); widgets.prepend(current);
     for (auto *widget : widgets) {
         const QString id = widget->property("swiftUINode").toString();

@@ -23,12 +23,12 @@ def upstream_symbols():
     systemSymbolName:, symbol:, badge) and the cases of computed `symbol`/`badge` properties."""
     found = {}
     literal = re.compile(r'"([a-z][a-z0-9]*(?:\.[a-z0-9]+)*)"')
-    context = re.compile(r'systemName:|systemImage:|systemSymbolName:|symbol:|\bsymbol\b.*[=?:]|\bbadge\b')
+    context = re.compile(r'systemName:|systemImage:|systemSymbolName:|symbol:|\bsymbol\b.*[=?:]|\bbadge\b|\bheaderIcon\(')
     for path in sorted((root / "Compositor").rglob("*.swift")):
         lines = path.read_text().splitlines()
         block = 0
         for number, line in enumerate(lines, 1):
-            if re.search(r"var (symbol|badge): String\??\s*\{", line):
+            if re.search(r"var (symbol|badge|systemImageName): String\??\s*\{", line):
                 block = 1 + line.count("{") - line.count("}") - 1
             elif block:
                 block += line.count("{") - line.count("}")

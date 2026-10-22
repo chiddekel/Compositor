@@ -118,6 +118,7 @@ NATIVE_GATES=(
     "test --combo-smoke --selection-clear-probe"
     "test --combo-smoke --app-visibility-probe"
     "test --combo-smoke --canvas-size-controls-probe"
+    "test --combo-smoke --layer-search-probe"
     "test --combo-smoke --image-size-controls-probe"
     "test --combo-smoke --transform-gestures-probe"
     "test --combo-smoke --transform-snap-probe"

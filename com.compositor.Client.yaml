@@ -484,6 +484,7 @@ modules:
       - install -Dm644 flatpak/com.compositor.Client.thumbnailer /app/share/thumbnailers/com.compositor.Client.thumbnailer
       - install -Dm755 build/compositor-thumbnailer /app/bin/compositor-thumbnailer
       - install -Dm644 LICENSE /app/share/licenses/com.compositor.Client/LICENSE
+      - install -Dm644 third_party/lucide/LICENSE /app/share/licenses/com.compositor.Client/Lucide-LICENSE
       - cp -r third_party/licenses/vendored /app/share/licenses/com.compositor.Client/
       - install -Dm644 third_party/sources/inventory.json /app/share/licenses/com.compositor.Client/vendored-sources.json
     sources:

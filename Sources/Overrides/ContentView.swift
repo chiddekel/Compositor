@@ -10,6 +10,11 @@ import Sparkle
 /// NSApplicationDelegate with Sparkle) is excluded, since the Qt shell owns the app's lifecycle. This carries what the
 /// views and menus use: the workspace, the project commands (the shell performs them), the updater and the editor.
 @MainActor final class CompositorApplicationDelegate {
+    nonisolated static var runsTests: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
     let workspace: ProjectWorkspace
     /// The project commands (upstream's ProjectController for the current tab): on Linux the shell performs them.
     let projects: ShellProjects

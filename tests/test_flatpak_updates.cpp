@@ -4,6 +4,7 @@
 #include <QDBusMessage>
 #include <QDialog>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QSettings>
 #include <QPushButton>
@@ -104,6 +105,20 @@ int main(int argc, char **argv) {
     writeInfo("com.compositor.Client", true);
     CHECK(!FlatpakUpdateService::isInstalledApplication(file, "/workspace/.build/release/CompositorHostBootstrap"));
     CHECK(!FlatpakUpdateService::isInstalledApplication(directory.filePath("missing"), "/app/bin/compositor"));
+    for (const char *key : {"XCTestConfigurationFilePath", "XCTestBundlePath"}) {
+        const bool wasSet = qEnvironmentVariableIsSet(key);
+        const QByteArray previous = qgetenv(key);
+        qputenv(key, "/dev/null");
+        {
+            FlatpakUpdateService testHost(file, "/app/bin/compositor", bus);
+            QEventLoop loop;
+            QTimer::singleShot(100, &loop, &QEventLoop::quit);
+            loop.exec();
+            CHECK(testHost.isSupported());
+            CHECK(testHost.status() == UpdateStatus::Idle && portal.creates == 0);
+        }
+        if (wasSet) qputenv(key, previous); else qunsetenv(key);
+    }
     {
         FlatpakUpdateService unsupported(file, "/workspace/compositor", bus);
         unsupported.installUpdate(); unsupported.checkForUpdates(false);

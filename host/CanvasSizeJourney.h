@@ -92,6 +92,10 @@ inline int run(QApplication &) {
         const auto command = [&](QJsonObject value) { require(window.sendCommand(value), "canvas size bridge setup/history failed"); QApplication::processEvents(); };
         command({{"action", "setShowsTransformControls"}, {"enabled", false}});
         command({{"action", "resizeImage"}, {"width", 64}, {"height", 48}, {"value", 100}, {"kind", "Nearest"}});
+        auto *zoomIn = window.findChild<QAction *>("view.zoomIn");
+        require(zoomIn && zoomIn->isEnabled(), "canvas size zoom fixture action missing");
+        zoomIn->trigger(); QApplication::processEvents();
+        require(window.sessionState().value("zoom").toDouble() != 1, "canvas size zoom fixture stayed at 100 percent");
         const auto pixels = [&]() {
             const QString path = temporary.filePath("pixels.png"); require(window.exportPNG(path), "canvas size pixel readback failed");
             QImage image(path); require(!image.isNull(), "canvas size readback missing"); return image.convertToFormat(QImage::Format_RGBA8888);
@@ -173,6 +177,7 @@ inline int run(QApplication &) {
                 click(button(sheet, anchors[anchor])); click(button(sheet, "OK"));
             });
             pump([&] { return window.sessionState().value("width").toInt() == size.width() && window.sessionState().value("height").toInt() == size.height(); }, "canvas size commit dimensions differ");
+            require(window.sessionState().value("zoom") == before.value("zoom"), "Canvas Size changed the zoom");
             require(window.sessionState().value("activeLayerID") == originalState.value("activeLayerID")
                 && window.sessionState().value("layers").toArray().size() == 1, "canvas size changed layer identity/count");
         };

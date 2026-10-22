@@ -126,7 +126,7 @@ final class ProjectController {
         guard let options, let snapshot = session.projectSnapshot() else { return }
         do {
             let resized = try await CanvasResizer.shared.resize(snapshot, to: options)
-            session.applyDocumentSize(resized, actionName: "Canvas Size")
+            session.applyDocumentSize(resized, actionName: "Canvas Size", keepingZoom: true)
         } catch { await showError("Couldn’t change canvas size", error: error) }
     }
 

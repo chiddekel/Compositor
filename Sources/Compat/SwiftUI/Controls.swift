@@ -1,4 +1,7 @@
 import Foundation
+
+/// Upstream's keys use the same string-backed labels as the portable Text and Label controls.
+public typealias LocalizedStringKey = String
 // The leaf controls. Each is a thin value type carrying exactly what real SwiftUI's initializer takes; the Qt
 // renderer turns each into one widget (QLabel, QPushButton, QSlider, ...) — see the architecture plan for the
 // kind→widget mapping.
@@ -226,6 +229,12 @@ public struct Toggle<Label: View>: View, PrimitiveView {
 }
 extension Toggle where Label == Text {
     public init(_ title: String, isOn: Binding<Bool>) { self.init(isOn: isOn) { Text(title) } }
+}
+
+extension Toggle where Label == SwiftUI.Label<Text, Image> {
+    public init(_ title: LocalizedStringKey, systemImage: String, isOn: Binding<Bool>) {
+        self.init(isOn: isOn) { SwiftUI.Label(title, systemImage: systemImage) }
+    }
 }
 
 public struct ToggleStyleConfiguration {

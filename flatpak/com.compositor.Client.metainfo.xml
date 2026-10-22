@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.5-linux-alpha.3" date="2026-10-22" type="development">
+      <description><p>Integrate upstream layer name search and type filters, preserve zoom when changing Canvas Size, and suppress automatic updates in test hosts. Retain original upstream source behind Linux compatibility adapters. Fix native search text refresh and focus release on Escape.</p></description>
+    </release>
     <release version="1.5.5-linux-alpha.2" date="2026-10-22" type="development">
       <description><p>Upstream 1.5.5 on GNU/Linux: RGB Split, filter adjustment layers, Channel Pack with transparent RGB preservation, Split to Layers, Photoshop artboard tabs, and project format 16. Fix native font Undo and artboard conversion prompt ownership. Add a verbose terminal dashboard for Flatpak workflows.</p></description>
     </release>

@@ -75,6 +75,10 @@ jobs:
           flatpak install --user --noninteractive -y compositor-release-test com.compositor.Client//alpha
           flatpak run --env=QT_QPA_PLATFORM=offscreen com.compositor.Client --session-smoke
           flatpak run --env=QT_QPA_PLATFORM=offscreen com.compositor.Client --preferences-smoke
+          flatpak run --env=QT_QPA_PLATFORM=offscreen --env=XCTestConfigurationFilePath=flatpak-release \
+            com.compositor.Client --combo-smoke --layer-search-probe
+          flatpak run --env=QT_QPA_PLATFORM=offscreen --env=XCTestConfigurationFilePath=flatpak-release \
+            com.compositor.Client --combo-smoke --canvas-size-controls-probe
       - name: Remove private signing material
         if: always()
         run: |

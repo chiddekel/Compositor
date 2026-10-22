@@ -172,6 +172,15 @@ extension View {
         }
     }
     public func labelsHidden() -> some View { modified { $0.boolParams["labelsHidden"] = true } }
+    public func labelReservedIconWidth(_ width: CGFloat?) -> some View {
+        modified { node in
+            if let width, width.isFinite {
+                node.doubleParams["labelReservedIconWidth"] = Double(max(0, width))
+            } else {
+                node.doubleParams.removeValue(forKey: "labelReservedIconWidth")
+            }
+        }
+    }
     public func cornerRadius(_ radius: Double) -> some View { modified { $0.modifiers.append(.cornerRadius(radius)) } }
     public func offset(x: Double = 0, y: Double = 0) -> some View { modified { $0.modifiers.append(.offset(x: x, y: y)) } }
     public func shadow(radius: Double = 1) -> some View { modified { $0.modifiers.append(.shadow(radius: radius)) } }

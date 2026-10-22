@@ -12,6 +12,7 @@
 #include "AutosaveJourney.h"
 #include "GridSettingsJourney.h"
 #include "CanvasSizeJourney.h"
+#include "LayerSearchJourney.h"
 #include "ImageSizeJourney.h"
 #include "UIAuditJourney.h"
 #include "DesktopProbeJourney.h"
@@ -147,6 +148,7 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     if (app.arguments().contains("--autosave-crash-probe")) return autosavejourney::run(app);
     if (app.arguments().contains("--grid-settings-probe")) return gridsettingsjourney::run(app);
     if (app.arguments().contains("--canvas-size-controls-probe")) return canvassizejourney::run(app);
+    if (app.arguments().contains("--layer-search-probe")) return layersearchjourney::run(app);
     if (app.arguments().contains("--image-size-controls-probe")) return imagesizejourney::run(app);
     if (app.arguments().contains("--ui-audit-probe")) return uiauditjourney::run(app);
     if (app.arguments().contains("--desktop-probe")) return desktopprobe::run(app);

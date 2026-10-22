@@ -30,8 +30,10 @@ FlatpakUpdateService::FlatpakUpdateService(QObject *parent)
 FlatpakUpdateService::FlatpakUpdateService(const QString &infoPath, const QString &executable,
                                          const QDBusConnection &bus, QObject *parent)
     : QObject(parent), m_bus(bus), m_supported(isInstalledApplication(infoPath, executable)) {
-    if (m_supported) QTimer::singleShot(0, this, [this] { ensureMonitor(); });
-    else m_status = UpdateStatus::Unsupported;
+    const bool testHost = qEnvironmentVariableIsSet("XCTestConfigurationFilePath")
+        || qEnvironmentVariableIsSet("XCTestBundlePath");
+    if (m_supported && !testHost) QTimer::singleShot(0, this, [this] { ensureMonitor(); });
+    else if (!m_supported) m_status = UpdateStatus::Unsupported;
 }
 
 FlatpakUpdateService::~FlatpakUpdateService() {
