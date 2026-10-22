@@ -60,7 +60,12 @@ jobs:
           name: parity-inputs
           path: .build/parity-inputs
       - name: Render with upstream macOS APIs
-        run: python3 scripts/render-parity.py --inputs .build/parity-inputs --output .build/parity-mac
+        # Reject incompatible fixtures before spending time compiling the application oracle.
+        # The preflight uses the same native CIRAWFilter and linear-light context as upstream.
+        # It does not substitute another decoder for the Mac reference.
+        run: |
+          swift scripts/check-parity-raw-macos.swift .build/parity-inputs/sensor-*.dng
+          python3 scripts/render-parity.py --inputs .build/parity-inputs --output .build/parity-mac
       - name: Preserve macOS XCTest failure details
         uses: actions/upload-artifact@v4
         if: always()

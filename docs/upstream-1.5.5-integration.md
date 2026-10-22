@@ -123,3 +123,13 @@ Evidence: `/tmp/compositor155-parity-catalog-check.log`.
 The first alpha.1 signing workflow was cancelled before publication while the exporter is
 revalidated. No alpha.1 GitHub release was published. A new candidate will carry these harness
 fixes; the application code and completed local Flatpak acceptance are unchanged.
+
+The corrected Mac exporter produced 156 images, including the new RGB Split/filter-layer cases
+and the deep-color samples. It then reported `.unreadable` while developing the synthetic RAW
+fixtures. The fixtures now derive ASCII lengths from their NUL-terminated bytes and state their
+crop/active area explicitly on 512-pixel sensor frames. A native `CIRAWFilter` preflight checks
+actual development before the Mac app build; metadata recognition alone is insufficient.
+An independent TIFF structure test checks the string termination, crop and strip bounds.
+All seven parity tests and a real 162-case Linux export pass with the revised inputs
+(`/tmp/compositor155-alpha2-parity-local.log`). Native Mac RAW acceptance is being rechecked
+before tagging `1.5.5-linux-alpha.2`.

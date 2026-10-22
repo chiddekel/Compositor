@@ -1,4 +1,4 @@
-Compositor 1.5.5-linux-alpha.1 for GNU/Linux — signed Flatpak alpha, x86_64.
+Compositor 1.5.5-linux-alpha.2 for GNU/Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream 1.5.5 while preserving the upstream app, test and Xcode sources.
 - Adds RGB Split with CPU and Vulkan rendering, filter adjustment layers, Split to Layers, and Photoshop artboards opening in separate tabs. Saved projects use format 16.
@@ -12,6 +12,7 @@ Verification:
 - Passed 1,036 Swift tests and 164 XCTest cases. All 42 native journeys are covered across the full batch and corrected combination rerun; the initial batch passed all six wand stress rounds.
 - Built all dependencies and the full Flatpak application with downloads disabled; all 15 CMake tests passed.
 - Ran the packaged image against KDE Platform: session startup, RGB Split, Channel Pack, all artboard conversion Accept/Cancel cases and font history passed.
+- Expanded the independent render catalog to 162 cases and fixed the disposable macOS exporter setup; failure summaries are retained by CI.
 - Verified all 29 source archives and installed the project license, vendored notices and source inventory. The dashboard's 16 tests and release tools' 17 tests pass.
 
 Validation details are recorded in docs/upstream-1.5.5-integration.md. Physical tablet input and a current macOS pixel comparison remain unverified locally. RGB Split's pseudorandom samples can differ between CPU and Vulkan; its image comparison checks aggregate error and spread.
