@@ -1,3 +1,18 @@
+Compositor 1.5.5-linux-alpha.4 for GNU/Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream through `78de504`, retaining the protected macOS app, tests and Xcode sources.
+- Adds animated GIF layers: import, timeline playback, per-frame editing, duplication, deletion and timing, project format 17 persistence, and animated GIF export.
+- Uses source-owned ImageIO decoder sessions for linear sequential frame decoding and panel-owned thumbnail tokens for large timelines and multiple windows.
+- Adapts the original toolbar to one or two columns as window height changes, including returning to one column when space becomes available.
+- Keeps canvas geometry stable during toolbar refreshes and keeps held layer drags responsive through scoped native UI invalidation and live scroll queries.
+- Adds an installed-Flatpak GIF journey to the signed release workflow before publication.
+
+Verification: 170 XCTest cases, 1,061 Swift tests, all 44 native gates, all 16 CMake tests without skips, and seven packaged KDE-runtime checks pass. Protected-source, generator, shader, source-coverage, ledger, codec-scaling, vendored-source and release-tool checks pass. Details: docs/upstream-bd76fc9-integration.md.
+
+This remains an alpha port. Existing macOS render-comparison differences and physical tablet validation limits from the preceding release still apply; see docs/upstream-1.5.5-integration.md. This update does not claim a new macOS pixel comparison.
+
+Previous release notes:
+
 Compositor 1.5.5-linux-alpha.3 for GNU/Linux — signed Flatpak alpha, x86_64.
 
 - Integrates current upstream through `551a35f` while retaining the original app, tests and Xcode sources.

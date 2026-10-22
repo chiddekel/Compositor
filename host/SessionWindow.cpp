@@ -859,6 +859,14 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
         grid->addWidget(m_rulerH, 0, 1);
         grid->addWidget(m_rulerV, 1, 0);
         grid->addWidget(m_canvasWidget, 1, 1);
+        grid->setRowStretch(1, 1);
+        m_gifTimelineContainer = new QWidget(column);
+        m_gifTimelineContainer->setObjectName("gifTimelineContainer");
+        auto *timelineLayout = new QVBoxLayout(m_gifTimelineContainer);
+        timelineLayout->setContentsMargins(0, 0, 0, 0);
+        m_gifTimelineContainer->setFixedHeight(110);
+        m_gifTimelineContainer->hide();
+        grid->addWidget(m_gifTimelineContainer, 2, 0, 1, 2);
         for (QWidget *w : {m_rulerCorner, m_rulerH, m_rulerV}) w->hide();
         setCentralWidget(column);
     }
@@ -867,7 +875,7 @@ SessionWindow::SessionWindow(QWidget *parent, PlatformServices services)
     m_toolsBar->setObjectName("toolbar.tools");
     m_toolsBar->setMovable(false);
     m_toolsBar->setOrientation(Qt::Vertical);
-    m_toolsBar->setFixedWidth(ParityMetrics::ToolRailWidth);
+    m_toolsBar->setMinimumWidth(ParityMetrics::ToolRailWidth);
     m_toolsBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     m_toolsBar->setIconSize(QSize(ParityMetrics::ToolIconNominal, ParityMetrics::ToolIconNominal));
     addToolBar(Qt::LeftToolBarArea, m_toolsBar);
@@ -2856,6 +2864,7 @@ void SessionWindow::exportAsWithUpstream(const QString &startFormat) {
     else if (format == QLatin1String("PDF")) { filter = tr("PDF document (*.pdf)"); ext = QStringLiteral(".pdf"); }
     else if (format == QLatin1String("EXR")) { filter = tr("OpenEXR image (*.exr)"); ext = QStringLiteral(".exr"); }
     else if (format == QLatin1String("TIFF")) { filter = tr("TIFF image (*.tif *.tiff)"); ext = QStringLiteral(".tif"); }
+    else if (format == QLatin1String("GIF")) { filter = tr("GIF animation (*.gif)"); ext = QStringLiteral(".gif"); }
     const QString path = QFileDialog::getSaveFileName(this, tr("Export %1").arg(format.isEmpty() ? QStringLiteral("PNG") : format),
         QDir::home().filePath(base + ext), filter);
     if (path.isEmpty()) {
@@ -4671,6 +4680,7 @@ void SessionWindow::refreshDirtyPanels() {
     bool floating = false;
     for (const QString &panel : dirty) {
         if (panel == QLatin1String("StatusBar")) updateStatusTelemetry();
+        else if (panel == QLatin1String("GIFTimeline")) updateGIFTimeline();
         else if (panel == QLatin1String("ToolHeaders")) updateOptionsBar();
         else if (panel == QLatin1String("ToolRail")) updateToolRail();
         else if (panel == QLatin1String("LayersPanel")) updateLayersPanel();
@@ -6440,9 +6450,6 @@ void SessionWindow::applyDarkTheme() {
             spacing: 10px;
             padding-top: 16px;
             padding-bottom: 12px;
-            width: 56px;
-            min-width: 56px;
-            max-width: 56px;
         }
         QToolBar[objectName="toolbar.tools"] QToolButton {
             background: transparent;
@@ -8146,19 +8153,7 @@ void SessionWindow::updateToolRail() {
         }
         if (auto *area = qobject_cast<QScrollArea *>(rendered) ? qobject_cast<QScrollArea *>(rendered) : rendered->findChild<QScrollArea *>()) {
             QTimer::singleShot(0, area, [area, scrolled] { area->verticalScrollBar()->setValue(scrolled); });
-            if (!m_railFitChecked) {
-                m_railFitChecked = true;
-                // Opening size: upstream's 1180x780, grown (never past the screen) just enough that the whole rail —
-                // every tool plus the colour swatches — shows without scrolling when the screen has the room.
-                QTimer::singleShot(0, this, [this, area] {
-                    if (isMaximized() || isFullScreen() || !area->widget()) return;
-                    const int missing = area->widget()->sizeHint().height() - area->viewport()->height();
-                    if (missing <= 0) return;
-                    const QScreen *display = screen();
-                    const int limit = display ? display->availableGeometry().height() - (frameGeometry().height() - height()) : height();
-                    resize(width(), std::min(limit, height() + missing));
-                });
-            }
+
         }
         if (m_swiftUICurrentToolRail) {
             m_swiftUIToolRailContainer->layout()->removeWidget(m_swiftUICurrentToolRail);
@@ -8263,8 +8258,23 @@ void SessionWindow::syncOptionsFromSession() {
     }
 }
 
+void SessionWindow::updateGIFTimeline() {
+    if (!m_gifTimelineContainer || !m_sessionHandle) return;
+    QWidget *rendered = swiftUIRenderPanelIfChanged(m_sessionHandle, QStringLiteral("GIFTimeline"), m_gifTimeline);
+    if (rendered != m_gifTimeline) {
+        if (m_gifTimeline) {
+            m_gifTimelineContainer->layout()->removeWidget(m_gifTimeline);
+            retireRenderedPanel(m_gifTimeline);
+        }
+        m_gifTimeline = rendered;
+        if (rendered) m_gifTimelineContainer->layout()->addWidget(rendered);
+    }
+    m_gifTimelineContainer->setVisible(m_gifTimeline != nullptr);
+}
+
 void SessionWindow::updateStatusTelemetry() {
     PERF_SCOPE("updateStatusTelemetry");
+    updateGIFTimeline();
     if (!statusBar()) return;
 
     if (!m_statusZoomLabel) {

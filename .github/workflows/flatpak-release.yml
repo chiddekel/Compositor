@@ -79,6 +79,8 @@ jobs:
             com.compositor.Client --combo-smoke --layer-search-probe
           flatpak run --env=QT_QPA_PLATFORM=offscreen --env=XCTestConfigurationFilePath=flatpak-release \
             com.compositor.Client --combo-smoke --canvas-size-controls-probe
+          flatpak run --env=QT_QPA_PLATFORM=offscreen --env=XCTestConfigurationFilePath=flatpak-release \
+            --filesystem="$PWD:ro" --cwd="$PWD" com.compositor.Client --combo-smoke --gif-probe
       - name: Remove private signing material
         if: always()
         run: |

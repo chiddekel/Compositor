@@ -33,18 +33,36 @@ public let kCGImagePropertyProfileName: CFString = "ProfileName"
 public let kCGImagePropertyTIFFDictionary: CFString = "{TIFF}"
 public let kCGImagePropertyTIFFCompression: CFString = "Compression"
 
+public let kCGImagePropertyGIFDictionary: CFString = "{GIF}"
+public let kCGImagePropertyGIFDelayTime: CFString = "DelayTime"
+public let kCGImagePropertyGIFUnclampedDelayTime: CFString = "UnclampedDelayTime"
+public let kCGImagePropertyGIFLoopCount: CFString = "LoopCount"
+public let kCGImagePropertyGIFHasGlobalColorMap: CFString = "HasGlobalColorMap"
+
 // MARK: - Source
 
 public final class CGImageSource: @unchecked Sendable {
     let data: Data
     let info: ImageInfo
+    let animation: GIFMetadata?
     /// A camera RAW file, read by the RAW decoder from disk (never loaded whole: they can be hundreds of MB).
     let rawURL: URL?
     private var cached: CGImage?
-    init(data: Data, info: ImageInfo) { self.data = data; self.info = info; rawURL = nil }
-    init(rawURL: URL, info: ImageInfo) { data = Data(); self.info = info; self.rawURL = rawURL }
+    private var animationSource: (any AnimatedImageSource)?
+    private let animationLock = NSLock()
+    init(data: Data, info: ImageInfo, animation: GIFMetadata? = nil) { self.data = data; self.info = info; rawURL = nil; self.animation = animation }
+    init(rawURL: URL, info: ImageInfo) { data = Data(); self.info = info; self.rawURL = rawURL; animation = nil }
 
-    func image() -> CGImage? {
+    func image(at index: Int = 0) -> CGImage? {
+        if animation != nil {
+            animationLock.lock(); defer { animationLock.unlock() }
+            if animationSource == nil {
+                animationSource = ImageCodecRegistry.backends.compactMap { $0 as? AnimatedImageCodecBackend }
+                    .lazy.compactMap { $0.makeAnimationSource(self.data) }.first
+            }
+            return animationSource?.image(at: index)
+        }
+        guard index == 0 else { return nil }
         if let cached { return cached }
         if let rawURL {
             // As shot, full size (the Develop sheet is the place for settings).
@@ -69,6 +87,11 @@ private func boolOption(_ options: CFDictionary?, _ key: CFString) -> Bool? {
 }
 
 public func CGImageSourceCreateWithData(_ data: CFData, _ options: CFDictionary?) -> CGImageSource? {
+    if data.starts(with: Data("GIF8".utf8)) {
+        guard let metadata = GIFMetadata(data) else { return nil }
+        return CGImageSource(data: data, info: ImageInfo(typeIdentifier: "com.compuserve.gif",
+            width: metadata.width, height: metadata.height), animation: metadata)
+    }
     guard let info = ImageCodecRegistry.identify(data) else { return nil }
     return CGImageSource(data: data, info: info)
 }
@@ -85,11 +108,12 @@ public func CGImageSourceCreateWithURL(_ url: CFURL, _ options: CFDictionary?) -
 
 /// The image's type identifier, or nil when it is not an image.
 public func CGImageSourceGetType(_ source: CGImageSource) -> CFString? { source.info.typeIdentifier }
-public func CGImageSourceGetCount(_ source: CGImageSource) -> Int { 1 }
+public func CGImageSourceGetCount(_ source: CGImageSource) -> Int { source.animation?.delays.count ?? 1 }
 
 public func CGImageSourceCopyPropertiesAtIndex(_ source: CGImageSource, _ index: Int, _ options: CFDictionary?) -> CFDictionary? {
-    guard index == 0 else { return nil }
+    guard (0..<CGImageSourceGetCount(source)).contains(index) else { return nil }
     var info = source.info
+    if let animation = source.animation { info.width = animation.width; info.height = animation.height }
     // Header-only recognition (magic bytes) knows the type but not the size; decode to learn it.
     if info.width == 0, let image = source.image() { info.width = image.width; info.height = image.height }
     guard info.width > 0 else { return nil }
@@ -98,20 +122,26 @@ public func CGImageSourceCopyPropertiesAtIndex(_ source: CGImageSource, _ index:
         kCGImagePropertyDepth: info.bitDepth, kCGImagePropertyOrientation: info.orientation,
         kCGImagePropertyHasAlpha: info.hasAlpha, kCGImagePropertyColorModel: info.colorModel,
     ]
+    if let animation = source.animation {
+        dict[kCGImagePropertyPixelWidth] = animation.width
+        dict[kCGImagePropertyPixelHeight] = animation.height
+        dict[kCGImagePropertyGIFDictionary] = [kCGImagePropertyGIFDelayTime: animation.delays[index],
+            kCGImagePropertyGIFUnclampedDelayTime: animation.delays[index]]
+    }
     if let profileName = info.profileName { dict[kCGImagePropertyProfileName] = profileName }
     if let dpi = info.dpi { dict[kCGImagePropertyDPIWidth] = dpi; dict[kCGImagePropertyDPIHeight] = dpi }
     return dict
 }
 
 public func CGImageSourceCreateImageAtIndex(_ source: CGImageSource, _ index: Int, _ options: CFDictionary?) -> CGImage? {
-    guard index == 0 else { return nil }
-    return source.image()
+    guard (0..<CGImageSourceGetCount(source)).contains(index) else { return nil }
+    return source.image(at: index)
 }
 
 /// Downscaled image with its longest side at most `kCGImageSourceThumbnailMaxPixelSize`. With
 /// `kCGImageSourceCreateThumbnailWithTransform` the EXIF orientation is applied.
 public func CGImageSourceCreateThumbnailAtIndex(_ source: CGImageSource, _ index: Int, _ options: CFDictionary?) -> CGImage? {
-    guard index == 0, var image = source.image() else { return nil }
+    guard (0..<CGImageSourceGetCount(source)).contains(index), var image = source.image(at: index) else { return nil }
     if boolOption(options, kCGImageSourceCreateThumbnailWithTransform) == true, source.info.orientation != 1 {
         image = ImageOrientation.apply(source.info.orientation, to: image)
     }
@@ -129,30 +159,61 @@ public final class CGImageDestination: @unchecked Sendable {
     let type: String
     var image: CGImage?
     var properties: [AnyHashable: Any] = [:]
+    var frames: [(CGImage, Double)] = []
+    var globalProperties: CFDictionary = [:]
+    var expectedCount = 1
     var finalized = false
     var url: URL?
     init(sink: NSMutableData, type: String) { self.sink = sink; self.type = type }
 }
 
 public func CGImageDestinationCreateWithData(_ data: CFMutableData, _ type: CFString, _ count: Int, _ options: CFDictionary?) -> CGImageDestination? {
-    guard count == 1, UTType(type)?.conforms(to: .image) == true else { return nil }
-    return CGImageDestination(sink: data, type: type)
+    guard count > 0, (count == 1 || type == "com.compuserve.gif"), UTType(type)?.conforms(to: .image) == true else { return nil }
+    let destination = CGImageDestination(sink: data, type: type)
+    destination.expectedCount = count
+    return destination
 }
 
 public func CGImageDestinationCreateWithURL(_ url: CFURL, _ type: CFString, _ count: Int, _ options: CFDictionary?) -> CGImageDestination? {
-    guard count == 1, UTType(type)?.conforms(to: .image) == true else { return nil }
+    guard count > 0, (count == 1 || type == "com.compuserve.gif"), UTType(type)?.conforms(to: .image) == true else { return nil }
     let destination = CGImageDestination(sink: NSMutableData(), type: type)
+    destination.expectedCount = count
     destination.url = url
     return destination
 }
 
 public func CGImageDestinationAddImage(_ destination: CGImageDestination, _ image: CGImage, _ properties: CFDictionary?) {
-    guard destination.image == nil, !destination.finalized else { return }
+    guard !destination.finalized else { return }
+    if destination.type == "com.compuserve.gif" {
+        guard destination.frames.count < destination.expectedCount else { return }
+        let gif = properties?[kCGImagePropertyGIFDictionary] as? CFDictionary
+        let delay = (gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
+            ?? (gif?[kCGImagePropertyGIFDelayTime] as? Double) ?? 0
+        destination.frames.append((image, delay))
+        return
+    }
+    guard destination.image == nil else { return }
     destination.image = image
     destination.properties = properties ?? [:]
 }
 
+public func CGImageDestinationSetProperties(_ destination: CGImageDestination, _ properties: CFDictionary?) {
+    guard !destination.finalized else { return }
+    destination.globalProperties = properties ?? [:]
+}
+
 public func CGImageDestinationFinalize(_ destination: CGImageDestination) -> Bool {
+    if destination.type == "com.compuserve.gif" {
+        guard !destination.finalized, destination.frames.count == destination.expectedCount else { return false }
+        destination.finalized = true
+        let gif = destination.globalProperties[kCGImagePropertyGIFDictionary] as? CFDictionary
+        guard let data = PortableGIFEncoder().encodeFrames(destination.frames, loopCount: gif?[kCGImagePropertyGIFLoopCount] as? Int) else { return false }
+        if let url = destination.url {
+            do { try data.write(to: url); return true } catch { return false }
+        }
+        destination.sink.append(data)
+        return true
+    }
     guard !destination.finalized, let image = destination.image else { return false }
     destination.finalized = true
     let quality = destination.properties[kCGImageDestinationLossyCompressionQuality] as? Double

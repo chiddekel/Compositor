@@ -259,6 +259,8 @@ public enum ViewResolver {
     /// an `NSHostingView` of it would hold as a real AppKit subview (a layers table, a window bridge). Walks exactly
     /// the way `resolveList` does, stopping at the first match.
     @MainActor public static func firstNativeView(in view: any View) -> NSView? {
+        // The chosen alternative is determined during layout; eager creation would retain an unchosen native view.
+        if view is any _FittingView { return nil }
         if let native = view as? any HostedNativeContent { return native.makeNativeView() }
         if let list = view as? any _ViewListProviding {
             for child in list._viewList { if let found = firstNativeView(in: child) { return found } }

@@ -120,18 +120,21 @@ public enum StateStore {
         self.scope = scope
         claimed = []
         ViewResolver.resetNestedPaths()
+        ImageRegistry.begin(scope: scope)
         PreferenceValues.begin(scope: scope)
         return true
     }
     public static func end() {
         guard let scope else { return }
         PreferenceValues.end(scope: scope)
+        ImageRegistry.end(scope: scope)
         let prefix = scope + "|"
         for key in boxes.keys where key.hasPrefix(prefix) && !claimed.contains(key) { boxes.removeValue(forKey: key) }
         self.scope = nil
     }
     /// Forgets all state under `scope` (a panel that is closed for good).
     public static func discard(scope: String) {
+        ImageRegistry.discard(scope: scope)
         let prefix = scope + "|"
         for key in boxes.keys where key.hasPrefix(prefix) { boxes.removeValue(forKey: key) }
     }

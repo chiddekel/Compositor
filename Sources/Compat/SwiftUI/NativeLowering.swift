@@ -2,6 +2,12 @@ import Foundation
 import AppKit
 import Observation
 
+/// A live native viewport query, independent of resolving or painting its document.
+@MainActor public final class NativeScrollOffsetBox {
+    public var offset: CGPoint?
+    public init() {}
+}
+
 // A host that draws resolved trees itself (the Qt shell) can't place real AppKit views, so with `NativeLowering`
 // active an `NSViewRepresentable` resolves to the nodes its AppKit view stands for. The representable's view is made
 // once per tree position and updated on every resolve, exactly as SwiftUI drives it; what it shows is read back from
@@ -27,9 +33,8 @@ import Observation
     }
     private static var hosted: [String: Hosted] = [:]
 
-    /// Bumped when the user acts on a lowered control: the trees that showed one resolve again (AppKit state such as a
-    /// pop-up's selection isn't observable by itself).
-    static let revision = Revision()
+    /// AppKit control state isn't observable by itself. Each hosted window invalidates only its own tree;
+    /// unrelated panels and sessions still follow their model's Observation dependencies.
     final class Revision: Observable {
         private let registrar = ObservationRegistrar()
         private var stored = 0
@@ -53,7 +58,7 @@ import Observation
         source._updateNativeView(entry.view, state: entry.state)
         let preferred = source._sizeThatFits(.unspecified, view: entry.view, state: entry.state)
         if let preferred, entry.view.bounds.width <= 0 || entry.view.bounds.height <= 0 { entry.view.setFrameSize(preferred) }
-        _ = revision.value
+        _ = revision(for: entry.view.window)?.value
         var node = lower(entry.view, path: path + "/native")
         if let minimum = source._sizeThatFits(.init(width: 0, height: nil), view: entry.view, state: entry.state) {
             node.doubleParams["nativeMinWidth"] = Double(minimum.width)
@@ -81,7 +86,7 @@ import Observation
     }
     public static func dismissChildWindow(_ number: Int) {
         guard let window = childWindow(number) else { return }
-        act { window.resignKey(); window.orderOut(nil); window.parent?.removeChildWindow(window) }
+        act(in: window.contentView) { window.resignKey(); window.orderOut(nil); window.parent?.removeChildWindow(window) }
     }
     public static func childWindowNode(_ number: Int) -> RenderNode? {
         guard let window = childWindow(number), let view = window.contentView else { return nil }
@@ -124,9 +129,19 @@ import Observation
     }
 
     /// Runs a user action on a lowered control, then has the trees showing it resolve again.
-    static func act(_ action: () -> Void) {
+    private static func revision(for window: NSWindow?) -> Revision? {
+        var current = window
+        while let window = current {
+            if let lowered = window as? LoweringWindow { return lowered.nativeRevision }
+            current = window.parent
+        }
+        return nil
+    }
+
+    static func act(in view: NSView?, _ action: () -> Void) {
+        let revision = revision(for: view?.window)
         action()
-        revision.bump()
+        revision?.bump()
     }
 
     static func lower(_ view: NSView, path: String) -> RenderNode {
@@ -179,7 +194,7 @@ import Observation
                 let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                              context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)!
-                act { view.keyDown(with: event) }
+                act(in: view) { view.keyDown(with: event) }
             })
         }
         return node
@@ -202,7 +217,7 @@ import Observation
             get: { String(popUp.indexOfSelectedItem) },
             set: { tag in
                 guard let index = Int(tag), let item = popUp.item(at: index) else { return }
-                act { popUp.choose(item) }
+                act(in: popUp) { popUp.choose(item) }
             })
         let picker = Picker(selection: selection) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
@@ -223,14 +238,14 @@ import Observation
             if let tag, let index = Int(tag) {
                 popUp.highlight(popUp.item(at: index))
             } else if popUp.isMenuOpen {
-                act { popUp.closeMenu() }
+                act(in: popUp) { popUp.closeMenu() }
             }
         }
         var node = resolved(picker, path: path)
         if popUp is any NSCustomPopUpPresenting {
             node.boolParams["customPopup"] = true
             node.handlers["popupOpen"] = { payload in
-                act {
+                act(in: popUp) {
                     if let info = payload as? [String: Any], let anchor = info["anchor"] as? [Double], anchor.count == 4,
                        let screen = info["screen"] as? [Double], screen.count == 4,
                        (anchor + screen).allSatisfy(\.isFinite), let window = popUp.window {
@@ -254,7 +269,7 @@ import Observation
     private static func buttonNode(_ button: NSButton, path: String) -> RenderNode {
         let symbol = button.image?.symbolName
         let tint = button.contentTintColor
-        let control = Button(action: { act { button.performClick(nil) } }) {
+        let control = Button(action: { act(in: button) { button.performClick(nil) } }) {
             if let symbol, button.imagePosition == .imageOnly || button.title.isEmpty {
                 if let tint { Image(systemName: symbol).foregroundStyle(Color(nsColor: tint)) } else { Image(systemName: symbol) }
             } else if let symbol {
@@ -274,7 +289,7 @@ import Observation
             let text = Binding<String>(
                 get: { field.stringValue },
                 set: { value in
-                    act {
+                    act(in: field) {
                         field.stringValue = value
                         let notification = Notification(name: NSControl.textDidChangeNotification, object: field)
                         field.delegate?.controlTextDidChange(notification)
@@ -282,7 +297,7 @@ import Observation
                     }
                 })
             node = resolved(TextField(field.placeholderString ?? "", text: text)
-                .onSubmit { act {
+                .onSubmit { act(in: field) {
                     if field.delegate?.control(field, textView: NSTextView(), doCommandBy: Selector("insertNewline:")) != true {
                         field.sendAction(field.action, to: field.target)
                     }
@@ -290,7 +305,7 @@ import Observation
             node.modifiers.append(.resultSink("fieldCommand", { payload in
                 guard let command = payload as? String else { return 0 }
                 var handled = false
-                act { handled = field.delegate?.control(field, textView: NSTextView(), doCommandBy: Selector(command)) ?? false }
+                act(in: field) { handled = field.delegate?.control(field, textView: NSTextView(), doCommandBy: Selector(command)) ?? false }
                 return handled ? 1 : 0
             }))
         } else {
@@ -321,7 +336,7 @@ import Observation
         let cell = slider.cell as? NSSliderCell
         let value = Binding<Double>(
             get: { slider.doubleValue },
-            set: { newValue in act { slider.doubleValue = newValue; slider.sendAction(slider.action, to: slider.target) } })
+            set: { newValue in act(in: slider) { slider.doubleValue = newValue; slider.sendAction(slider.action, to: slider.target) } })
         let range = (cell?.minValue ?? 0)...max(cell?.minValue ?? 0, cell?.maxValue ?? 1)
         if slider.frame.width < 1 { slider.frame = CGRect(x: 0, y: 0, width: 200, height: 22) }
         // A double-click is AppKit's two-click press on the knob (a slider may reset there).
@@ -333,7 +348,7 @@ import Observation
                                                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                windowNumber: slider.window?.windowNumber ?? 0, context: nil, eventNumber: 0,
                                                clickCount: 2, pressure: 1)!
-                act { slider.mouseDown(with: event) }
+                act(in: slider) { slider.mouseDown(with: event) }
             }
         return resolved(control, path: path)
     }
@@ -407,6 +422,14 @@ import Observation
                 ? scroll.contentView.bounds.minY - document.frame.minY
                 : document.frame.maxY - scroll.contentView.bounds.maxY)
         }
+        node.handlers["scrollOffset"] = { [weak scroll] payload in
+            guard let box = payload as? NativeScrollOffsetBox, let scroll, let document = scroll.documentView else { return }
+            let x = scroll.contentView.bounds.minX - document.frame.minX
+            let y = document.isFlipped ? scroll.contentView.bounds.minY - document.frame.minY
+                : document.frame.maxY - scroll.contentView.bounds.maxY
+            guard x.isFinite, y.isFinite else { return }
+            box.offset = CGPoint(x: max(0, x), y: max(0, y))
+        }
         node.handlers["scrollGeometry"] = { payload in
             guard let values = payload as? [String: Any], let document = scroll.documentView else { return }
             func number(_ name: String) -> CGFloat? {
@@ -449,7 +472,7 @@ import Observation
                 let actualY = document.isFlipped ? scroll.contentView.bounds.minY - document.frame.minY
                     : document.frame.maxY - scroll.contentView.bounds.maxY
                 let actualX = scroll.contentView.bounds.minX - document.frame.minX
-                if abs(actualY - y) > 0.5 || abs(actualX - x) > 0.5 { revision.bump() }
+                if abs(actualY - y) > 0.5 || abs(actualX - x) > 0.5 { revision(for: scroll.window)?.bump() }
             }
         }
         if !scroll.hasVerticalScroller && !scroll.hasHorizontalScroller { node.modifiers.append(.scrollIndicators("never")) }
@@ -521,16 +544,16 @@ import Observation
                 editor.string = value
                 field.delegate?.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
             })
-        let end = { act { field.window?.makeFirstResponder(root.acceptsFirstResponder ? root : nil) } }
+        let end = { act(in: field) { field.window?.makeFirstResponder(root.acceptsFirstResponder ? root : nil) } }
         var node = resolved(TextField("", text: text)
             .onSubmit {
-                act {
+                act(in: field) {
                     field.sendAction(field.action, to: field.target)
                     field.window?.makeFirstResponder(root.acceptsFirstResponder ? root : nil)
                 }
             }
             .onExitCommand {
-                act {
+                act(in: field) {
                     guard let editor = field.currentEditor() as? NSTextView,
                           field.delegate?.control(field, textView: editor, doCommandBy: Selector("cancelOperation:")) == true
                     else { field.window?.makeFirstResponder(root.acceptsFirstResponder ? root : nil); return }
@@ -631,11 +654,12 @@ extension NSHostingView: _AnyHostingView {
 /// The window lowered views live in: the pointer is wherever the host last reported it over them.
 @MainActor final class LoweringWindow: NSWindow {
     var pointer = CGPoint.zero
+    let nativeRevision = NativeLowering.Revision()
     override var mouseLocationOutsideOfEventStream: CGPoint { pointer }
     /// What has the keys shows (a table's selection color, a field being edited): the trees showing it resolve again.
     @discardableResult override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         let made = super.makeFirstResponder(responder)
-        NativeLowering.revision.bump()
+        nativeRevision.bump()
         return made
     }
 }
@@ -684,7 +708,7 @@ extension NSHostingView: _AnyHostingView {
             if type == "up" { NSEvent.pressedMouseButtons &= ~1 }
             return
         }
-        NativeLowering.act {
+        NativeLowering.act(in: root) {
             switch type {
             case "down": down(event(.leftMouseDown), at: local, in: root)
             case "drag": drag(event(.leftMouseDragged), at: local, in: root)
@@ -854,7 +878,7 @@ extension NSHostingView: _AnyHostingView {
                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                      context: nil, characters: characters, charactersIgnoringModifiers: characters.lowercased(),
                                      isARepeat: (dict["repeat"] as? Bool) ?? false, keyCode: keyCode)!
-        NativeLowering.act {
+        NativeLowering.act(in: root) {
             let responder = ownsFirstResponder(in: window, root: root) ? window.firstResponder : root
             dispatch(event) { responder?.keyDown(with: event) }
         }
@@ -866,10 +890,10 @@ extension NSHostingView: _AnyHostingView {
         guard let root, let window = root.window else { return }
         if focused {
             if !ownsFirstResponder(in: window, root: root), root.acceptsFirstResponder {
-                NativeLowering.act { window.makeFirstResponder(root) }
+                NativeLowering.act(in: root) { window.makeFirstResponder(root) }
             }
         } else if ownsFirstResponder(in: window, root: root) {
-            NativeLowering.act { window.makeFirstResponder(nil) }
+            NativeLowering.act(in: root) { window.makeFirstResponder(nil) }
         }
     }
 

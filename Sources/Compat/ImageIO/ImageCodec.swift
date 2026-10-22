@@ -47,6 +47,16 @@ public protocol ImageCodecBackend: AnyObject {
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data?
 }
 
+/// Optional indexed decoding, independent of still-image encoding and platform UI.
+public protocol AnimatedImageCodecBackend: ImageCodecBackend {
+    func makeAnimationSource(_ data: Data) -> (any AnimatedImageSource)?
+}
+
+/// Source lifetime bounds native decoder state; callers serialize reads on a source.
+public protocol AnimatedImageSource: AnyObject {
+    func image(at index: Int) -> CGImage?
+}
+
 public extension ImageCodecBackend {
     func decodeSource(_ data: Data) -> CGImage? { decode(data) }
     func encode(_ image: CGImage, typeIdentifier: String, quality: Double?, dpi: Double?, orientation: Int32) -> Data? {
@@ -90,6 +100,13 @@ public enum ImageCodecRegistry {
                 var deep: CompositorImageDecodeFn?
                 if let deepSym = dlsym(handle, "compositor_qt_imageio_deep_decode") { _ = unsafeBitCast(deepSym, to: DeepFunction.self)(&deep) }
                 host = CCallbackCodec(decode: decode, encode: encode, deepDecode: deep)
+                if let open = dlsym(handle, "compositor_qt_imageio_animation_open"),
+                   let read = dlsym(handle, "compositor_qt_imageio_animation_read"),
+                   let close = dlsym(handle, "compositor_qt_imageio_animation_close") {
+                    compositor_imageio_register_animation(unsafeBitCast(open, to: CompositorAnimationOpenFn.self),
+                        unsafeBitCast(read, to: CompositorAnimationReadFn.self),
+                        unsafeBitCast(close, to: CompositorAnimationCloseFn.self))
+                }
                 var straightDecode: CompositorImageDecodeFn?, straightEncode: CompositorImageEncodeFn?
                 if let straight = dlsym(handle, "compositor_qt_imageio_straight_functions"),
                    unsafeBitCast(straight, to: Functions.self)(&straightDecode, &straightEncode) == 1 {
@@ -175,7 +192,47 @@ public typealias CompositorCMYKEncodeFn = @convention(c) (
     UnsafePointer<UInt8>?, Int32, Int32, UnsafePointer<UInt8>?, Int, UnsafePointer<CChar>?, Double, Double,
     UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int>?) -> Int32
 
-final class CCallbackCodec: ImageCodecBackend {
+public typealias CompositorAnimationOpenFn = @convention(c) (UnsafePointer<UInt8>?, Int) -> UnsafeMutableRawPointer?
+public typealias CompositorAnimationReadFn = @convention(c) (UnsafeMutableRawPointer?, Int32,
+    UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
+public typealias CompositorAnimationCloseFn = @convention(c) (UnsafeMutableRawPointer?) -> Void
+
+@_cdecl("compositor_imageio_register_animation")
+public func compositor_imageio_register_animation(_ open: CompositorAnimationOpenFn?, _ read: CompositorAnimationReadFn?,
+                                                  _ close: CompositorAnimationCloseFn?) {
+    guard let codec = ImageCodecRegistry.host as? CCallbackCodec else { return }
+    codec.animationOpen = open; codec.animationRead = read; codec.animationClose = close
+}
+
+private final class CAnimationSource: AnimatedImageSource {
+    let handle: UnsafeMutableRawPointer
+    let read: CompositorAnimationReadFn
+    let close: CompositorAnimationCloseFn
+    init(handle: UnsafeMutableRawPointer, read: @escaping CompositorAnimationReadFn, close: @escaping CompositorAnimationCloseFn) {
+        self.handle = handle; self.read = read; self.close = close
+    }
+    deinit { close(handle) }
+    func image(at index: Int) -> CGImage? {
+        guard let index = Int32(exactly: index), index >= 0 else { return nil }
+        var pixels: UnsafeMutablePointer<UInt8>?
+        var width: Int32 = 0, height: Int32 = 0
+        let result = read(handle, index, &pixels, &width, &height)
+        defer { free(pixels) }
+        guard result == 0, let pixels, width > 0, height > 0 else { return nil }
+        return CGImage(PortableImage(width: Int(width), height: Int(height), kind: .rgba,
+            bytesPerRow: Int(width) * 4, bytes: Array(UnsafeBufferPointer(start: pixels, count: Int(width) * Int(height) * 4))))
+    }
+}
+
+final class CCallbackCodec: AnimatedImageCodecBackend {
+    var animationOpen: CompositorAnimationOpenFn?
+    var animationRead: CompositorAnimationReadFn?
+    var animationClose: CompositorAnimationCloseFn?
+    func makeAnimationSource(_ data: Data) -> (any AnimatedImageSource)? {
+        guard let open = animationOpen, let read = animationRead, let close = animationClose,
+              let handle = data.withUnsafeBytes({ open($0.bindMemory(to: UInt8.self).baseAddress, data.count) }) else { return nil }
+        return CAnimationSource(handle: handle, read: read, close: close)
+    }
     let decodeFn: CompositorImageDecodeFn, encodeFn: CompositorImageEncodeFn
     var straightDecodeFn: CompositorImageDecodeFn?
     var straightEncodeFn: CompositorImageEncodeFn?

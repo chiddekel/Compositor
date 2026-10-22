@@ -36,6 +36,26 @@ public struct HStack<Content: View>: View, PrimitiveView {
 public typealias LazyVStack<Content: View> = VStack<Content>
 public typealias LazyHStack<Content: View> = HStack<Content>
 
+/// Ordered layout alternatives. Hosts choose the first child whose ideal size fits the proposed axes.
+protocol _FittingView {}
+
+public struct ViewThatFits<Content: View>: View, PrimitiveView, _FittingView {
+    let axes: Axis.Set
+    let content: Content
+    public init(in axes: Axis.Set = [.horizontal, .vertical], @ViewBuilder content: () -> Content) {
+        self.axes = axes
+        self.content = content()
+    }
+    public var _childViews: [any View] { [content] }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "ViewThatFits")
+        node.boolParams["horizontal"] = axes.contains(.horizontal)
+        node.boolParams["vertical"] = axes.contains(.vertical)
+        node.children = children
+        return node
+    }
+}
+
 public struct ZStack<Content: View>: View, PrimitiveView {
     let alignment: Alignment
     let content: Content
@@ -112,11 +132,31 @@ public struct ScrollView<Content: View>: View, PrimitiveView {
 public struct ScrollViewProxy {
     let key: String
     init(key: String = "") { self.key = key }
-    public func scrollTo(_ id: AnyHashable, anchor: UnitPoint? = nil) { ScrollTargets.requests[key] = "\(id.base)" }
+    public func scrollTo(_ id: AnyHashable, anchor: UnitPoint? = nil) {
+        ScrollTargets.requests[key] = "\(id.base)"
+        ScrollTargets.durations[key] = AnimationTransaction.current?.duration
+    }
+}
+
+public struct Animation: Sendable {
+    let duration: Double
+    public static func easeOut(duration: Double = 0.35) -> Animation { Animation(duration: max(0, duration)) }
+}
+
+private enum AnimationTransaction { nonisolated(unsafe) static var current: Animation? }
+
+public func withAnimation<Result>(_ animation: Animation? = .easeOut(), _ body: () throws -> Result) rethrows -> Result {
+    let previous = AnimationTransaction.current
+    AnimationTransaction.current = animation
+    defer { AnimationTransaction.current = previous }
+    return try body()
 }
 
 /// Pending `scrollTo` requests, by reader (its tree and place).
-enum ScrollTargets { nonisolated(unsafe) static var requests: [String: String] = [:] }
+enum ScrollTargets {
+    nonisolated(unsafe) static var requests: [String: String] = [:]
+    nonisolated(unsafe) static var durations: [String: Double] = [:]
+}
 
 public struct ScrollViewReader<Content: View>: View, PrimitiveView {
     let content: (ScrollViewProxy) -> Content
@@ -129,6 +169,7 @@ public struct ScrollViewReader<Content: View>: View, PrimitiveView {
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "ScrollViewReader")
         if let target = ScrollTargets.requests.removeValue(forKey: key) { node.stringParams["scrollTarget"] = target }
+        if let duration = ScrollTargets.durations.removeValue(forKey: key) { node.doubleParams["scrollDuration"] = duration }
         node.children = children
         return node
     }

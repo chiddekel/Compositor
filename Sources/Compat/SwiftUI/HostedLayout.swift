@@ -88,8 +88,25 @@ import Foundation
                 result = (size.width >= 0 ? size.width : nil, size.height >= 0 ? size.height : nil)
             } else if node.kind == "_Empty" {
                 result = (0, 0)
+            } else if node.kind == "ViewThatFits" {
+                let chosen = node.children.first { child in
+                    let ideal = measure(child)
+                    return (node.boolParams["horizontal"] != true || childProposal.width == nil || (ideal.width ?? .infinity) <= childProposal.width!)
+                        && (node.boolParams["vertical"] != true || childProposal.height == nil || (ideal.height ?? .infinity) <= childProposal.height!)
+                } ?? node.children.last
+                result = chosen.map { measure($0, proposal: childProposal) } ?? (0, 0)
             } else if let size = HostingMeasurementBackend.measure(node, proposal: childProposal) {
                 result = (size.width, size.height)
+            } else if node.kind == "Button", node.modifiers.compactMap({ modifier -> String? in
+                if case .buttonStyle(let style) = modifier { return style }
+                return nil
+            }).last == "plain", let label = node.children.first {
+                // A plain button's explicitly sized label remains measurable without a widget renderer.
+                // Unknown text metrics remain unknown, rather than inventing a font measurement here.
+                result = measure(label, proposal: childProposal)
+            } else if ["Popover", "Background", "Overlay"].contains(node.kind), let base = node.children.first {
+                // Presented content and decorations do not contribute to the base view's natural size.
+                result = measure(base, proposal: childProposal)
             } else if ["HStack", "VStack", "ZStack", "_ViewList", "Group"].contains(node.kind) {
                 let horizontal = node.kind == "HStack", vertical = node.kind == "VStack"
                 var children: [Bounds]
@@ -210,6 +227,12 @@ import Foundation
             proposal: ProposedViewSize(width: fixedAxes.horizontal ? nil : proposal.width,
                                        height: fixedAxes.vertical ? nil : proposal.height)) { return size }
         switch node.kind {
+        case "Popover":
+            guard let base = node.children.first else { return .zero }
+            return size(base, base.modifiers.count, proposal)
+        case "ViewThatFits":
+            guard let child = fittingChild(node, proposal) else { return .zero }
+            return size(child, child.modifiers.count, proposal)
         case "_Native":
             if let preferred = preferredNative(node, ProposedViewSize(width: fixedAxes.horizontal ? nil : proposal.width,
                                                                       height: fixedAxes.vertical ? nil : proposal.height)) { return preferred }
@@ -232,6 +255,14 @@ import Foundation
             }
             return result
         }
+    }
+
+    private static func fittingChild(_ node: RenderNode, _ proposal: CGSize) -> RenderNode? {
+        node.children.first { child in
+            let ideal = idealSize(child, intrinsicSize: intrinsic, nativeSize: preferredNative)
+            return (node.boolParams["horizontal"] != true || (ideal.width >= 0 && ideal.width <= proposal.width))
+                && (node.boolParams["vertical"] != true || (ideal.height >= 0 && ideal.height <= proposal.height))
+        } ?? node.children.last
     }
 
     /// Font and control environments reach leaves even when measurement visits them separately from the container.
@@ -333,6 +364,13 @@ import Foundation
 
     private static func placeBase(_ node: RenderNode, _ rect: CGRect, _ out: inout [Placement]) {
         switch node.kind {
+        case "Popover":
+            if let base = node.children.first { place(base, base.modifiers.count, rect, &out) }
+        case "ViewThatFits":
+            if let child = fittingChild(node, rect.size) {
+                let childSize = size(child, child.modifiers.count, rect.size)
+                place(child, child.modifiers.count, aligned(childSize, in: rect, alignment: "topLeading"), &out)
+            }
         case "_Native":
             if let source = node.nativeSource { out.append(Placement(path: node.id, source: source, frame: rect)) }
         case "GeometryReader":

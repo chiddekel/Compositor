@@ -66,6 +66,26 @@ import Testing
         }
         func updateNSView(_ view: NSScrollView, context: Context) {}
     }
+    @Test(arguments: [true, false]) func liveOffsetQueryReadsCurrentDocumentWithoutResolving(flipped: Bool) throws {
+        try withLowering("nativeLiveOffset") {
+            let probe = Probe()
+            let node = ViewResolver.resolve(Scroll(probe: probe, flipped: flipped))
+            let query = try #require(node.handlers["scrollOffset"])
+            let scroll = try #require(probe.scroll)
+            let document = try #require(scroll.documentView)
+            document.frame = CGRect(x: 30, y: 40, width: 500, height: 800)
+            scroll.contentView.scroll(to: CGPoint(x: 100, y: 220))
+            let first = NativeScrollOffsetBox(); query(first)
+            #expect(first.offset == CGPoint(x: 70, y: flipped ? 180 : 500))
+            document.setFrameSize(CGSize(width: 500, height: 1000))
+            scroll.contentView.scroll(to: CGPoint(x: 130, y: 300))
+            let second = NativeScrollOffsetBox(); query(second)
+            #expect(second.offset == CGPoint(x: 100, y: flipped ? 260 : 620))
+            scroll.documentView = nil
+            let removed = NativeScrollOffsetBox(); query(removed)
+            #expect(removed.offset == nil)
+        }
+    }
     private struct HostedScroll: @preconcurrency NSViewRepresentable {
         var probe: Probe
         func makeNSView(context: Context) -> NSScrollView {

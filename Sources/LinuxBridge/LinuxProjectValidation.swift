@@ -16,6 +16,42 @@ enum LinuxProjectValidation {
             if layer.shape?.smoothing == true {
                 guard manifest.version >= 14 else { throw ProjectError.invalid }
             }
+            if let gif = layer.gif {
+                let identityLimit = manifest.version >= 17 ? GIFTimelineLimits.frameIdentityLimit : GIFTimelineLimits.maxFrames
+                guard manifest.version >= 17, layer.imageFile != nil, layer.isGroup != true,
+                      layer.adjustment == nil, layer.text == nil, layer.shape == nil,
+                      gif.sourceFile == "\(layer.id.uuidString).gif",
+                      (0..<identityLimit).contains(gif.selectedFrameIndex),
+                      gif.geometry.map(\.isValid) ?? true else { throw ProjectError.invalid }
+                var indices = Set<Int>()
+                guard gif.deletedFrameIndices.isEmpty || manifest.version >= 17,
+                      gif.deletedFrameIndices.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
+                for index in gif.deletedFrameIndices {
+                    guard (0..<GIFTimelineLimits.maxFrames).contains(index), indices.insert(index).inserted else {
+                        throw ProjectError.invalid
+                    }
+                }
+                indices.removeAll()
+                if let order = gif.frameOrder {
+                    guard manifest.version >= 17, !order.isEmpty, order.count <= GIFTimelineLimits.maxFrames else {
+                        throw ProjectError.invalid
+                    }
+                    for frame in order {
+                        guard (0..<identityLimit).contains(frame.index), indices.insert(frame.index).inserted,
+                              (0..<GIFTimelineLimits.maxFrames).contains(frame.sourceIndex) else { throw ProjectError.invalid }
+                    }
+                    indices.removeAll()
+                }
+                if let timing = gif.timing {
+                    guard manifest.version >= 17, timing.isValid else { throw ProjectError.invalid }
+                }
+                guard gif.framePixels.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
+                indices.removeAll()
+                for pixels in gif.framePixels {
+                    guard (0..<identityLimit).contains(pixels.index), indices.insert(pixels.index).inserted,
+                          pixels.imageFile == "\(layer.id.uuidString).frame-\(pixels.index).png" else { throw ProjectError.invalid }
+                }
+            }
             // A line's dashes and caps arrived in version 15, and only lines have them.
             if let shape = layer.shape, shape.lineStyle != nil || shape.lineCap != nil {
                 guard manifest.version >= 15, shape.kind == .line else { throw ProjectError.invalid }

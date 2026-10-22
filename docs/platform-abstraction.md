@@ -72,6 +72,17 @@ Upstream's unmodified code cannot take a service through an initialiser, so each
 `CompCanvasBridge` (the Skia dlopen binding) is internal to `SkiaCanvasBackend`. Event-style hooks (alert and panel
 handlers, `onBeep`, cursor changes) stay closures: they are one-way notifications, not services with a lifetime.
 
+Animated image decoding is an optional, narrow extension of the codec seam (`AnimatedImageCodecBackend`).
+`CGImageSource` owns immutable GIF bytes and parsed frame metadata; the registered backend supplies composed pixels
+through a source-owned `AnimatedImageSource` session. Sequential reads reuse the reader and composed canvas;
+backward seeks rewind, and releasing the source releases its native state. Source reads are serialized.
+Qt handles frame offsets and disposal, while the portable GIF writer supplies palettes,
+delays and looping. The original editor, timeline and exporter use ImageIO unchanged. The codec tests independently
+check transparent disposal, opaque black, timing, invalid indices, backward seeks and linear decode work.
+Rendered panels lease bitmap tokens until replacement or closure; cache limits apply only to unleased images.
+The lifetime regression covers two 4,096-frame timelines. The native GIF journey exercises the same
+timeline through Qt controls and project save/reopen.
+
 ## Layer effects chain
 
 `Sources/Overrides/MetalLayerEffects.swift` keeps upstream's surface (`MetalLayerEffects.shared`, `render(_:effects:)`) and
@@ -111,3 +122,10 @@ controls, and what the user does goes to them:
 `NSMenu.popUp` shows the menu at the pointer through the shell (`NSMenu.presenter`, a "popUpMenu" shell request). A text
 field being edited inside an `_AppKit` view gets a real Qt field over it. Tests and `NSHostingView` keep hosting the real
 views (`HostedLayout`); lowering is only for the shell.
+
+Held-pointer tracking queries native scroll offsets through the registered `scrollOffset` handler and
+`compositor_session_scroll_offset`. The query reads the current document and viewport without resolving or
+rasterizing the panel. Missing handlers fail without changing the host's scroll basis; geometry reports retain
+their stale-basis guard so delayed Qt events cannot undo an AppKit reveal or autoscroll.
+Native control revisions belong to each hosted window. Pointer, focus and accessibility actions invalidate that
+window's panel; changes to shared editor state continue through Observation to every affected panel and session.

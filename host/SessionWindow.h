@@ -420,6 +420,7 @@ private:
     void syncOptionsFromSession();
     void syncBrushFromSession();
     void updateStatusTelemetry();
+    void updateGIFTimeline();
     void fitCanvas();
     void actualPixels();
     void zoomStep(int step);
@@ -555,6 +556,8 @@ private:
     bool m_layersResizeQueued = false;
     QWidget *m_swiftUIStatusBarContainer = nullptr;
     QWidget *m_swiftUICurrentStatusBar = nullptr;
+    QWidget *m_gifTimelineContainer = nullptr;
+    QWidget *m_gifTimeline = nullptr;
     QWidget *m_welcomeContent = nullptr;
     QWidget *m_navigatorContent = nullptr;
     bool m_canvasOnly = false;

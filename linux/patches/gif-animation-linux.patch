@@ -1,0 +1,27 @@
+--- a/Compositor/Document/GIFAnimation.swift
++++ b/Compositor/Document/GIFAnimation.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import CoreGraphics
++import ImageIO
+-
++
+ /// Encoded frames and small previews are immutable and shared by layers, history and background saves.
+ nonisolated final class GIFSource: @unchecked Sendable {
+@@ -7,12 +8,14 @@
+     static let totalByteLimit = DocumentLimits.documentPixelBudget * 4
+     static let totalThumbnailPixelBudget = GIFTimelineLimits.thumbnailPixelBudget
+-
++
++    let imageSource: CGImageSource?
+     let data: Data
+     let frames: [GIFTimelineFrame]
+     let width: Int
+     let height: Int
+-
++
+     init(data: Data, frames: [GIFTimelineFrame], width: Int, height: Int) {
++        imageSource = CGImageSourceCreateWithData(data as CFData, nil)
+         self.data = data
+         self.frames = frames
+         self.width = width

@@ -1,6 +1,6 @@
 --- a/Compositor/ContentView.swift
 +++ b/Compositor/ContentView.swift
-@@ -1,5 +1,35 @@
+@@ -1,6 +1,36 @@
  import SwiftUI
  import UniformTypeIdentifiers
 +import Sparkle
@@ -33,10 +33,13 @@
 +        ShellProjects.enqueue("toggleCanvasOnly")
 +    }
 +}
- 
+-
++
  struct ContentView: View {
      /// The Layers panel's width, remembered across launches.
-@@ -12,7 +42,6 @@
+     @AppStorage("layersPanelWidth") private var layersPanelWidth = 252.0
+@@ -11,9 +41,8 @@
+     @State private var canvasFrame: CGRect = .zero
      @State private var levelsPanel = FloatingPanelController(name: "levelsPanel")
      @State private var adjustmentPanel = FloatingPanelController(name: "adjustmentPanel")
      @State private var selectionAmountPanel = FloatingPanelController(name: "selectionAmountPanel")
@@ -44,7 +47,9 @@
      @State private var filterPanel = FloatingPanelController(name: "filterPanel")
      @State private var effectsPanel = FloatingPanelController(name: "effectsPanel")
      @State private var isDropTargeted = false
-@@ -24,7 +53,7 @@
+     /// The window's width, so the tab strip can use the toolbar's free space.
+@@ -23,9 +52,9 @@
+         guard let workspace = applicationDelegate?.workspace else { return true }
          return workspace.canReceiveDrag(into: workspace.current.id)
      }
      // Extracted from `body`: as one expression the type checker times out (Xcode 26.1).
@@ -53,10 +58,13 @@
          Group {
              if session.tool == .move {
                  TransformInspector(session: session).id(session.activeLayerID)
-@@ -218,7 +247,12 @@
+                 Divider()
+@@ -248,24 +277,22 @@
+             }
          }
      }
- 
+-
++
 -    var body: some View {
 +    // Split from `body` (the ONE deviation from upstream in this file): the same "chain outgrew the type checker"
 +    // pattern the two splits above already document, one level deeper. `bodyCore` carries the first four
@@ -67,7 +75,8 @@
          editorChrome
          .onChange(of: session.levels == nil) { _, closed in
              if closed { levelsPanel.close() }
-@@ -227,13 +261,6 @@
+             else {
+                 levelsPanel.onClose = { session.cancelLevels() }
                  levelsPanel.show(title: "Levels", content: LevelsSheet(session: session))
              }
          }
@@ -81,7 +90,9 @@
          .onChange(of: session.hueSaturation == nil) { _, closed in
              if closed { adjustmentPanel.close() }
              else {
-@@ -255,6 +282,10 @@
+                 adjustmentPanel.onClose = { session.cancelHueSaturation() }
+@@ -285,8 +312,12 @@
+                 session.effectsEditing = nil
                  session.effectsEditingOriginal = nil
              }
          }
@@ -92,16 +103,15 @@
          .onChange(of: session.selectionAmountOperation) { _, operation in
              if let operation {
                  selectionAmountPanel.onClose = { session.selectionAmountOperation = nil }
-@@ -301,7 +332,7 @@
+                 selectionAmountPanel.show(title: operation.rawValue + " Selection",
+@@ -332,14 +363,15 @@
+     private func requestNewCanvas() {
          if let applicationDelegate { Task { await applicationDelegate.projects.newCanvas() } }
          else { session.clearProject() }
      }
--    private var toolRail: some View {
-+    var toolRail: some View {   // Linux: internal, see toolHeaders
-         // Scrolls when the window is too short for every tool, rather than pushing the bars above and below away.
-         IndicatorlessScrollView {
-         VStack(spacing: 10) {
-@@ -340,7 +371,7 @@
++    var toolRail: some View { ToolRail(session: session) }
+     private var welcome: some View {
+         NewCanvasSheet(session: session,
              onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
              onOpen: { Task { await applicationDelegate?.projects.open() } })
      }
@@ -110,10 +120,8 @@
          HStack(spacing: 16) {
              if let document = session.document {
                  Text(session.viewport.zoom, format: .percent.precision(.fractionLength(0...1)))
-@@ -481,7 +512,12 @@
-                 stepper.change = change
-                 active ? stepper.listen(step: step) : stepper.stopListening()
-             }
+                     .frame(width: 62, alignment: .leading).accessibilityIdentifier("zoomStatus")
+@@ -475 +507,6 @@
 -            .onDisappear { stepper.stopListening() }
 +            .onDisappear {
 +                stepper.stopListening()
@@ -121,5 +129,3 @@
 +                stepper.value = { 0 }
 +                stepper.change = { _ in }
 +            }
-     }
- }

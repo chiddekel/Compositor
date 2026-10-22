@@ -971,6 +971,7 @@ final class UpstreamEditor {
                     case "exr": return .exr
                     case "tiff": return .tiff
                     case "channelpack": return .channelPack
+                    case "gif": return .gif
                     default: return lastExportFormat
                     }
                 }()
@@ -1801,7 +1802,7 @@ final class UpstreamEditor {
                     imageFile: record.imageFile, parentID: record.parentID, isGroup: record.isGroup, opacity: record.opacity,
                     blendMode: blendMode, maskFile: record.maskFile, maskEnabled: record.maskEnabled, maskSourceID: record.maskSourceID,
                     adjustment: record.adjustment, maskPlacement: maskPlacement, maskLinked: record.maskLinked,
-                    shape: record.shape, effects: record.effects, text: record.text)
+                    shape: record.shape, effects: record.effects, text: record.text, gif: record.gif)
             }
         }
         // The shape being dragged out, in the color it will be made in, just above the active layer — where its layer
@@ -1811,7 +1812,7 @@ final class UpstreamEditor {
             let above = manifest.layers.firstIndex { $0.id == s.activeLayerID }.map { $0 + 1 } ?? manifest.layers.count
             manifest.layers.insert(draft.record, at: above)
         }
-        snapshot = ProjectSnapshot(manifest: manifest, images: images, masks: masks)
+        snapshot = ProjectSnapshot(manifest: manifest, images: images, masks: masks, animations: snapshot.animations)
         return snapshot
     }
 
@@ -1960,14 +1961,14 @@ final class UpstreamEditor {
                 imageFile: r.imageFile, parentID: r.parentID, isGroup: r.isGroup, opacity: r.opacity,
                 blendMode: r.blendMode, maskFile: r.maskFile, maskEnabled: r.maskEnabled, maskSourceID: r.maskSourceID,
                 adjustment: r.adjustment, maskPlacement: r.maskPlacement.map(shifted), maskLinked: r.maskLinked,
-                shape: r.shape, effects: r.effects, text: r.text)
+                shape: r.shape, effects: r.effects, text: r.text, gif: r.gif)
         }
         let manifest = ProjectManifest(format: m.format, version: m.version, colorSpace: m.colorSpace, resolution: m.resolution,
             documentID: m.documentID, width: outW, height: outH, activeLayerID: m.activeLayerID,
             layers: layers, guides: m.guides)
         let outputDocument = CGRect(x: output.minX / k, y: output.minY / k,
                                     width: output.width / k, height: output.height / k).intersection(canvas)
-        return (ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks), outputDocument, k,
+        return (ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks, animations: snapshot.animations), outputDocument, k,
                 output.offsetBy(dx: -sampled.minX, dy: -sampled.minY))
     }
 
@@ -2029,7 +2030,7 @@ final class UpstreamEditor {
             let preview = s.filterEdit?.previewImage(for: layer.id) ?? s.levels?.previewImage(for: layer.id)
                 ?? s.hueSaturation?.previewImage(for: layer.id)
             return RenderKey.Layer(id: layer.id, transform: s.displayedTransform(for: layer),
-                image: layer.asset.map { ObjectIdentifier($0.image) }, mask: layer.mask.map { ObjectIdentifier($0.asset.image) },
+                image: s.displayedAsset(for: layer).map { ObjectIdentifier($0.image) }, mask: layer.mask.map { ObjectIdentifier($0.asset.image) },
                 maskEnabled: layer.mask?.isEnabled ?? false,
                 maskSourceID: layer.maskSourceID, parentID: layer.parentID, isGroup: layer.isGroup,
                 visible: visible.contains(layer.id), opacity: opacities[layer.id] ?? layer.opacity,

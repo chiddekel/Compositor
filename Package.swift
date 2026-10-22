@@ -284,6 +284,8 @@ let package = Package(
                      "Rendering/WandPixels.c",
                      "Rendering/WandPixels.h",
                      "IO/CompositorApplicationDelegate.swift",
+                     "IO/GIFDecoder.swift",
+                     "Document/GIFAnimation.swift",
                      // Tip 1.4.9 Sparkle user driver (its own AppKit update alert); Linux updates through Flatpak.
                      "IO/UpdateDriver.swift",
                      "Document/EditorSession.swift",

@@ -17,6 +17,12 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 
 OUTPUTS = {
+    'Sources/Overrides/GIFAnimation.swift': (
+        'Compositor/Document/GIFAnimation.swift', 'linux/patches/gif-animation-linux.patch',
+        'Each immutable GIF source owns its ImageIO reader so playback and export reuse bounded decoder state.'),
+    'Sources/Overrides/GIFDecoder.swift': (
+        'Compositor/IO/GIFDecoder.swift', 'linux/patches/gif-decoder-linux.patch',
+        'Frame reads reuse the immutable GIF source reader; upstream frame geometry, pixels and timing are unchanged.'),
     'Sources/Overrides/ProjectWorkspace.swift': (
         'Compositor/Document/ProjectWorkspace.swift', 'linux/patches/project-workspace-linux.patch',
         'Register newly created artboard sessions with the importing native window; upstream tab/import algorithms are unchanged.'),

@@ -140,7 +140,7 @@ import AppKit
         _ = snapshot() // reject an old identity after a model update, row reuse, rename or visibility change
         guard let action = actions[id] else { return false }
         var result = false
-        NativeLowering.act { result = action() }
+        NativeLowering.act(in: root) { result = action() }
         return result
     }
 }

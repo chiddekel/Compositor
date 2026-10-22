@@ -88,7 +88,8 @@ extension Label where Title == Text, Icon == Image {
 
 /// Bitmaps a resolved tree shows (`Image(nsImage:)`, `Image(decorative:scale:)`), handed to the shell by token: the tree
 /// carries `pixels:<token>`, the shell fetches the pixels (`compositor_swiftui_image`). One token per image object, so
-/// a changed picture changes the tree and an unchanged one doesn't. The most recent images are kept, oldest dropped.
+/// a changed picture changes the tree and an unchanged one doesn't. Live panels lease their images; only unleased
+/// cache entries are bounded, so large timelines and multiple windows retain every visible thumbnail.
 public enum ImageRegistry {
     nonisolated(unsafe) private static var tokens: [ObjectIdentifier: String] = [:]
     nonisolated(unsafe) private static var images: [String: CGImage] = [:]
@@ -96,18 +97,48 @@ public enum ImageRegistry {
     nonisolated(unsafe) private static var next = 1
     private static let lock = NSLock()
     private static let capacity = 2048
+    nonisolated(unsafe) private static var leases: [String: Set<String>] = [:]
+    nonisolated(unsafe) private static var resolving: String?
+    nonisolated(unsafe) private static var claimed = Set<String>()
+
+    static func begin(scope: String) {
+        lock.lock(); defer { lock.unlock() }
+        resolving = scope; claimed = []
+    }
+    static func end(scope: String) {
+        lock.lock(); defer { lock.unlock() }
+        leases[scope] = claimed
+        resolving = nil; claimed = []
+        trim()
+    }
+    static func discard(scope: String) {
+        lock.lock(); defer { lock.unlock() }
+        leases.removeValue(forKey: scope)
+        trim()
+    }
+    private static func trim() {
+        let pinned = leases.values.reduce(into: Set<String>()) { $0.formUnion($1) }.union(claimed)
+        var excess = images.count - pinned.count - capacity
+        guard excess > 0 else { return }
+        order.removeAll { token in
+            guard excess > 0, !pinned.contains(token) else { return false }
+            if let image = images.removeValue(forKey: token) { tokens.removeValue(forKey: ObjectIdentifier(image)) }
+            excess -= 1
+            return true
+        }
+    }
 
     public static func token(for image: CGImage) -> String {
         lock.lock(); defer { lock.unlock() }
-        if let token = tokens[ObjectIdentifier(image)], images[token] === image { return token }
+        if let token = tokens[ObjectIdentifier(image)], images[token] === image {
+            if resolving != nil { claimed.insert(token) }
+            return token
+        }
         let token = String(next); next += 1
         tokens[ObjectIdentifier(image)] = token
         images[token] = image
         order.append(token)
-        if order.count > capacity {
-            let dropped = order.removeFirst()
-            if let image = images.removeValue(forKey: dropped) { tokens.removeValue(forKey: ObjectIdentifier(image)) }
-        }
+        if resolving != nil { claimed.insert(token) } else { trim() }
         return token
     }
     public static func image(for token: String) -> CGImage? {
@@ -118,6 +149,7 @@ public enum ImageRegistry {
 
 public struct Image: View, PrimitiveView {
     let source: String
+    private var bitmap: CGImage? = nil
     /// `.resizable()`: drawn to fill its slot (keeping its aspect with `.aspectRatio(contentMode: .fit)`, the default
     /// here) rather than at its own size.
     var isResizable = false
@@ -125,9 +157,10 @@ public struct Image: View, PrimitiveView {
     var preferredAspectRatio: Double?
     public init(systemName: String) { source = "system:\(systemName)" }
     public init(_ name: String) { source = "named:\(name)" }
-    public init(decorative cgImage: CGImage, scale: Double) { source = "pixels:" + ImageRegistry.token(for: cgImage) }
+    public init(decorative cgImage: CGImage, scale: Double) { bitmap = cgImage; source = "pixels:" + ImageRegistry.token(for: cgImage) }
     public init(nsImage: NSImage) {
         if let image = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            bitmap = image
             source = "pixels:" + ImageRegistry.token(for: image)
         } else {
             source = "pixels:"
@@ -160,7 +193,7 @@ public struct Image: View, PrimitiveView {
     public func aspectRatio(contentMode: ContentMode) -> some View { aspectRatio(nil, contentMode: contentMode) }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "Image")
-        node.stringParams["source"] = source
+        node.stringParams["source"] = bitmap.map { "pixels:" + ImageRegistry.token(for: $0) } ?? source
         if isResizable { node.boolParams["resizable"] = true }
         if let contentMode {
             switch contentMode {

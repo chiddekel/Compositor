@@ -204,7 +204,7 @@ extension EditorSession {
         brushRevision += 1
         guard !warp.points.isEmpty, let result = warp.image,
               let current = document?.layers.first(where: { $0.id == warp.layer.id }),
-              current.asset?.image === warp.layer.asset?.image, current.transform == warp.layer.transform else { return }
+              pixelEditTargetMatches(current, original: warp.layer) else { return }
         do {
             var settings = brushSettings
             // A hard tip a little wider than the brush covers everything the stroke moved.

@@ -13,6 +13,7 @@
 #include "GridSettingsJourney.h"
 #include "CanvasSizeJourney.h"
 #include "LayerSearchJourney.h"
+#include "GIFJourney.h"
 #include "ImageSizeJourney.h"
 #include "UIAuditJourney.h"
 #include "DesktopProbeJourney.h"
@@ -149,6 +150,7 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
     if (app.arguments().contains("--grid-settings-probe")) return gridsettingsjourney::run(app);
     if (app.arguments().contains("--canvas-size-controls-probe")) return canvassizejourney::run(app);
     if (app.arguments().contains("--layer-search-probe")) return layersearchjourney::run(app);
+    if (app.arguments().contains("--gif-probe")) return gifjourney::run(app);
     if (app.arguments().contains("--image-size-controls-probe")) return imagesizejourney::run(app);
     if (app.arguments().contains("--ui-audit-probe")) return uiauditjourney::run(app);
     if (app.arguments().contains("--desktop-probe")) return desktopprobe::run(app);
@@ -1122,6 +1124,7 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                         qWarning() << "layer autoscroll before/after/max" << beforeScroll << (area ? area->verticalScrollBar()->value() : -1)
                             << (area ? area->verticalScrollBar()->maximum() : -1);
                         qWarning().noquote() << "layer autoscroll pointer trace" << swiftUIPointerTrace();
+                        qWarning().noquote() << "layer autoscroll geometry trace" << swiftUIScrollTrace();
                         send(QEvent::MouseButtonRelease, outside, Qt::LeftButton, Qt::NoButton, final);
                         throw;
                     }
@@ -2880,7 +2883,17 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                       && after.value("layers") == before.value("layers"),
                   "CMYK proofing changed the document, export composite or history");
             toggle("Gamut Warning", "showsGamutWarning", false);
-            pump([&] { return frame() == off; }, "turning CMYK proofing off did not restore the exact canvas");
+            try {
+                pump([&] { return frame() == off; }, "turning CMYK proofing off did not restore the exact canvas");
+            } catch (...) {
+                const QImage restored = frame();
+                qWarning() << "CMYK canvas geometry before/after" << off.size() << restored.size();
+                int differing = 0; QPoint first(-1, -1);
+                if (off.size() == restored.size()) for (int y = 0; y < off.height(); ++y) for (int x = 0; x < off.width(); ++x)
+                    if (off.pixel(x, y) != restored.pixel(x, y) && differing++ == 0) first = QPoint(x, y);
+                qWarning() << "CMYK canvas differing pixels/first" << differing << first;
+                throw;
+            }
             qInfo("Qt CMYK proof OK (visible View > CMYK toggles, proof dulls blue %s and keeps gray %s, gamut warning marks blue, "
                   "document/export/history untouched, exact frame restored)",
                   qPrintable(proofBlue.name()), qPrintable(proofGray.name()));
@@ -10106,8 +10119,8 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(textFile.open(QIODevice::ReadOnly), "format-11 native manifest missing");
         textManifest = QJsonDocument::fromJson(textFile.readAll()).object(); textFile.close();
         const auto savedText = textManifest.value("layers").toArray().last().toObject().value("text").toObject();
-        // New saves use version 16 (filter adjustment layers); font runs arrived in version 11.
-        require(textManifest.value("version").toInt() == 16, "native save did not write current format 16");
+        // New saves use version 17 (GIF layers); font runs arrived in version 11.
+        require(textManifest.value("version").toInt() == 17, "native save did not write current format 17");
         require(savedText.value("fontRuns").toArray() == chosenRuns, "format-11 save lost chosen font runs");
         require(savedText.value("colorRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "format-11 save lost overlapping color runs");
@@ -11244,7 +11257,12 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
             wheel(QPoint(0, 4), {}, Qt::ControlModifier);
             require(viewport() == busy, "wheel zoom interrupted an active upstream stroke");
             gesture(Qt::ZoomNativeGesture, 0.25);
-            require(viewport() == busy, "pinch zoom interrupted an active upstream stroke");
+            const auto afterPinch = viewport();
+            if (afterPinch != busy) {
+                for (size_t index = 0; index < busy.size(); ++index)
+                    qWarning() << "active stroke pinch viewport" << index << busy[index] << afterPinch[index];
+            }
+            require(afterPinch == busy, "pinch zoom interrupted an active upstream stroke");
             require(window.sendCommand({{"action", "brushEnd"}}), "navigation brush stroke did not finish");
             const auto ready = viewport();
             const auto history = window.sessionState();

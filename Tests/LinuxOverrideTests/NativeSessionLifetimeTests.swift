@@ -4,6 +4,27 @@ import XCTest
 @testable import Compositor
 
 final class NativeSessionLifetimeTests: XCTestCase {
+    func testNativePointerInvalidatesOnlyItsOwningPanelAndHandle() throws {
+        try MainActor.assumeIsolated {
+            let first = compositorSessionCreate(), second = compositorSessionCreate()
+            defer { compositorSessionClose(first); compositorSessionClose(second) }
+            let entry = try XCTUnwrap(Sessions.entries[first])
+            let other = try XCTUnwrap(Sessions.entries[second])
+            for owner in [entry, other] {
+                owner.editor.session.createDocument(width: 64, height: 32, emptyLayer: true)
+                XCTAssertNotNil(resolvePanel("ToolRail", entry: owner))
+                XCTAssertNotNil(resolvePanel("LayersPanel", entry: owner))
+                _ = DirtyPanels.take(owner)
+            }
+            let pointer = try XCTUnwrap(entry.actionHandlers["LayersPanel"]?.values.compactMap { $0["pointer"] }.first)
+            pointer(["type": "move", "x": 4.0, "y": 4.0])
+            let dirty = DirtyPanels.take(entry)
+            XCTAssertTrue(dirty.contains("LayersPanel"))
+            XCTAssertFalse(dirty.contains("ToolRail"))
+            XCTAssertTrue(DirtyPanels.take(other).isEmpty)
+        }
+    }
+
     func testClosingOneHandlePreservesAnotherHandlesNativeRows() throws {
         try MainActor.assumeIsolated {
             let first = compositorSessionCreate()

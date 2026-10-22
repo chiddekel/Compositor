@@ -23,6 +23,7 @@ extern "C" void compositor_end_layer_drag(int32_t copied);
 // every panel, no per-panel Qt glue. This is intentionally the *only* place that knows the kind→widget mapping.
 
 #include "SwiftUIQtRenderer.h"
+#include "SwiftUIFittingWidget.h"
 #include "LucideIcons.h"
 #include "QtTextFont.h"
 #include <QPointer>
@@ -33,6 +34,8 @@ extern "C" void compositor_end_layer_drag(int32_t copied);
 #include <QSvgRenderer>
 #include "PerfTrace.h"
 #include <QTimer>
+#include <QPropertyAnimation>
+#include <QScopedValueRollback>
 #include <QTextEdit>
 #include <QAbstractSpinBox>
 #include <QApplication>
@@ -79,6 +82,7 @@ extern "C" void compositor_end_layer_drag(int32_t copied);
 extern "C" {
 int64_t compositor_session_render_tree(uint64_t handle, const char *panel, uint8_t *output, size_t capacity);
 int64_t compositor_session_accessibility_tree(uint64_t handle, const char *panel, const char *node_id, uint8_t *output, size_t capacity);
+int32_t compositor_session_scroll_offset(uint64_t handle, const char *panel, const char *node_id, double *output);
 int32_t compositor_session_dispatch_swiftui_action(uint64_t handle, const char *panel, const char *node_id, const char *handler_key,
                                                    const uint8_t *payload, size_t payload_count);
 int32_t compositor_session_dispatch_swiftui_drop_event(uint64_t handle, const char *panel, const char *node_id, const char *handler_key,
@@ -88,6 +92,7 @@ int64_t compositor_session_render_swiftui_canvas(uint64_t handle, const char *pa
 }
 
 namespace {
+const QHash<QString, QSize> *fittingProposals = nullptr;
 
 // Defined below (with the cursor codes); the AppKit view widget applies it after each pointer event.
 static void applyCompositorCursor(QWidget *widget);
@@ -402,6 +407,7 @@ public:
                     }
                     // A held pointer beyond the viewport keeps reaching new rows as the document scrolls.
                     const QPointer<SwiftUIAppKitWidget> self(this);
+                    PERF_SCOPE("held native drag tick");
                     send("drag", mapFromGlobal(m_lastDragGlobalPosition), m_lastDragModifiers);
                     if (self) synchronizeTrackingScroll(self);
                 }
@@ -2205,6 +2211,7 @@ private:
 
 QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &node);
 
+
 /// A ZStack: children layered in order, filling it, or placed by `.position` / at the alignment when fixed-size.
 class SwiftUIZStackWidget : public QWidget {
 public:
@@ -2605,28 +2612,23 @@ public:
     }
     bool horizontalOnly = false;
     void synchronizeTrackingOffset() {
+        PERF_SCOPE("native scroll offset sync");
         if (!m_handle || !widget()) return;
         trace("track-before");
-        const QJsonObject root = QJsonDocument::fromJson(fetchTreeBytes(m_handle, m_panel)).object();
-        std::function<void(const QJsonObject &)> visit = [&](const QJsonObject &node) {
-            if (node.value("id").toString() == m_nodeID) {
-                const QJsonObject offsets = node.value("doubleParams").toObject();
-                if (!offsets.contains("scrollX") || !offsets.contains("scrollY")) return;
-                trace("track-model", qRound(offsets.value("scrollY").toDouble()));
-                // Keep the native viewport in step without rebuilding the widgets in an AppKit tracking loop.
-                m_applyingOffset = true;
-                horizontalScrollBar()->setValue(qRound(offsets.value("scrollX").toDouble()));
-                verticalScrollBar()->setValue(qRound(offsets.value("scrollY").toDouble()));
-                m_applyingOffset = false;
-                m_pendingOffset = false;
-                m_hasBasis = true;
-                m_basis = QPoint(qRound(offsets.value("scrollX").toDouble()), qRound(offsets.value("scrollY").toDouble()));
-                reportGeometry();
-                return;
-            }
-            for (const QJsonValue &child : node.value("children").toArray()) visit(child.toObject());
-        };
-        visit(root);
+        double offsets[2];
+        if (compositor_session_scroll_offset(m_handle, m_panel.toUtf8().constData(),
+                                             m_nodeID.toUtf8().constData(), offsets) != 0
+            || !std::isfinite(offsets[0]) || !std::isfinite(offsets[1])) return;
+        const QPoint offset(qRound(offsets[0]), qRound(offsets[1]));
+        trace("track-model", offset.y());
+        m_applyingOffset = true;
+        horizontalScrollBar()->setValue(offset.x());
+        verticalScrollBar()->setValue(offset.y());
+        m_applyingOffset = false;
+        m_pendingOffset = false;
+        m_hasBasis = true;
+        m_basis = offset;
+        reportGeometry();
     }
 protected:
     void resizeEvent(QResizeEvent *event) override { QScrollArea::resizeEvent(event); scheduleGeometry(); }
@@ -2978,6 +2980,15 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         QList<QColor> colors;
         for (const QString &name : strings.value("colors").toString().split(QLatin1Char('|'), Qt::SkipEmptyParts)) colors << parseColorToken(name);
         widget = new SwiftUIGradientWidget(colors, strings.value("startPoint").toString(), strings.value("endPoint").toString());
+    } else if (kind == "ViewThatFits") {
+        QList<QWidget *> choices;
+        for (const auto &child : children) {
+            if (auto *choice = buildNode(handle, panel, child.toObject())) choices.append(choice);
+        }
+        const auto axes = node.value("boolParams").toObject();
+        widget = new SwiftUIFittingWidget(choices, axes.value("horizontal").toBool(), axes.value("vertical").toBool(),
+                                         fittingProposals ? fittingProposals->value(id) : QSize());
+        widget->setProperty("swiftUIFittingNode", id);
     } else if (kind == "GeometryReader") {
         const QJsonObject d = node.value("doubleParams").toObject();
         widget = new SwiftUIGeometryWidget(handle, panel, id, strings.value("geometryKey").toString(),
@@ -4013,13 +4024,29 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         widget = children.isEmpty() ? new QWidget : buildNode(handle, panel, children.first().toObject());
         if (!widget) widget = new QWidget;
         const QString target = strings.value("scrollTarget").toString();
+        const double scrollDuration = node.value("doubleParams").toObject().value("scrollDuration").toDouble();
         if (!target.isEmpty()) {
-            QTimer::singleShot(0, widget, [root = QPointer<QWidget>(widget), target] {
+            QTimer::singleShot(0, widget, [root = QPointer<QWidget>(widget), target, scrollDuration] {
                 if (!root) return;
                 for (QWidget *child : root->findChildren<QWidget *>()) {
                     if (child->property("swiftuiIdentifier").toString() != target) continue;
                     for (QWidget *up = child->parentWidget(); up; up = up->parentWidget())
-                        if (auto *area = qobject_cast<QScrollArea *>(up)) { area->ensureWidgetVisible(child, 0, 0); break; }
+                        if (auto *area = qobject_cast<QScrollArea *>(up)) {
+                            const int x = area->horizontalScrollBar()->value(), y = area->verticalScrollBar()->value();
+                            area->ensureWidgetVisible(child, 0, 0);
+                            if (std::isfinite(scrollDuration) && scrollDuration > 0) {
+                                for (auto pair : {qMakePair(area->horizontalScrollBar(), x), qMakePair(area->verticalScrollBar(), y)}) {
+                                    const int targetValue = pair.first->value();
+                                    pair.first->setValue(pair.second);
+                                    auto *animation = new QPropertyAnimation(pair.first, "value", pair.first);
+                                    animation->setDuration(qRound(std::min(60.0, scrollDuration) * 1000));
+                                    animation->setStartValue(pair.second); animation->setEndValue(targetValue);
+                                    animation->setEasingCurve(QEasingCurve::OutCubic);
+                                    animation->start(QAbstractAnimation::DeleteWhenStopped);
+                                }
+                            }
+                            break;
+                        }
                     break;
                 }
             });
@@ -4357,6 +4384,18 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
     const QJsonObject root = QJsonDocument::fromJson(bytes).object();
     if (root.isEmpty()) return nullptr;
     if (colorField) colorField->setProperty("swiftuiPreservingFocus", true);
+    // A fitting replacement must negotiate from its live allocation, rather than briefly returning
+    // the first alternative's width and resizing the canvas before its first resize event.
+    QHash<QString, QSize> proposals;
+    if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle) {
+        const auto remember = [&](QWidget *candidate) {
+            if (auto *fitting = dynamic_cast<SwiftUIFittingWidget *>(candidate); fitting && !fitting->size().isEmpty())
+                proposals.insert(fitting->property("swiftUIFittingNode").toString(), fitting->size());
+        };
+        remember(current);
+        for (auto *candidate : current->findChildren<QWidget *>()) remember(candidate);
+    }
+    QScopedValueRollback<const QHash<QString, QSize> *> proposalScope(fittingProposals, &proposals);
     PERF_SCOPE(QStringLiteral("buildNode:") + panel);
     QWidget *built = buildNode(sessionHandle, panel, root);
     if (built) {

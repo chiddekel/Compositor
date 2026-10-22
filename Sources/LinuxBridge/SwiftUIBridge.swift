@@ -119,6 +119,23 @@ nonisolated public func compositorSessionDispatchSwiftUIDropEvent(_ handle: UInt
     // ContentView's own pieces (Sources/Overrides/ContentView.swift), not copies of them.
     case "ToolHeaders": resolved = ViewResolver.resolve(ContentView(session: session).toolHeaders)
     case "ToolRail": resolved = ViewResolver.resolve(ContentView(session: session).toolRail)
+    case "GIFTimeline":
+        guard !session.canvasOnly, let id = session.gifTimelineLayerID,
+              session.activeLayerID == id, !session.gifTimelineFrames.isEmpty else { return nil }
+        resolved = ViewResolver.resolve(GIFTimeline(frames: session.gifTimelineFrames,
+            selectedFrameIndex: session.gifTimelineSelectedFrameIndex,
+            isPlaying: session.gifTimelineIsPlaying, canPlay: session.gifTimelineCanPlay,
+            timing: session.gifTimelineTiming, canEditFrames: session.gifTimelineCanEditFrames,
+            canEditTiming: session.gifTimelineCanEditTiming,
+            onSelectFrame: { index in
+                guard session.activeLayerID == id else { return }
+                await session.selectGIFTimelineFrame(index)
+            },
+            onTogglePlayback: { session.toggleGIFPlayback(for: id) },
+            onStopPlayback: { session.stopGIFPlayback(for: id) },
+            onChangeTiming: { session.setGIFFrameTiming($0, for: id) },
+            onDuplicateFrame: { await session.duplicateGIFFrame(at: $0, for: id) },
+            onDeleteFrame: { await session.deleteGIFFrames(at: [$0], for: id) }).id(id))
     case "StatusBar": resolved = ViewResolver.resolve(ContentView(session: session).statusBar)
     case "NavigationToolHeader": resolved = ViewResolver.resolve(NavigationToolHeader(session: session))
     case "TransformInspector": resolved = ViewResolver.resolve(TransformInspector(session: session))
@@ -254,6 +271,21 @@ nonisolated public func compositorSessionRenderTree(_ handle: UInt64, _ panel: U
 
 /// The tree a `compositor_session_render_tree` size query resolved, waiting for the fill call that follows it.
 nonisolated(unsafe) private var pendingTree: (handle: UInt64, panel: String, data: Data)?
+
+/// Tracking loops query the live viewport without resolving and rasterizing the panel on every tick.
+@_cdecl("compositor_session_scroll_offset")
+nonisolated public func compositorSessionScrollOffset(_ handle: UInt64, _ panel: UnsafePointer<CChar>?,
+                                                     _ nodeID: UnsafePointer<CChar>?, _ output: UnsafeMutablePointer<Double>?) -> Int32 {
+    guard let panel, let nodeID, let output else { return -1 }
+    let panelName = String(cString: panel), node = String(cString: nodeID)
+    return Int32(withEntry(handle) { entry in
+        guard let query = entry.actionHandlers[panelName]?[node]?["scrollOffset"] else { return -1 }
+        let box = NativeScrollOffsetBox(); query(box)
+        guard let offset = box.offset, offset.x.isFinite, offset.y.isFinite else { return -1 }
+        output[0] = Double(offset.x); output[1] = Double(offset.y)
+        return 0
+    })
+}
 
 /// Accessibility is queried independently from painting; offscreen table rows need not be created on every frame.
 @_cdecl("compositor_session_accessibility_tree")

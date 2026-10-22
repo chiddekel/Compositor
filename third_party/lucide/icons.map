@@ -80,3 +80,6 @@ checkmark custom/check
 exclamationmark.triangle custom/triangle-alert
 printer custom/printer
 minus custom/minus
+# Local playback symbols for the GIF timeline and export preview.
+play.fill custom/play
+pause.fill custom/pause

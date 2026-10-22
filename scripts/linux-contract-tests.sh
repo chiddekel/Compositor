@@ -48,7 +48,7 @@ done
 cmake -S . -B "$NATIVE_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER="$(command -v clang)" -DCMAKE_CXX_COMPILER="$(command -v clang++)" \
     -DCOMPOSITOR_SKIA_ROOT="$SKIA_ROOT" -DCOMPOSITOR_SKIA_LIB="$SKIA_LIB"
-cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_dispersion_backend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels test_keyboard_layout
+cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_dispersion_backend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels test_keyboard_layout test_fitting_layout
 python3 tests/test_dispersion.py "$NATIVE_BUILD/libtest_dispersion_backend.so"
 python3 tests/make_artboard_fixture.py --check
 "$NATIVE_BUILD/test_pressure_brush"
@@ -73,8 +73,10 @@ fi
 export COMPOSITOR_REQUIRE_SUBJECT_MODEL=1
 "$NATIVE_BUILD/test_imageio_color" --require-heif
 python3 tests/test_straight_png.py "$NATIVE_BUILD/libCompositorQtImageIO.so"
+python3 tests/test_gif_backend.py "$NATIVE_BUILD/libCompositorQtImageIO.so"
 "$NATIVE_BUILD/test_font_traits"
 "$NATIVE_BUILD/test_native_file_panels"
+"$NATIVE_BUILD/test_fitting_layout"
 "$NATIVE_BUILD/test_thumbnailer" "$NATIVE_BUILD/compositor-thumbnailer"
 export PATH="/usr/lib/sdk/swift6/bin:$PATH"
 swift package --manifest-cache none describe --type json > "$NATIVE_BUILD/package-description.json"
@@ -119,6 +121,7 @@ NATIVE_GATES=(
     "test --combo-smoke --app-visibility-probe"
     "test --combo-smoke --canvas-size-controls-probe"
     "test --combo-smoke --layer-search-probe"
+    "test --combo-smoke --gif-probe"
     "test --combo-smoke --image-size-controls-probe"
     "test --combo-smoke --transform-gestures-probe"
     "test --combo-smoke --transform-snap-probe"
@@ -132,7 +135,7 @@ NATIVE_GATES=(
     "test --combo-smoke --zoom-cursor-probe"
     "test --combo-smoke --keyboard-cursor-probe"
     "test --combo-smoke --layer-disjoint-probe"
-    "test --combo-smoke --layer-nesting-probe"
+    "solo test --combo-smoke --layer-nesting-probe"
     "test --combo-smoke --thumbnail-selection-probe"
     "test --combo-smoke --modern-adjustment-probe"
     "test --combo-smoke --autosave-crash-probe"

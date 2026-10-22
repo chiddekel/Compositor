@@ -27,6 +27,7 @@
 #include <QTextOption>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
@@ -67,6 +68,11 @@ typedef int32_t (*CompositorImageEncodeFn)(const uint8_t *, int32_t, int32_t, in
                                            int32_t, uint8_t **, size_t *);
 // Provided by the Swift core; weak so C++-only builds (no Swift) still link.
 void compositor_imageio_register(CompositorImageDecodeFn, CompositorImageEncodeFn) __attribute__((weak));
+typedef void *(*CompositorAnimationOpenFn)(const uint8_t *, size_t);
+typedef int32_t (*CompositorAnimationReadFn)(void *, int32_t, uint8_t **, int32_t *, int32_t *);
+typedef void (*CompositorAnimationCloseFn)(void *);
+void compositor_imageio_register_animation(CompositorAnimationOpenFn, CompositorAnimationReadFn,
+                                          CompositorAnimationCloseFn) __attribute__((weak));
 // The deep decode (16-bit and float layouts), registered beside the 8-bit one.
 void compositor_imageio_register_deep(CompositorImageDecodeFn) __attribute__((weak));
 void compositor_imageio_register_straight(CompositorImageDecodeFn, CompositorImageEncodeFn) __attribute__((weak));
@@ -1260,10 +1266,82 @@ extern "C" int compositor_qt_text_functions(CompositorTextLayoutFn *layout, Comp
     return 1;
 }
 
+// One source owns a sequential reader and its current composed canvas, never all decoded frames.
+// Rewinding rebuilds the reader so Qt reapplies disposal and frame offsets correctly.
+namespace {
+std::atomic<uint64_t> animationReads{0};
+struct AnimationSource {
+    QByteArray bytes;
+    QBuffer buffer;
+    std::unique_ptr<QImageReader> reader;
+    QImage image;
+    int32_t cursor = -1;
+    uint64_t reads = 0;
+    AnimationSource(const uint8_t *data, size_t length)
+        : bytes(reinterpret_cast<const char *>(data), qsizetype(length)), buffer(&bytes) {
+        buffer.open(QIODevice::ReadOnly);
+        reset();
+    }
+    void reset() {
+        reader.reset();
+        buffer.seek(0);
+        reader = std::make_unique<QImageReader>(&buffer, "gif");
+        image = QImage();
+        cursor = -1;
+    }
+};
+}
+extern "C" void *compositor_qt_imageio_animation_open(const uint8_t *data, size_t length) {
+    if (!data || !length || length > size_t(std::numeric_limits<int>::max())) return nullptr;
+    auto source = std::make_unique<AnimationSource>(data, length);
+    const QSize size = source->reader->size();
+    if (size.width() <= 0 || size.height() <= 0 || size.width() > 30000 || size.height() > 30000
+        || int64_t(size.width()) * size.height() > 200000000) return nullptr;
+    return source.release();
+}
+extern "C" void compositor_qt_imageio_animation_close(void *handle) {
+    delete static_cast<AnimationSource *>(handle);
+}
+// Instrumentation counts actual reader work, including rewinds, for scaling regressions.
+extern "C" uint64_t compositor_qt_imageio_animation_reads(void *handle) {
+    return handle ? static_cast<AnimationSource *>(handle)->reads : animationReads.load(std::memory_order_relaxed);
+}
+extern "C" int32_t compositor_qt_imageio_animation_read(void *handle, int32_t index,
+                                                       uint8_t **out, int32_t *width, int32_t *height) {
+    if (out) *out = nullptr;
+    if (!handle || !out || !width || !height || index < 0) return -1;
+    auto &source = *static_cast<AnimationSource *>(handle);
+    if (index < source.cursor) source.reset();
+    while (source.cursor < index) {
+        source.image = source.reader->read();
+        ++source.reads;
+        animationReads.fetch_add(1, std::memory_order_relaxed);
+        if (source.image.isNull()) { source.reset(); return -4; }
+        ++source.cursor;
+    }
+    const QImage image = source.image.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+    const size_t stride = size_t(image.width()) * 4;
+    auto *pixels = static_cast<uint8_t *>(malloc(stride * image.height()));
+    if (!pixels) return -5;
+    for (int y = 0; y < image.height(); ++y) memcpy(pixels + y * stride, image.constScanLine(y), stride);
+    *out = pixels; *width = image.width(); *height = image.height();
+    return 0;
+}
+// Stateless entry point retained for independent callers; ImageIO uses source sessions.
+extern "C" int32_t compositor_qt_imageio_decode_frame(const uint8_t *data, size_t length, int32_t index,
+                                                       uint8_t **out, int32_t *width, int32_t *height) {
+    void *source = compositor_qt_imageio_animation_open(data, length);
+    const int32_t result = compositor_qt_imageio_animation_read(source, index, out, width, height);
+    compositor_qt_imageio_animation_close(source);
+    return result;
+}
+
 extern "C" int compositor_qt_imageio_install(void) {
     if (compositor_text_register) compositor_text_register(textLayout, textRender);
     if (!compositor_imageio_register) return 0;
     compositor_imageio_register(decodeImage, encodeImage);
+    if (compositor_imageio_register_animation) compositor_imageio_register_animation(
+        compositor_qt_imageio_animation_open, compositor_qt_imageio_animation_read, compositor_qt_imageio_animation_close);
     if (compositor_imageio_register_deep) compositor_imageio_register_deep(decodeImageDeep);
     if (compositor_imageio_register_straight) compositor_imageio_register_straight(decodeStraightImage, encodeStraightImage);
     if (compositor_imageio_register_cmyk) compositor_imageio_register_cmyk(decodeCMYK, encodeCMYK);
