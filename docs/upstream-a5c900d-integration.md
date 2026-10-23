@@ -48,8 +48,8 @@ label assertions. Its logs are retained as `native-gif-before-rebuild.log` and
 `HostRun/DialogJourney.cpp`, verifies those assertions.
 
 The README refresh was published separately as `d9ab8bc` on both `main` and
-`GNU_Linux`. That push contains only `README.md`; this upstream code integration
-remains local.
+`GNU_Linux`. That push contains only `README.md`; the subsequent branch
+synchronization publishes this verified upstream code integration separately.
 
 The macOS Xcode test target requires a macOS runner; this Linux integration runs its
 portable tests in the manifest's KDE SDK with the actual Skia and Qt codec backends.
