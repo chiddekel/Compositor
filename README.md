@@ -1,33 +1,77 @@
-# Compositor
+<div align="center">
+  <img src="Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-128.png" alt="Compositor app icon" width="96" height="96">
+  <h1>Compositor</h1>
+  <p><strong>A free, open-source image editor for compositing and photo work.</strong></p>
+  <p>Layers, masks, retouching, Camera Raw, and animated GIFs.</p>
+  <p>
+    <a href="https://chiddekel.github.io/Compositor/">Download for Linux</a> ·
+    <a href="https://robbietilton.com/compositor">Download for macOS</a> ·
+    <a href="docs/project-format.md">Documentation</a> ·
+    <a href="https://github.com/chiddekel/Compositor/issues">Report an issue</a>
+  </p>
+  <p>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+    <img src="https://img.shields.io/badge/GNU%2FLinux-Flatpak_alpha-orange" alt="GNU/Linux: Flatpak alpha">
+    <a href="https://github.com/chiddekel/Compositor/actions/workflows/ci-guard.yml"><img src="https://github.com/chiddekel/Compositor/actions/workflows/ci-guard.yml/badge.svg?branch=main" alt="Upstream compatibility checks"></a>
+  </p>
+</div>
 
-Adobe Photoshop costs too much and tools like GIMP don’t feel familiar enough for me to stay in flow. That’s why I built Compositor.
+Compositor is built around a familiar, layer-based editing workflow: combine images, refine masks,
+adjust color, and export the finished composition. Projects keep layers and edits available for later work.
 
-The goal was to create a full-featured image editor that is completely free and open source. I used to use Photoshop for compositing and post-processing, so Compositor is built around that workflow - with the tools needed to create a pixel-perfect final image.
+This repository maintains the **GNU/Linux port** of [Robbie Tilton's Compositor](https://github.com/robbietilton/Compositor).
+It runs the upstream Swift editor through a macOS API compatibility layer, with Qt providing the Linux host
+and Skia providing raster drawing. Linux releases are **x86_64 alpha builds**; report Linux issues in this repository.
 
-Because it’s open source, you can download the Xcode project and add, remove, or modify any feature to fit your workflow.
-
-**Jump to:** [Features](#features) · [macOS build](#requirements) · [**Linux port**](#linux-port) · [Releasing](#releasing) · [License](#license)
+[Install](#installation) · [Features](#features) · [Build](#building-from-source) · [Test](#testing) · [Contribute](#contributing) · [Docs](#documentation)
 
 ## Installation
 
-### Linux alpha (Flatpak)
+### GNU/Linux
 
-Install the x86_64 alpha from the [Linux download page](https://chiddekel.github.io/Compositor/).
-The installed app's **Check for Updates…** menu updates it through Flatpak.
-See [Flatpak releases](docs/flatpak-releases.md) for installation, updating, and publishing.
+Install [Flatpak](https://flatpak.org/setup/) for your distribution, then install the signed alpha:
 
-### Download
-Get Compositor from [robbietilton.com/compositor](https://robbietilton.com/compositor), or download the latest release directly from [GitHub Releases](https://github.com/robbietilton/Compositor/releases/latest).
+```sh
+flatpak install --user https://chiddekel.github.io/Compositor/com.compositor.Client.flatpakref
+flatpak run com.compositor.Client
+```
 
-### Homebrew
+The install reference adds the `compositor-alpha` update repository. Use **Check for Updates…** in the app,
+your software center, or:
+
+```sh
+flatpak update com.compositor.Client
+```
+
+See [Flatpak releases](docs/flatpak-releases.md) for bundles, updates, and release details.
+
+### macOS
+
+Download the original app from [robbietilton.com/compositor](https://robbietilton.com/compositor)
+or [upstream releases](https://github.com/robbietilton/Compositor/releases/latest), or use Homebrew:
 
 ```sh
 brew install --cask robbietilton-compositor
 ```
 
+Requires **macOS 26 or later on Apple silicon**. macOS builds and support come from the upstream project.
+
 ## Features
 
+| Workflow | Tools |
+| --- | --- |
+| Compositing | Layers and folders, blend modes, clipping masks, editable effects |
+| Selection and masking | Marquee, lasso, Magic Wand, object and subject selection, feathering |
+| Painting and retouching | Pressure-sensitive brush, healing, clone stamp, blur, editable text and shapes |
+| Color and filters | Camera Raw, Levels, Curves, adjustment layers, blur, grain, glow |
+| Animation | GIF layers, frame editing and playback, saved timing, animated export |
+| Files and canvas | PSD/PSB import, camera RAW, SVG/PDF, project tabs, guides, image and canvas resizing |
+
+<details>
+<summary><strong>Full feature reference</strong></summary>
+
 ### Layers
+
 - Layers and folders, with opacity and Photoshop's full set of blend modes in its order — a folder's opacity dims everything inside it
 - Layer masks: paint, fill, invert, blur and feather them anywhere on the canvas, past the layer's own pixels; link or unlink them to transform a mask on its own
 - Clipping masks and folder masks
@@ -38,6 +82,7 @@ brew install --cask robbietilton-compositor
 - Copy and paste whole layers and folders (⌘C/⌘V with no selection), within a project or between projects, or drag them between projects
 
 ### Transform
+
 - Non-destructive move, scale, rotate and flip — images keep their full resolution however small you make them
 - Free distort (⌘-drag a handle), with Shift to lock to an axis
 - Transform several layers, or a whole folder, together
@@ -46,6 +91,7 @@ brew install --cask robbietilton-compositor
 - Flip Layer and Flip Canvas, horizontal and vertical
 
 ### Selections
+
 - Rectangle and Ellipse Marquee, Freehand and Polygonal Lasso, and the Magic tool — Wand selects by color, Object traces whatever you click (Tab switches)
 - Select Subject, and Expand, Contract and Feather on any selection
 - Add to and subtract from selections, move the outline, or move and duplicate the pixels inside
@@ -53,6 +99,7 @@ brew install --cask robbietilton-compositor
 - Content-Aware Fill, which can also extend an image past its edges
 
 ### Painting and retouching
+
 - Brush with size, hardness, opacity and smoothing, in Paint or Erase mode (B and E), and Shift for straight lines
 - Pen pressure for the Brush's size and opacity, on a graphics tablet
 - Spot Healing Brush (content-aware)
@@ -63,6 +110,7 @@ brew install --cask robbietilton-compositor
 - Eyedropper and a full color picker
 
 ### Adjustments and filters
+
 - Camera Raw filter: light, color, curves, color mixer, color grading, detail, optics and geometry, in a panel beside the canvas; each section resets to its defaults from its header
 - Levels (with Auto), Curves, Hue/Saturation, Exposure, Gradient Map, Grain, Black & White, Color Balance and Invert
 - Gaussian Blur and Motion Blur that spread past a layer's edges
@@ -71,6 +119,7 @@ brew install --cask robbietilton-compositor
 - Last Filter (⌃⌘F) runs the last filter again with the same settings
 
 ### Canvas and files
+
 - Multiple projects in tabs
 - Search Commands (⌘F): find every menu command and tool by name, as in Raycast or Obsidian, and run it with Return
 - Toggle Fullscreen (F): the canvas alone on black over the whole screen, with every panel put away; F or Esc brings them back
@@ -89,139 +138,118 @@ brew install --cask robbietilton-compositor
 - Automatic updates, signed and notarized
 
 ### Works with AI agents
+
 - AI agents and scripts can build and edit projects directly: a `.comp` is a folder of PNG layers and a manifest, and an open project updates live as it's written. See [Writing Compositor projects](docs/writing-comp-files.md)
-
-## Requirements
-
-- macOS 26.0 or later on a Mac with Apple silicon
-- Xcode 26 or later (to build from source)
-
-## Translations
-
-Compositor is English only for now, and translation pull requests aren't being accepted. It's maintained by one person, every new string would need translating from then on, and translations in languages I don't read can't be reviewed. I'll revisit this once the app settles; until then, please don't open localization PRs.
-
-## Other platforms
-
-Compositor is macOS only. These unofficial ports are made by others, not reviewed or supported by me, so please report issues to them:
-
-- [CompositorWindows](https://github.com/Cengokill/CompositorWindows) by [@Cengokill](https://github.com/Cengokill): Windows
-- [Composa](https://github.com/dvdstelt/Composa) by [@dvdstelt](https://github.com/dvdstelt): Windows and Linux
-- [CompositorLX](https://github.com/ClaudiuJitea/compositorLX) by [@ClaudiuJitea](https://github.com/ClaudiuJitea): Linux
-
-More are listed in [#23 (Windows)](https://github.com/robbietilton/Compositor/issues/23) and [#19 (Linux)](https://github.com/robbietilton/Compositor/issues/19).
-
-## Building
-
-Open `Compositor.xcodeproj` and run the **Compositor** scheme.
-
-## Linux Port
-
-Runs on GNU/Linux via Flatpak. Upstream Swift/SwiftUI compiles unmodified against a Linux
-compat layer (AppKit/CoreGraphics/SwiftUI) — same look and behavior as macOS, custom title
-bar included.
-
-### Requirements
-
-```
-flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak install --user flathub \
-    org.kde.Platform//6.11 org.kde.Sdk//6.11 \
-    org.freedesktop.Sdk.Extension.swift6//26.08
-```
-
-Version must match the manifest's `runtime-version` — mismatched SDK/runtime fails to link.
-
-### Run it
-
-```
-flatpak-builder --user --install --force-clean build-dir com.compositor.Client.yaml
-flatpak run com.compositor.Client
-```
-
-No native title bar: drag the header to move the window, double-click to maximize.
-
-Headless: `QT_QPA_PLATFORM=offscreen flatpak run com.compositor.Client --help`
-
-Optional Nautilus/Dolphin project previews and the independent macOS/Linux render
-comparison are described in [render parity and desktop previews](docs/render-parity-and-desktop-previews.md).
-
-### Dev loop
-
-[`scripts/run-compositor.sh`](scripts/run-compositor.sh) — builds from the working tree, runs from `.build/`, seconds not minutes:
-
-```
-./scripts/run-compositor.sh              # build + run
-./scripts/run-compositor.sh --offscreen  # headless
-```
-
-Smoke tests (add `--offscreen`):
-
-| Flag | Checks |
-|---|---|
-| `--session-smoke` | new/paint/render/undo/redo/close |
-| `--dialog-smoke` | resize, undo, autosave, save/reopen |
-| `--io-smoke` | image codecs |
-| `--layers-smoke` | layers dock |
-| `--brush-smoke` | brush + blend + paint |
-
-<details>
-<summary>Manual build (what the script automates)</summary>
-
-```
-flatpak-builder --run build-dir com.compositor.Client.yaml bash
-# inside the sandbox:
-export PATH=/usr/lib/sdk/swift6/bin:$PATH
-swift build -c release --static-swift-stdlib
-cmake -S . -B build -DCMAKE_PREFIX_PATH=/app \
-    -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
-    -DOpenCV_DIR=/app/lib/cmake/opencv4 \
-    -DCompositorCore_SWIFT_STATIC_LIB=$PWD/.build/release/libCompositorCore.a
-cmake --build build
-QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
-```
-
-Linux dependency source archives, including Skia's required dependencies and GN,
-are committed with pinned checksums and license notices. See
-[Vendored Linux dependencies](docs/vendored-linux-dependencies.md) for offline
-verification, build instructions and the update procedure.
 
 </details>
 
-### Docs
+The feature reference describes the upstream editor. For platform-specific behavior and verification,
+see the [compatibility inventory](docs/current-linux-compatibility-inventory.md) and
+[macOS/Linux parity inventory](docs/mac-linux-parity-inventory.md).
 
-| | |
-|---|---|
-| [`docs/platform-abstraction.md`](docs/platform-abstraction.md) | macOS API → Linux/Qt mapping |
-| [`docs/linux-port-file-map.md`](docs/linux-port-file-map.md) | which files are reused vs. replaced |
-| [`docs/project-format.md`](docs/project-format.md) | the `.comp` file format |
-| [`linux/upstream-parity.json`](linux/upstream-parity.json) | every UI override, and why |
-| [`linux/UPSTREAM_TEST_EXCLUSIONS.md`](linux/UPSTREAM_TEST_EXCLUSIONS.md) | skipped upstream tests, and why |
-| [`docs/upstream-test-baseline.md`](docs/upstream-test-baseline.md) | the correct `swift test` invocation (env vars, flags) and current pass count |
+## Building from source
 
-**Contributing:** extend `Sources/Compat/` before adding to `Sources/Overrides/`. Overrides are
-a last resort for the handful of cases that need the Objective-C runtime or missing AppKit —
-same public API either way.
+### GNU/Linux
 
-### Known issues
+Requires `git`, `flatpak`, and `flatpak-builder`. The manifest selects the KDE 6.11 SDK and Swift 6
+extension; its SDK and runtime versions must match.
 
-- **Correction to an earlier version of this note**: running `AdjustmentLayerTests`/`ProjectTests` without
-  `COMPOSITOR_SKIA_BRIDGE`/`COMPOSITOR_IMAGEIO_BACKEND` set produces blank pixels (every `CGContext` silently
-  no-ops when no Skia bridge resolves — see `docs/upstream-test-baseline.md`), which was previously misdiagnosed
-  here as a native pixel-kernel/Accelerate-vImage portability bug. It isn't — it's a missing test prerequisite.
-  Run tests the way `docs/upstream-test-baseline.md` documents and this doesn't happen (260+/260+ passing).
-- InnerGlow renders on every effects tier (Vulkan, OpenCV, C++), matching upstream's Metal passes; the prebuilt
-  opt-in Skia tier (`COMPOSITOR_EFFECTS=skia`) does not draw it.
+```sh
+git clone https://github.com/chiddekel/Compositor.git
+cd Compositor
+flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak-builder --user --install --install-deps-from=flathub --force-clean \
+  build-dir com.compositor.Client.yaml
+flatpak run com.compositor.Client
+```
 
-## Releasing
+The first build compiles the pinned native dependencies. Source archives, checksums, and license notices
+are included; see [vendored Linux dependencies](docs/vendored-linux-dependencies.md).
 
-`scripts/release.sh` builds a Release version, signs it with Developer ID, notarizes and staples it, and packages it into `dist/Compositor-<version>.dmg`.
+Once the SDK and native bridges are prepared, the [development launcher](scripts/run-compositor.sh)
+builds and runs the working tree:
 
-It needs, all kept outside this repository:
+```sh
+./scripts/run-compositor.sh --release
+./scripts/run-compositor.sh --release --offscreen --session-smoke
+```
 
-- a **Developer ID Application** certificate in the login keychain
-- notarization credentials saved with `xcrun notarytool store-credentials "compositor-notary" …`
-- [`create-dmg`](https://github.com/create-dmg/create-dmg) (`brew install create-dmg`)
+### macOS
 
-## License
+Requires Xcode 26 or later. Open `Compositor.xcodeproj` and run the **Compositor** scheme, or:
 
-MIT — see [LICENSE](LICENSE).
+```sh
+xcodebuild -project Compositor.xcodeproj -scheme Compositor \
+  -destination 'platform=macOS' build
+```
+
+## Testing
+
+Run the fast upstream source, generator, and override checks from the repository root
+(with the `upstream` remote fetched):
+
+```sh
+git remote add upstream https://github.com/robbietilton/Compositor.git  # once per clone
+git fetch upstream main
+bash scripts/check-upstream-clean.sh
+```
+
+The Linux contract runner needs the manifest's dependency modules, Skia, and the Qt image-codec backend.
+Prepare a separate SDK build directory before the final packaging cleanup, then run:
+
+```sh
+flatpak-builder --user --force-clean --disable-rofiles-fuse --stop-at=compositor \
+  build-test com.compositor.Client.yaml
+flatpak build --device=dri --filesystem="$PWD" build-test \
+  bash "$PWD/scripts/linux-contract-tests.sh"
+```
+
+See the [Linux test baseline](docs/upstream-test-baseline.md) for backend environment variables and
+focused test commands. On macOS, run the **CompositorTests** target in Xcode.
+
+## Contributing
+
+Bug reports and focused pull requests are welcome. Include your app version, distribution,
+steps to reproduce, and whether you used a packaged Flatpak or a development build.
+
+For Linux changes, extend `Sources/Compat/` before adding an override. Keep protected upstream app
+and test sources unchanged; put platform implementations behind the existing interfaces.
+See [AGENTS.md](AGENTS.md) and [platform abstraction](docs/platform-abstraction.md) for repository rules
+and the SOLID service boundaries.
+
+The upstream editor is English-only and is not currently accepting localization pull requests.
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Platform abstraction](docs/platform-abstraction.md) | macOS APIs, Linux implementations, and replaceable services |
+| [Compatibility inventory](docs/current-linux-compatibility-inventory.md) | Current Linux coverage and limitations |
+| [Upstream integration](docs/upstream-after-1.4.10-ledger.md) | Commit coverage, platform adaptations, and verification references |
+| [Source map](docs/linux-port-file-map.md) | Reused sources and platform replacements |
+| [Override manifest](linux/upstream-parity.json) | Every override and its purpose |
+| [Test exclusions](linux/UPSTREAM_TEST_EXCLUSIONS.md) | Platform-only upstream tests and their reasons |
+| [Project format](docs/project-format.md) | The `.comp` document format |
+| [Writing projects](docs/writing-comp-files.md) | Create and edit projects with scripts or AI agents |
+| [Desktop previews and render parity](docs/render-parity-and-desktop-previews.md) | File-manager integration and platform comparisons |
+| [Flatpak releases](docs/flatpak-releases.md) | Linux packaging, updates, and publishing |
+
+<details>
+<summary><strong>macOS release tooling</strong></summary>
+
+`scripts/release.sh` creates a signed, notarized DMG in `dist/`. It requires a Developer ID Application
+certificate, notarization credentials stored as `compositor-notary`, and
+[`create-dmg`](https://github.com/create-dmg/create-dmg). Keep signing credentials outside the repository.
+
+</details>
+
+## Credits and license
+
+Compositor was created by [Robbie Tilton](https://github.com/robbietilton).
+The [upstream repository](https://github.com/robbietilton/Compositor) maintains the original macOS application.
+Other community ports are listed in its platform discussions:
+[Windows](https://github.com/robbietilton/Compositor/issues/23) and
+[Linux](https://github.com/robbietilton/Compositor/issues/19).
+
+Released under the [MIT License](LICENSE). Third-party dependency notices are documented in
+[vendored Linux dependencies](docs/vendored-linux-dependencies.md).
