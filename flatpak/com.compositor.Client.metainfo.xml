@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.5.6-linux-alpha.1" date="2026-10-23" type="development">
+      <description><p>Integrate upstream release 1.5.6 and synchronize the Linux About panel to build 52. Retain animated GIF layers and export, layer search, adaptive toolbars and Canvas Size zoom preservation from the preceding Linux release.</p></description>
+    </release>
     <release version="1.5.5-linux-alpha.4" date="2026-10-22" type="development">
       <description><p>Integrate upstream GIF layers, project format 17, animated export and adaptive one/two-column toolbars, with source-owned image decoders and panel-owned thumbnails on GNU/Linux.</p></description>
     </release>

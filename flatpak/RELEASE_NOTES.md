@@ -1,3 +1,15 @@
+Compositor 1.5.6-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream release 1.5.6 through `47cb96b`, including the original Xcode version and macOS update feed.
+- Synchronizes the Linux About panel to version 1.5.6, build 52.
+- Retains animated GIF layers and export, layer search, the adaptive toolbar and Canvas Size zoom preservation from the preceding Linux release.
+
+The two new upstream commits change release metadata only. Application code and the compatibility adapters are unchanged from `1.5.5-linux-alpha.4`; its full verification is recorded in docs/upstream-bd76fc9-integration.md. Current release checks are recorded in docs/upstream-1.5.6-integration.md.
+
+This remains an alpha port, with the existing macOS render-comparison differences and physical tablet validation limits documented in docs/upstream-1.5.5-integration.md.
+
+Previous release notes:
+
 Compositor 1.5.5-linux-alpha.4 for GNU/Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream through `78de504`, retaining the protected macOS app, tests and Xcode sources.

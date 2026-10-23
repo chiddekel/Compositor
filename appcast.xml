@@ -3,19 +3,17 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.5.5</title>
-      <pubDate>Wed, 21 Oct 2026 22:09:13 +0000</pubDate>
-      <sparkle:version>51</sparkle:version>
-      <sparkle:shortVersionString>1.5.5</sparkle:shortVersionString>
+      <title>Version 1.5.6</title>
+      <pubDate>Fri, 23 Oct 2026 03:20:29 +0000</pubDate>
+      <sparkle:version>52</sparkle:version>
+      <sparkle:shortVersionString>1.5.6</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.5</link>
-      <changes><![CDATA[Filter › RGB Split: rainbow dispersion, linear or radial, with blur streaks.
-Progressive Blur, Bloom / Glow and RGB Split as adjustment layers.
-Export As › Channel Pack packs layers into a PNG's red, green, blue and alpha, for game textures.
-Photoshop artboards each open in a tab of their own.
-Copy and paste work in file names when saving, and shortcuts work on non-Latin keyboards.
-Image Size keeps the zoom, and small images open at 100%.]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.5/Compositor.dmg" sparkle:edSignature="TGExBpK96Swny/lx2IICL1Kq8WyJFc8z48JlLL9CEklE79plJVxcYBAvhmrNu3Ermm2i2ddgmHSdCtfV8yjaAQ==" length="8330075" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.6</link>
+      <changes><![CDATA[- Animated GIFs: a GIF imports as one layer with its frames in a strip under the canvas, to play, paint on, duplicate, delete and retime; Export As saves animated GIFs.
+- Search the Layers panel by name, or show only one kind of layer or the selected ones.
+- The tool bar moves into two columns when the window is too short for one.
+- Canvas Size keeps the zoom, so added or trimmed canvas shows as such.]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.6/Compositor.dmg" sparkle:edSignature="ZvnDG9w6T6/SX+ZCQa2SmIwlq/7EkctjVl+KASjjbikERspBjgsjJA3L7/XOmg695BWYaaVgtSSqMLFatwcjBw==" length="8490463" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

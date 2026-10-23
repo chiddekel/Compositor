@@ -2,7 +2,7 @@
   "upstream_remote": "upstream",
   "upstream_ref": "upstream/main",
   "ledger_base": "a1bd74c",
-  "ledger_to": "78de504",
+  "ledger_to": "47cb96b",
   "protected_roots": [
     "Compositor",
     "CompositorTests",
@@ -46,7 +46,7 @@
     "Compositor/Document/GIFAnimation.swift": "Sources/Overrides/GIFAnimation.swift (generated source-owned ImageIO reader)",
     "Compositor/IO/GIFDecoder.swift": "Sources/Overrides/GIFDecoder.swift (generated reader reuse; original frame geometry and editing)"
   },
-  "status": "Integrated upstream through 78de504: animated GIF layers, project format 17, GIF export and adaptive tool rail. Protected trees match upstream. Local verification passes 170 XCTest cases, 1,061 Swift tests, all 44 native gates, 16 CMake tests and seven packaged runtime checks. See docs/upstream-bd76fc9-integration.md.",
+  "status": "Integrated upstream 1.5.6 through 47cb96b: animated GIF layers, project format 17, GIF export and adaptive tool rail. Protected trees match upstream. The preceding application checkpoint passes 170 XCTest cases, 1,061 Swift tests, all 44 native gates, 16 CMake tests and seven packaged runtime checks. Current metadata-release verification: docs/upstream-1.5.6-integration.md; full application evidence: docs/upstream-bd76fc9-integration.md.",
   "drift": {
     "Sources/Overrides/ContentView.swift": {
       "mode": "generated",
