@@ -1,6 +1,12 @@
 # Build output
 dist/
 build/
+build-cmake/
+build-sdk/
+build-qt/
+build-host/
+build-swift/
+.build/
 DerivedData/
 *.xcarchive
 *.dmg
@@ -22,6 +28,20 @@ xcuserdata/
 # Claude Code settings personal to this machine
 .claude/settings.local.json
 BUILD_PLAN.md
+
+# Flatpak build artifacts (pinned dependency archives live in third_party/sources)
+.flatpak-builder/
+build-dir/
+build-flatpak/
+build-flatpak-minimal/
+build-vendored/
+linux/build/
+
+# Test scratch logs and Python bytecode
+.*.log
+.*.txt
+__pycache__/
+*.pyc
 
 # Local HDR plans and agent handoffs: HDR_FULL_PLAN.md, HDR_EDITING_PLAN.md, HDR_LIGHT_PLAN.md
 /HDR_*.md

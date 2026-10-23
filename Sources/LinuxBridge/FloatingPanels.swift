@@ -1,0 +1,89 @@
+import Foundation
+import SwiftUI
+import AppKit
+
+/// Upstream's floating panels. On the Mac, `ContentView` watches the session and shows an `NSPanel`
+/// (`FloatingPanel`) for each editing task — a layer effect, … — and runs the task's cancel when the panel's close
+/// button is pressed. The Qt shell has no ContentView: the state tells it which of these panels should be up (the shell
+/// shows each one as a non-modal tool window rendering the upstream view), and `close` is the close button.
+enum FloatingPanels {
+    struct Open: Encodable, Equatable {
+        /// SwiftUI panel name the shell renders (see SwiftUIBridge.resolvePanel).
+        let panel: String
+        /// Window title, as upstream passes it to `FloatingPanel.show(title:)`.
+        let title: String
+        let placement: String
+        let dockedWidth: Double?
+        var popupWidth: Double? = nil
+        var popupHeight: Double? = nil
+        var popupX: Double? = nil
+        var popupY: Double? = nil
+
+        @MainActor init(panel: String, title: String, placement: FloatingPanelPlacement = .automatic) {
+            self.panel = panel
+            self.title = title
+            self.placement = placement == .dockedToMainWindowRight ? "dockedToMainWindowRight" : "automatic"
+            dockedWidth = placement == .dockedToMainWindowRight ? Double(FloatingPanelController.dockedWidth) : nil
+        }
+    }
+
+    /// ContentView's own bookkeeping that isn't a panel: runs before each state read, as its `.onChange` handlers do
+    /// after every change.
+    @MainActor static func observe(_ editor: UpstreamEditor) {
+        let session = editor.session
+        if session.filterEdit == nil { editor.filterInShellDialog = false }
+        // .onChange(of: session.document?.layers): an effect deleted (or its layer gone) while being edited ends the edit.
+        if let editing = session.effectsEditing,
+           session.document?.layers.first(where: { $0.id == editing.layerID })?.effects?.contains(editing.kind) != true {
+            if let picker = session.colorPicker, case .effect = picker.target { session.closeColorPicker(commit: false) }
+            session.effectsEditing = nil
+            session.effectsEditingOriginal = nil
+        }
+    }
+
+    /// The panels ContentView would be showing now.
+    @MainActor static func open(in editor: UpstreamEditor) -> [Open] {
+        let session = editor.session
+        var panels: [Open] = []
+        for window in NativeLowering.childWindows(in: editor.nativePanelScopes) {
+            var panel = Open(panel: "NativeWindow:\(window.windowNumber)", title: window.title)
+            panel.popupWidth = window.frame.width; panel.popupHeight = window.frame.height
+            panel.popupX = window.frame.minX; panel.popupY = -window.frame.maxY
+            panels.append(panel)
+        }
+        if let editing = session.effectsEditing { panels.append(Open(panel: "EffectsSheet", title: editing.kind.rawValue)) }
+        if let picker = session.colorPicker { panels.append(Open(panel: "ColorPickerSheet", title: picker.target.title)) }
+        if session.colorRange != nil { panels.append(Open(panel: "ColorRangeSheet", title: "Color Range")) }
+        if session.levels != nil { panels.append(Open(panel: "LevelsSheet", title: "Levels")) }
+        if session.hueSaturation != nil { panels.append(Open(panel: "HueSaturationSheet", title: "Hue/Saturation")) }
+        if let operation = session.selectionAmountOperation {
+            panels.append(Open(panel: "SelectionAmountSheet", title: operation.rawValue + " Selection"))
+        }
+        if !editor.filterInShellDialog, let edit = session.filterEdit {
+            panels.append(Open(panel: "FilterSheet", title: edit.kind.rawValue,
+                placement: edit.kind == .cameraRaw ? .dockedToMainWindowRight : .automatic))
+        }
+        if ShortcutSettings.shared.sheet != nil { panels.append(Open(panel: "KeyboardShortcutsSheet", title: "Keyboard Shortcuts")) }
+        return panels
+    }
+
+    /// The panel's close button: what ContentView sets as that panel's `onClose`.
+    @MainActor static func close(_ panel: String, in editor: UpstreamEditor) {
+        if panel.hasPrefix("NativeWindow:"), let number = Int(panel.dropFirst("NativeWindow:".count)) {
+            NativeLowering.dismissChildWindow(number)
+            return
+        }
+        let session = editor.session
+        switch panel {
+        case "EffectsSheet": if session.effectsEditing != nil { session.finishEffectsEditing(commit: false) }
+        case "FilterSheet": if session.filterEdit != nil { session.cancelFilter() }
+        case "ColorPickerSheet": if session.colorPicker != nil { session.closeColorPicker(commit: false) }
+        case "LevelsSheet": if session.levels != nil { session.cancelLevels() }
+        case "HueSaturationSheet": if session.hueSaturation != nil { session.cancelHueSaturation() }
+        case "ColorRangeSheet": session.cancelColorRange()
+        case "SelectionAmountSheet": session.selectionAmountOperation = nil
+        case "KeyboardShortcutsSheet": ShortcutSettings.shared.close()
+        default: break
+        }
+    }
+}

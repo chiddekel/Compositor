@@ -1,0 +1,56 @@
+name: upstream-sync build
+
+# Merge upstream, verify source integrity, build the pinned manifest dependencies, then run the full compiled
+# suite and native combinations with real Skia/ImageIO backends, without per-test skips.
+# Manual + weekly because a cold native dependency build takes substantially longer than a cached contract run.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 06:00 UTC
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder glslang-tools
+
+      - name: Merge latest upstream/main
+        run: |
+          git remote add upstream https://github.com/robbietilton/Compositor.git
+          git fetch upstream main
+          git -c user.email=ci@localhost -c user.name=ci merge --no-edit upstream/main
+          REQUIRE_SHADER_CHECK=1 bash scripts/check-upstream-clean.sh
+
+      - name: Install the merged manifest's SDK and extension dependencies
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --assumeyes --install-deps-from=flathub --install-deps-only \
+            build-ci-sdk com.compositor.Client.yaml
+
+      - name: Cache pinned native dependencies
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: contract-native-${{ hashFiles('com.compositor.Client.yaml') }}
+
+      - name: Build dependency modules inside the merged manifest's SDK
+        run: |
+          flatpak-builder --user --force-clean --disable-rofiles-fuse --jobs="$(nproc)" --stop-at=compositor \
+            build-ci-sdk com.compositor.Client.yaml
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: contract-swiftpm-${{ hashFiles('com.compositor.Client.yaml', 'Package.swift', 'Package.resolved') }}
+
+      - name: Full compiled test suite and native Qt tool combinations
+        run: |
+          flatpak-builder --run --filesystem="$PWD" build-ci-sdk com.compositor.Client.yaml \
+            bash "$PWD/scripts/linux-contract-tests.sh"

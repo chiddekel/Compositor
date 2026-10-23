@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.compositor.Client</id>
+
+  <name>Compositor</name>
+  <summary>A free, open-source, Photoshop-style image editor</summary>
+
+  <developer id="io.github.chiddekel">
+    <name>Compositor Linux contributors</name>
+  </developer>
+
+  <launchable type="desktop-id">com.compositor.Client.desktop</launchable>
+
+  <project_license>MIT</project_license>
+  <metadata_license>CC0-1.0</metadata_license>
+
+  <url type="homepage">https://chiddekel.github.io/Compositor/</url>
+  <url type="bugtracker">https://github.com/chiddekel/Compositor/issues</url>
+
+  <description>
+    <p>
+      Compositor is a full-featured image editor that is completely free and open
+      source. It is built around a Photoshop-style compositing and post-processing
+      workflow, with layers, masks, adjustment layers, transform, selections,
+      painting and retouching tools, and a full set of adjustments and filters.
+    </p>
+    <p>
+      This is the Linux port: a Qt Widgets shell over a retained Swift core, with
+      Skia compositing and OpenCV named operations, packaged as a Flatpak.
+    </p>
+  </description>
+
+  <releases>
+    <release version="1.5.6-linux-alpha.1" date="2026-10-23" type="development">
+      <description><p>Integrate upstream release 1.5.6 and synchronize the Linux About panel to build 52. Retain animated GIF layers and export, layer search, adaptive toolbars and Canvas Size zoom preservation from the preceding Linux release.</p></description>
+    </release>
+    <release version="1.5.5-linux-alpha.4" date="2026-10-22" type="development">
+      <description><p>Integrate upstream GIF layers, project format 17, animated export and adaptive one/two-column toolbars, with source-owned image decoders and panel-owned thumbnails on GNU/Linux.</p></description>
+    </release>
+    <release version="1.5.5-linux-alpha.3" date="2026-10-22" type="development">
+      <description><p>Integrate upstream layer name search and type filters, preserve zoom when changing Canvas Size, and suppress automatic updates in test hosts. Retain original upstream source behind Linux compatibility adapters. Fix native search text refresh and focus release on Escape.</p></description>
+    </release>
+    <release version="1.5.5-linux-alpha.2" date="2026-10-22" type="development">
+      <description><p>Upstream 1.5.5 on GNU/Linux: RGB Split, filter adjustment layers, Channel Pack with transparent RGB preservation, Split to Layers, Photoshop artboard tabs, and project format 16. Fix native font Undo and artboard conversion prompt ownership. Add a verbose terminal dashboard for Flatpak workflows.</p></description>
+    </release>
+    <release version="1.5.4-linux-alpha.3" date="2026-10-21" type="development">
+      <description><p>Vendor pinned Linux dependency sources, licenses and offline build documentation</p></description>
+    </release>
+    <release version="1.5.4-linux-alpha.2" date="2026-10-21" type="development">
+      <description><p>Fix Poppler-data license packaging for the upstream 1.5.4 Linux release.</p></description>
+    </release>
+    <release version="1.5.4-linux-alpha.1" date="2026-10-21" type="development">
+      <description><p>Upstream 1.5.4 on Linux: pen pressure for brush size and opacity, searchable font previews, PDF pages imported as layers, new line styles and caps, and project format 15.</p></description>
+    </release>
+    <release version="1.5.3-linux-alpha.5" date="2026-10-20" type="development">
+      <description><p>Linux: document parity evidence and remaining verification gaps; Linux: add optional Nautilus and Dolphin project previews; Linux: add independent render parity corpus and project launch verification</p></description>
+    </release>
+    <release version="1.5.3-linux-alpha.4" date="2026-10-20" type="development">
+      <description><p>Linux: Smudge keeps up with a fast drag and releases faster; Linux: About shows 1.5.3 (49); the upstream gate fails when AppVersion.h is stale</p></description>
+    </release>
+    <release version="1.5.3-linux-alpha.3" date="2026-10-19" type="development">
+      <description><p>RAW Develop and Add Noise/Grain now use upstream's own code unchanged; Live Add Noise and Grain run on the GPU (Vulkan); Gaussian noise matches the exported file exactly; Projects tab bar: a dragged tab stays above its neighbours; UI checks now cover the Export As sheet and the command palette.</p></description>
+    </release>
+    <release version="1.5.3-linux-alpha.2" date="2026-10-19" type="development">
+      <description><p>RAW Lens Correction for files without their own profile, from the lensfun lens database; A default CMYK profile (SWOP TR005 Coated), so View › CMYK and CMYK export work without loading one; Select Subject and Remove Background follow the photo's edges more closely; Faster brushes and drags on large documents; no stall on a stroke's first frame; Command palette as on the Mac: its placeholder, No commands match, shortcuts in their own column; Window menu: Bring All to Front and the window entry; Export As preview: dragging the zoomed image pans it, and zooming keeps its middle; View › Clear Guides works; UI fixes: New Canvas preset menu, CMYK proof and gamut pills, unclipped slider titles, missing icons, Camera Raw scope layout.</p></description>
+    </release>
+    <release version="1.5.3-linux-alpha.1" date="2026-10-18" type="development">
+      <description><p>Linux: adaptations and parity fixes for upstream 1.5.3; Merge upstream 1.5.3 into GNU_Linux; Publish update feed for Compositor 1.5.3; Version 1.5.3; Accelerate large Camera Raw previews with verified Metal lookup; Reduce Camera Raw scope sampling and benchmark preview latency; Keep Camera Raw previews at native resolution during adjustments; Update zoom cursors immediately when drag direction changes; Add middle-mouse dragging to scroll the layer list; Disable smooth corners when rectangle radius is zero; Add smooth rectangle corners and simplify shape controls; Remove temporary proof benchmark test committed by mistake</p></description>
+    </release>
+    <release version="1.5.2-linux-alpha.1" date="2026-10-14" type="development">
+      <description><p>Compositor 1.5.2: CMYK proof colors and gamut warning on the canvas, CMYK JPEG/TIFF/PDF export and CMYK Photoshop files, 16-bit layers on the canvas at 16 bits, Progressive Blur, Camera Raw section resets and adaptive Shadows, RAW files opening into the Camera Raw Filter, and clearable shortcuts. Typed transform values preview live and number labels scrub again.</p></description>
+    </release>
+    <release version="1.4.10-linux-alpha.3" date="2026-10-12" type="development">
+      <description><p>16-bit and HDR layers: 16-bit images keep their precision through every edit, EXR and Radiance HDR import with light brighter than white, EXR export, 8/16-bit conversion, paste an image to make a new canvas, and drops anywhere on the tab bar open a new project.</p></description>
+    </release>
+    <release version="1.4.10-linux-alpha.2" date="2026-10-12" type="development">
+      <description><p>RAW Lens Correction: distortion and vignetting taken out from the profile in the file (DNG, Sony, Fujifilm, OM System/Olympus, Panasonic), on by default where a file has one, as on the Mac.</p></description>
+    </release>
+    <release version="1.4.10-linux-alpha.1" date="2026-10-11" type="development">
+      <description><p>Catches up with Compositor 1.4.10: HEIF photos from Canon, Sony and Fuji cameras (.hif, .heif) import like HEIC; new app icon.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.10" date="2026-10-05" type="development">
+      <description><p>Flatpak Save As: allow Documents/Downloads for .comp directory packages; remap portal/tmpfs paths to a durable save location.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.9" date="2026-10-05" type="development">
+      <description><p>Save As installs .comp directory packages reliably; document-portal paths auto-save under Documents with the chosen name.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.8" date="2026-10-05" type="development">
+      <description><p>Show Controls arms Free Transform with Cancel (Esc) and Apply (Enter); Ctrl+T still enters Free Transform when controls are off.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.7" date="2026-10-05" type="development">
+      <description><p>Move / Free Transform: Ctrl+T persistent edit with aligned handle hitboxes, wider grab slop, and resize/rotate hover cursors on Linux.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.6" date="2026-10-05" type="development">
+      <description><p>Image › Curves (Ctrl+M) graph interaction works on Linux: map SwiftUI Color views so DragGesture hosts receive clicks.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.5" date="2026-10-04" type="development">
+      <description><p>About panel shows the Compositor app icon on Flatpak by resolving theme and /app/share icon paths.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.4" date="2026-10-01" type="development">
+      <description><p>Flatpak Updates dialog adds Restart Now after an install so the new commit launches after save prompts.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.3" date="2026-09-30" type="development">
+      <description><p>Maintenance alpha: drop the Linux UI e2e and graphics E2E bench harness from the tree; editor behavior unchanged from alpha.2.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.2" date="2026-09-30" type="development">
+      <description><p>Tip 1.4.5 Linux catch-up: live gradient preview, Copy Merged/Paste, Smudge/Liquify under 150 ms with a responsive release, Cut through every selected layer, and a Skia Ganesh Flatpak build fix.</p></description>
+    </release>
+    <release version="1.4.5-linux-alpha.1" date="2026-09-30" type="development">
+      <description><p>Tip 1.4.5 Linux catch-up: live gradient preview, Copy Merged/Paste, Smudge/Liquify under 150 ms with a responsive release, and Cut through every selected layer.</p></description>
+    </release>
+    <release version="1.2.0-linux-alpha.1" date="2026-09-27" type="development">
+      <description><p>Keep the newly created canvas when undoing all edits on GNU/Linux, preserving the initial layer, redo history, and unsaved document state.</p></description>
+    </release>
+    <release version="1.1.0-linux-alpha.1" date="2026-09-27" type="development">
+      <description><p>Fix save and autosave crashes with SQLite-backed preferences, migrate existing settings, and verify preference persistence in installed Flatpak builds.</p></description>
+    </release>
+    <release version="1.0.5-linux-alpha.1" date="2026-09-27" type="development">
+      <description><p>Signed Flatpak updates, Linux release downloads, and faster Gaussian and Motion Blur rendering.</p></description>
+    </release>
+    <release version="1.0.4-linux-preview.1" date="2026-09-19">
+      <description>
+        <p>First Linux Flatpak preview build of the port. Feature-aligned with
+        macOS 1.0.4; not yet at full parity. Packages the portable C pixel
+        kernels behind a Qt Widgets host shell with a Swift core on a C ABI.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1" />
+
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+</component>

@@ -1,0 +1,458 @@
+import Foundation
+// Minimal value types upstream `Compositor/UI/*.swift` names directly (`.leading`, `.horizontal`, `.callout`,
+// `.secondary`, ...). They carry just enough information (a description string, mostly) for `RenderNode` to record
+// what the Qt renderer should do; they are not a rendering engine of their own.
+
+import AppKit
+
+public struct Edge: Hashable, Sendable {
+    public struct Set: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let top = Set(rawValue: 1 << 0), leading = Set(rawValue: 1 << 1)
+        public static let bottom = Set(rawValue: 1 << 2), trailing = Set(rawValue: 1 << 3)
+        public static let horizontal: Set = [.leading, .trailing]
+        public static let vertical: Set = [.top, .bottom]
+        public static let all: Set = [.top, .leading, .bottom, .trailing]
+    }
+}
+
+public struct SafeAreaRegions: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let container = SafeAreaRegions(rawValue: 1 << 0)
+    public static let keyboard = SafeAreaRegions(rawValue: 1 << 1)
+    public static let all: SafeAreaRegions = [.container, .keyboard]
+}
+
+public struct EdgeInsets: Sendable {
+    public var top: Double, leading: Double, bottom: Double, trailing: Double
+    public init(top: Double = 0, leading: Double = 0, bottom: Double = 0, trailing: Double = 0) {
+        self.top = top; self.leading = leading; self.bottom = bottom; self.trailing = trailing
+    }
+}
+
+public struct ScrollBounceBehavior: Sendable, Equatable {
+    public let name: String
+    public static let automatic = ScrollBounceBehavior(name: "automatic")
+    public static let always = ScrollBounceBehavior(name: "always")
+    public static let basedOnSize = ScrollBounceBehavior(name: "basedOnSize")
+}
+
+public enum ContentMode: Sendable {
+    case fit
+    case fill
+}
+
+public struct AccessibilityTraits: OptionSet, Sendable {
+    public let rawValue: UInt
+    public init(rawValue: UInt) { self.rawValue = rawValue }
+    public static let isSelected = AccessibilityTraits(rawValue: 1)
+    public static let isButton = AccessibilityTraits(rawValue: 2)
+    public static let isHeader = AccessibilityTraits(rawValue: 4)
+}
+
+
+
+public struct HorizontalAlignment: Sendable, Equatable { public let name: String
+    public static let leading = HorizontalAlignment(name: "leading")
+    public static let center = HorizontalAlignment(name: "center")
+    public static let trailing = HorizontalAlignment(name: "trailing")
+}
+public struct VerticalAlignment: Sendable, Equatable { public let name: String
+    public static let top = VerticalAlignment(name: "top")
+    public static let center = VerticalAlignment(name: "center")
+    public static let bottom = VerticalAlignment(name: "bottom")
+    public static let firstTextBaseline = VerticalAlignment(name: "firstTextBaseline")
+}
+public struct Alignment: Sendable, Equatable {
+    public let name: String
+    public init(name: String) { self.name = name }
+    public init(horizontal: HorizontalAlignment, vertical: VerticalAlignment) { name = "\(horizontal.name)-\(vertical.name)" }
+    public static let center = Alignment(name: "center"), leading = Alignment(name: "leading")
+    public static let trailing = Alignment(name: "trailing"), top = Alignment(name: "top")
+    public static let bottom = Alignment(name: "bottom"), topLeading = Alignment(name: "topLeading")
+    public static let topTrailing = Alignment(name: "topTrailing"), bottomLeading = Alignment(name: "bottomLeading")
+    public static let bottomTrailing = Alignment(name: "bottomTrailing")
+    public static let leadingFirstTextBaseline = Alignment(name: "leadingFirstTextBaseline")
+}
+
+public struct TextAlignment: Sendable, Equatable {
+    public let name: String
+    public static let leading = TextAlignment(name: "leading"), center = TextAlignment(name: "center")
+    public static let trailing = TextAlignment(name: "trailing")
+}
+
+/// Stands for both `Font` and any `ShapeStyle`/`Color` token upstream code names (`.callout`, `.secondary`,
+/// `.orange`, `Color(nsColor:)`, ...) — the Qt renderer maps the `name` to a real `QFont`/`QPalette` role/`QColor`.
+/// Also conforms to `View` (as a filled-rectangle leaf) so `Color.clear`/`Color.black` etc. can be used directly as
+/// a view — a common real-SwiftUI pattern (`Color.clear.contentShape(Rectangle())`, a background fill, ...). `Font`
+/// values technically inherit this too since they share the same underlying type; harmless, since nothing actually
+/// builds a `Font` as a standalone view.
+public struct StyleToken: Sendable, Equatable, ExpressibleByStringLiteral, PrimitiveView {
+    public let name: String
+    public init(_ name: String) { self.name = name }
+    public init(stringLiteral value: String) { name = value }
+    public init(cgColor: CGColor) { name = "cgColor:\(cgColor.red),\(cgColor.green),\(cgColor.blue),\(cgColor.alpha)" }
+    public init(nsColor: NSColor) {
+        name = "rgb:\(nsColor.redComponent),\(nsColor.greenComponent),\(nsColor.blueComponent),\(nsColor.alphaComponent)"
+    }
+    /// `Color(.sRGB, red:green:blue:opacity:)` — the colorspace argument is unused (Skia paints sRGB throughout).
+    public init(_ colorSpace: ColorRenderingSpace = .sRGB, red: Double, green: Double, blue: Double, opacity: Double = 1) {
+        name = "rgb:\(red),\(green),\(blue),\(opacity)"
+    }
+    public init(hue: Double, saturation: Double, brightness: Double, opacity: Double = 1) {
+        name = "hsb:\(hue),\(saturation),\(brightness),\(opacity)"
+    }
+    public init(white: Double, opacity: Double = 1) { name = "white:\(white),\(opacity)" }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "Color")
+        node.stringParams["name"] = name
+        return node
+    }
+}
+public typealias Font = StyleToken
+public typealias Color = StyleToken
+public typealias ShapeStyle = StyleToken
+
+/// Type-erased `ShapeStyle` (Apple's `AnyShapeStyle`); here a thin wrapper over `StyleToken`.
+public struct AnyShapeStyle: Sendable, Equatable {
+    let token: StyleToken
+    public init(_ style: StyleToken) { token = style }
+}
+
+extension StyleToken {
+    // Animation-shaped members (`.animation(.easeOut(duration:), value:)`). The compat layer's `.animation`
+    // modifier is inert (see Modifiers.swift), so these only need to type-check, not carry real curve data.
+    public static let linear = StyleToken("linear")
+    public static func easeIn(duration: Double = 0.35) -> StyleToken { StyleToken("easeIn") }
+    public static func easeOut(duration: Double = 0.35) -> StyleToken { StyleToken("easeOut") }
+    public static func easeInOut(duration: Double = 0.35) -> StyleToken { StyleToken("easeInOut") }
+    public static func linear(duration: Double) -> StyleToken { StyleToken("linear") }
+
+    // Font.TextStyle-shaped members.
+    public static let largeTitle = StyleToken("largeTitle"), title = StyleToken("title"), title2 = StyleToken("title2")
+    public static let title3 = StyleToken("title3"), headline = StyleToken("headline"), subheadline = StyleToken("subheadline")
+    public static let body = StyleToken("body"), callout = StyleToken("callout"), footnote = StyleToken("footnote")
+    public static let caption = StyleToken("caption"), caption2 = StyleToken("caption2")
+    // Color-shaped members.
+    public static let primary = StyleToken("primary"), secondary = StyleToken("secondary"), clear = StyleToken("clear")
+    public static let tertiary = StyleToken("tertiary"), quaternary = StyleToken("quaternary")
+    public static let regularMaterial = StyleToken("regularMaterial"), thinMaterial = StyleToken("thinMaterial")
+    public static let ultraThinMaterial = StyleToken("ultraThinMaterial"), thickMaterial = StyleToken("thickMaterial")
+    public static let red = StyleToken("red"), orange = StyleToken("orange"), yellow = StyleToken("yellow")
+    public static let green = StyleToken("green"), blue = StyleToken("blue"), purple = StyleToken("purple")
+    public static let cyan = StyleToken("cyan")
+    public static let white = StyleToken("white"), black = StyleToken("black"), gray = StyleToken("gray")
+    public static let accentColor = StyleToken("accentColor")
+    // Font.Weight-shaped members (also reused for `.controlSize`/similar small enums — a bare style tag either way).
+    public static let ultraLight = StyleToken("ultraLight"), thin = StyleToken("thin"), light = StyleToken("light")
+    public static let regular = StyleToken("regular"), medium = StyleToken("medium"), semibold = StyleToken("semibold")
+    public static let bold = StyleToken("bold"), heavy = StyleToken("heavy")
+    public static let small = StyleToken("small"), large = StyleToken("large"), mini = StyleToken("mini")
+    // TextFieldStyle/ButtonStyle/ToggleStyle-shaped members.
+    public static let roundedBorder = StyleToken("roundedBorder"), plain = StyleToken("plain")
+    public static let bordered = StyleToken("bordered"), borderedProminent = StyleToken("borderedProminent")
+    public static let checkbox = StyleToken("checkbox"), automatic = StyleToken("automatic"), button = StyleToken("button")
+    public static let segmented = StyleToken("segmented"), borderless = StyleToken("borderless"), menu = StyleToken("menu")
+    public static let radioGroup = StyleToken("radioGroup")
+    public static let capsule = StyleToken("capsule")
+    public static let borderlessButton = StyleToken("borderlessButton")
+    public static let inline = StyleToken("inline"), none = StyleToken("none"), high = StyleToken("high")
+    // ScrollIndicatorVisibility-shaped members.
+    public static let hidden = StyleToken("hidden"), visible = StyleToken("visible"), never = StyleToken("never")
+    public func weight(_ weight: StyleToken) -> StyleToken { StyleToken("\(name)+weight:\(weight.name)") }
+    public func bold() -> StyleToken { StyleToken("\(name)+bold") }
+    /// `Font.custom(_:size:)`: a named face at a size.
+    public static func custom(_ name: String, size: Double) -> StyleToken { StyleToken("system:\(size)+family:\(name)") }
+    public func monospacedDigit() -> StyleToken { StyleToken("\(name)+monospacedDigit") }
+    /// `Font.body.monospaced()`: the same style in the fixed-pitch design.
+    public func monospaced() -> StyleToken { StyleToken("\(name)+design:monospaced") }
+    /// `Color`-shaped: `Color.black.opacity(0.35)` — a new color token, not the `View.opacity(_:)` modifier.
+    public func opacity(_ value: Double) -> StyleToken { StyleToken("\(name)+opacity:\(value)") }
+    public static func system(size: Double, weight: StyleToken = "regular") -> StyleToken {
+        StyleToken("system:\(size)+weight:\(weight.name)")
+    }
+    public static func system(_ style: StyleToken, design: StyleToken = "default") -> StyleToken {
+        StyleToken("\(style.name)+design:\(design.name)")
+    }
+    public static let monospaced = StyleToken("monospaced"), rounded = StyleToken("rounded"), serif = StyleToken("serif")
+    public static let `default` = StyleToken("default")
+}
+
+/// A minimal stand-in for Foundation's `FormatStyle` machinery — just enough for `TextField(_:value:format:)`'s
+/// `.number.precision(.fractionLength(_:))` chains to compile; the Qt renderer formats the number itself.
+public struct NumberFormat: Sendable {
+    public static let number = NumberFormat(minimumFractionLength: nil, maximumFractionLength: nil, grouping: true)
+    public let minimumFractionLength: Int?
+    public let maximumFractionLength: Int?
+    public let grouping: Bool
+
+    private init(minimumFractionLength: Int?, maximumFractionLength: Int?, grouping: Bool = true) {
+        self.minimumFractionLength = minimumFractionLength
+        self.maximumFractionLength = maximumFractionLength
+        self.grouping = grouping
+    }
+
+    public func precision(_ precision: NumberFormatPrecision) -> NumberFormat {
+        NumberFormat(minimumFractionLength: precision.minimumFractionLength,
+                     maximumFractionLength: precision.maximumFractionLength,
+                     grouping: grouping)
+    }
+    /// Tip New Canvas / Export As size fields use `.grouping(.never)`.
+    public enum Grouping: Sendable { case automatic, never }
+    public func grouping(_ grouping: Grouping) -> NumberFormat {
+        NumberFormat(minimumFractionLength: minimumFractionLength,
+                     maximumFractionLength: maximumFractionLength,
+                     grouping: grouping != .never)
+    }
+}
+public struct NumberFormatPrecision: Sendable {
+    public let minimumFractionLength: Int
+    public let maximumFractionLength: Int
+
+    private init(minimumFractionLength: Int, maximumFractionLength: Int) {
+        self.minimumFractionLength = minimumFractionLength
+        self.maximumFractionLength = maximumFractionLength
+    }
+
+    public static func fractionLength(_ length: Int) -> NumberFormatPrecision {
+        let normalizedLength = max(0, length)
+        return NumberFormatPrecision(minimumFractionLength: normalizedLength, maximumFractionLength: normalizedLength)
+    }
+    public static func fractionLength(_ range: ClosedRange<Int>) -> NumberFormatPrecision {
+        let minimumLength = max(0, range.lowerBound)
+        let maximumLength = max(minimumLength, range.upperBound)
+        return NumberFormatPrecision(minimumFractionLength: minimumLength, maximumFractionLength: maximumLength)
+    }
+}
+
+/// A key press `onKeyPress` reports on.
+public struct KeyPress: Sendable {
+    public enum Result: Sendable { case handled, ignored }
+}
+
+/// A single key for `.keyboardShortcut`/`configuredNativeShortcut` (upstream names keys like `.escape`, `.return`,
+/// or writes a plain letter as a string literal, e.g. `"p"`).
+public struct KeyEquivalent: Sendable, Equatable, ExpressibleByExtendedGraphemeClusterLiteral {
+    public let character: Character
+    /// `.defaultAction` / `.cancelAction`: SwiftUI's KeyboardShortcuts of those names are the bare key (no ⌘).
+    let isAction: Bool
+    public init(_ character: Character) { self.character = character; isAction = false }
+    public init(extendedGraphemeClusterLiteral value: Character) { character = value; isAction = false }
+    init(action character: Character) { self.character = character; isAction = true }
+    public static let escape = KeyEquivalent("\u{1b}"), `return` = KeyEquivalent("\r")
+    public static let tab = KeyEquivalent("\t"), space = KeyEquivalent(" "), delete = KeyEquivalent("\u{8}")
+    public static let upArrow = KeyEquivalent("\u{F700}"), downArrow = KeyEquivalent("\u{F701}")
+    public static let leftArrow = KeyEquivalent("\u{F702}"), rightArrow = KeyEquivalent("\u{F703}")
+    public static let cancelAction = KeyEquivalent(action: "\u{1b}"), defaultAction = KeyEquivalent(action: "\r")
+}
+
+/// A key and its modifiers, as one value (SwiftUI's `KeyboardShortcut`).
+public struct KeyboardShortcut: Sendable, Equatable {
+    public let key: KeyEquivalent
+    public let modifiers: EventModifiers
+    public init(_ key: KeyEquivalent, modifiers: EventModifiers = .command) { self.key = key; self.modifiers = modifiers }
+    public static let defaultAction = KeyboardShortcut(.defaultAction, modifiers: [])
+    public static let cancelAction = KeyboardShortcut(.cancelAction, modifiers: [])
+}
+
+/// A minimal `Shape` for the handful of custom shapes upstream draws (e.g. `HueArrow`); it only needs to exist as
+/// a `View` (drawing happens through `Canvas`/`GraphicsContext`, already bridged via Compat/CoreGraphics).
+public protocol Shape: PrimitiveView {
+    func path(in rect: CGRect) -> Path
+    var shapeKind: String { get }
+    var cornerRadiusValue: Double { get }
+}
+private protocol InsetShapeMetadata {
+    var insetAmount: Double { get }
+    var usesNativeGeometry: Bool { get }
+}
+private struct InsetShape<Base: Shape>: Shape, InsetShapeMetadata {
+    let base: Base
+    let amount: Double
+    var insetAmount: Double { amount }
+    var usesNativeGeometry: Bool { base is Rectangle || base is Circle || base is RoundedRectangle || base is Capsule }
+    var shapeKind: String { base.shapeKind }
+    var cornerRadiusValue: Double { max(0, base.cornerRadiusValue - amount) }
+
+    func path(in rect: CGRect) -> Path {
+        let inset = CGFloat(amount)
+        let insetRect = CGRect(x: rect.minX + inset, y: rect.minY + inset,
+                               width: max(0, rect.width - inset * 2), height: max(0, rect.height - inset * 2))
+        if let roundedRectangle = base as? RoundedRectangle {
+            return Path(roundedRect: insetRect, cornerRadius: max(0, roundedRectangle.cornerRadius - amount),
+                        style: roundedRectangle.style)
+        }
+        return base.path(in: insetRect)
+    }
+}
+extension Shape {
+    public var shapeKind: String { "rectangle" }
+    public var cornerRadiusValue: Double { 0 }
+    /// A bare shape drawn on its own (outside a `Canvas`) fills its path at whatever size the Qt renderer gives it.
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "Shape")
+        node.stringParams["shapeKind"] = shapeKind
+        if cornerRadiusValue > 0 { node.doubleParams["cornerRadius"] = cornerRadiusValue }
+        let inset = self as? InsetShapeMetadata
+        if let inset, inset.usesNativeGeometry { node.doubleParams["inset"] = inset.insetAmount }
+        // A shape of the app's own (HueArrow, ...): its outline in a 100×100 box, which the renderer scales to the
+        // view; a bare Path keeps its own coordinates.
+        if !(self is Rectangle || self is Circle || self is RoundedRectangle || self is Capsule || inset?.usesNativeGeometry == true) {
+            let absolute = self is Path
+            let path = absolute ? (self as! Path) : path(in: CGRect(x: 0, y: 0, width: 100, height: 100))
+            func n(_ v: CGFloat) -> String { String(format: "%.3f", Double(v)) }
+            node.stringParams["path"] = path.cgPath.segments.map { segment -> String in
+                switch segment {
+                case .move(let p): return "M \(n(p.x)) \(n(p.y))"
+                case .line(let p): return "L \(n(p.x)) \(n(p.y))"
+                case .quad(let c, let p): return "Q \(n(c.x)) \(n(c.y)) \(n(p.x)) \(n(p.y))"
+                case .cubic(let a, let b, let p): return "C \(n(a.x)) \(n(a.y)) \(n(b.x)) \(n(b.y)) \(n(p.x)) \(n(p.y))"
+                case .close: return "Z"
+                }
+            }.joined(separator: " ")
+            if absolute { node.boolParams["pathAbsolute"] = true }
+        }
+        return node
+    }
+}
+
+public struct Rectangle: Shape {
+    public init() {}
+    public var shapeKind: String { "rectangle" }
+    public func path(in rect: CGRect) -> Path { Path(rect) }
+}
+public struct Circle: Shape {
+    public init() {}
+    public var shapeKind: String { "circle" }
+    public func path(in rect: CGRect) -> Path { Path(ellipseIn: rect) }
+}
+public struct Angle: Sendable, Equatable {
+    public var radians: Double
+    public var degrees: Double { get { radians * 180 / .pi } set { radians = newValue * .pi / 180 } }
+    public init(radians: Double = 0) { self.radians = radians }
+    public static func degrees(_ value: Double) -> Angle { Angle(radians: value * .pi / 180) }
+    public static func radians(_ value: Double) -> Angle { Angle(radians: value) }
+    public static let zero = Angle(radians: 0)
+}
+
+public enum RoundedCornerStyle: Sendable { case circular, continuous }
+public enum ColorRenderingSpace: Sendable { case sRGB, sRGBLinear, displayP3 }
+
+public struct RoundedRectangle: Shape {
+    public let cornerRadius: Double
+    public let style: RoundedCornerStyle
+    public var shapeKind: String { "roundedRectangle" }
+    public var cornerRadiusValue: Double { cornerRadius }
+    public init(cornerRadius: Double, style: RoundedCornerStyle = .circular) { self.cornerRadius = cornerRadius; self.style = style }
+    public init(cornerSize: CGSize, style: RoundedCornerStyle = .circular) { cornerRadius = cornerSize.width; self.style = style }
+    public func path(in rect: CGRect) -> Path { Path(roundedRect: rect, cornerRadius: cornerRadius, style: style) }
+}
+public struct Capsule: Shape {
+    public init() {}
+    public var shapeKind: String { "capsule" }
+    public func path(in rect: CGRect) -> Path { Path(rect) }
+}
+
+extension Shape {
+    public func strokeBorder(_ style: ShapeStyle, lineWidth: Double = 1) -> some View {
+        modified {
+            $0.stringParams["strokeColor"] = style.name
+            $0.doubleParams["strokeWidth"] = lineWidth
+        }
+    }
+    public func strokeBorder(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View {
+        strokeBorder(style, lineWidth: strokeStyle.lineWidth)
+    }
+    public func fill(_ style: ShapeStyle) -> some View {
+        modified {
+            $0.stringParams["fillColor"] = style.name
+            $0.modifiers.append(.foregroundStyle(style.name))
+        }
+    }
+    public func fill(_ gradient: AngularGradient) -> some View {
+        fill(gradient.gradient.colors.first ?? .clear)
+    }
+    public func stroke(_ style: ShapeStyle, lineWidth: Double = 1) -> some View {
+        strokeBorder(style, lineWidth: lineWidth)
+    }
+    public func stroke(_ style: ShapeStyle, style strokeStyle: StrokeStyle) -> some View {
+        strokeBorder(style, lineWidth: strokeStyle.lineWidth)
+    }
+    public func inset(by amount: Double) -> some Shape { InsetShape(base: self, amount: amount) }
+}
+
+/// `onContinuousHover`'s phases.
+public enum HoverPhase: Equatable, Sendable {
+    case active(CGPoint)
+    case ended
+}
+
+/// Where a gesture's coordinates are reported in — `.local`/`.global`/`.named(_:)`. Only the identity matters here
+/// (nothing computes real cross-widget coordinate transforms yet), so this is just a tag.
+public struct CoordinateSpace: Sendable {
+    let name: String?
+    public static let local = CoordinateSpace(name: nil)
+    public static let global = CoordinateSpace(name: "global")
+    public static func named(_ name: some Hashable) -> CoordinateSpace { CoordinateSpace(name: "\(name)") }
+}
+
+/// A press-and-drag gesture. `.onChanged`/`.onEnded` register callbacks the Qt renderer can call once real mouse
+/// tracking is wired to a widget (a later phase — see `.gesture(_:)`, currently a no-op `View` modifier); building
+/// this value and chaining onto it must still compile and behave like real SwiftUI's fluent builder.
+public struct DragGesture {
+    public struct Value: Sendable {
+        public var location: CGPoint = .zero
+        public var translation: CGSize = .zero
+        /// Where the drag began. Derived from `location` − `translation` so the Qt bridge's 4-number payload
+        /// (x, y, dx, dy) still matches Apple's `DragGesture.Value` (Camera Raw curve graph, tip 1.4.5).
+        public var startLocation: CGPoint {
+            CGPoint(x: location.x - translation.width, y: location.y - translation.height)
+        }
+    }
+    public let minimumDistance: Double
+    public let coordinateSpace: CoordinateSpace
+    var onChangedAction: ((Value) -> Void)?
+    var onEndedAction: ((Value) -> Void)?
+    public init(minimumDistance: Double = 10, coordinateSpace: CoordinateSpace = .local) {
+        self.minimumDistance = minimumDistance; self.coordinateSpace = coordinateSpace
+    }
+    public func onChanged(_ action: @escaping (Value) -> Void) -> DragGesture {
+        var copy = self; copy.onChangedAction = action; return copy
+    }
+    public func onEnded(_ action: @escaping (Value) -> Void) -> DragGesture {
+        var copy = self; copy.onEndedAction = action; return copy
+    }
+}
+
+/// A tap that also reports where it landed — structurally real, inert like `DragGesture` when handed to
+/// `.simultaneousGesture` (which is itself inert; see Modifiers.swift).
+public struct SpatialTapGesture {
+    public struct Value: Sendable { public var location: CGPoint = .zero }
+    public let count: Int
+    var onEndedAction: ((Value) -> Void)?
+    public init(count: Int = 1, coordinateSpace: CoordinateSpace = .local) { self.count = count }
+    public func onEnded(_ action: @escaping (Value) -> Void) -> SpatialTapGesture {
+        var copy = self; copy.onEndedAction = action; return copy
+    }
+}
+
+/// Minimal `Gradient`/`AngularGradient` — enough for `AngularGradient(gradient:center:)`-style construction to
+/// type-check and resolve as a tree node; the Qt renderer doesn't paint gradients from these yet.
+public struct Gradient: Sendable {
+    public var colors: [Color]
+    public init(colors: [Color]) { self.colors = colors }
+}
+
+public struct AngularGradient: View, PrimitiveView {
+    let gradient: Gradient
+    let center: UnitPoint
+    public init(gradient: Gradient, center: UnitPoint) { self.gradient = gradient; self.center = center }
+    public init(colors: [Color], center: UnitPoint) { self.gradient = Gradient(colors: colors); self.center = center }
+    public func _makeNode(children: [RenderNode]) -> RenderNode {
+        var node = RenderNode(kind: "AngularGradient")
+        node.stringParams["colors"] = gradient.colors.map(\.name).joined(separator: ",")
+        return node
+    }
+}

@@ -1,0 +1,1814 @@
+// SkiaBridge.cpp — C ABI bridge between the Swift core and Skia render backends
+// (plan §9, Stage 5/8). Implements CompRenderer for Raster (CPU) and Vulkan backends.
+//
+// The Swift core owns document pixels (PortableImage/PixelBuffer, CPU-addressable).
+// The Skia backends own the SkCanvas/SkSurface and the GPU device.
+// Swift calls through this C ABI to render a CPU RGBA8 buffer into a destination
+// buffer of the canonical contract (premultiplied RGBA8, stride == width*4).
+//
+// Backend contract (plan §6):
+//   RendererDeviceFactory.create() tries Vulkan, falls back to Raster.
+//   Both backends implement the same render contract (LSP):
+//     - compositor_render_rgba(src, dst, w, h) composites src over dst
+//       at opacity 1.0, source-over, returning the result in dst.
+//     - A backend that cannot initialize returns NULL; the caller uses
+//       the existing pure-Swift DocumentRenderer as the ultimate fallback.
+//
+// Status codes: 0 success, -1 invalid argument, -2 backend lost (try Raster).
+
+#include "SkiaBridge.h"
+#include "CompositorEffectsBackend.h"
+#include <stdlib.h>
+#include <string.h>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <array>
+#include <iostream>
+#include <vector>
+
+// Include Skia headers — search in Skia source include/core layout or system /app layout.
+#if defined(__has_include)
+#if __has_include("include/core/SkCanvas.h")
+#define COMPOSITOR_HAS_SKIA 1
+#include "include/core/SkCanvas.h"
+#include "include/core/SkSurface.h"
+#include "include/core/SkImage.h"
+#include "include/core/SkData.h"
+#include "include/core/SkPixmap.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkBlendMode.h"
+#include "include/core/SkSamplingOptions.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkPathBuilder.h"
+#include "include/core/SkShader.h"
+#include "include/core/SkMatrix.h"
+#include "include/core/SkColor.h"
+#include "include/core/SkPathUtils.h"
+#include "include/core/SkPathIter.h"
+#include "include/core/SkRRect.h"
+#include "include/core/SkRegion.h"
+#include "include/core/SkColorFilter.h"
+#include "include/effects/SkImageFilters.h"
+#include "include/effects/SkColorMatrix.h"
+#include "include/pathops/SkPathOps.h"
+#include "include/effects/SkGradient.h"
+#elif __has_include(<skia/core/SkCanvas.h>)
+#define COMPOSITOR_HAS_SKIA 1
+#include <skia/core/SkCanvas.h>
+#include <skia/core/SkSurface.h>
+#include <skia/core/SkImage.h>
+#include <skia/core/SkData.h>
+#include <skia/core/SkPixmap.h>
+#include <skia/core/SkPaint.h>
+#include <skia/core/SkBlendMode.h>
+#include <skia/core/SkSamplingOptions.h>
+#include <skia/core/SkPath.h>
+#include <skia/core/SkPathBuilder.h>
+#include <skia/core/SkShader.h>
+#include <skia/core/SkMatrix.h>
+#include <skia/core/SkColor.h>
+#include <skia/core/SkPathUtils.h>
+#include <skia/core/SkPathIter.h>
+#include <skia/core/SkRRect.h>
+#include <skia/core/SkRegion.h>
+#include <skia/core/SkColorFilter.h>
+#include <skia/effects/SkImageFilters.h>
+#include <skia/effects/SkColorMatrix.h>
+#include <skia/pathops/SkPathOps.h>
+#include <skia/effects/SkGradient.h>
+#endif
+#if __has_include(<vulkan/vulkan.h>)
+#define COMPOSITOR_HAS_VULKAN 1
+#include <vulkan/vulkan.h>
+#endif
+#if defined(COMPOSITOR_ENABLE_SKIA_GPU) && defined(COMPOSITOR_HAS_SKIA) && defined(COMPOSITOR_HAS_VULKAN)
+#if __has_include("include/gpu/ganesh/vk/GrVkDirectContext.h")
+#define COMPOSITOR_HAS_SKIA_GANESH_VK 1
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/vk/GrVkDirectContext.h"
+#include "include/gpu/vk/VulkanBackendContext.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
+#include "include/core/SkColorSpace.h"
+#elif __has_include(<skia/gpu/ganesh/vk/GrVkDirectContext.h>)
+#define COMPOSITOR_HAS_SKIA_GANESH_VK 1
+#include <skia/gpu/ganesh/GrDirectContext.h>
+#include <skia/gpu/ganesh/vk/GrVkDirectContext.h>
+#include <skia/gpu/vk/VulkanBackendContext.h>
+#include <skia/gpu/ganesh/SkSurfaceGanesh.h>
+#include <skia/core/SkColorSpace.h>
+#endif
+#endif
+#endif
+
+#if defined(COMPOSITOR_HAS_VULKAN)
+#include "shaders/composite_over_spv.h"
+#endif
+
+// ── CompRenderer ────────────────────────────────────────────────────────
+
+// Opaque handle owning one Skia backend context.
+struct CompRenderer {
+    void* ctx = nullptr;
+
+#if defined(COMPOSITOR_HAS_VULKAN)
+    VkInstance vk_instance = VK_NULL_HANDLE;
+    VkPhysicalDevice vk_physical_device = VK_NULL_HANDLE;
+    VkDevice vk_device = VK_NULL_HANDLE;
+    VkQueue vk_queue = VK_NULL_HANDLE;
+    uint32_t vk_queue_family = 0;
+    VkFormat vk_format = VK_FORMAT_R8G8B8A8_UNORM;
+
+    // Lazy compute pipeline for source-over (Metal → Vulkan canvas path).
+    VkDescriptorSetLayout vk_descriptor_layout = VK_NULL_HANDLE;
+    VkPipelineLayout vk_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline vk_pipeline = VK_NULL_HANDLE;
+    VkShaderModule vk_shader = VK_NULL_HANDLE;
+    VkCommandPool vk_command_pool = VK_NULL_HANDLE;
+    VkFence vk_fence = VK_NULL_HANDLE;
+    bool vk_compute_ready = false;
+#endif
+
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    sk_sp<GrDirectContext> gr_context;
+#endif
+
+    bool is_raster = false;
+    bool is_device_lost = false;
+    CompRendererKind last_executed = COMP_RENDERER_RASTER;
+
+    CompRenderer() = default;
+    ~CompRenderer() = default;
+};
+
+// ── Forward declarations ────────────────────────────────────────────────
+
+static void raster_device_create(CompRenderer* r, int width, int height);
+static void raster_device_destroy(CompRenderer* r);
+static int raster_render_rgba(CompRenderer* r,
+                              const uint8_t* src_rgba,
+                              uint8_t* dst_rgba,
+                              size_t width, size_t height);
+
+static void vulkan_device_create(CompRenderer* r, int force_raster);
+static void vulkan_device_destroy(CompRenderer* r);
+static int vulkan_render_rgba(CompRenderer* r,
+                              const uint8_t* src_rgba,
+                              uint8_t* dst_rgba,
+                              size_t width, size_t height,
+                              int cg_blend_mode);
+#if defined(COMPOSITOR_HAS_SKIA)
+static SkBlendMode map_cg_blend_mode(int cg_mode);
+#endif
+
+// ── Availability and Kind Queries ──────────────────────────────────────
+
+int compositor_skia_available(void) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+CompRendererKind compositor_renderer_last_executed(const CompRenderer *renderer) {
+    if (!renderer) return COMP_RENDERER_RASTER;
+    return renderer->last_executed;
+}
+
+// ── compositor_renderer_create ─────────────────────────────────────────
+
+CompRenderer *compositor_renderer_create(int force_raster, CompRendererKind *kind_out) {
+    CompRenderer* r = new (std::nothrow) CompRenderer();
+    if (!r) return nullptr;
+
+    if (force_raster) {
+        raster_device_create(r, 0, 0);
+        if (kind_out) *kind_out = COMP_RENDERER_RASTER;
+        return r;
+    }
+
+    // Try Vulkan first.
+    vulkan_device_create(r, force_raster);
+    if (r->vk_device != VK_NULL_HANDLE) {
+        if (kind_out) *kind_out = COMP_RENDERER_VULKAN;
+        return r;
+    }
+
+    // Vulkan failed — fall back to Raster.
+    raster_device_create(r, 0, 0);
+    if (kind_out) *kind_out = COMP_RENDERER_RASTER;
+    return r;
+}
+
+// ── compositor_renderer_close ──────────────────────────────────────────
+
+void compositor_renderer_close(CompRenderer *renderer) {
+    if (!renderer) return;
+    CompRenderer* r = (CompRenderer*)renderer;
+    if (r->is_raster) {
+        raster_device_destroy(r);
+    } else {
+        vulkan_device_destroy(r);
+    }
+    delete r;
+}
+
+// ── compositor_renderer_kind ───────────────────────────────────────────
+
+CompRendererKind compositor_renderer_kind(const CompRenderer *renderer) {
+    if (!renderer) return COMP_RENDERER_RASTER;
+    const CompRenderer* r = (const CompRenderer*)renderer;
+    return r->is_raster ? COMP_RENDERER_RASTER : COMP_RENDERER_VULKAN;
+}
+
+void compositor_renderer_simulate_device_lost(CompRenderer *renderer) {
+    if (renderer) {
+        renderer->is_device_lost = true;
+    }
+}
+
+// ── compositor_renderer_activate / deactivate ──────────────────────────
+
+#if defined(COMPOSITOR_HAS_SKIA)
+static CompRenderer* g_active_renderer = nullptr;
+
+static int32_t compositor_active_render_trampoline(const uint8_t* src, uint8_t* dst,
+                                                   size_t width, size_t height,
+                                                   int32_t cg_blend_mode) {
+    if (!g_active_renderer) return -2;
+    return compositor_render_rgba_blend(g_active_renderer, src, dst, width, height, cg_blend_mode);
+}
+
+// Declared in Swift (RenderDeviceBinding.swift); resolved when the host links the Compositor module.
+extern "C" void compositor_compat_set_render_fn(CompRenderFn fn) __attribute__((weak));
+#endif
+
+void compositor_renderer_activate(CompRenderer *renderer) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    g_active_renderer = renderer;
+    if (compositor_compat_set_render_fn) {
+        compositor_compat_set_render_fn(renderer ? compositor_active_render_trampoline : nullptr);
+    }
+#else
+    (void)renderer;
+#endif
+}
+
+void compositor_renderer_deactivate(void) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    g_active_renderer = nullptr;
+    if (compositor_compat_set_render_fn) {
+        compositor_compat_set_render_fn(nullptr);
+    }
+#endif
+}
+
+// ── compositor_render_rgba ─────────────────────────────────────────────
+
+int compositor_render_rgba(CompRenderer *renderer,
+                           const uint8_t *src_rgba,
+                           uint8_t *dst_rgba,
+                           size_t width, size_t height) {
+    return compositor_render_rgba_blend(renderer, src_rgba, dst_rgba, width, height, 0);
+}
+
+int compositor_render_rgba_blend(CompRenderer *renderer,
+                                 const uint8_t *src_rgba,
+                                 uint8_t *dst_rgba,
+                                 size_t width, size_t height,
+                                 int cg_blend_mode) {
+    if (!renderer || !src_rgba || !dst_rgba) return -1;
+    if (width == 0 || height == 0) return -1;
+
+#if !defined(COMPOSITOR_HAS_SKIA)
+    (void)cg_blend_mode;
+    return -3;
+#else
+    CompRenderer* r = (CompRenderer*)renderer;
+    if (r->is_device_lost && !r->is_raster) {
+        vulkan_device_destroy(r);
+        raster_device_create(r, static_cast<int>(width), static_cast<int>(height));
+    }
+    if (r->is_raster) {
+        // Raster path only implements SrcOver; colour blends stay on CompCanvas / SeparableBlend.
+        if (cg_blend_mode != 0) return -2;
+        return raster_render_rgba(r, src_rgba, dst_rgba, width, height);
+    } else {
+        int rc = vulkan_render_rgba(r, src_rgba, dst_rgba, width, height, cg_blend_mode);
+        if (rc == -2 && cg_blend_mode == 0) {
+            // Plan §6 runtime loss failsafe: automatic dynamic fallback to Raster CPU
+            vulkan_device_destroy(r);
+            raster_device_create(r, static_cast<int>(width), static_cast<int>(height));
+            rc = raster_render_rgba(r, src_rgba, dst_rgba, width, height);
+        }
+        return rc;
+    }
+#endif
+}
+
+// ── compositor_skia_raster_surface ─────────────────────────────────────
+
+int compositor_skia_raster_surface(const uint8_t *src_rgba,
+                                   uint8_t *dst_rgba,
+                                   size_t width, size_t height) {
+    if (!src_rgba || !dst_rgba) return -1;
+    if (width == 0 || height == 0) return -1;
+
+#if !defined(COMPOSITOR_HAS_SKIA)
+    return -3;
+#else
+    const size_t stride = width * 4;
+    SkImageInfo info = SkImageInfo::Make(static_cast<int>(width),
+                                         static_cast<int>(height),
+                                         kRGBA_8888_SkColorType,
+                                         kPremul_SkAlphaType);
+
+    SkPixmap srcPixmap(info, src_rgba, stride);
+    sk_sp<SkImage> srcImage = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
+    if (!srcImage) return -1;
+
+    sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, dst_rgba, stride);
+    if (!surface) return -1;
+
+    SkCanvas* canvas = surface->getCanvas();
+    if (!canvas) return -1;
+
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrcOver);
+    canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
+    return 0;
+#endif
+}
+
+// ── compositor_vulkan_enumerate_devices ────────────────────────────────
+
+int compositor_vulkan_gpu_available(void) {
+#if defined(COMPOSITOR_HAS_VULKAN)
+    return compositor_vulkan_enumerate_devices() > 0 ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+int compositor_vulkan_enumerate_devices(void) {
+#if defined(COMPOSITOR_HAS_VULKAN)
+    VkApplicationInfo appInfo{};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "Compositor";
+    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_0;
+
+    VkInstanceCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
+    if (res != VK_SUCCESS || instance == VK_NULL_HANDLE) {
+        return -1;
+    }
+
+    uint32_t device_count = 0;
+    res = vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    vkDestroyInstance(instance, nullptr);
+
+    if (res == VK_SUCCESS) {
+        return (int)device_count;
+    }
+    return -1;
+#else
+    return -1;
+#endif
+}
+
+// ── Internal: raster device ────────────────────────────────────────────
+
+static void raster_device_create(CompRenderer* r, int width, int height) {
+    (void)width; (void)height;
+    r->is_raster = true;
+    r->last_executed = COMP_RENDERER_RASTER;
+}
+
+static void raster_device_destroy(CompRenderer* r) {
+    r->is_raster = false;
+}
+
+static int raster_render_rgba(CompRenderer* r,
+                              const uint8_t* src_rgba,
+                              uint8_t* dst_rgba,
+                              size_t width, size_t height) {
+    if (!r || !r->is_raster) return -1;
+    if (!src_rgba || !dst_rgba) return -1;
+    if (width == 0 || height == 0) return -1;
+
+#if defined(COMPOSITOR_HAS_SKIA)
+    r->last_executed = COMP_RENDERER_RASTER;
+    const size_t stride = width * 4;
+    SkImageInfo info = SkImageInfo::Make(static_cast<int>(width),
+                                         static_cast<int>(height),
+                                         kRGBA_8888_SkColorType,
+                                         kPremul_SkAlphaType);
+
+    SkPixmap srcPixmap(info, src_rgba, stride);
+    sk_sp<SkImage> srcImage = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
+    if (!srcImage) return -1;
+
+    sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, dst_rgba, stride);
+    if (!surface) return -1;
+
+    SkCanvas* canvas = surface->getCanvas();
+    if (!canvas) return -1;
+
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrcOver);
+    canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
+    return 0;
+#else
+    return -3;
+#endif
+}
+
+// ── Internal: Vulkan device ────────────────────────────────────────────
+
+static void vulkan_device_create(CompRenderer* r, int force_raster) {
+    if (force_raster) {
+        r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
+        return;
+    }
+#if defined(COMPOSITOR_HAS_VULKAN)
+    r->is_raster = false;
+    r->is_device_lost = false;
+    r->last_executed = COMP_RENDERER_VULKAN;
+
+    VkApplicationInfo appInfo{};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "Compositor";
+    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_0;
+
+    VkInstanceCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
+    if (res != VK_SUCCESS || instance == VK_NULL_HANDLE) {
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
+        return;
+    }
+
+    uint32_t device_count = 0;
+    res = vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    if (res != VK_SUCCESS || device_count == 0) {
+        vkDestroyInstance(instance, nullptr);
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
+        return;
+    }
+
+    std::vector<VkPhysicalDevice> devices(device_count);
+    vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
+
+    VkPhysicalDevice chosenDevice = VK_NULL_HANDLE;
+    uint32_t chosenQueueFamily = 0;
+    bool foundQueue = false;
+
+    for (const auto& dev : devices) {
+        uint32_t qfCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qfCount, nullptr);
+        std::vector<VkQueueFamilyProperties> qfProps(qfCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qfCount, qfProps.data());
+
+        for (uint32_t i = 0; i < qfCount; ++i) {
+            if (qfProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                chosenDevice = dev;
+                chosenQueueFamily = i;
+                foundQueue = true;
+                break;
+            }
+        }
+        if (foundQueue) break;
+    }
+
+    if (!foundQueue) {
+        vkDestroyInstance(instance, nullptr);
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
+        return;
+    }
+
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo qci{};
+    qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qci.queueFamilyIndex = chosenQueueFamily;
+    qci.queueCount = 1;
+    qci.pQueuePriorities = &priority;
+
+    VkDeviceCreateInfo dci{};
+    dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    dci.queueCreateInfoCount = 1;
+    dci.pQueueCreateInfos = &qci;
+
+    VkDevice device = VK_NULL_HANDLE;
+    res = vkCreateDevice(chosenDevice, &dci, nullptr, &device);
+    if (res != VK_SUCCESS || device == VK_NULL_HANDLE) {
+        vkDestroyInstance(instance, nullptr);
+        r->vk_device = VK_NULL_HANDLE;
+        r->is_raster = true;
+        r->last_executed = COMP_RENDERER_RASTER;
+        return;
+    }
+
+    r->vk_instance = instance;
+    r->vk_physical_device = chosenDevice;
+    r->vk_device = device;
+    r->vk_queue_family = chosenQueueFamily;
+    vkGetDeviceQueue(device, chosenQueueFamily, 0, &r->vk_queue);
+    r->is_raster = false;
+    r->last_executed = COMP_RENDERER_VULKAN;
+#else
+    r->is_raster = true;
+    r->last_executed = COMP_RENDERER_RASTER;
+    (void)r; (void)force_raster;
+#endif
+}
+
+static void vulkan_device_destroy(CompRenderer* r) {
+#if defined(COMPOSITOR_HAS_VULKAN)
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    r->gr_context.reset();
+#endif
+    if (r->vk_device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(r->vk_device);
+        if (r->vk_fence) vkDestroyFence(r->vk_device, r->vk_fence, nullptr);
+        if (r->vk_command_pool) vkDestroyCommandPool(r->vk_device, r->vk_command_pool, nullptr);
+        if (r->vk_pipeline) vkDestroyPipeline(r->vk_device, r->vk_pipeline, nullptr);
+        if (r->vk_pipeline_layout) vkDestroyPipelineLayout(r->vk_device, r->vk_pipeline_layout, nullptr);
+        if (r->vk_descriptor_layout) vkDestroyDescriptorSetLayout(r->vk_device, r->vk_descriptor_layout, nullptr);
+        if (r->vk_shader) vkDestroyShaderModule(r->vk_device, r->vk_shader, nullptr);
+        r->vk_fence = VK_NULL_HANDLE;
+        r->vk_command_pool = VK_NULL_HANDLE;
+        r->vk_pipeline = VK_NULL_HANDLE;
+        r->vk_pipeline_layout = VK_NULL_HANDLE;
+        r->vk_descriptor_layout = VK_NULL_HANDLE;
+        r->vk_shader = VK_NULL_HANDLE;
+        r->vk_compute_ready = false;
+        vkDestroyDevice(r->vk_device, nullptr);
+        r->vk_device = VK_NULL_HANDLE;
+    }
+    if (r->vk_instance != VK_NULL_HANDLE) {
+        vkDestroyInstance(r->vk_instance, nullptr);
+        r->vk_instance = VK_NULL_HANDLE;
+    }
+    r->vk_queue = VK_NULL_HANDLE;
+    r->vk_physical_device = VK_NULL_HANDLE;
+#else
+    (void)r;
+#endif
+}
+
+#if defined(COMPOSITOR_HAS_VULKAN)
+static uint32_t vulkan_find_host_memory(VkPhysicalDevice physical, uint32_t type_bits) {
+    VkPhysicalDeviceMemoryProperties props{};
+    vkGetPhysicalDeviceMemoryProperties(physical, &props);
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        if ((type_bits & (1u << i)) == 0) continue;
+        const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+        if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) return i;
+    }
+    return UINT32_MAX;
+}
+
+struct VulkanHostBuffer {
+    VkDevice device = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    bool coherent = false;
+    ~VulkanHostBuffer() {
+        if (mapped) vkUnmapMemory(device, memory);
+        if (buffer) vkDestroyBuffer(device, buffer, nullptr);
+        if (memory) vkFreeMemory(device, memory, nullptr);
+    }
+    int create(VkDevice dev, VkPhysicalDevice physical, VkDeviceSize bytes) {
+        device = dev;
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = bytes;
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(device, &info, nullptr, &buffer) != VK_SUCCESS) return -1;
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(device, buffer, &req);
+        uint32_t type = vulkan_find_host_memory(physical, req.memoryTypeBits);
+        if (type == UINT32_MAX) return -1;
+        VkPhysicalDeviceMemoryProperties props{};
+        vkGetPhysicalDeviceMemoryProperties(physical, &props);
+        coherent = (props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+        VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        alloc.allocationSize = req.size;
+        alloc.memoryTypeIndex = type;
+        if (vkAllocateMemory(device, &alloc, nullptr, &memory) != VK_SUCCESS) return -1;
+        if (vkBindBufferMemory(device, buffer, memory, 0) != VK_SUCCESS) return -1;
+        if (vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) return -1;
+        return 0;
+    }
+    void flush(VkDeviceSize size) {
+        if (coherent) return;
+        VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = memory;
+        range.size = size;
+        vkFlushMappedMemoryRanges(device, 1, &range);
+    }
+    void invalidate(VkDeviceSize size) {
+        if (coherent) return;
+        VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = memory;
+        range.size = size;
+        vkInvalidateMappedMemoryRanges(device, 1, &range);
+    }
+};
+
+static int vulkan_ensure_compute(CompRenderer* r) {
+    if (r->vk_compute_ready) return 0;
+    if (r->vk_device == VK_NULL_HANDLE) return -2;
+
+    VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    smci.codeSize = sizeof(compositor_composite_spv);
+    smci.pCode = compositor_composite_spv;
+    if (vkCreateShaderModule(r->vk_device, &smci, nullptr, &r->vk_shader) != VK_SUCCESS) return -2;
+
+    VkDescriptorSetLayoutBinding binds[2]{};
+    binds[0].binding = 0;
+    binds[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    binds[0].descriptorCount = 1;
+    binds[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    binds[1] = binds[0];
+    binds[1].binding = 1;
+    VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dlci.bindingCount = 2;
+    dlci.pBindings = binds;
+    if (vkCreateDescriptorSetLayout(r->vk_device, &dlci, nullptr, &r->vk_descriptor_layout) != VK_SUCCESS) return -2;
+
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push.offset = 0;
+    push.size = sizeof(uint32_t) * 2;
+    VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &r->vk_descriptor_layout;
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges = &push;
+    if (vkCreatePipelineLayout(r->vk_device, &plci, nullptr, &r->vk_pipeline_layout) != VK_SUCCESS) return -2;
+
+    VkComputePipelineCreateInfo pci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pci.stage.module = r->vk_shader;
+    pci.stage.pName = "main";
+    pci.layout = r->vk_pipeline_layout;
+    if (vkCreateComputePipelines(r->vk_device, VK_NULL_HANDLE, 1, &pci, nullptr, &r->vk_pipeline) != VK_SUCCESS) return -2;
+
+    VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    cpci.queueFamilyIndex = r->vk_queue_family;
+    if (vkCreateCommandPool(r->vk_device, &cpci, nullptr, &r->vk_command_pool) != VK_SUCCESS) return -2;
+
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateFence(r->vk_device, &fci, nullptr, &r->vk_fence) != VK_SUCCESS) return -2;
+
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    if (!r->gr_context) {
+        skgpu::VulkanBackendContext backend{};
+        backend.fInstance = r->vk_instance;
+        backend.fPhysicalDevice = r->vk_physical_device;
+        backend.fDevice = r->vk_device;
+        backend.fQueue = r->vk_queue;
+        backend.fGraphicsQueueIndex = r->vk_queue_family;
+        backend.fGetProc = [](const char* name, VkInstance instance, VkDevice device) -> PFN_vkVoidFunction {
+            if (device != VK_NULL_HANDLE) {
+                if (PFN_vkVoidFunction p = vkGetDeviceProcAddr(device, name)) return p;
+            }
+            return vkGetInstanceProcAddr(instance, name);
+        };
+        r->gr_context = GrDirectContexts::MakeVulkan(backend);
+    }
+#endif
+
+    r->vk_compute_ready = true;
+    return 0;
+}
+#endif
+
+static int vulkan_render_rgba(CompRenderer* r,
+                              const uint8_t* src_rgba,
+                              uint8_t* dst_rgba,
+                              size_t width, size_t height,
+                              int cg_blend_mode) {
+#if !defined(COMPOSITOR_HAS_VULKAN)
+    (void)r; (void)src_rgba; (void)dst_rgba; (void)width; (void)height; (void)cg_blend_mode;
+    return -2;
+#else
+    if (!r || r->vk_device == VK_NULL_HANDLE || r->is_device_lost) return -2;
+    if (!src_rgba || !dst_rgba || width == 0 || height == 0) return -1;
+    if (vulkan_ensure_compute(r) != 0) return -2;
+
+#if defined(COMPOSITOR_HAS_SKIA_GANESH_VK)
+    // Prefer Skia Ganesh when the Flatpak GPU Skia build is linked — colour blend modes
+    // (Soft Light, Multiply, Hue/…/Luminosity) run on the GPU here.
+    if (r->gr_context) {
+        const size_t stride = width * 4;
+        SkImageInfo info = SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height),
+                                             kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+        sk_sp<SkSurface> surface = SkSurfaces::RenderTarget(r->gr_context.get(), skgpu::Budgeted::kNo, info);
+        if (!surface) return -2;
+        SkPixmap dstPixmap(info, dst_rgba, stride);
+        sk_sp<SkImage> dstImage = SkImages::RasterFromPixmap(dstPixmap, nullptr, nullptr);
+        SkPixmap srcPixmap(info, src_rgba, stride);
+        sk_sp<SkImage> srcImage = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
+        if (!dstImage || !srcImage) return -2;
+        SkCanvas* canvas = surface->getCanvas();
+        canvas->clear(SK_ColorTRANSPARENT);
+        canvas->drawImage(dstImage, 0, 0);
+        SkPaint paint;
+        paint.setBlendMode(map_cg_blend_mode(cg_blend_mode));
+        canvas->drawImage(srcImage, 0, 0, SkSamplingOptions(), &paint);
+        if (!surface->readPixels(dstPixmap, 0, 0)) return -2;
+        // Skia canvaskit/0.42+: flushAndSubmit takes GrSyncCpu, not bool.
+        r->gr_context->flushAndSubmit(GrSyncCpu::kYes);
+        r->last_executed = COMP_RENDERER_VULKAN;
+        return 0;
+    }
+#endif
+
+    // Compute SrcOver kernel only — non-normal blends need Ganesh or Skia CPU fallback.
+    if (cg_blend_mode != 0) return -2;
+
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width * height * 4u);
+    VulkanHostBuffer srcBuf, dstBuf;
+    if (srcBuf.create(r->vk_device, r->vk_physical_device, bytes) != 0) return -2;
+    if (dstBuf.create(r->vk_device, r->vk_physical_device, bytes) != 0) return -2;
+    std::memcpy(srcBuf.mapped, src_rgba, static_cast<size_t>(bytes));
+    std::memcpy(dstBuf.mapped, dst_rgba, static_cast<size_t>(bytes));
+    srcBuf.flush(bytes);
+    dstBuf.flush(bytes);
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 2;
+    VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    dpci.maxSets = 1;
+    dpci.poolSizeCount = 1;
+    dpci.pPoolSizes = &poolSize;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(r->vk_device, &dpci, nullptr, &pool) != VK_SUCCESS) return -2;
+
+    VkDescriptorSetAllocateInfo dsai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    dsai.descriptorPool = pool;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &r->vk_descriptor_layout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(r->vk_device, &dsai, &set) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    VkDescriptorBufferInfo srcInfo{};
+    srcInfo.buffer = srcBuf.buffer;
+    srcInfo.range = bytes;
+    VkDescriptorBufferInfo dstInfo{};
+    dstInfo.buffer = dstBuf.buffer;
+    dstInfo.range = bytes;
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].pBufferInfo = &srcInfo;
+    writes[1] = writes[0];
+    writes[1].dstBinding = 1;
+    writes[1].pBufferInfo = &dstInfo;
+    vkUpdateDescriptorSets(r->vk_device, 2, writes, 0, nullptr);
+
+    VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cbai.commandPool = r->vk_command_pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(r->vk_device, &cbai, &cmd) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, r->vk_pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, r->vk_pipeline_layout, 0, 1, &set, 0, nullptr);
+    uint32_t push[2] = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+    vkCmdPushConstants(cmd, r->vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+    vkCmdDispatch(cmd, (static_cast<uint32_t>(width) + 15u) / 16u, (static_cast<uint32_t>(height) + 15u) / 16u, 1);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    vkResetFences(r->vk_device, 1, &r->vk_fence);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    if (vkQueueSubmit(r->vk_queue, 1, &submit, r->vk_fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    if (vkWaitForFences(r->vk_device, 1, &r->vk_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+        vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+        return -2;
+    }
+    dstBuf.invalidate(bytes);
+    std::memcpy(dst_rgba, dstBuf.mapped, static_cast<size_t>(bytes));
+    vkFreeCommandBuffers(r->vk_device, r->vk_command_pool, 1, &cmd);
+    vkDestroyDescriptorPool(r->vk_device, pool, nullptr);
+    r->last_executed = COMP_RENDERER_VULKAN;
+    return 0;
+#endif
+}
+
+// ── Stage 4/5: Canvas C ABI (CoreGraphics-shaped Skia Bridge) ────────────
+
+#if defined(COMPOSITOR_HAS_SKIA)
+static SkBlendMode map_cg_blend_mode(int cg_mode) {
+    switch (cg_mode) {
+        case 0:  return SkBlendMode::kSrcOver;     // normal
+        case 1:  return SkBlendMode::kMultiply;    // multiply
+        case 2:  return SkBlendMode::kScreen;      // screen
+        case 3:  return SkBlendMode::kOverlay;     // overlay
+        case 4:  return SkBlendMode::kDarken;      // darken
+        case 5:  return SkBlendMode::kLighten;     // lighten
+        case 6:  return SkBlendMode::kColorDodge;  // colorDodge
+        case 7:  return SkBlendMode::kColorBurn;   // colorBurn
+        case 8:  return SkBlendMode::kSoftLight;   // softLight
+        case 9:  return SkBlendMode::kHardLight;   // hardLight
+        case 10: return SkBlendMode::kDifference;  // difference
+        case 11: return SkBlendMode::kExclusion;   // exclusion
+        case 12: return SkBlendMode::kHue;         // hue
+        case 13: return SkBlendMode::kSaturation;  // saturation
+        case 14: return SkBlendMode::kColor;       // color
+        case 15: return SkBlendMode::kLuminosity;  // luminosity
+        case 16: return SkBlendMode::kClear;       // clear
+        case 17: return SkBlendMode::kSrc;         // copy
+        case 18: return SkBlendMode::kSrcIn;       // sourceIn
+        case 19: return SkBlendMode::kSrcOut;      // sourceOut
+        case 20: return SkBlendMode::kSrcATop;     // sourceAtop
+        case 21: return SkBlendMode::kDstOver;     // destinationOver
+        case 22: return SkBlendMode::kDstIn;       // destinationIn
+        case 23: return SkBlendMode::kDstOut;      // destinationOut
+        case 24: return SkBlendMode::kDstATop;     // destinationAtop
+        case 25: return SkBlendMode::kXor;         // xor
+        case 26: return SkBlendMode::kDarken;      // plusDarker
+        case 27: return SkBlendMode::kPlus;        // plusLighter
+        default: return SkBlendMode::kSrcOver;
+    }
+}
+
+static SkSamplingOptions map_cg_sampling(int quality) {
+    switch (quality) {
+        case 1:  // none / nearest
+            return SkSamplingOptions(SkFilterMode::kNearest, SkMipmapMode::kNone);
+        case 2:  // low
+            return SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kNone);
+        case 3:  // medium
+            return SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kNearest);
+        case 4:  // high
+            return SkSamplingOptions(SkCubicResampler::CatmullRom());
+        default: // default / low
+            return SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kNone);
+    }
+}
+
+// Premultiplied area average of `img` to w x h (each output pixel weights every source pixel it covers).
+// Source rows are read in chunks, so only the horizontally reduced rows are held in floating point.
+static sk_sp<SkImage> comp_area_resample(const sk_sp<SkImage> &img, int w, int h) {
+    const int sw = img->width(), sh = img->height();
+    const SkImageInfo rowInfo = SkImageInfo::Make(sw, 1, kRGBA_F32_SkColorType, kPremul_SkAlphaType, img->refColorSpace());
+    const double fx = double(sw) / w, fy = double(sh) / h;
+    std::vector<float> wide(size_t(w) * sh * 4, 0.0f);
+    constexpr int chunk = 64;
+    std::vector<float> rows(size_t(sw) * chunk * 4);
+    for (int y0 = 0; y0 < sh; y0 += chunk) {
+        const int count = std::min(chunk, sh - y0);
+        if (!img->readPixels(nullptr, rowInfo.makeWH(sw, count), rows.data(), size_t(sw) * 16, 0, y0)) return nullptr;
+        for (int r = 0; r < count; r++) {
+            const float *src = rows.data() + size_t(r) * sw * 4;
+            float *dst = wide.data() + (size_t(y0 + r) * w) * 4;
+            for (int x = 0; x < w; x++) {
+                const double a = x * fx, b = (x + 1) * fx;
+                double acc[4] = {0, 0, 0, 0};
+                for (int s = int(a); s < sw && s < b; s++) {
+                    const double weight = std::min<double>(b, s + 1) - std::max<double>(a, s);
+                    for (int c = 0; c < 4; c++) acc[c] += weight * src[size_t(s) * 4 + c];
+                }
+                for (int c = 0; c < 4; c++) dst[size_t(x) * 4 + c] = float(acc[c] / fx);
+            }
+        }
+    }
+    const SkImageInfo outInfo = SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType, img->refColorSpace());
+    sk_sp<SkData> data = SkData::MakeUninitialized(size_t(w) * h * 16);
+    float *out = static_cast<float *>(data->writable_data());
+    for (int y = 0; y < h; y++) {
+        const double a = y * fy, b = (y + 1) * fy;
+        float *dst = out + size_t(y) * w * 4;
+        std::fill(dst, dst + size_t(w) * 4, 0.0f);
+        for (int s = int(a); s < sh && s < b; s++) {
+            const float weight = float((std::min<double>(b, s + 1) - std::max<double>(a, s)) / fy);
+            const float *src = wide.data() + size_t(s) * w * 4;
+            for (int i = 0; i < w * 4; i++) dst[i] += weight * src[i];
+        }
+    }
+    return SkImages::RasterFromData(outInfo, std::move(data), size_t(w) * 16);
+}
+
+// Core Graphics' high quality averages every covered source pixel when minifying; a cubic kernel alone
+// reads only a 4x4 neighbourhood, so large reductions alias and shift tone. Axes reduced 2x or more are
+// area-averaged to their device-space length first (rotation included); the cubic pass then runs at about 1:1.
+static sk_sp<SkImage> comp_prefilter_minified(sk_sp<SkImage> img, const SkMatrix &ctm, float dw, float dh) {
+    if (ctm.hasPerspective()) return img;
+    const float sx = std::hypot(ctm.getScaleX(), ctm.getSkewY()), sy = std::hypot(ctm.getSkewX(), ctm.getScaleY());
+    const float tw = std::fabs(dw) * sx, th = std::fabs(dh) * sy;
+    if (!(tw > 0) || !(th > 0) || !std::isfinite(tw) || !std::isfinite(th)) return img;
+    int w = img->width(), h = img->height();
+    if (w < 2 * tw && h < 2 * th) return img;
+    const int nw = w >= 2 * tw ? std::max(1, int(std::lround(tw))) : w;
+    const int nh = h >= 2 * th ? std::max(1, int(std::lround(th))) : h;
+    sk_sp<SkImage> averaged = comp_area_resample(img, nw, nh);
+    return averaged ? averaged : img;
+}
+
+struct CompCanvasState {
+    float alpha = 1.0f;
+    SkBlendMode blendMode = SkBlendMode::kSrcOver;
+    SkSamplingOptions sampling = SkSamplingOptions(SkFilterMode::kLinear);
+    bool antialias = true;
+};
+
+struct CompCanvas {
+    sk_sp<SkSurface> surface;
+    SkCanvas* canvas = nullptr;
+    std::vector<CompCanvasState> states;
+    uint8_t* pixels = nullptr;
+    size_t width = 0;
+    size_t height = 0;
+    size_t stride = 0;
+
+    CompCanvasState& current_state() {
+        if (states.empty()) states.push_back(CompCanvasState{});
+        return states.back();
+    }
+};
+
+struct CompPath {
+    SkPathBuilder builder;
+    SkPath get_path(bool even_odd) const {
+        SkPath p = builder.snapshot();
+        p.setFillType(even_odd ? SkPathFillType::kEvenOdd : SkPathFillType::kWinding);
+        return p;
+    }
+};
+#else
+struct CompCanvas {};
+struct CompPath {};
+#endif
+
+#if defined(COMPOSITOR_HAS_SKIA)
+// The bridge's pixel format codes (SkiaBridge.h): 0 RGBA8 premultiplied, 1 gray 8-bit, 2 RGBA 16-bit unsigned
+// premultiplied, 3 RGBA half float premultiplied (unclamped, an HDR layer's light past white), 4 RGBA 32-bit float
+// premultiplied (source images only). No color spaces are
+// attached: pixels move between formats as values, as Core Graphics moves them within one working space.
+static SkImageInfo comp_format_info(size_t width, size_t height, int format) {
+    const int w = static_cast<int>(width), h = static_cast<int>(height);
+    switch (format) {
+        case 1: return SkImageInfo::Make(w, h, kGray_8_SkColorType, kOpaque_SkAlphaType);
+        case 2: return SkImageInfo::Make(w, h, kR16G16B16A16_unorm_SkColorType, kPremul_SkAlphaType);
+        case 3: return SkImageInfo::Make(w, h, kRGBA_F16_SkColorType, kPremul_SkAlphaType);
+        case 4: return SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType);
+        default: return SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    }
+}
+static size_t comp_format_bytes(int format) { return format == 1 ? 1 : (format == 2 || format == 3) ? 8 : format == 4 ? 16 : 4; }
+#endif
+
+CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t height, size_t stride) {
+    return compositor_canvas_create_ex(pixels, width, height, stride, 0);
+}
+
+CompCanvas *compositor_canvas_create_ex(uint8_t *pixels, size_t width, size_t height, size_t stride, int format) {
+    if (!pixels || width == 0 || height == 0) return nullptr;
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (stride == 0) stride = width * comp_format_bytes(format);
+    SkImageInfo info = comp_format_info(width, height, format);
+    sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, pixels, stride);
+    if (!surface) return nullptr;
+    SkCanvas* canvas = surface->getCanvas();
+    if (!canvas) return nullptr;
+
+    CompCanvas* c = new (std::nothrow) CompCanvas();
+    if (!c) return nullptr;
+    c->surface = surface;
+    c->canvas = canvas;
+    c->pixels = pixels;
+    c->width = width;
+    c->height = height;
+    c->stride = stride;
+    c->states.push_back(CompCanvasState{});
+    return c;
+#else
+    (void)stride; (void)format;
+    return nullptr;
+#endif
+}
+
+void compositor_canvas_destroy(CompCanvas *canvas) {
+    if (!canvas) return;
+    delete canvas;
+}
+
+void compositor_canvas_save(CompCanvas *canvas) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->save();
+    canvas->states.push_back(canvas->current_state());
+#else
+    (void)canvas;
+#endif
+}
+
+void compositor_canvas_restore(CompCanvas *canvas) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->restore();
+    if (canvas->states.size() > 1) {
+        canvas->states.pop_back();
+    }
+#else
+    (void)canvas;
+#endif
+}
+
+void compositor_canvas_translate(CompCanvas *canvas, float dx, float dy) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->translate(dx, dy);
+#else
+    (void)canvas; (void)dx; (void)dy;
+#endif
+}
+
+void compositor_canvas_scale(CompCanvas *canvas, float sx, float sy) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->scale(sx, sy);
+#else
+    (void)canvas; (void)sx; (void)sy;
+#endif
+}
+
+void compositor_canvas_rotate(CompCanvas *canvas, float radians) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    float degrees = radians * (180.0f / 3.14159265358979323846f);
+    canvas->canvas->rotate(degrees);
+#else
+    (void)canvas; (void)radians;
+#endif
+}
+
+void compositor_canvas_concat(CompCanvas *canvas, float a, float b, float c, float d, float tx, float ty) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    SkMatrix m;
+    m.setAll(a, c, tx, b, d, ty, 0.0f, 0.0f, 1.0f);
+    canvas->canvas->concat(m);
+#else
+    (void)canvas; (void)a; (void)b; (void)c; (void)d; (void)tx; (void)ty;
+#endif
+}
+
+void compositor_canvas_get_ctm(const CompCanvas *canvas, float *a, float *b, float *c, float *d, float *tx, float *ty) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) {
+        if (a) *a = 1; if (b) *b = 0; if (c) *c = 0; if (d) *d = 1; if (tx) *tx = 0; if (ty) *ty = 0;
+        return;
+    }
+    SkMatrix m = canvas->canvas->getTotalMatrix();
+    if (a) *a = m.getScaleX();
+    if (b) *b = m.getSkewY();
+    if (c) *c = m.getSkewX();
+    if (d) *d = m.getScaleY();
+    if (tx) *tx = m.getTranslateX();
+    if (ty) *ty = m.getTranslateY();
+#else
+    if (a) *a = 1; if (b) *b = 0; if (c) *c = 0; if (d) *d = 1; if (tx) *tx = 0; if (ty) *ty = 0;
+    (void)canvas;
+#endif
+}
+
+void compositor_canvas_clip_rect(CompCanvas *canvas, float x, float y, float w, float h, int antialias) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->clipRect(SkRect::MakeXYWH(x, y, w, h), SkClipOp::kIntersect, antialias != 0);
+#else
+    (void)canvas; (void)x; (void)y; (void)w; (void)h; (void)antialias;
+#endif
+}
+
+void compositor_canvas_clip_rect_difference(CompCanvas *canvas, float x, float y, float w, float h) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->clipRect(SkRect::MakeXYWH(x, y, w, h), SkClipOp::kDifference, false);
+#else
+    (void)canvas; (void)x; (void)y; (void)w; (void)h;
+#endif
+}
+
+void compositor_canvas_clip_path(CompCanvas *canvas, const CompPath *path, int even_odd, int antialias) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !path) return;
+    SkPath p = path->get_path(even_odd != 0);
+    const SkMatrix m = canvas->canvas->getTotalMatrix();
+    if (antialias == 0 && !m.rectStaysRect()) {
+        // A hard-edged clip under a rotation or skew is rasterized once, against the whole surface, and applied as a
+        // pixel region. Left to Skia, the pixels on an edge depend on what is already clipped (it trims the edge to
+        // the current clip first, which shifts its fixed-point rounding), so the same path clips a different pixel
+        // at a tie the second time. Core Graphics has one answer per path; this gives Skia one too.
+        SkPath device = p.makeTransform(m);
+        SkRegion whole(SkIRect::MakeWH(static_cast<int>(canvas->width), static_cast<int>(canvas->height)));
+        SkRegion region;
+        region.setPath(device, whole);
+        canvas->canvas->clipRegion(region, SkClipOp::kIntersect);
+        return;
+    }
+    canvas->canvas->clipPath(p, SkClipOp::kIntersect, antialias != 0);
+#else
+    (void)canvas; (void)path; (void)even_odd; (void)antialias;
+#endif
+}
+
+void compositor_canvas_clip_mask(CompCanvas *canvas, const uint8_t *mask_pixels, size_t mask_w, size_t mask_h, size_t mask_stride, float x, float y, float w, float h, int is_alpha_only) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !mask_pixels || mask_w == 0 || mask_h == 0) return;
+    if (mask_stride == 0) mask_stride = is_alpha_only ? mask_w : mask_w * 4;
+
+    SkColorType ct = is_alpha_only ? kAlpha_8_SkColorType : kRGBA_8888_SkColorType;
+    SkAlphaType at = is_alpha_only ? kPremul_SkAlphaType : kPremul_SkAlphaType;
+    SkImageInfo maskInfo = SkImageInfo::Make(static_cast<int>(mask_w), static_cast<int>(mask_h), ct, at);
+    SkPixmap maskPixmap(maskInfo, mask_pixels, mask_stride);
+    sk_sp<SkImage> maskImg = SkImages::RasterFromPixmapCopy(maskPixmap);
+    if (!maskImg) return;
+
+    SkMatrix m;
+    m.setRectToRect(SkRect::MakeWH(mask_w, mask_h), SkRect::MakeXYWH(x, y, w, h), SkMatrix::kFill_ScaleToFit);
+    // Core Graphics confines the mask to its rect and holds its edge pixels there, so a 1x1 mask stays uniform.
+    sk_sp<SkShader> shader = maskImg->makeShader(SkTileMode::kClamp, SkTileMode::kClamp, canvas->current_state().sampling, m);
+    if (shader) {
+        canvas->canvas->clipRect(SkRect::MakeXYWH(x, y, w, h), SkClipOp::kIntersect, true);
+        // Shader clips alone retain the whole tile's bounds. Restrict the conservative
+        // bounds to nonzero coverage so a regional filter does not compute invisible pixels.
+        // Two mask pixels retain the complete support of linear and cubic interpolation.
+        size_t left = mask_w, top = mask_h, right = 0, bottom = 0;
+        for (size_t row = 0; row < mask_h; ++row) {
+            const uint8_t *pixels = mask_pixels + row * mask_stride;
+            const size_t stride = is_alpha_only ? 1 : 4, alpha = is_alpha_only ? 0 : 3;
+            size_t rowLeft = 0, rowRight = mask_w;
+            while (rowLeft < rowRight && pixels[rowLeft * stride + alpha] == 0) ++rowLeft;
+            if (rowLeft == rowRight) continue;
+            while (pixels[(rowRight - 1) * stride + alpha] == 0) --rowRight;
+            left = std::min(left, rowLeft); top = std::min(top, row);
+            right = std::max(right, rowRight); bottom = row + 1;
+        }
+        if (left == mask_w) {
+            canvas->canvas->clipRect(SkRect::MakeEmpty());
+        } else {
+            left = left > 2 ? left - 2 : 0; top = top > 2 ? top - 2 : 0;
+            right = std::min(mask_w, right + 2); bottom = std::min(mask_h, bottom + 2);
+            const SkRect support = SkRect::MakeLTRB(left, top, right, bottom);
+            canvas->canvas->clipRect(m.mapRect(support), SkClipOp::kIntersect, false);
+        }
+        canvas->canvas->clipShader(shader, SkClipOp::kIntersect);
+    }
+#else
+    (void)canvas; (void)mask_pixels; (void)mask_w; (void)mask_h; (void)mask_stride; (void)x; (void)y; (void)w; (void)h; (void)is_alpha_only;
+#endif
+}
+
+void compositor_canvas_get_clip_bounds(const CompCanvas *canvas, float *x, float *y, float *w, float *h) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) {
+        if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
+        return;
+    }
+    SkIRect devBounds = canvas->canvas->getDeviceClipBounds();
+    SkMatrix inv;
+    SkRect localBounds;
+    if (canvas->canvas->getTotalMatrix().invert(&inv)) {
+        localBounds = inv.mapRect(SkRect::Make(devBounds));
+    } else {
+        localBounds = SkRect::Make(devBounds);
+    }
+    if (x) *x = localBounds.fLeft;
+    if (y) *y = localBounds.fTop;
+    if (w) *w = localBounds.width();
+    if (h) *h = localBounds.height();
+#else
+    if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
+    (void)canvas;
+#endif
+}
+
+void compositor_canvas_set_alpha(CompCanvas *canvas, float alpha) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas) return;
+    canvas->current_state().alpha = alpha;
+#else
+    (void)canvas; (void)alpha;
+#endif
+}
+
+void compositor_canvas_set_blend_mode(CompCanvas *canvas, int cg_blend_mode) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas) return;
+    canvas->current_state().blendMode = map_cg_blend_mode(cg_blend_mode);
+#else
+    (void)canvas; (void)cg_blend_mode;
+#endif
+}
+
+void compositor_canvas_set_interpolation_quality(CompCanvas *canvas, int cg_quality) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas) return;
+    canvas->current_state().sampling = map_cg_sampling(cg_quality);
+#else
+    (void)canvas; (void)cg_quality;
+#endif
+}
+
+void compositor_canvas_set_antialias(CompCanvas *canvas, int antialias) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas) return;
+    canvas->current_state().antialias = antialias != 0;
+#else
+    (void)canvas; (void)antialias;
+#endif
+}
+
+void compositor_canvas_fill_rect(CompCanvas *canvas, float x, float y, float w, float h, float r, float g, float b, float a) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    SkPaint paint;
+    float finalAlpha = a * canvas->current_state().alpha;
+    paint.setColor4f(SkColor4f{r, g, b, finalAlpha});
+    paint.setBlendMode(canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+    canvas->canvas->drawRect(SkRect::MakeXYWH(x, y, w, h), paint);
+#else
+    (void)canvas; (void)x; (void)y; (void)w; (void)h; (void)r; (void)g; (void)b; (void)a;
+#endif
+}
+
+void compositor_canvas_clear(CompCanvas *canvas, float x, float y, float w, float h) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kClear);
+    canvas->canvas->drawRect(SkRect::MakeXYWH(x, y, w, h), paint);
+#else
+    (void)canvas; (void)x; (void)y; (void)w; (void)h;
+#endif
+}
+
+void compositor_canvas_draw_image_rect(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality) {
+    compositor_canvas_draw_image_rect_ex(canvas, src_pixels, src_w, src_h, src_stride, 0, dx, dy, dw, dh, opacity, cg_blend_mode, cg_sampling_quality);
+}
+
+void compositor_canvas_draw_image_rect_ex(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, int src_format, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !src_pixels || src_w == 0 || src_h == 0) return;
+    if (src_stride == 0) src_stride = src_w * comp_format_bytes(src_format);
+
+    SkImageInfo srcInfo = comp_format_info(src_w, src_h, src_format);
+    SkPixmap srcPixmap(srcInfo, src_pixels, src_stride);
+    sk_sp<SkImage> img = SkImages::RasterFromPixmap(srcPixmap, nullptr, nullptr);
+    if (!img) return;
+
+    SkPaint paint;
+    float finalAlpha = opacity * canvas->current_state().alpha;
+    paint.setAlphaf(finalAlpha);
+    paint.setBlendMode(cg_blend_mode >= 0 ? map_cg_blend_mode(cg_blend_mode) : canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+
+    SkSamplingOptions sampling = (cg_sampling_quality >= 0) ? map_cg_sampling(cg_sampling_quality) : canvas->current_state().sampling;
+    if (sampling.useCubic) img = comp_prefilter_minified(img, canvas->canvas->getTotalMatrix(), dw, dh);
+    if (!img) return;
+    canvas->canvas->drawImageRect(img, SkRect::MakeXYWH(dx, dy, dw, dh), sampling, &paint);
+#else
+    (void)canvas; (void)src_pixels; (void)src_w; (void)src_h; (void)src_stride; (void)src_format; (void)dx; (void)dy; (void)dw; (void)dh; (void)opacity; (void)cg_blend_mode; (void)cg_sampling_quality;
+#endif
+}
+
+void compositor_canvas_begin_transparency_layer(CompCanvas *canvas, float opacity) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->saveLayerAlphaf(nullptr, opacity);
+    canvas->states.push_back(canvas->current_state());
+#else
+    (void)canvas; (void)opacity;
+#endif
+}
+
+void compositor_canvas_end_transparency_layer(CompCanvas *canvas) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas) return;
+    canvas->canvas->restore();
+    if (canvas->states.size() > 1) {
+        canvas->states.pop_back();
+    }
+#else
+    (void)canvas;
+#endif
+}
+
+/* Path Handle */
+CompPath *compositor_path_create(void) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    return new (std::nothrow) CompPath();
+#else
+    return nullptr;
+#endif
+}
+
+void compositor_path_destroy(CompPath *path) {
+    if (!path) return;
+    delete path;
+}
+
+void compositor_path_move_to(CompPath *path, float x, float y) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.moveTo(x, y);
+#else
+    (void)path; (void)x; (void)y;
+#endif
+}
+
+void compositor_path_line_to(CompPath *path, float x, float y) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.lineTo(x, y);
+#else
+    (void)path; (void)x; (void)y;
+#endif
+}
+
+void compositor_path_add_rect(CompPath *path, float x, float y, float w, float h) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.addRect(SkRect::MakeXYWH(x, y, w, h));
+#else
+    (void)path; (void)x; (void)y; (void)w; (void)h;
+#endif
+}
+
+void compositor_path_add_ellipse(CompPath *path, float cx, float cy, float rx, float ry) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.addOval(SkRect::MakeXYWH(cx - rx, cy - ry, rx * 2, ry * 2));
+#else
+    (void)path; (void)cx; (void)cy; (void)rx; (void)ry;
+#endif
+}
+
+void compositor_path_close(CompPath *path) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.close();
+#else
+    (void)path;
+#endif
+}
+
+void compositor_path_reset(CompPath *path) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.reset();
+#else
+    (void)path;
+#endif
+}
+
+#if defined(COMPOSITOR_HAS_SKIA)
+// SkPathOps' debug helpers (src/pathops/SkPathOpsDebug.cpp) reference SkPath::dump, which this Skia build
+// leaves out (it is compiled only with SK_DUMP_ENABLED). Nothing here dumps paths, so a no-op keeps the
+// pathops archive self-contained.
+void SkPath::dump(SkWStream *, bool) const {}
+#endif
+
+/* ── CoreGraphics path surface ───────────────────────────────────────────── */
+
+void compositor_path_quad_to(CompPath *path, float cx, float cy, float x, float y) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.quadTo(cx, cy, x, y);
+#else
+    (void)path; (void)cx; (void)cy; (void)x; (void)y;
+#endif
+}
+
+void compositor_path_cubic_to(CompPath *path, float c1x, float c1y, float c2x, float c2y, float x, float y) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.cubicTo(SkPoint::Make(c1x, c1y), SkPoint::Make(c2x, c2y), SkPoint::Make(x, y));
+#else
+    (void)path; (void)c1x; (void)c1y; (void)c2x; (void)c2y; (void)x; (void)y;
+#endif
+}
+
+void compositor_path_add_round_rect(CompPath *path, float x, float y, float w, float h, float rx, float ry) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (path) path->builder.addRRect(SkRRect::MakeRectXY(SkRect::MakeXYWH(x, y, w, h), rx, ry));
+#else
+    (void)path; (void)x; (void)y; (void)w; (void)h; (void)rx; (void)ry;
+#endif
+}
+
+CompPath *compositor_path_copy(const CompPath *path) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!path) return nullptr;
+    CompPath *copy = new (std::nothrow) CompPath();
+    if (copy) copy->builder = path->builder;
+    return copy;
+#else
+    (void)path; return nullptr;
+#endif
+}
+
+CompPath *compositor_path_op(const CompPath *a, const CompPath *b, int op, int even_odd_a, int even_odd_b) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!a || !b) return nullptr;
+    static const SkPathOp ops[4] = {kDifference_SkPathOp, kIntersect_SkPathOp, kUnion_SkPathOp, kXOR_SkPathOp};
+    if (op < 0 || op > 3) return nullptr;
+    std::optional<SkPath> result = Op(a->get_path(even_odd_a != 0), b->get_path(even_odd_b != 0), ops[op]);
+    if (!result) return nullptr;
+    // The Swift side keeps no fill rule. Canonicalize curved contours before AsWinding so interior holes survive.
+    if (result->getFillType() != SkPathFillType::kWinding) {
+        if (auto simplified = Simplify(*result)) result = simplified;
+        if (auto winding = AsWinding(*result)) result = winding;
+    }
+    CompPath *out = new (std::nothrow) CompPath();
+    if (out) out->builder = SkPathBuilder(*result);
+    return out;
+#else
+    (void)a; (void)b; (void)op; (void)even_odd_a; (void)even_odd_b; return nullptr;
+#endif
+}
+
+CompPath *compositor_path_stroke(const CompPath *path, float width, int cap, int join, float miter_limit) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!path || width < 0) return nullptr;
+    SkPaint paint;
+    paint.setStyle(SkPaint::kStroke_Style);
+    paint.setStrokeWidth(width);
+    paint.setStrokeMiter(miter_limit > 0 ? miter_limit : 10.0f);
+    paint.setStrokeCap(cap == 1 ? SkPaint::kRound_Cap : cap == 2 ? SkPaint::kSquare_Cap : SkPaint::kButt_Cap);
+    paint.setStrokeJoin(join == 1 ? SkPaint::kRound_Join : join == 2 ? SkPaint::kBevel_Join : SkPaint::kMiter_Join);
+    SkPath stroked = skpathutils::FillPathWithPaint(path->get_path(false), paint);
+    CompPath *out = new (std::nothrow) CompPath();
+    if (out) out->builder = SkPathBuilder(stroked);
+    return out;
+#else
+    (void)path; (void)width; (void)cap; (void)join; (void)miter_limit; return nullptr;
+#endif
+}
+
+int compositor_path_bounds(const CompPath *path, float out_rect[4]) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!path || !out_rect) return 0;
+    SkPath p = path->get_path(false);
+    if (p.isEmpty()) return 0;
+    SkRect r = p.computeTightBounds();
+    out_rect[0] = r.x(); out_rect[1] = r.y(); out_rect[2] = r.width(); out_rect[3] = r.height();
+    return 1;
+#else
+    (void)path; (void)out_rect; return 0;
+#endif
+}
+
+size_t compositor_path_elements(const CompPath *path, uint8_t *out_types, size_t type_capacity,
+                                float *out_points, size_t point_float_capacity, size_t *points_written) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (points_written) *points_written = 0;
+    if (!path) return 0;
+    SkPath p = path->get_path(false);
+    SkPathIter iter = p.iter();
+    size_t count = 0, floats = 0;
+    while (auto rec = iter.next()) {
+        uint8_t type = 0; size_t first = 0, n = 0;
+        std::vector<SkPoint> converted;
+        switch (rec->fVerb) {
+        case SkPathVerb::kMove:  type = 0; first = 0; n = 1; break;
+        case SkPathVerb::kLine:  type = 1; first = 1; n = 1; break;
+        case SkPathVerb::kQuad:  type = 2; first = 1; n = 2; break;
+        case SkPathVerb::kCubic: type = 3; first = 1; n = 3; break;
+        case SkPathVerb::kConic: {
+            // Approximate the conic with quads; the point spans `pts[0..2]`.
+            SkPoint quads[1 + 2 * 4];
+            int q = SkPath::ConvertConicToQuads(rec->fPoints[0], rec->fPoints[1], rec->fPoints[2], rec->conicWeight(), quads, 2);
+            for (int i = 0; i < q; ++i) {
+                if (out_types && count < type_capacity) out_types[count] = 2;
+                if (out_points && floats + 4 <= point_float_capacity) {
+                    out_points[floats] = quads[1 + 2 * i].x(); out_points[floats + 1] = quads[1 + 2 * i].y();
+                    out_points[floats + 2] = quads[2 + 2 * i].x(); out_points[floats + 3] = quads[2 + 2 * i].y();
+                }
+                ++count; floats += 4;
+            }
+            continue;
+        }
+        case SkPathVerb::kClose: type = 4; n = 0; break;
+        }
+        if (out_types && count < type_capacity) out_types[count] = type;
+        if (out_points) {
+            for (size_t i = 0; i < n; ++i) {
+                if (floats + 2 <= point_float_capacity) {
+                    out_points[floats] = rec->fPoints[first + i].x();
+                    out_points[floats + 1] = rec->fPoints[first + i].y();
+                }
+                floats += 2;
+            }
+        } else floats += n * 2;
+        ++count;
+    }
+    if (points_written) *points_written = floats;
+    return count;
+#else
+    (void)path; (void)out_types; (void)type_capacity; (void)out_points; (void)point_float_capacity;
+    if (points_written) *points_written = 0;
+    return 0;
+#endif
+}
+
+void compositor_canvas_fill_path(CompCanvas *canvas, const CompPath *path, int even_odd,
+                                 float r, float g, float b, float a) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !path) return;
+    SkPaint paint;
+    paint.setColor4f(SkColor4f{r, g, b, a * canvas->current_state().alpha});
+    paint.setBlendMode(canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+    canvas->canvas->drawPath(path->get_path(even_odd != 0), paint);
+#else
+    (void)canvas; (void)path; (void)even_odd; (void)r; (void)g; (void)b; (void)a;
+#endif
+}
+
+void compositor_canvas_stroke_path(CompCanvas *canvas, const CompPath *path, float width, int cap, int join,
+                                   float miter_limit, float r, float g, float b, float a) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !path) return;
+    SkPaint paint;
+    paint.setStyle(SkPaint::kStroke_Style);
+    paint.setStrokeWidth(width);
+    paint.setStrokeMiter(miter_limit > 0 ? miter_limit : 10.0f);
+    paint.setStrokeCap(cap == 1 ? SkPaint::kRound_Cap : cap == 2 ? SkPaint::kSquare_Cap : SkPaint::kButt_Cap);
+    paint.setStrokeJoin(join == 1 ? SkPaint::kRound_Join : join == 2 ? SkPaint::kBevel_Join : SkPaint::kMiter_Join);
+    paint.setColor4f(SkColor4f{r, g, b, a * canvas->current_state().alpha});
+    paint.setBlendMode(canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+    canvas->canvas->drawPath(path->get_path(false), paint);
+#else
+    (void)canvas; (void)path; (void)width; (void)cap; (void)join; (void)miter_limit; (void)r; (void)g; (void)b; (void)a;
+#endif
+}
+
+#if defined(COMPOSITOR_HAS_SKIA)
+static void draw_gradient_shader(CompCanvas *canvas, sk_sp<SkShader> shader, const SkRect &clipBounds, int options,
+                                 bool extendStart, bool extendEnd, bool radial) {
+    (void)options; (void)extendStart; (void)extendEnd; (void)radial;
+    if (!shader) return;
+    SkPaint paint;
+    paint.setShader(shader);
+    paint.setAlphaf(canvas->current_state().alpha);
+    paint.setBlendMode(canvas->current_state().blendMode);
+    paint.setAntiAlias(canvas->current_state().antialias);
+    canvas->canvas->drawRect(clipBounds, paint);
+}
+#endif
+
+void compositor_canvas_draw_linear_gradient(CompCanvas *canvas, float x0, float y0, float x1, float y1,
+                                            const float *colors, const float *locations, size_t count, int options) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !colors || !locations || count < 2) return;
+    std::vector<SkColor4f> cs(count);
+    for (size_t i = 0; i < count; ++i) cs[i] = SkColor4f{colors[i * 4], colors[i * 4 + 1], colors[i * 4 + 2], colors[i * 4 + 3]};
+    // CoreGraphics only paints beyond the end points when the extend options ask for it; otherwise the
+    // outside stays untouched. A clamp tile mode plus an explicit limiting clip reproduces that.
+    const bool before = options & 1, after = options & 2;
+    SkPoint pts[2] = {SkPoint::Make(x0, y0), SkPoint::Make(x1, y1)};
+    SkGradient grad(SkGradient::Colors(cs, SkSpan<const float>(locations, count), SkTileMode::kClamp), SkGradient::Interpolation());
+    sk_sp<SkShader> shader = SkShaders::LinearGradient(pts, grad);
+    // Local (user-space) bounds: the shader rect is drawn through the current matrix. Device bounds were only right
+    // with an identity matrix, so a gradient drawn into a translated context (every tile but the first) missed it.
+    SkRect bounds = canvas->canvas->getLocalClipBounds();
+    canvas->canvas->save();
+    if (!before || !after) {
+        // Limit to the half-planes the options allow (perpendicular to the gradient axis).
+        SkPath keep;
+        SkVector axis = pts[1] - pts[0];
+        float len = axis.length();
+        if (len > 0) {
+            axis.scale(1.0f / len);
+            SkVector normal = SkVector::Make(-axis.fY, axis.fX);
+            float big = 1e5f;
+            SkPoint a = pts[0] - (before ? axis * big : SkVector::Make(0, 0));
+            SkPoint b = pts[1] + (after ? axis * big : SkVector::Make(0, 0));
+            SkPathBuilder pb;
+            pb.moveTo(a + normal * big); pb.lineTo(b + normal * big); pb.lineTo(b - normal * big); pb.lineTo(a - normal * big); pb.close();
+            canvas->canvas->clipPath(pb.detach(), SkClipOp::kIntersect, false);
+        }
+    }
+    draw_gradient_shader(canvas, shader, bounds, options, before, after, false);
+    canvas->canvas->restore();
+#else
+    (void)canvas; (void)x0; (void)y0; (void)x1; (void)y1; (void)colors; (void)locations; (void)count; (void)options;
+#endif
+}
+
+void compositor_canvas_draw_radial_gradient(CompCanvas *canvas, float x0, float y0, float r0, float x1, float y1,
+                                            float r1, const float *colors, const float *locations, size_t count,
+                                            int options) {
+#if defined(COMPOSITOR_HAS_SKIA)
+    if (!canvas || !canvas->canvas || !colors || !locations || count < 2) return;
+    std::vector<SkColor4f> cs(count);
+    for (size_t i = 0; i < count; ++i) cs[i] = SkColor4f{colors[i * 4], colors[i * 4 + 1], colors[i * 4 + 2], colors[i * 4 + 3]};
+    const bool before = options & 1, after = options & 2;
+    SkGradient grad(SkGradient::Colors(cs, SkSpan<const float>(locations, count), SkTileMode::kClamp), SkGradient::Interpolation());
+    sk_sp<SkShader> shader = SkShaders::TwoPointConicalGradient(SkPoint::Make(x0, y0), r0, SkPoint::Make(x1, y1), r1, grad);
+    // Local (user-space) bounds: the shader rect is drawn through the current matrix. Device bounds were only right
+    // with an identity matrix, so a gradient drawn into a translated context (every tile but the first) missed it.
+    SkRect bounds = canvas->canvas->getLocalClipBounds();
+    canvas->canvas->save();
+    if (!after) {
+        SkPathBuilder pb;
+        pb.addOval(SkRect::MakeXYWH(x1 - r1, y1 - r1, r1 * 2, r1 * 2));
+        canvas->canvas->clipPath(pb.detach(), SkClipOp::kIntersect, canvas->current_state().antialias);
+    }
+    (void)before;  // Before-start extension is empty for the concentric case used by upstream (r0 = 0).
+    draw_gradient_shader(canvas, shader, bounds, options, before, after, true);
+    canvas->canvas->restore();
+#else
+    (void)canvas; (void)x0; (void)y0; (void)r0; (void)x1; (void)y1; (void)r1; (void)colors; (void)locations; (void)count; (void)options;
+#endif
+}
+
+
+// ── Layer effects: the Skia tier ───────────────────────────────────────────────────────────────────────────────
+//
+// The passes use Skia image filters over float (RGBA F32) surfaces, so nothing is rounded to 8 bits until the end:
+// dilate/erode for the stroke's reach, a bilinear translate for the shadow's offset, a clamped Gaussian for its blur,
+// arithmetic blends for the ring, and color-matrix filters for the inner effects' strength and tint. Source-atop
+// recolors the source pixels without changing their alpha before source-over places them over the outer effects.
+// The passes follow upstream's Metal compose order. Approximate where
+// Skia's kernels differ from the reference C++ tier (Gaussian support and edge blending of the shift), by a few levels.
+
+#if defined(COMPOSITOR_HAS_SKIA)
+namespace {
+
+sk_sp<SkImage> effects_apply(const sk_sp<SkImage> &input, sk_sp<SkImageFilter> filter, int w, int h) {
+    sk_sp<SkSurface> surface = SkSurfaces::Raster(SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType));
+    if (!surface) return nullptr;
+    surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+    SkPaint paint;
+    paint.setImageFilter(std::move(filter));
+    surface->getCanvas()->drawImage(input, 0, 0, SkSamplingOptions(), &paint);
+    return surface->makeImageSnapshot();
+}
+
+// Coverage held in alpha, tinted: color * coverage * opacity, premultiplied.
+sk_sp<SkImageFilter> effects_tint(const CompositorEffectColor &c) {
+    SkColorMatrix m;
+    m.setRowMajor(std::array<float, 20>{0, 0, 0, 0, c.r,
+                                        0, 0, 0, 0, c.g,
+                                        0, 0, 0, 0, c.b,
+                                        0, 0, 0, c.opacity, 0}.data());
+    return SkImageFilters::ColorFilter(SkColorFilters::Matrix(m), nullptr);
+}
+
+// Inner effects recolor by 1 - moved, before the layer's own alpha is applied by source-atop.
+sk_sp<SkImageFilter> effects_inside() {
+    SkColorMatrix m;
+    m.setRowMajor(std::array<float, 20>{0, 0, 0, 0, 0,
+                                        0, 0, 0, 0, 0,
+                                        0, 0, 0, 0, 0,
+                                        0, 0, 0, -1, 1}.data());
+    return SkImageFilters::ColorFilter(SkColorFilters::Matrix(m), nullptr);
+}
+
+sk_sp<SkImageFilter> effects_blur(float sigma) { return SkImageFilters::Blur(sigma, sigma, SkTileMode::kClamp, nullptr); }
+sk_sp<SkImageFilter> effects_shift(float dx, float dy) {
+    return SkImageFilters::MatrixTransform(SkMatrix::Translate(dx, dy), SkSamplingOptions(SkFilterMode::kLinear), nullptr);
+}
+
+}  // namespace
+#endif
+
+int compositor_skia_effects_render(const CompositorEffectsParams *p, const uint8_t *pixels, uint8_t *out) {
+    if (!p || !pixels || !out || p->width == 0 || p->height == 0) return -1;
+#if defined(COMPOSITOR_HAS_SKIA)
+    const int w = static_cast<int>(p->width), h = static_cast<int>(p->height);
+    if (static_cast<size_t>(w) * h > 100000000) return -1;
+    try {
+        SkPixmap sourcePixmap(SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType), pixels, static_cast<size_t>(w) * 4);
+        sk_sp<SkImage> source = SkImages::RasterFromPixmapCopy(sourcePixmap);
+        if (!source) return -2;
+        // The shape's own coverage, in alpha.
+        SkColorMatrix alphaOnly;
+        alphaOnly.setRowMajor(std::array<float, 20>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0}.data());
+        sk_sp<SkImage> shape = effects_apply(source, SkImageFilters::ColorFilter(SkColorFilters::Matrix(alphaOnly), nullptr), w, h);
+        if (!shape) return -2;
+
+        sk_sp<SkSurface> result = SkSurfaces::Raster(SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType));
+        if (!result) return -2;
+        SkCanvas *canvas = result->getCanvas();
+        canvas->clear(SK_ColorTRANSPARENT);
+
+        sk_sp<SkImage> shadow, ring, inner, innerGlow, outer;
+        if (p->has_stroke) {
+            const float reach = static_cast<float>(std::max(1u, p->stroke_reach));
+            sk_sp<SkImage> moved = effects_apply(shape, p->stroke_inside ? SkImageFilters::Erode(reach, reach, nullptr)
+                                                                          : SkImageFilters::Dilate(reach, reach, nullptr), w, h);
+            if (!moved) return -2;
+            // outside: moved - shape; inside: shape - moved (both clamped to 0...1 by the blend).
+            sk_sp<SkImage> difference = effects_apply(shape,
+                p->stroke_inside ? SkImageFilters::Arithmetic(0, 1, -1, 0, false, SkImageFilters::Image(moved, SkSamplingOptions()), SkImageFilters::Image(shape, SkSamplingOptions()))
+                                 : SkImageFilters::Arithmetic(0, 1, -1, 0, false, SkImageFilters::Image(shape, SkSamplingOptions()), SkImageFilters::Image(moved, SkSamplingOptions())), w, h);
+            ring = difference ? effects_apply(difference, effects_tint(p->stroke), w, h) : nullptr;
+            if (!ring) return -2;
+        }
+        if (p->has_shadow) {
+            sk_sp<SkImage> moved = effects_apply(shape, effects_shift(p->shadow_dx, p->shadow_dy), w, h);
+            if (moved && p->shadow_sigma > 0.01f) moved = effects_apply(moved, effects_blur(p->shadow_sigma), w, h);
+            shadow = moved ? effects_apply(moved, effects_tint(p->shadow), w, h) : nullptr;
+            if (!shadow) return -2;
+        }
+        if (p->has_inner) {
+            sk_sp<SkImage> moved = effects_apply(shape, effects_shift(p->inner_dx, p->inner_dy), w, h);
+            if (moved && p->inner_sigma > 0.01f) moved = effects_apply(moved, effects_blur(p->inner_sigma), w, h);
+            sk_sp<SkImage> inside = moved ? effects_apply(moved, effects_inside(), w, h) : nullptr;
+            inner = inside ? effects_apply(inside, effects_tint(p->inner), w, h) : nullptr;
+            if (!inner) return -2;
+        }
+        if (p->has_inner_glow) {
+            sk_sp<SkImage> moved = p->inner_glow_sigma > 0.01f ? effects_apply(shape, effects_blur(p->inner_glow_sigma), w, h) : shape;
+            sk_sp<SkImage> inside = moved ? effects_apply(moved, effects_inside(), w, h) : nullptr;
+            innerGlow = inside ? effects_apply(inside, effects_tint(p->inner_glow), w, h) : nullptr;
+            if (!innerGlow) return -2;
+        }
+        if (p->has_outer) {
+            // The shape softened omnidirectionally (no offset), with the shape's own interior excluded: moved * (1 - shape).
+            sk_sp<SkImage> moved = p->outer_sigma > 0.01f ? effects_apply(shape, effects_blur(p->outer_sigma), w, h) : shape;
+            sk_sp<SkImage> excluded = moved ? effects_apply(shape,
+                SkImageFilters::Arithmetic(-1, 1, 0, 0, false, SkImageFilters::Image(shape, SkSamplingOptions()), SkImageFilters::Image(moved, SkSamplingOptions())), w, h) : nullptr;
+            outer = excluded ? effects_apply(excluded, effects_tint(p->outer), w, h) : nullptr;
+            if (!outer) return -2;
+        }
+        // Recolor only the layer's own pixels, preserving their alpha and the colors of the effects beneath them.
+        if (p->has_overlay || innerGlow || inner) {
+            sk_sp<SkSurface> recolored = SkSurfaces::Raster(SkImageInfo::Make(w, h, kRGBA_F32_SkColorType, kPremul_SkAlphaType));
+            if (!recolored) return -2;
+            SkCanvas *sourceCanvas = recolored->getCanvas();
+            sourceCanvas->clear(SK_ColorTRANSPARENT);
+            sourceCanvas->drawImage(source, 0, 0);
+            if (p->has_overlay) sourceCanvas->drawColor(SkColor4f{p->overlay.r, p->overlay.g, p->overlay.b, p->overlay.opacity}, SkBlendMode::kSrcATop);
+            SkPaint recolor;
+            recolor.setBlendMode(SkBlendMode::kSrcATop);
+            if (innerGlow) sourceCanvas->drawImage(innerGlow, 0, 0, SkSamplingOptions(), &recolor);
+            if (inner) sourceCanvas->drawImage(inner, 0, 0, SkSamplingOptions(), &recolor);
+            source = recolored->makeImageSnapshot();
+            if (!source) return -2;
+        }
+        // Shadow behind, outer glow and outside stroke over it, the recolored layer's pixels over that, then an
+        // inside stroke on top (upstream's effects_compose order).
+        if (shadow) canvas->drawImage(shadow, 0, 0);
+        if (outer) canvas->drawImage(outer, 0, 0);
+        if (ring && !p->stroke_inside) canvas->drawImage(ring, 0, 0);
+        canvas->drawImage(source, 0, 0);
+        if (ring && p->stroke_inside) canvas->drawImage(ring, 0, 0);
+
+        SkPixmap target(SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType), out, static_cast<size_t>(w) * 4);
+        return result->readPixels(target, 0, 0) ? 0 : -2;
+    } catch (...) {
+        return -2;
+    }
+#else
+    return -2;
+#endif
+}

@@ -6,7 +6,15 @@ The goal was to create a full-featured image editor that is completely free and 
 
 Because it’s open source, you can download the Xcode project and add, remove, or modify any feature to fit your workflow.
 
+**Jump to:** [Features](#features) · [macOS build](#requirements) · [**Linux port**](#linux-port) · [Releasing](#releasing) · [License](#license)
+
 ## Installation
+
+### Linux alpha (Flatpak)
+
+Install the x86_64 alpha from the [Linux download page](https://chiddekel.github.io/Compositor/).
+The installed app's **Check for Updates…** menu updates it through Flatpak.
+See [Flatpak releases](docs/flatpak-releases.md) for installation, updating, and publishing.
 
 ### Download
 Get Compositor from [robbietilton.com/compositor](https://robbietilton.com/compositor), or download the latest release directly from [GitHub Releases](https://github.com/robbietilton/Compositor/releases/latest).
@@ -105,6 +113,104 @@ More are listed in [#23 (Windows)](https://github.com/robbietilton/Compositor/is
 ## Building
 
 Open `Compositor.xcodeproj` and run the **Compositor** scheme.
+
+## Linux Port
+
+Runs on GNU/Linux via Flatpak. Upstream Swift/SwiftUI compiles unmodified against a Linux
+compat layer (AppKit/CoreGraphics/SwiftUI) — same look and behavior as macOS, custom title
+bar included.
+
+### Requirements
+
+```
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user flathub \
+    org.kde.Platform//6.11 org.kde.Sdk//6.11 \
+    org.freedesktop.Sdk.Extension.swift6//26.08
+```
+
+Version must match the manifest's `runtime-version` — mismatched SDK/runtime fails to link.
+
+### Run it
+
+```
+flatpak-builder --user --install --force-clean build-dir com.compositor.Client.yaml
+flatpak run com.compositor.Client
+```
+
+No native title bar: drag the header to move the window, double-click to maximize.
+
+Headless: `QT_QPA_PLATFORM=offscreen flatpak run com.compositor.Client --help`
+
+Optional Nautilus/Dolphin project previews and the independent macOS/Linux render
+comparison are described in [render parity and desktop previews](docs/render-parity-and-desktop-previews.md).
+
+### Dev loop
+
+[`scripts/run-compositor.sh`](scripts/run-compositor.sh) — builds from the working tree, runs from `.build/`, seconds not minutes:
+
+```
+./scripts/run-compositor.sh              # build + run
+./scripts/run-compositor.sh --offscreen  # headless
+```
+
+Smoke tests (add `--offscreen`):
+
+| Flag | Checks |
+|---|---|
+| `--session-smoke` | new/paint/render/undo/redo/close |
+| `--dialog-smoke` | resize, undo, autosave, save/reopen |
+| `--io-smoke` | image codecs |
+| `--layers-smoke` | layers dock |
+| `--brush-smoke` | brush + blend + paint |
+
+<details>
+<summary>Manual build (what the script automates)</summary>
+
+```
+flatpak-builder --run build-dir com.compositor.Client.yaml bash
+# inside the sandbox:
+export PATH=/usr/lib/sdk/swift6/bin:$PATH
+swift build -c release --static-swift-stdlib
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/app \
+    -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+    -DOpenCV_DIR=/app/lib/cmake/opencv4 \
+    -DCompositorCore_SWIFT_STATIC_LIB=$PWD/.build/release/libCompositorCore.a
+cmake --build build
+QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+```
+
+Linux dependency source archives, including Skia's required dependencies and GN,
+are committed with pinned checksums and license notices. See
+[Vendored Linux dependencies](docs/vendored-linux-dependencies.md) for offline
+verification, build instructions and the update procedure.
+
+</details>
+
+### Docs
+
+| | |
+|---|---|
+| [`docs/platform-abstraction.md`](docs/platform-abstraction.md) | macOS API → Linux/Qt mapping |
+| [`docs/linux-port-file-map.md`](docs/linux-port-file-map.md) | which files are reused vs. replaced |
+| [`docs/project-format.md`](docs/project-format.md) | the `.comp` file format |
+| [`linux/upstream-parity.json`](linux/upstream-parity.json) | every UI override, and why |
+| [`linux/UPSTREAM_TEST_EXCLUSIONS.md`](linux/UPSTREAM_TEST_EXCLUSIONS.md) | skipped upstream tests, and why |
+| [`docs/upstream-test-baseline.md`](docs/upstream-test-baseline.md) | the correct `swift test` invocation (env vars, flags) and current pass count |
+
+**Contributing:** extend `Sources/Compat/` before adding to `Sources/Overrides/`. Overrides are
+a last resort for the handful of cases that need the Objective-C runtime or missing AppKit —
+same public API either way.
+
+### Known issues
+
+- **Correction to an earlier version of this note**: running `AdjustmentLayerTests`/`ProjectTests` without
+  `COMPOSITOR_SKIA_BRIDGE`/`COMPOSITOR_IMAGEIO_BACKEND` set produces blank pixels (every `CGContext` silently
+  no-ops when no Skia bridge resolves — see `docs/upstream-test-baseline.md`), which was previously misdiagnosed
+  here as a native pixel-kernel/Accelerate-vImage portability bug. It isn't — it's a missing test prerequisite.
+  Run tests the way `docs/upstream-test-baseline.md` documents and this doesn't happen (260+/260+ passing).
+- InnerGlow renders on every effects tier (Vulkan, OpenCV, C++), matching upstream's Metal passes; the prebuilt
+  opt-in Skia tier (`COMPOSITOR_EFFECTS=skia`) does not draw it.
 
 ## Releasing
 

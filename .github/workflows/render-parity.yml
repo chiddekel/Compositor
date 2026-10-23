@@ -1,0 +1,166 @@
+name: macOS and Linux render parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [GNU_Linux]
+    paths:
+      - 'Tests/RenderParity/**'
+      - 'tests/test_native_file_panels.cpp'
+      - 'scripts/*parity*'
+      - 'Sources/**'
+      - 'backends/**'
+      - 'Compositor/**'
+      - 'Package.swift'
+      - '.github/workflows/render-parity.yml'
+  pull_request:
+    branches: [GNU_Linux]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/parity-requirements.txt
+      - run: python scripts/parity-inputs.py .build/parity-inputs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parity-inputs
+          path: .build/parity-inputs
+          if-no-files-found: error
+
+  mac:
+    needs: inputs
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve the matching upstream revision
+        run: |
+          git remote add upstream https://github.com/robbietilton/Compositor.git
+          git fetch upstream main
+          python3 scripts/check-upstream-content.py
+          xcodebuild -version
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity-inputs
+          path: .build/parity-inputs
+      - name: Render with upstream macOS APIs
+        # Reject incompatible fixtures before spending time compiling the application oracle.
+        # The preflight uses the same native CIRAWFilter and linear-light context as upstream.
+        # It does not substitute another decoder for the Mac reference.
+        run: |
+          swift scripts/check-parity-raw-macos.swift .build/parity-inputs/sensor-*.dng
+          python3 scripts/render-parity.py --inputs .build/parity-inputs --output .build/parity-mac
+      - name: Preserve macOS XCTest failure details
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-mac-test-results
+          path: .build/parity-mac.test-results.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-mac
+          path: .build/parity-mac
+          if-no-files-found: error
+
+  linux:
+    needs: inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare upstream and Flatpak dependencies
+        run: |
+          git remote add upstream https://github.com/robbietilton/Compositor.git
+          git fetch upstream main
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --assumeyes --install-deps-from=flathub --install-deps-only build-parity-sdk com.compositor.Client.yaml
+      - uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: parity-native-${{ hashFiles('com.compositor.Client.yaml') }}
+      - name: Build native dependencies
+        run: flatpak-builder --user --force-clean --disable-rofiles-fuse --jobs="$(nproc)" --stop-at=compositor build-parity-sdk com.compositor.Client.yaml
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity-inputs
+          path: .build/parity-inputs
+      - name: Full Linux contract
+        run: flatpak-builder --run --filesystem="$PWD" build-parity-sdk com.compositor.Client.yaml bash "$PWD/scripts/linux-contract-tests.sh"
+      - name: Project launch from a desktop entry (APP-12)
+        run: |
+          flatpak-builder --run --filesystem="$PWD" build-parity-sdk com.compositor.Client.yaml \
+            env QT_QPA_PLATFORM=offscreen COMPOSITOR_SKIA_BRIDGE="$PWD/.build/linux-contract-native/libCompositorSkiaBridge.so" \
+            COMPOSITOR_IMAGEIO_BACKEND="$PWD/.build/linux-contract-native/libCompositorQtImageIO.so" \
+            python3 tests/test_project_launch.py .build/x86_64-unknown-linux-gnu/release/CompositorHostBootstrap --evidence .build/parity-launch
+      - name: Render the CPU and Vulkan backends
+        run: |
+          for backend in cpu vulkan; do
+            flatpak-builder --run --filesystem="$PWD" build-parity-sdk com.compositor.Client.yaml \
+              env PATH=/usr/lib/sdk/swift6/bin:/usr/bin:/bin QT_QPA_PLATFORM=offscreen \
+              COMPOSITOR_COREIMAGE_BACKEND="$backend" COMPOSITOR_FORCE_GPU_CANVAS=0 \
+              COMPOSITOR_SKIA_BRIDGE="$PWD/.build/linux-contract-native/libCompositorSkiaBridge.so" \
+              COMPOSITOR_IMAGEIO_BACKEND="$PWD/.build/linux-contract-native/libCompositorQtImageIO.so" \
+              python3 scripts/render-parity.py --scratch .build --inputs .build/parity-inputs --output ".build/parity-linux-$backend"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-linux
+          path: .build/parity-linux-*
+          if-no-files-found: error
+
+  compare:
+    needs: [mac, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/parity-requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity-mac
+          path: .build/parity-mac
+      - uses: actions/download-artifact@v4
+        with:
+          name: parity-linux
+          path: .build
+      - run: python tests/test_render_parity.py
+      - name: Compare both Linux paths with the Mac
+        run: |
+          failures=0
+          for backend in cpu vulkan; do
+            python scripts/compare-render-parity.py .build/parity-mac ".build/parity-linux-$backend" \
+              --output ".build/parity-diff-$backend" || failures=$((failures + 1))
+          done
+          test "$failures" = 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-differences
+          path: .build/parity-diff-*
+          if-no-files-found: error
