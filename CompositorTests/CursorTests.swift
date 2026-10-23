@@ -12,6 +12,46 @@ struct CursorTests {
                            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
     }
 
+    @Test func emptyCanvasLeavesTheScrubberCursorAloneAndRestoresTrackingForADocument() {
+        let session = EditorSession()
+        let view = CanvasView(session: session)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = view
+        let pointer = mouse(at: NSPoint(x: 200, y: 150), in: window)
+        defer { NSCursor.arrow.set() }
+
+        func hasCanvasTracking() -> Bool {
+            view.trackingAreas.contains { $0.owner === view && $0.options.contains(.mouseEnteredAndExited) }
+        }
+        func checkEmptyCanvas() {
+            view.synchronizeDisplay()
+            #expect(!hasCanvasTracking())
+            NSCursor.resizeLeftRight.set()
+            view.resetCursorRects()
+            view.mouseMoved(with: pointer)
+            view.cursorUpdate(with: pointer)
+            view.mouseExited(with: pointer)
+            let drag = NSEvent.mouseEvent(with: .leftMouseDragged, location: NSPoint(x: 200, y: 150),
+                                          modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                                          context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            let release = NSEvent.mouseEvent(with: .leftMouseUp, location: NSPoint(x: -20, y: 150),
+                                             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                                             context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+            view.mouseDragged(with: drag)
+            view.mouseUp(with: release)
+            #expect(NSCursor.current === NSCursor.resizeLeftRight,
+                    "Document-close callbacks must not replace a form control's cursor")
+        }
+
+        checkEmptyCanvas()
+        session.createDocument(width: 400, height: 300)
+        view.synchronizeDisplay()
+        #expect(hasCanvasTracking())
+        session.clearProject()
+        checkEmptyCanvas()
+    }
+
     @Test func leavingTheCanvasRestoresTheArrowWithEveryTool() {
         let session = EditorSession()
         session.createDocument(width: 400, height: 300)
@@ -46,6 +86,45 @@ struct CursorTests {
         #expect(NSCursor.current === NSCursor.closedHand)
         view.mouseUp(with: click(.leftMouseUp, at: NSPoint(x: -20, y: 150)))
         #expect(NSCursor.current === NSCursor.arrow)
+    }
+
+    @Test(arguments: [false, true])
+    func zoomToolCursorFollowsDragDirectionAndRestoresOnRelease(_ optionOnRelease: Bool) throws {
+        let session = EditorSession()
+        session.createDocument(width: 400, height: 300)
+        session.selectTool(.zoom)
+        let view = CanvasView(session: session)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = view
+        defer { window.orderOut(nil) }
+        func event(_ type: NSEvent.EventType, x: CGFloat, option: Bool = false) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: 150),
+                modifierFlags: option ? .option : [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        view.mouseDown(with: try event(.leftMouseDown, x: 200))
+        let plus = NSCursor.current
+        let initial = session.viewport.zoom
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 300))
+        #expect(abs(session.viewport.zoom - initial * 2) < 0.01)
+        #expect(NSCursor.current === plus)
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 280))
+        let minus = NSCursor.current
+        #expect(minus !== plus, "reversing switches before crossing the starting point")
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 280))
+        #expect(NSCursor.current === minus)
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 290))
+        #expect(NSCursor.current === plus)
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 270))
+        #expect(NSCursor.current === minus)
+        view.mouseUp(with: try event(.leftMouseUp, x: 270, option: optionOnRelease))
+        #expect(NSCursor.current === (optionOnRelease ? minus : plus))
+        // A click still doubles or halves zoom according to Option.
+        let beforeClick = session.viewport.zoom
+        view.mouseDown(with: try event(.leftMouseDown, x: 200, option: optionOnRelease))
+        view.mouseUp(with: try event(.leftMouseUp, x: 200, option: optionOnRelease))
+        #expect(abs(session.viewport.zoom - beforeClick * (optionOnRelease ? 0.5 : 2)) < 0.01)
     }
 
     @Test func theLayerListShowsTheArrowUnlessAModifierCursorApplies() throws {

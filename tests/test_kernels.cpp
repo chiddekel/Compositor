@@ -12,7 +12,7 @@
 extern "C" {
 #include "AdjustPixels.h"
 #include "BrushPixels.h"
-#include "ContentFill.h"
+#include "PatchPixels.h"
 #include "HealPixels.h"
 #include "LensPixels.h"
 #include "LevelsPixels.h"
@@ -127,6 +127,34 @@ static void test_layer_alpha_roundtrip() {
 }
 
 // ---- ENG-17 death test: a padded RGBA stride aborts at kernel entry. ----
+static void test_camera_raw_padded_rows() {
+    float table[24];
+    for (int r = 0; r < 2; ++r) for (int g = 0; g < 2; ++g) for (int b = 0; b < 2; ++b) {
+        const int i = ((r * 2 + g) * 2 + b) * 3;
+        table[i] = float(r); table[i + 1] = float(g); table[i + 2] = float(b);
+    }
+    uint8_t source[24] = {100, 40, 20, 128, 0, 50, 90, 255, 173, 173, 173, 173,
+                          20, 10, 30, 64, 240, 100, 80, 255, 173, 173, 173, 173};
+    uint8_t result[24]; std::memcpy(result, source, sizeof(source));
+    adjust_camera_raw(result, 2, 2, 12, table, 2, 0);
+    CHECK(std::memcmp(result, source, sizeof(source)) == 0, "Camera Raw lookup honors padded rows");
+    for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) result[y * 12 + x * 4] = 0;
+    const uint8_t uncertain[4] = {1, 1, 1, 1};
+    camera_raw_repair_lookup(result, source, uncertain, 2, 2, 12, table, 2);
+    CHECK(std::memcmp(result, source, sizeof(source)) == 0, "Camera Raw rounding repair honors padded rows");
+    for (int repair = 0; repair < 2; ++repair) {
+        const pid_t child = fork();
+        if (child == 0) {
+            if (repair) camera_raw_repair_lookup(result, source, uncertain, 2, 2, 4, table, 2);
+            else adjust_camera_raw(result, 2, 2, 4, table, 2, 0);
+            _Exit(0);
+        }
+        int status = 0; waitpid(child, &status, 0);
+        CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+              "Camera Raw padded-row support still refuses undersized rows");
+    }
+}
+
 static void test_canonical_assert_fires() {
     pid_t pid = fork();
     if (pid == 0) {
@@ -150,6 +178,7 @@ int main() {
     test_heal_coverage_bounds();
     test_clamp_premultiplied();
     test_layer_alpha_roundtrip();
+    test_camera_raw_padded_rows();
     test_canonical_assert_fires();
 
     if (g_failures == 0) {

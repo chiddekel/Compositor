@@ -46,6 +46,12 @@ typedef enum {
  */
 int compositor_skia_available(void);
 
+/* Layer effects (stroke, drop shadow, colour overlay, inner shadow) with Skia image filters: the Skia tier of the
+ * effects chain. `pixels` and `out` are width*height*4 bytes (premultiplied RGBA8), disjoint. Returns 0 on success,
+ * -1 invalid input, -2 when Skia is not built in. See backends/effects/include/CompositorEffectsBackend.h. */
+struct CompositorEffectsParams;
+int compositor_skia_effects_render(const struct CompositorEffectsParams *params, const uint8_t *pixels, uint8_t *out);
+
 /*
  * Create a render device. Try Vulkan first (plan §6 startup). On any
  * failure (no device, no queue family, bad ICD, device lost, no /dev/dri),
@@ -89,6 +95,18 @@ int compositor_render_rgba(CompRenderer *renderer,
                            size_t width, size_t height);
 
 /*
+ * Like compositor_render_rgba, but composites with a Core Graphics blend mode
+ * (CGBlendMode raw value: Soft Light=8, Multiply=1, Color=14, …). Used so colour
+ * blend tools and layer modes ride the Vulkan path instead of silent SrcOver.
+ * Unsupported modes on a compute-only build return -2 (caller falls back to Skia CPU).
+ */
+int compositor_render_rgba_blend(CompRenderer *renderer,
+                                 const uint8_t *src_rgba,
+                                 uint8_t *dst_rgba,
+                                 size_t width, size_t height,
+                                 int cg_blend_mode);
+
+/*
  * Create a raster surface of the given size and fill it with the src pixels,
  * returning the result in dst. Equivalent to compositor_render_rgba for the
  * Raster backend; for Vulkan it exercises the GPU upload + readback path.
@@ -108,20 +126,27 @@ int compositor_skia_raster_surface(const uint8_t *src_rgba,
 int compositor_vulkan_enumerate_devices(void);
 
 /*
+ * 1 when CompRenderer can run Vulkan compute (or Skia Ganesh) for compositor_render_rgba;
+ * 0 when only Raster is available. Used by Swift CanvasBackends / GPUCanvasRenderer.
+ */
+int compositor_vulkan_gpu_available(void);
+
+/*
  * Register a render function with the Swift CoreGraphicsCompat shim. The
  * Swift CGContextCompat draws route through this function when set; when
  * NULL (or on non-zero return), draws fall back to the pure-Swift
  * LayerRenderer (plan §6 failsafe). The host calls this once at startup
  * after creating a CompRenderer.
  *
- * fn signature matches compositor_render_rgba minus the renderer handle:
- *   fn(src, dst, width, height) -> int32_t
+ * fn signature matches compositor_render_rgba_blend minus the renderer handle:
+ *   fn(src, dst, width, height, cg_blend_mode) -> int32_t
  * The C++ side wraps a CompRenderer* into this signature via a static
  * trampoline (one active renderer at a time; the factory replaces it on
- * device loss).
+ * device loss). Colour blend modes (Soft Light, Multiply, …) pass through
+ * cg_blend_mode so tools stay on Vulkan when Ganesh is available.
  */
 typedef int32_t (*CompRenderFn)(const uint8_t *src, uint8_t *dst,
-                                size_t width, size_t height);
+                                size_t width, size_t height, int32_t cg_blend_mode);
 void compositor_compat_set_render_fn(CompRenderFn fn);
 
 /* ── Stage 4/5: Canvas C ABI (CoreGraphics-shaped Skia Bridge) ──────────── */
@@ -131,6 +156,10 @@ typedef struct CompPath CompPath;
 
 /* Canvas Lifecycle */
 CompCanvas *compositor_canvas_create(uint8_t *pixels, size_t width, size_t height, size_t stride);
+/* Pixel formats: 0 = RGBA8888 premultiplied, 1 = 8-bit gray (opaque, one byte per pixel), 2 = RGBA 16-bit unsigned
+   premultiplied (native-endian, 8 bytes per pixel), 3 = RGBA half float premultiplied (unclamped, 8 bytes per pixel); 4 = RGBA 32-bit float premultiplied (16 bytes per
+   pixel, source images only). */
+CompCanvas *compositor_canvas_create_ex(uint8_t *pixels, size_t width, size_t height, size_t stride, int format);
 void compositor_canvas_destroy(CompCanvas *canvas);
 
 /* State Management */
@@ -159,6 +188,8 @@ void compositor_canvas_set_antialias(CompCanvas *canvas, int antialias);
 void compositor_canvas_fill_rect(CompCanvas *canvas, float x, float y, float w, float h, float r, float g, float b, float a);
 void compositor_canvas_clear(CompCanvas *canvas, float x, float y, float w, float h);
 void compositor_canvas_draw_image_rect(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality);
+/* Same, with the source pixel format (codes as compositor_canvas_create_ex; 1 = 8-bit gray, drawn as opaque gray). */
+void compositor_canvas_draw_image_rect_ex(CompCanvas *canvas, const uint8_t *src_pixels, size_t src_w, size_t src_h, size_t src_stride, int src_format, float dx, float dy, float dw, float dh, float opacity, int cg_blend_mode, int cg_sampling_quality);
 void compositor_canvas_begin_transparency_layer(CompCanvas *canvas, float opacity);
 void compositor_canvas_end_transparency_layer(CompCanvas *canvas);
 
@@ -171,6 +202,42 @@ void compositor_path_add_rect(CompPath *path, float x, float y, float w, float h
 void compositor_path_add_ellipse(CompPath *path, float cx, float cy, float rx, float ry);
 void compositor_path_close(CompPath *path);
 void compositor_path_reset(CompPath *path);
+
+/* CoreGraphics path surface (Apple CGPath/CGContext compat). Curves, rounded rects and copies. */
+void compositor_path_quad_to(CompPath *path, float cx, float cy, float x, float y);
+void compositor_path_cubic_to(CompPath *path, float c1x, float c1y, float c2x, float c2y, float x, float y);
+void compositor_path_add_round_rect(CompPath *path, float x, float y, float w, float h, float rx, float ry);
+CompPath *compositor_path_copy(const CompPath *path);
+
+/* Boolean operations (Skia PathOps): op 0 = difference (a - b), 1 = intersect, 2 = union, 3 = xor.
+ * even_odd_a/b select each operand's fill rule. Returns a new path, or NULL if the operation fails. */
+CompPath *compositor_path_op(const CompPath *a, const CompPath *b, int op, int even_odd_a, int even_odd_b);
+
+/* Stroked outline as a fillable path. cap: 0 butt, 1 round, 2 square. join: 0 miter, 1 round, 2 bevel. */
+CompPath *compositor_path_stroke(const CompPath *path, float width, int cap, int join, float miter_limit);
+
+/* Tight bounds of the path (out = x, y, w, h). Returns 0 when the path is empty. */
+int compositor_path_bounds(const CompPath *path, float out_rect[4]);
+
+/* Element enumeration: type 0 move (1 pt), 1 line (1 pt), 2 quad (2 pts), 3 cubic (3 pts), 4 close (0 pts).
+ * Conics are converted to quads. Returns the element count when out_types is NULL, otherwise the number of
+ * elements written; points are packed x,y in order into out_points (capacity in floats). */
+size_t compositor_path_elements(const CompPath *path, uint8_t *out_types, size_t type_capacity,
+                                float *out_points, size_t point_float_capacity, size_t *points_written);
+
+/* Painting a path on a canvas. */
+void compositor_canvas_fill_path(CompCanvas *canvas, const CompPath *path, int even_odd,
+                                 float r, float g, float b, float a);
+void compositor_canvas_stroke_path(CompCanvas *canvas, const CompPath *path, float width, int cap, int join,
+                                   float miter_limit, float r, float g, float b, float a);
+
+/* Gradients painted through the current clip. colors are packed r,g,b,a; locations has `count` entries in 0...1.
+ * options bit0: extend before start, bit1: extend after end (CGGradientDrawingOptions). */
+void compositor_canvas_draw_linear_gradient(CompCanvas *canvas, float x0, float y0, float x1, float y1,
+                                            const float *colors, const float *locations, size_t count, int options);
+void compositor_canvas_draw_radial_gradient(CompCanvas *canvas, float x0, float y0, float r0, float x1, float y1,
+                                            float r1, const float *colors, const float *locations, size_t count,
+                                            int options);
 
 #ifdef __cplusplus
 }

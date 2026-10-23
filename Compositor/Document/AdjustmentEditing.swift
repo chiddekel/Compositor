@@ -16,7 +16,8 @@ extension EditorSession {
         for i in manifest.layers.indices where manifest.layers[i].isGroup != true && !underneath.contains(manifest.layers[i].id) {
             manifest.layers[i].isVisible = false
         }
-        let source = ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks)
+        let source = ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks,
+                                     animations: snapshot.animations)
         do {
             let raster = try await ImageExporter.shared.render(source)
             guard !Task.isCancelled, adjustmentEditingID == id, adjustmentOriginal == nil else { return }
@@ -39,14 +40,21 @@ extension EditorSession {
                 let edit = try HueSaturationEdit(layerID: layer.id, original: asset, selection: nil, transform: layer.transform)
                 edit.settings = original.resolvedHSV
                 hueSaturation = edit
-            case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance:
-                var settings = FilterSettings()
+            case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
+                 .progressiveBlur, .bloomGlow, .rgbSplit:
+                var settings = original.filterLayer.applied(to: FilterSettings())
                 settings.curves = original.curves
                 settings.exposure = original.exposure
                 settings.gradientMap = original.gradientMap
                 settings.grain = original.grain
                 settings.blackWhite = original.blackWhite
                 settings.colorBalance = original.colorBalance
+                settings.radius = original.gaussianRadius
+                settings.angle = original.resolvedMotionAngle
+                settings.distance = original.resolvedMotionDistance
+                settings.amount = original.resolvedNoiseAmount
+                settings.gaussian = original.resolvedNoiseGaussian
+                settings.monochromatic = original.resolvedNoiseMonochromatic
                 filterEdit = try FilterEdit(kind: original.kind.filterKind ?? .curves, layer: layer, selection: nil, settings: settings)
             }
             adjustmentOriginal = original
@@ -69,7 +77,8 @@ extension EditorSession {
         case .hsv:
             guard let hueSaturation else { return nil }
             value.hsvSettings = hueSaturation.settings
-        case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance:
+        case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
+             .progressiveBlur, .bloomGlow, .rgbSplit:
             guard let filterEdit else { return nil }
             switch value.kind {
             case .exposure: value.exposure = filterEdit.settings.exposure
@@ -77,6 +86,15 @@ extension EditorSession {
             case .grain: value.grain = filterEdit.settings.grain
             case .blackWhite: value.blackWhite = filterEdit.settings.blackWhite
             case .colorBalance: value.colorBalance = filterEdit.settings.colorBalance
+            case .gaussianBlur: value.gaussianRadius = filterEdit.settings.radius
+            case .motionBlur:
+                value.resolvedMotionAngle = filterEdit.settings.angle
+                value.resolvedMotionDistance = filterEdit.settings.distance
+            case .addNoise:
+                value.resolvedNoiseAmount = filterEdit.settings.amount
+                value.resolvedNoiseGaussian = filterEdit.settings.gaussian
+                value.resolvedNoiseMonochromatic = filterEdit.settings.monochromatic
+            case .progressiveBlur, .bloomGlow, .rgbSplit: value.filterLayer = FilterLayerSettings(filterEdit.settings)
             default: value.curves = filterEdit.settings.curves
             }
         }

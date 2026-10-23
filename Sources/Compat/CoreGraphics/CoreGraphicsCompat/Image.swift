@@ -1,0 +1,413 @@
+// CoreGraphicsCompat/Image.swift — CGImage, CGDataProvider, and related shims.
+//
+// Plan §3, §5: Wraps the portable raster substrate (PortableImage, PixelBuffer,
+// MaskBuffer) in a reference-typed CGImage interface matching CoreGraphics.
+
+import Foundation
+import CompositorColorManagement
+
+// MARK: - CGImageAlphaInfo
+
+public enum CGImageAlphaInfo: UInt32, Sendable {
+    case none = 0
+    case premultipliedLast = 1
+    case premultipliedFirst = 2
+    case last = 3
+    case first = 4
+    case noneSkipLast = 5
+    case noneSkipFirst = 6
+    case only = 7
+}
+
+// MARK: - CGBitmapInfo
+
+public struct CGBitmapInfo: OptionSet, Sendable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    public static let alphaInfoMask = CGBitmapInfo(rawValue: 0x1F)
+    public static let floatComponents = CGBitmapInfo(rawValue: 1 << 8)
+    public static let byteOrderMask = CGBitmapInfo(rawValue: 0x7000)
+    public static let byteOrderDefault = CGBitmapInfo(rawValue: 0 << 12)
+    public static let byteOrder16Little = CGBitmapInfo(rawValue: 1 << 12)
+    public static let byteOrder32Little = CGBitmapInfo(rawValue: 2 << 12)
+    public static let byteOrder16Big = CGBitmapInfo(rawValue: 3 << 12)
+    public static let byteOrder32Big = CGBitmapInfo(rawValue: 4 << 12)
+}
+
+// MARK: - CGColorRenderingIntent
+
+public enum CGColorRenderingIntent: Int32, Sendable {
+    case defaultIntent = 0
+    case absoluteColorimetric = 1
+    case relativeColorimetric = 2
+    case perceptual = 3
+    case saturation = 4
+}
+
+// MARK: - CGDataProvider
+
+public struct CGDataProviderDirectCallbacks {
+    public var version: UInt32
+    public var getBytePointer: (@convention(c) (UnsafeMutableRawPointer?) -> UnsafeRawPointer?)?
+    public var releaseBytePointer: (@convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?) -> Void)?
+    public var getBytesAtPosition: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer, off_t, Int) -> Int)?
+    public var releaseInfo: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?
+
+    public init(version: UInt32 = 0,
+                getBytePointer: (@convention(c) (UnsafeMutableRawPointer?) -> UnsafeRawPointer?)? = nil,
+                releaseBytePointer: (@convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?) -> Void)? = nil,
+                getBytesAtPosition: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer, off_t, Int) -> Int)? = nil,
+                releaseInfo: (@convention(c) (UnsafeMutableRawPointer?) -> Void)? = nil) {
+        self.version = version
+        self.getBytePointer = getBytePointer
+        self.releaseBytePointer = releaseBytePointer
+        self.getBytesAtPosition = getBytesAtPosition
+        self.releaseInfo = releaseInfo
+    }
+}
+
+public final class CGDataProvider: @unchecked Sendable {
+    private let lock = NSLock()
+    private var loaded: [UInt8]?
+    private var loader: (() -> [UInt8])?
+    private let onRelease: (() -> Void)?
+
+    /// The provider's bytes. A direct provider reads its source on first use, like Core Graphics does when an
+    /// image is first drawn, and never before.
+    var bytes: [UInt8] {
+        lock.lock(); defer { lock.unlock() }
+        if let loaded { return loaded }
+        let result = loader?() ?? []
+        loaded = result; loader = nil
+        return result
+    }
+    /// The provider's contents (Apple: `CFData?`, which is `Data` here).
+    public var data: Data? { Data(bytes) }
+
+    public init(data: [UInt8]) {
+        self.loaded = data; self.onRelease = nil
+    }
+
+    /// Failable like Apple's `CGDataProvider(data:)` (which returns nil for an unusable CFData).
+    public init?(data: Data) {
+        guard !data.isEmpty else { return nil }
+        self.loaded = [UInt8](data); self.onRelease = nil
+    }
+
+    public init?(directInfo: UnsafeMutableRawPointer?, size: off_t, callbacks: UnsafePointer<CGDataProviderDirectCallbacks>) {
+        guard size > 0 else { return nil }
+        let cb = callbacks.pointee
+        let total = Int(size)
+        let info = SendableRaw(directInfo)
+        self.onRelease = { cb.releaseInfo?(info.pointer) }
+        self.loader = {
+            var buffer = [UInt8](repeating: 0, count: total)
+            if let getBytes = cb.getBytesAtPosition {
+                _ = buffer.withUnsafeMutableBytes { rawBuf in getBytes(info.pointer, rawBuf.baseAddress!, 0, total) }
+            } else if let getBytePtr = cb.getBytePointer, let src = getBytePtr(info.pointer) {
+                _ = buffer.withUnsafeMutableBytes { dst in memcpy(dst.baseAddress!, src, total) }
+                cb.releaseBytePointer?(info.pointer, src)
+            }
+            return buffer
+        }
+    }
+
+    deinit { onRelease?() }
+}
+
+private struct SendableRaw: @unchecked Sendable {
+    let pointer: UnsafeMutableRawPointer?
+    init(_ pointer: UnsafeMutableRawPointer?) { self.pointer = pointer }
+}
+
+// MARK: - CGImage
+
+public final class CGImage: @unchecked Sendable {
+    public let width: Int
+    public let height: Int
+    public let bytesPerRow: Int
+    public let bitsPerComponent: Int
+    public let bitsPerPixel: Int
+    let space: CGColorSpace
+    /// Optional like Apple's: a mask or unmanaged image may have none.
+    public var colorSpace: CGColorSpace? { space }
+    public let alphaInfo: CGImageAlphaInfo
+    public let bitmapInfo: CGBitmapInfo
+    private let imageLock = NSLock()
+    private var resolved: PortableImage?
+    private var deferred: (() -> PortableImage)?
+    private var regionRenderer: ((CGRect) -> PortableImage)?
+    private var regionCache: [(rect: CGRect, image: PortableImage)] = []
+    /// A CMYK image's own ink bytes (8 bits a channel, no alpha) and the intent it was made with. Its `nativeImage` is
+    /// those inks converted to sRGB through its profile, so everything that draws it sees colours.
+    private var inks: CGDataProvider?
+    /// Original unassociated samples stay available to ImageIO/vImage; drawing uses canonical premultiplied pixels.
+    private var sourceProvider: CGDataProvider?
+    private let intent: CGColorRenderingIntent
+    /// Filter-backed images can supply just the source pixels visible through a drawing context's clip.
+    public var supportsRegionRendering: Bool { regionRenderer != nil }
+    /// The raster behind this image, at its own depth (8 bits, 16 bits or half floats a channel). Images built over a
+    /// direct data provider resolve it on first use.
+    public var nativeImage: PortableImage {
+        imageLock.lock(); defer { imageLock.unlock() }
+        if let resolved { return resolved }
+        let image = deferred!()
+        resolved = image; deferred = nil
+        regionCache.removeAll()
+        return image
+    }
+    private var prefetching = false
+    /// Resolves a raster supplied lazily by a data provider (a committed brush stroke's `RasterSnapshot`) on a
+    /// background queue, so the first draw that needs its pixels — a stroke's first full-resolution frame — finds them
+    /// ready instead of materializing them then. Filter results (rendered by region) and resolved images are left alone.
+    public func prefetch() {
+        imageLock.lock()
+        let pending = resolved == nil && deferred != nil && regionRenderer == nil && !prefetching
+        if pending { prefetching = true }
+        imageLock.unlock()
+        guard pending else { return }
+        DispatchQueue.global(qos: .utility).async { _ = self.nativeImage }
+    }
+    private var eightBitView: PortableImage?
+    /// The raster at 8 bits a channel, as the compat's 8-bit paths take it: `nativeImage` itself for an 8-bit image, a
+    /// rounded copy (kept) for a 16-bit or half-float one.
+    public var portableImage: PortableImage {
+        let native = nativeImage
+        guard native.depth != .uint8 else { return native }
+        imageLock.lock(); defer { imageLock.unlock() }
+        if let eightBitView { return eightBitView }
+        let view = native.eightBit
+        eightBitView = view
+        return view
+    }
+
+    public var bytes: [UInt8] { portableImage.bytes }
+    var drawingIsPremultiplied: Bool {
+        alphaInfo == .premultipliedLast || alphaInfo == .premultipliedFirst ||
+            (bitsPerComponent == 8 && bitsPerPixel == 32 &&
+                [.last, .first, .noneSkipFirst, .noneSkipLast].contains(alphaInfo))
+    }
+    /// One-byte-per-pixel gray plane (the compat's internal notion of a mask raster).
+    public var isGrayPlane: Bool { space.model == .monochrome || alphaInfo == .only }
+    /// Apple's meaning: a stencil image mask. An ordinary gray image is not one.
+    public var isMask: Bool { alphaInfo == .only }
+
+    public init(_ portableImage: PortableImage) {
+        self.width = portableImage.width
+        self.height = portableImage.height
+        self.bytesPerRow = portableImage.bytesPerRow
+        let depth = portableImage.depth
+        self.bitsPerComponent = depth == .uint8 ? 8 : depth == .float32 ? 32 : 16
+        self.bitsPerPixel = portableImage.kind == .rgba ? bitsPerComponent * 4 : 8
+        self.space = portableImage.kind == .mask ? .deviceGraySpace
+            : depth == .half ? .extendedSRGBSpace : depth == .float32 ? .extendedLinearSRGBSpace : .srgbSpace
+        self.alphaInfo = portableImage.kind == .rgba ? .premultipliedLast : .none
+        // As Apple's deep bitmaps: little-endian 16- or 32-bit components, floats for half and 32-bit.
+        self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue
+            | (depth == .uint16 || depth == .half ? CGBitmapInfo.byteOrder16Little.rawValue : 0)
+            | (depth == .float32 ? CGBitmapInfo.byteOrder32Little.rawValue : 0)
+            | (depth == .half || depth == .float32 ? CGBitmapInfo.floatComponents.rawValue : 0))
+        self.resolved = portableImage
+        self.intent = .defaultIntent
+    }
+
+    public convenience init(_ buffer: PixelBuffer) {
+        self.init(PortableImage(buffer))
+    }
+
+    public convenience init(mask: MaskBuffer) {
+        self.init(PortableImage(mask))
+    }
+
+    /// An immutable filter result, evaluated in top-down pixel coordinates. Full byte access still
+    /// materializes the complete image; drawing and cropping reuse a bounded cache of 64 px tiles.
+    public init(width: Int, height: Int, isGray: Bool, renderRegion: @escaping (CGRect) -> PortableImage) {
+        precondition(width > 0 && height > 0)
+        self.width = width; self.height = height
+        self.bytesPerRow = width * (isGray ? 1 : 4)
+        self.bitsPerComponent = 8; self.bitsPerPixel = isGray ? 8 : 32
+        self.space = isGray ? .deviceGraySpace : .srgbSpace
+        self.alphaInfo = isGray ? .none : .premultipliedLast
+        self.bitmapInfo = CGBitmapInfo(rawValue: alphaInfo.rawValue)
+        self.regionRenderer = renderRegion
+        self.deferred = { renderRegion(CGRect(x: 0, y: 0, width: width, height: height)) }
+        self.intent = .defaultIntent
+    }
+
+    public init?(width: Int,
+                 height: Int,
+                 bitsPerComponent: Int = 8,
+                 bitsPerPixel: Int = 32,
+                 bytesPerRow: Int,
+                 space: CGColorSpace = .srgbSpace,
+                 bitmapInfo: CGBitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                 provider: CGDataProvider,
+                 decode: UnsafePointer<CGFloat>? = nil,
+                 shouldInterpolate: Bool = true,
+                 intent: CGColorRenderingIntent = .defaultIntent) {
+        guard width > 0, height > 0, bytesPerRow > 0 else { return nil }
+        self.width = width
+        self.height = height
+        self.bytesPerRow = bytesPerRow
+        self.bitsPerComponent = bitsPerComponent
+        self.bitsPerPixel = bitsPerPixel
+        self.space = space
+        self.alphaInfo = CGImageAlphaInfo(rawValue: bitmapInfo.rawValue & CGBitmapInfo.alphaInfoMask.rawValue) ?? .premultipliedLast
+        self.bitmapInfo = bitmapInfo
+        self.intent = intent
+        if space.model == .cmyk {
+            // 8-bit inks, four a pixel, as Core Graphics' CMYK bitmaps; nothing else is a CMYK layout it draws.
+            guard bitsPerComponent == 8, bitsPerPixel == 32, bytesPerRow >= width * 4, let profile = space.iccData else { return nil }
+            self.inks = provider
+            let expectedBytes = height * bytesPerRow
+            self.deferred = {
+                var inkBytes = provider.bytes
+                if inkBytes.count < expectedBytes { inkBytes.append(contentsOf: repeatElement(0, count: expectedBytes - inkBytes.count)) }
+                let rgba = CGImage.colors(ofInks: inkBytes, bytesPerRow: bytesPerRow, width: width, height: height,
+                                          profile: profile, intent: intent)
+                return PortableImage(width: width, height: height, kind: .rgba, depth: .uint8, bytesPerRow: width * 4, bytes: rgba)
+            }
+            return
+        }
+
+        let kind: PortableImage.Kind = (space.model == .monochrome || bitsPerPixel == 8) ? .mask : .rgba
+        // 16 bits a component: unsigned, or half floats with `.floatComponents` (Apple's 64-bit RGBA layouts).
+        let depth: PortableImage.Depth = kind != .rgba ? .uint8
+            : bitsPerComponent == 32 && bitmapInfo.contains(.floatComponents) ? .float32
+            : bitsPerComponent == 16 ? (bitmapInfo.contains(.floatComponents) ? .half : .uint16) : .uint8
+        let expectedBytes = height * bytesPerRow
+        let rgba8 = kind == .rgba && bitsPerComponent == 8 && bitsPerPixel == 32
+        let unassociated = alphaInfo == .last || alphaInfo == .first
+        let skipsAlpha = alphaInfo == .noneSkipLast || alphaInfo == .noneSkipFirst
+        let first = alphaInfo == .first || alphaInfo == .premultipliedFirst || alphaInfo == .noneSkipFirst
+        let little = bitmapInfo.intersection(.byteOrderMask) == .byteOrder32Little
+        if rgba8 && (unassociated || skipsAlpha || first || little) { sourceProvider = provider }
+        self.deferred = {
+            var pixelBytes = provider.bytes
+            if pixelBytes.count < expectedBytes {
+                pixelBytes.append(contentsOf: repeatElement(0, count: expectedBytes - pixelBytes.count))
+            }
+            if rgba8, bytesPerRow >= width * 4, unassociated || skipsAlpha || first || little {
+                for y in 0..<height { for x in 0..<width {
+                    let at = y * bytesPerRow + x * 4
+                    if little { pixelBytes.swapAt(at, at + 3); pixelBytes.swapAt(at + 1, at + 2) }
+                    if first {
+                        let alpha = pixelBytes[at]
+                        pixelBytes[at] = pixelBytes[at + 1]; pixelBytes[at + 1] = pixelBytes[at + 2]
+                        pixelBytes[at + 2] = pixelBytes[at + 3]; pixelBytes[at + 3] = alpha
+                    }
+                    if skipsAlpha { pixelBytes[at + 3] = 255 }
+                    else if unassociated {
+                        let alpha = Int(pixelBytes[at + 3])
+                        for channel in 0..<3 { pixelBytes[at + channel] = UInt8((Int(pixelBytes[at + channel]) * alpha + 127) / 255) }
+                    }
+                } }
+            }
+            return PortableImage(width: width, height: height, kind: kind, depth: depth, bytesPerRow: bytesPerRow, bytes: pixelBytes)
+        }
+    }
+
+    public func cropping(to rect: CGRect) -> CGImage? {
+        if regionRenderer != nil { return regionImage(in: rect).map(CGImage.init) }
+        guard let cropped = nativeImage.cropping(to: rect) else { return nil }
+        return CGImage(cropped)
+    }
+
+    private func regionImage(in requested: CGRect) -> PortableImage? {
+        let rect = requested.integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !rect.isNull, !rect.isEmpty else { return nil }
+        if rect == CGRect(x: 0, y: 0, width: width, height: height) { return portableImage }
+        imageLock.lock(); defer { imageLock.unlock() }
+        if let resolved { return resolved.cropping(to: rect) }
+        guard let regionRenderer else { return nil }
+        // Small stable tiles retain work as a soft mask grows a few pixels per pointer event.
+        // A 256 px grid would turn a two-pixel interpolation margin into eight extra large tiles.
+        let tileSize = 64
+        let x0 = Int(rect.minX), y0 = Int(rect.minY), w = Int(rect.width), h = Int(rect.height)
+        let channels = isGrayPlane ? 1 : 4
+        var bytes = [UInt8](repeating: 0, count: w * h * channels)
+        for ty in (y0 / tileSize)...((y0 + h - 1) / tileSize) {
+            for tx in (x0 / tileSize)...((x0 + w - 1) / tileSize) {
+                let tile = CGRect(x: tx * tileSize, y: ty * tileSize,
+                                  width: min(tileSize, width - tx * tileSize), height: min(tileSize, height - ty * tileSize))
+                let pixels: PortableImage
+                if let index = regionCache.firstIndex(where: { $0.rect == tile }) {
+                    let cached = regionCache.remove(at: index)
+                    regionCache.append(cached)
+                    pixels = cached.image
+                } else {
+                    pixels = regionRenderer(tile)
+                    precondition(pixels.width == Int(tile.width) && pixels.height == Int(tile.height)
+                                 && pixels.bytesPerRow >= pixels.width * channels
+                                 && pixels.bytes.count >= pixels.bytesPerRow * pixels.height)
+                    regionCache.append((tile, pixels))
+                    // At most 4 MiB of RGBA pixels, irrespective of the document size.
+                    if regionCache.count > 256 { regionCache.removeFirst() }
+                }
+                let copy = rect.intersection(tile)
+                let rowBytes = Int(copy.width) * channels
+                bytes.withUnsafeMutableBufferPointer { dst in
+                    pixels.bytes.withUnsafeBufferPointer { src in
+                        for y in Int(copy.minY)..<Int(copy.maxY) {
+                            let from = (y - Int(tile.minY)) * pixels.bytesPerRow + Int(copy.minX - tile.minX) * channels
+                            let to = ((y - y0) * w + Int(copy.minX) - x0) * channels
+                            memcpy(dst.baseAddress! + to, src.baseAddress! + from, rowBytes)
+                        }
+                    }
+                }
+            }
+        }
+        return PortableImage(width: w, height: h, kind: isGrayPlane ? .mask : .rgba,
+                             bytesPerRow: w * channels, bytes: bytes)
+    }
+
+    /// The image's own bytes, at its own depth (as Apple's data provider); a CMYK image's inks.
+    public var dataProvider: CGDataProvider? {
+        if let inks { return inks }
+        if let sourceProvider { return sourceProvider }
+        return CGDataProvider(data: nativeImage.bytes as [UInt8])
+    }
+
+    /// A CMYK image's colours drawn with `intent` (a context's own), or nil for any other image.
+    func colors(intent drawing: CGColorRenderingIntent) -> PortableImage? {
+        guard let inks, let profile = space.iccData else { return nil }
+        if drawing == .defaultIntent || drawing == intent { return nativeImage }
+        let rgba = CGImage.colors(ofInks: inks.bytes, bytesPerRow: bytesPerRow, width: width, height: height,
+                                  profile: profile, intent: drawing)
+        return PortableImage(width: width, height: height, kind: .rgba, depth: .uint8, bytesPerRow: width * 4, bytes: rgba)
+    }
+
+    /// Ink bytes to opaque sRGB RGBA through `profile` (black where the profile can't be used).
+    static func colors(ofInks inks: [UInt8], bytesPerRow: Int, width: Int, height: Int, profile: Data,
+                       intent: CGColorRenderingIntent) -> [UInt8] {
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for i in stride(from: 3, to: rgba.count, by: 4) { rgba[i] = 255 }
+        profile.withUnsafeBytes { icc in
+            inks.withUnsafeBufferPointer { source in
+                rgba.withUnsafeMutableBufferPointer { target in
+                    _ = compositor_icc_cmyk_to_srgb(icc.bindMemory(to: UInt8.self).baseAddress, icc.count, intent.rawValue,
+                                                    source.baseAddress, bytesPerRow, target.baseAddress, width * 4,
+                                                    UInt32(width), UInt32(height))
+                }
+            }
+        }
+        return rgba
+    }
+
+    /// Premultiplied sRGB RGBA to ink bytes (four a pixel) through `profile`; nil when the profile can't be used.
+    static func inks(ofColors rgba: UnsafePointer<UInt8>, bytesPerRow: Int, width: Int, height: Int, profile: Data,
+                     intent: CGColorRenderingIntent) -> [UInt8]? {
+        var inks = [UInt8](repeating: 0, count: width * height * 4)
+        let status = profile.withUnsafeBytes { icc in
+            inks.withUnsafeMutableBufferPointer { target in
+                compositor_icc_srgb_to_cmyk(icc.bindMemory(to: UInt8.self).baseAddress, icc.count, intent.rawValue,
+                                            rgba, bytesPerRow, target.baseAddress, width * 4, UInt32(width), UInt32(height))
+            }
+        }
+        return status == 0 ? inks : nil
+    }
+}

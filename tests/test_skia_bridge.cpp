@@ -18,6 +18,8 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <vector>
 
 static int test_raster_surface_identity() {
     const size_t w = 4, h = 4;
@@ -156,8 +158,17 @@ static int test_vulkan_device_creation_and_device_lost_fallback() {
         compositor_renderer_close(r);
         return 1;
     }
-    // Vulkan falls back to Raster until Stage 8, so last_executed must be RASTER.
-    if (compositor_renderer_last_executed(r) != COMP_RENDERER_RASTER) {
+    // Vulkan path must leave last_executed = VULKAN (proves GPU ran, not silent raster).
+    // Raster-only machines keep last_executed = RASTER.
+    if (kind == COMP_RENDERER_VULKAN) {
+        if (compositor_renderer_last_executed(r) != COMP_RENDERER_VULKAN) {
+            std::fprintf(stderr, "expected last_executed VULKAN after GPU render, got %d\n",
+                         compositor_renderer_last_executed(r));
+            compositor_renderer_close(r);
+            return 1;
+        }
+        std::printf("Vulkan GPU composite executed (last_executed=VULKAN)\n");
+    } else if (compositor_renderer_last_executed(r) != COMP_RENDERER_RASTER) {
         std::fprintf(stderr, "expected last_executed RASTER, got %d\n",
                      compositor_renderer_last_executed(r));
         compositor_renderer_close(r);
@@ -297,6 +308,55 @@ static int test_canvas_c_abi() {
     return 0;
 }
 
+// Core Graphics' high interpolation averages covered source pixels when minifying. Period-5 stripes
+// (2 of 5 white) reduced 10x must give their 40% area mean (102), not a 4x4-kernel sample (128),
+// directly, through a scaling CTM, under rotation and with straight 50% alpha.
+static int test_high_quality_minification_area() {
+    const int S = 320, D = 32;
+    std::vector<uint8_t> src(size_t(S) * S * 4);
+    for (int y = 0; y < S; y++)
+        for (int x = 0; x < S; x++) {
+            uint8_t *p = &src[(size_t(y) * S + x) * 4];
+            p[0] = p[1] = p[2] = (x % 5 < 2) ? 255 : 0;
+            p[3] = 255;
+        }
+    std::vector<uint8_t> half = src;
+    for (size_t i = 0; i < half.size(); i++) half[i] = (i % 4 == 3) ? 128 : uint8_t(half[i] * 128 / 255);
+    int failures = 0;
+    auto run = [&](const char *name, const std::vector<uint8_t> &image, int mode, int expect, int alpha, int tolerance) {
+        std::vector<uint8_t> dst(size_t(D) * D * 4, 0);
+        CompCanvas *canvas = compositor_canvas_create(dst.data(), D, D, D * 4);
+        if (!canvas) { std::fprintf(stderr, "%s: canvas_create NULL\n", name); failures++; return; }
+        if (mode == 0) compositor_canvas_draw_image_rect(canvas, image.data(), S, S, S * 4, 0, 0, D, D, 1.0f, 0, 4);
+        if (mode == 1) {
+            compositor_canvas_scale(canvas, 0.25f, 0.25f);
+            compositor_canvas_draw_image_rect(canvas, image.data(), S, S, S * 4, 0, 0, D * 4, D * 4, 1.0f, 0, 4);
+        }
+        if (mode == 2) {
+            compositor_canvas_translate(canvas, D / 2.0f, D / 2.0f);
+            compositor_canvas_rotate(canvas, 0.3f);
+            compositor_canvas_draw_image_rect(canvas, image.data(), S, S, S * 4, -D, -D, 2 * D, 2 * D, 1.0f, 0, 4);
+        }
+        compositor_canvas_destroy(canvas);
+        // The rotated draw is checked only inside its central square, away from its antialiased edges.
+        const int lo = mode == 2 ? D / 4 : 0, hi = mode == 2 ? D - D / 4 : D;
+        for (int y = lo; y < hi; y++)
+            for (int x = lo; x < hi; x++) {
+                const uint8_t *p = &dst[(size_t(y) * D + x) * 4];
+                if (std::abs(p[0] - expect) > tolerance || std::abs(p[3] - alpha) > 1) {
+                    std::fprintf(stderr, "%s: pixel %d,%d = %d,%d expected %d,%d\n", name, x, y, p[0], p[3], expect, alpha);
+                    failures++;
+                    return;
+                }
+            }
+    };
+    run("high-minify direct", src, 0, 102, 255, 1);
+    run("high-minify scaled CTM", src, 1, 102, 255, 1);
+    run("high-minify rotated", src, 2, 102, 255, 2);
+    run("high-minify half alpha", half, 0, 51, 128, 1);
+    return failures;
+}
+
 int main() {
     if (!compositor_skia_available()) {
         std::printf("Skia unavailable, skipping bridge tests (exit 77)\n");
@@ -311,6 +371,7 @@ int main() {
     failures += test_render_rgba_partial_alpha_over_nonempty_dst();
     failures += test_vulkan_device_creation_and_device_lost_fallback();
     failures += test_canvas_c_abi();
+    failures += test_high_quality_minification_area();
     if (failures) {
         std::fprintf(stderr, "SkiaBridge smoke: %d FAILURE(S)\n", failures);
         return 1;

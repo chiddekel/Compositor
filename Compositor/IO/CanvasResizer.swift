@@ -5,7 +5,7 @@ actor CanvasResizer {
     static let shared = CanvasResizer()
 
     func resize(_ snapshot: ProjectSnapshot, to options: CanvasSizeOptions) throws -> ProjectSnapshot {
-        guard (1...30_000).contains(options.width), (1...30_000).contains(options.height),
+        guard (1...DocumentLimits.maxSide).contains(options.width), (1...DocumentLimits.maxSide).contains(options.height),
               (0...8).contains(options.anchor) else { throw ProjectError.tooLarge }
         let old = snapshot.manifest
         let offset = options.offset(fromWidth: old.width, height: old.height)
@@ -21,6 +21,7 @@ actor CanvasResizer {
             transform.origin.x += offset.x
             transform.origin.y += offset.y
             guard transform.isValid else { throw ProjectError.tooLarge }
+            let gif = layer.gif
             manifest.layers.append(ProjectLayerRecord(id: layer.id, name: layer.name,
                 isVisible: layer.isVisible, transform: transform, imageFile: layer.imageFile, parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.maskFile, maskEnabled: layer.maskEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment,
                 maskPlacement: layer.maskPlacement.map { placement -> LayerTransform in
@@ -28,14 +29,14 @@ actor CanvasResizer {
                     moved.origin.x += offset.x
                     moved.origin.y += offset.y
                     return moved
-                }, maskLinked: layer.maskLinked, shape: layer.shape, text: layer.text))
+                }, maskLinked: layer.maskLinked, shape: layer.shape, effects: layer.effects, text: layer.text, gif: gif))
         }
         var images = snapshot.images
         // A colored extension is separate bottom-layer content. The old canvas
         // intersection remains transparent, including holes in the existing artwork.
         if let color = options.fill, options.width > old.width || options.height > old.height {
             let used = images.values.reduce(0) { $0 + $1.image.width * $1.image.height }
-            guard options.width * options.height <= 100_000_000 - used,
+            guard options.width * options.height <= DocumentLimits.documentPixelBudget - used,
                   manifest.layers.count < 10_000 else { throw ProjectError.tooLarge }
             guard [color.red, color.green, color.blue].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
                 throw ProjectError.invalid
@@ -68,6 +69,7 @@ actor CanvasResizer {
                 transform: LayerTransform(origin: .zero, size: CGSize(width: options.width, height: options.height)),
                 imageFile: "\(id.uuidString).png"), at: 0)
         }
-        return ProjectSnapshot(manifest: manifest, images: images, masks: snapshot.masks)
+        return ProjectSnapshot(manifest: manifest, images: images, masks: snapshot.masks,
+                               animations: snapshot.animations)
     }
 }

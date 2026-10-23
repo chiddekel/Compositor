@@ -1,0 +1,257 @@
+import Foundation
+import CoreGraphics
+import ImageIO
+
+/// A bitmap wrapper. Rendering symbols/vector art is a macOS feature; on Linux an `NSImage` holds pixels.
+open class NSImage: @unchecked Sendable {
+    public var size: CGSize
+    private var bitmap: CGImage?
+    /// The bitmap `lockFocus` draws into, until `unlockFocus`.
+    private var focusContext: CGContext?
+    /// An SF Symbol this image stands for, and the color a symbol configuration gave it: drawn through the host's icons.
+    public internal(set) var symbolName: String?
+    public internal(set) var symbolColor: NSColor?
+    /// The host draws SF Symbols (the shell's Lucide icons): name, pixel width and height, straight RGBA color.
+    nonisolated(unsafe) public static var symbolRenderer: ((String, Int, Int, (Double, Double, Double, Double)) -> CGImage?)?
+
+    public final class SymbolConfiguration {
+        public var pointSize: CGFloat = 0
+        public var paletteColors: [NSColor] = []
+        public init(pointSize: CGFloat, weight: NSFont.Weight) { self.pointSize = pointSize }
+        public init(pointSize: CGFloat) { self.pointSize = pointSize }
+        public init(paletteColors: [NSColor]) { self.paletteColors = paletteColors }
+        public func applying(_ other: SymbolConfiguration) -> SymbolConfiguration {
+            let merged = SymbolConfiguration(pointSize: other.pointSize > 0 ? other.pointSize : pointSize)
+            merged.paletteColors = other.paletteColors.isEmpty ? paletteColors : other.paletteColors
+            return merged
+        }
+    }
+
+    /// An SVG file's contents: kept as vectors and drawn at the size it is drawn at (AppKit's NSSVGImageRep), not
+    /// rasterized once and scaled.
+    var svgData: Data?
+    public init(size: CGSize) { self.size = size }
+    /// An empty image (no size, no pixels), as AppKit's `NSImage()`.
+    public convenience init() { self.init(size: .zero) }
+    /// A template image is drawn in its view's tint (the host draws symbols tinted).
+    public var isTemplate = false
+    public var accessibilityDescription: String?
+    public private(set) var representations: [NSImageRep] = []
+    /// Adds a representation; a bitmap one gives an image without pixels its pixels.
+    public func addRepresentation(_ rep: NSImageRep) {
+        representations.append(rep)
+        if bitmap == nil, let bitmapRep = rep as? NSBitmapImageRep { bitmap = bitmapRep.cgImage }
+    }
+    /// A file's image: SVG kept as vectors (drawn by the host's SVG renderer), anything else decoded as ImageIO does.
+    public convenience init?(contentsOf url: URL) {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let head = String(decoding: data.prefix(1024), as: UTF8.self)
+        if url.pathExtension.lowercased() == "svg" || head.contains("<svg") {
+            guard let declared = SVGRenderer.declaredSize(data) else { return nil }
+            self.init(size: declared)
+            svgData = data
+            return
+        }
+        self.init(data: data)
+    }
+    /// The SVG at `pixels`, or nil when this isn't an SVG (or no renderer is available).
+    func svgImage(pixels: CGSize) -> CGImage? {
+        guard let svgData else { return nil }
+        return SVGRenderer.render(svgData, width: max(1, Int(pixels.width.rounded())), height: max(1, Int(pixels.height.rounded())))
+    }
+    public init(cgImage: CGImage, size: CGSize) { self.bitmap = cgImage; self.size = size }
+    public convenience init?(data: Data) {
+        guard let decoded = ImageCodecRegistry.decode(data) else { return nil }
+        self.init(cgImage: decoded, size: CGSize(width: decoded.width, height: decoded.height))
+    }
+    public convenience init(size: CGSize, flipped: Bool, drawingHandler: (CGRect) -> Bool) {
+        self.init(size: size)
+        let w = max(1, Int(size.width)), h = max(1, Int(size.height))
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        if flipped { ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 1, y: -1) }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: flipped)
+        _ = drawingHandler(CGRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        bitmap = ctx.makeImage()
+    }
+    /// SF Symbols do not exist on Linux. Callers force-unwrap this initialiser, so it hands back an empty 16-pt image
+    /// (the Qt shell draws its own icons and cursors).
+    public convenience init?(systemSymbolName: String, accessibilityDescription: String?) {
+        self.init(size: CGSize(width: 16, height: 16))
+        symbolName = systemSymbolName
+        self.accessibilityDescription = accessibilityDescription
+    }
+    /// A symbol rasterized for `pixels` (the host's rendering), in its configured color (black otherwise).
+    func symbolImage(pixels: CGSize) -> CGImage? {
+        guard let symbolName, let renderer = NSImage.symbolRenderer else { return nil }
+        let color = symbolColor ?? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+        return renderer(symbolName, max(1, Int(pixels.width.rounded())), max(1, Int(pixels.height.rounded())),
+                        (Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent), Double(color.alphaComponent)))
+    }
+    /// Reads an image the pasteboard holds as PNG/TIFF data (needs the ImageIO codec backend).
+    public convenience init?(pasteboard: NSPasteboard) {
+        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+            if let data = pasteboard.data(forType: type), let image = ImageCodecRegistry.decode(data) {
+                self.init(cgImage: image, size: CGSize(width: image.width, height: image.height)); return
+            }
+        }
+        return nil
+    }
+
+    public func cgImage(forProposedRect proposedDestRect: UnsafeMutablePointer<CGRect>?, context: NSGraphicsContext?,
+                        hints: [NSImageRep.HintKey: Any]?) -> CGImage? { bitmap ?? svgImage(pixels: size) }
+    public func draw(in rect: CGRect, from source: CGRect, operation: NSCompositingOperation, fraction: CGFloat,
+                     respectFlipped: Bool, hints: [NSImageRep.HintKey: Any]?) {
+        // AppKit keeps the image upright in a flipped context when asked to; Core Graphics alone would draw it
+        // upside down there (its first row at the rect's max y).
+        guard respectFlipped, let graphics = NSGraphicsContext.current, graphics.isFlipped else {
+            draw(in: rect, from: source, operation: operation, fraction: fraction); return
+        }
+        let context = graphics.cgContext
+        context.saveGState()
+        context.translateBy(x: 0, y: rect.minY + rect.maxY)
+        context.scaleBy(x: 1, y: -1)
+        draw(in: rect, from: source, operation: operation, fraction: fraction)
+        context.restoreGState()
+    }
+    /// Drawing goes into this image until `unlockFocus`: a bitmap of its size, holding what it shows already.
+    public func lockFocus() {
+        let w = max(1, Int(size.width.rounded(.up))), h = max(1, Int(size.height.rounded(.up)))
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        if let current = cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            context.draw(current, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        focusContext = context
+    }
+    public func unlockFocus() {
+        guard let context = focusContext else { return }
+        focusContext = nil
+        NSGraphicsContext.restoreGraphicsState()
+        bitmap = context.makeImage()
+        svgData = nil
+    }
+}
+
+open class NSImageRep {
+    public struct HintKey: Hashable, RawRepresentable { public let rawValue: String; public init(rawValue: String) { self.rawValue = rawValue } }
+}
+
+public final class NSBitmapImageRep: NSImageRep, @unchecked Sendable {
+    public enum FileType { case png, jpeg, tiff, bmp, gif }
+    private let fixed: CGImage?
+    /// Present for reps that cache a view's display: drawing goes into this context and `image` reads it back.
+    let context: CGContext?
+    private var image: CGImage { context?.makeImage() ?? fixed! }
+    public init(cgImage: CGImage) { fixed = cgImage; context = nil }
+    init(context: CGContext) { fixed = nil; self.context = context }
+    /// Decodes PNG/JPEG/TIFF/... data through the ImageIO backend.
+    public convenience init?(data: Data) {
+        guard let decoded = ImageCodecRegistry.decode(data) else { return nil }
+        self.init(cgImage: decoded)
+    }
+    public var size: CGSize { CGSize(width: image.width, height: image.height) }
+    public var cgImage: CGImage? { image }
+    public var pixelsWide: Int { image.width }
+    public var pixelsHigh: Int { image.height }
+    public func getPixel(_ pixel: UnsafeMutablePointer<Int>, atX x: Int, y: Int) {
+        let raster = image
+        let samples = raster.isGrayPlane ? 1 : 4
+        guard x >= 0, y >= 0, x < raster.width, y < raster.height else {
+            for channel in 0..<samples { pixel[channel] = 0 }
+            return
+        }
+        let bytes = raster.portableImage.bytes, offset = y * raster.bytesPerRow + x * samples
+        for channel in 0..<samples { pixel[channel] = Int(bytes[offset + channel]) }
+    }
+    func pixelColor(x: Int, y: Int) -> NSColor? {
+        guard x >= 0, y >= 0, x < image.width, y < image.height else { return nil }
+        let bytes = image.portableImage.bytes, i = y * image.bytesPerRow
+        if image.isGrayPlane { let v = CGFloat(bytes[i + x]) / 255; return NSColor(white: v, alpha: 1) }
+        let o = i + x * 4, a = CGFloat(bytes[o + 3]) / 255
+        guard a > 0 else { return NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0) }
+        return NSColor(srgbRed: CGFloat(bytes[o]) / 255 / a, green: CGFloat(bytes[o + 1]) / 255 / a, blue: CGFloat(bytes[o + 2]) / 255 / a, alpha: a)
+    }
+
+    public func representation(using type: FileType, properties: [PropertyKey: Any]) -> Data? {
+        let uti: String
+        switch type { case .png: uti = "public.png"; case .jpeg: uti = "public.jpeg"; case .tiff: uti = "public.tiff"
+                      case .bmp: uti = "com.microsoft.bmp"; case .gif: uti = "com.compuserve.gif" }
+        return ImageCodecRegistry.encode(image, typeIdentifier: uti)
+    }
+    public struct PropertyKey: Hashable, RawRepresentable { public let rawValue: String; public init(rawValue: String) { self.rawValue = rawValue } }
+}
+
+public struct NSColorSpaceName: RawRepresentable, Hashable, Sendable {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public static let deviceRGB = NSColorSpaceName(rawValue: "NSDeviceRGBColorSpace")
+    public static let calibratedRGB = NSColorSpaceName(rawValue: "NSCalibratedRGBColorSpace")
+    public static let deviceWhite = NSColorSpaceName(rawValue: "NSDeviceWhiteColorSpace")
+}
+
+extension NSBitmapImageRep {
+    /// A blank bitmap to draw into (`NSGraphicsContext(bitmapImageRep:)`). Only the 8-bit RGBA layout is supported.
+    public convenience init?(bitmapDataPlanes planes: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, pixelsWide: Int,
+                             pixelsHigh: Int, bitsPerSample: Int, samplesPerPixel: Int, hasAlpha: Bool, isPlanar: Bool,
+                             colorSpaceName: NSColorSpaceName, bytesPerRow: Int, bitsPerPixel: Int) {
+        guard pixelsWide > 0, pixelsHigh > 0, bitsPerSample == 8, samplesPerPixel == 4, !isPlanar else { return nil }
+        guard let ctx = CGContext(data: nil, width: pixelsWide, height: pixelsHigh, bitsPerComponent: 8,
+                                  bytesPerRow: pixelsWide * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        self.init(context: ctx)
+    }
+
+    public var bytesPerRow: Int { (cgImage?.width ?? 0) * 4 }
+    public var bitsPerPixel: Int { 32 }
+    /// The live pixel memory of a drawable bitmap (premultiplied RGBA, top row first).
+    public var bitmapData: UnsafeMutablePointer<UInt8>? { context?.data?.assumingMemoryBound(to: UInt8.self) }
+}
+
+extension NSGraphicsContext {
+    public convenience init?(bitmapImageRep rep: NSBitmapImageRep) {
+        guard let ctx = rep.context else { return nil }
+        self.init(cgContext: ctx, flipped: false)
+    }
+}
+
+/// The host's SVG renderer (Qt's SVG image plugin, through the ImageIO backend library).
+enum SVGRenderer {
+    typealias RenderFn = @convention(c) (UnsafePointer<UInt8>?, Int, Int32, Int32, UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+                                         UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
+    nonisolated(unsafe) static let function: RenderFn? = {
+        #if canImport(Glibc)
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(handle, "compositor_qt_svg_render") else { continue }
+            return unsafeBitCast(sym, to: RenderFn.self)
+        }
+        #endif
+        return nil
+    }()
+    static func declaredSize(_ data: Data) -> CGSize? {
+        guard let function else { return nil }
+        var w: Int32 = 0, h: Int32 = 0
+        let status = data.withUnsafeBytes { function($0.bindMemory(to: UInt8.self).baseAddress, data.count, 0, 0, nil, &w, &h) }
+        return status == 0 && w > 0 && h > 0 ? CGSize(width: Int(w), height: Int(h)) : nil
+    }
+    static func render(_ data: Data, width: Int, height: Int) -> CGImage? {
+        guard let function else { return nil }
+        var pixels: UnsafeMutablePointer<UInt8>?
+        let status = data.withUnsafeBytes { function($0.bindMemory(to: UInt8.self).baseAddress, data.count, Int32(width), Int32(height), &pixels, nil, nil) }
+        guard status == 0, let pixels else { return nil }
+        defer { free(pixels) }
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let destination = context.data else { return nil }
+        destination.copyMemory(from: pixels, byteCount: width * height * 4)
+        return context.makeImage()
+    }
+}

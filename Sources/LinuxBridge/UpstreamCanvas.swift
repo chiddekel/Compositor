@@ -1,0 +1,409 @@
+import Foundation
+import AppKit
+
+@_cdecl("compositor_keyboard_set_latin_character")
+nonisolated public func compositorKeyboardSetLatinCharacter(_ keyCode: Int32, _ shifted: Int32,
+                                                            _ characters: UnsafePointer<CChar>?) {
+    guard keyCode >= 0, keyCode < 0xffff, let characters else { return }
+    NSKeyboardLayout.recordLatinCharacter(String(cString: characters), for: UInt16(keyCode), shift: shifted != 0)
+}
+
+/// Upstream's own canvas view (EditorCanvas.swift's CanvasView), hosted headlessly for each session: the Qt canvas
+/// forwards its pointer events here, so every tool behaves as the Mac's does, and paints the view's overlay
+/// (TransformOverlay: handles, marching ants, crop, gradient line, lasso draft, guides, grid, snap lines) over the
+/// document. Coordinates are the Qt canvas's: points, top-left origin.
+@MainActor final class UpstreamCanvas {
+    let view: CanvasView
+    let window: NSWindow
+    init(session: EditorSession) {
+        PenInput.install()
+        view = CanvasView(session: session)
+        window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
+                          backing: .buffered, defer: false)
+        window.contentView = view
+    }
+    func resize(width: Double, height: Double, scale: Double) {
+        let size = CGSize(width: max(1, width), height: max(1, height))
+        let dpr = CGFloat(scale)
+        guard view.frame.size != size || window.backingScaleFactor != dpr else { return }
+        window.backingScaleFactor = dpr
+        window.setContentSize(size)
+        // Keep contentView frame identical to the window content size — convert(_:from:nil) uses both,
+        // and a mismatch offsets every flipped-view mouse hit (transform handles look right, grab wrong).
+        view.frame = CGRect(origin: .zero, size: size)
+        view.layout()
+    }
+    /// A pointer event (returns the cursor code, see cursorCode): `kind` 0 press, 1 drag, 2 release, 3 move (no button), 4 double press; `modifiers` in
+    /// ShortcutChord bits as the shell sends them (Ctrl 1 → ⌘, Alt 2 → ⌥, Meta 4 → ⌃, Shift 8).
+    func mouse(kind: Int, x: Double, y: Double, modifiers: Int, clickCount: Int, pressure: Double? = nil) {
+        NSEvent.applyChordModifiers(modifiers)
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers & 1 != 0 { flags.insert(.command) }
+        if modifiers & 2 != 0 { flags.insert(.option) }
+        if modifiers & 4 != 0 { flags.insert(.control) }
+        if modifiers & 8 != 0 { flags.insert(.shift) }
+        if let edit = view.session.colorRange, let document = view.session.document {
+            edit.held = flags.contains(.option) ? .remove : flags.contains(.shift) ? .add : nil
+            if kind == 0 || kind == 4 {
+                let point = view.session.viewport.documentPoint(from: CGPoint(x: x, y: y), documentSize: document.size)
+                view.session.sampleColorRange(at: point, shift: flags.contains(.shift), option: flags.contains(.option))
+            }
+            NSCursor.crosshair.set()
+            return
+        }
+        // 5–7: the middle button (CanvasView.otherMouse*: pan, or with Command/Control zoom, upstream 1.4.9).
+        let type: NSEvent.EventType = [0: .leftMouseDown, 1: .leftMouseDragged, 2: .leftMouseUp, 3: .mouseMoved,
+                                       5: .otherMouseDown, 6: .otherMouseDragged, 7: .otherMouseUp][kind] ?? .leftMouseDown
+        // Qt canvas is top-left, same as this flipped CanvasView. Round-trip through convert so hit testing
+        // lands on the same points TransformOverlay draws (manual height-y broke when window/view sizes drifted).
+        let viewPoint = CGPoint(x: x, y: y)
+        let location = view.convert(viewPoint, to: nil)
+        // Keep AppKit's global pointer in sync so Move's toolCursor / Option-duplicate path see this hover.
+        NSEvent.mouseLocation = window.convertPoint(toScreen: location)
+        guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                             clickCount: max(1, clickCount), pressure: Float(pressure ?? 1)) else { return }
+        if pressure != nil {
+            event.subtype = .tabletPoint
+            event.pointingDeviceType = .pen
+        }
+        guard NSEvent.filterThroughLocalMonitors(event) != nil else { return }
+        if kind >= 5 { event.buttonNumber = 2 }
+        switch type {
+        case .otherMouseDown: view.otherMouseDown(with: event)
+        case .otherMouseDragged: view.otherMouseDragged(with: event)
+        case .otherMouseUp: view.otherMouseUp(with: event)
+        case .leftMouseDown: view.mouseDown(with: event)
+        case .leftMouseDragged: view.mouseDragged(with: event)
+        case .leftMouseUp: view.mouseUp(with: event)
+        default: view.mouseMoved(with: event)
+        }
+        // AppKit applies cursor rectangles on hover and after a drag ends. Move and selection tools
+        // refine their cursor in mouseMoved; keep those results instead of replacing them with a wide rect.
+        let usesCursorRects = view.session.tool != .move && !view.session.tool.isSelectionTool
+        if type == .leftMouseUp || type == .otherMouseUp || (type == .mouseMoved && usesCursorRects),
+           let cursor = view.cursorForPoint(viewPoint) {
+            NSCursor.current = cursor
+        }
+    }
+
+    /// Qt normalizes its wheel units before upstream handles navigation and active-edit refusal.
+    func scroll(x: Double, y: Double, deltaX: Double, deltaY: Double, precise: Bool, modifiers: Int) {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers & 1 != 0 { flags.insert(.command) }
+        if modifiers & 2 != 0 { flags.insert(.option) }
+        if modifiers & 4 != 0 { flags.insert(.control) }
+        if modifiers & 8 != 0 { flags.insert(.shift) }
+        let location = view.convert(CGPoint(x: x, y: y), to: nil)
+        guard let event = NSEvent.mouseEvent(with: .scrollWheel, location: location, modifierFlags: flags,
+                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                             context: nil, eventNumber: 0, clickCount: 0, pressure: 0) else { return }
+        event.scrollingDeltaX = CGFloat(deltaX)
+        event.scrollingDeltaY = CGFloat(deltaY)
+        event.hasPreciseScrollingDeltas = precise
+        view.scrollWheel(with: event)
+    }
+
+    /// A trackpad pinch (Qt's zoom gesture): upstream's `magnify(with:)`, zooming about the pointer by `1 + magnification`.
+    func magnify(x: Double, y: Double, magnification: Double) {
+        let location = view.convert(CGPoint(x: x, y: y), to: nil)
+        guard let event = NSEvent.mouseEvent(with: .magnify, location: location, modifierFlags: [],
+                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                             context: nil, eventNumber: 0, clickCount: 1, pressure: 0) else { return }
+        event.magnification = CGFloat(magnification)
+        view.magnify(with: event)
+    }
+
+    /// The cursor as a code the shell maps: 0 arrow, 1 I-beam, 2 crosshair, 3 open hand, 4 closed hand, 5 pointing hand,
+    /// 6 left-right, 7 up-down, 8 diagonal ↖↘, 9 diagonal ↗↙, 10 custom picture (`compositor_canvas_cursor_image`).
+    static func cursorCode(_ cursor: NSCursor) -> Int32 {
+        switch cursor.shape {
+        case .arrow: return 0
+        case .iBeam: return 1
+        case .crosshair: return 2
+        case .openHand: return 3
+        case .closedHand: return 4
+        case .pointingHand: return 5
+        case .resizeLeftRight: return 6
+        case .resizeUpDown: return 7
+        case .frameResize(let position, _):
+            switch position.rawValue {
+            case 0, 2: return 7
+            case 1, 3: return 6
+            case 4, 7: return 8
+            default: return 9
+            }
+        case .custom: return 10
+        }
+    }
+    /// A key press for the canvas: `keyCode` a Mac virtual key code, `characters` what it types.
+    func key(keyCode: Int, characters: String, modifiers: Int, isRepeat: Bool) {
+        NSEvent.applyChordModifiers(modifiers)
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers & 1 != 0 { flags.insert(.command) }
+        if modifiers & 2 != 0 { flags.insert(.option) }
+        if modifiers & 4 != 0 { flags.insert(.control) }
+        if modifiers & 8 != 0 { flags.insert(.shift) }
+        if view.session.colorRange != nil {
+            if keyCode == 53 { view.session.cancelColorRange() }
+            else if keyCode == 36 || keyCode == 76 { view.session.commitColorRange() }
+            return
+        }
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                           context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                           isARepeat: isRepeat, keyCode: UInt16(keyCode)) else { return }
+        view.keyDown(with: event)
+    }
+    /// The canvas itself, as upstream's CanvasView.draw(_:) paints it on the Mac — surround, shadow, checkerboard, the
+    /// layers composited from their cached downscales at view resolution, pixel grid, hairline, text being typed — for
+    /// `region` of the view (points, top-left), at `scale` device pixels per point. Premultiplied RGBA8, top row first.
+    func drawCanvas(region: CGRect, scale: CGFloat) -> [UInt8] {
+        let width = max(1, Int((region.width * scale).rounded(.up))), height = max(1, Int((region.height * scale).rounded(.up)))
+        // A bitmap context as AppKit makes one for a flipped view: Core Graphics' y-up space with the view's flip on
+        // top (upstream flips images locally for exactly this), then the backing scale.
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return [] }
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: -region.minX, y: -region.minY)
+        context.clip(to: region)
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        defer { NSGraphicsContext.current = previous }
+        view.draw(region)
+        return context.buffer.bytes
+    }
+
+    /// The overlay views, in their stacking order (TransformOverlay, the brush circle, the sample ring).
+    private var overlayViews: [NSView] {
+        view.subviews.filter { $0 is TransformOverlay || $0 is BrushCursorOverlay || $0 is SampleRingOverlay }
+    }
+    /// What the overlay was last drawn from besides the views' own invalid rects: the canvas size, and which overlay
+    /// views showed where (moving or hiding a view invalidates what it covered, as AppKit does).
+    private var drawnLayout: [CGRect] = []
+    private var currentLayout: [CGRect] {
+        [view.bounds] + overlayViews.map { $0.isHidden ? .null : $0.frame }
+    }
+    /// What changed in the overlay since it was last drawn, in canvas coordinates (top-left): nil nothing, else the
+    /// union of the overlay views' invalid rects (`setNeedsDisplay`) — the whole canvas when the layout moved.
+    func overlayInvalidRect() -> CGRect? {
+        if currentLayout != drawnLayout { return view.bounds }
+        var dirty: CGRect?
+        func add(_ rect: CGRect) { dirty = dirty.map { $0.union(rect) } ?? rect }
+        for subview in overlayViews where !subview.isHidden {
+            guard var rect = subview.invalidRect else { continue }
+            if !subview.isFlipped { rect.origin.y = subview.bounds.height - rect.maxY }
+            add(rect.offsetBy(dx: subview.frame.minX, dy: subview.frame.minY))
+        }
+        // The Type tool's box being dragged out is drawn by the canvas itself.
+        if let rect = view.invalidRect { add(rect) }
+        return dirty.map { $0.intersection(view.bounds) }.flatMap { $0.isEmpty ? nil : $0 }
+    }
+    /// TransformOverlay's drawing for `region` of the canvas (points, top-left), premultiplied RGBA8 at the region's
+    /// size, top row first; the overlay views' invalid rects are cleared, as a display does.
+    func overlay(region: CGRect) -> [UInt8] {
+        let context = CGContext(width: Int(region.width), height: Int(region.height))
+        context.translateBy(x: -region.minX, y: -region.minY)
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        defer { NSGraphicsContext.current = previous }
+        // Each overlay view in its own frame; an unflipped one draws y-up.
+        for subview in overlayViews {
+            if subview is TransformOverlay { subview.frame = view.bounds }
+            subview.needsDisplay = false
+            guard !subview.isHidden else { continue }
+            let frame = subview.frame
+            guard frame.width > 0, frame.height > 0, frame.intersects(region) else { continue }
+            context.saveGState()
+            context.translateBy(x: frame.minX, y: frame.minY)
+            if !subview.isFlipped { context.translateBy(x: 0, y: frame.height); context.scaleBy(x: 1, y: -1) }
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: subview.isFlipped)
+            subview.draw(CGRect(origin: .zero, size: frame.size))
+            context.restoreGState()
+        }
+        // The Type tool's box being dragged out (CanvasView.draw ends with it).
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        view.drawTextBoxDraft()
+        view.needsDisplay = false
+        drawnLayout = currentLayout
+        return context.buffer.bytes
+    }
+}
+
+@MainActor enum UpstreamCanvases {
+    static var canvases: [UInt64: UpstreamCanvas] = [:]
+    static func canvas(_ handle: UInt64, _ entry: Entry) -> UpstreamCanvas {
+        if let canvas = canvases[handle] { return canvas }
+        let canvas = UpstreamCanvas(session: entry.editor.session)
+        canvases[handle] = canvas
+        return canvas
+    }
+}
+
+@_cdecl("compositor_canvas_resize")
+nonisolated public func compositorCanvasResize(_ handle: UInt64, _ width: Double, _ height: Double, _ scale: Double) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        UpstreamCanvases.canvas(handle, entry).resize(width: width, height: height, scale: scale)
+        return 0
+    })
+}
+
+@_cdecl("compositor_canvas_mouse")
+nonisolated public func compositorCanvasMouse(_ handle: UInt64, _ kind: Int32, _ x: Double, _ y: Double, _ modifiers: Int32, _ clickCount: Int32) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        // The shell paints between slices of a long Smudge/Liquify drag (noteStrokeProgress / warp_continue), so
+        // while a button is held on the canvas, WarpStroke dabs in budgeted chunks; released or buttonless, it dabs
+        // the whole way, exactly as upstream's does. Scoping it here — not to Entry creation — keeps tests that never
+        // drive the canvas (WarpTipCacheTests' byte-exact oracle among them) on upstream's unchunked behaviour.
+        WarpStroke.timeSlicesLiveStrokes = kind == 0 || kind == 1 || kind == 4
+        UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers), clickCount: Int(clickCount))
+        entry.noteStrokeProgress()   // the brush painted: the shell redraws just that area mid-stroke
+        return Int64(UpstreamCanvas.cursorCode(NSCursor.current))
+    })
+}
+
+/// Tablet events use the same upstream canvas dispatch as the mouse, retaining the pen's pressure.
+@_cdecl("compositor_canvas_tablet")
+nonisolated public func compositorCanvasTablet(_ handle: UInt64, _ kind: Int32, _ x: Double, _ y: Double,
+                                               _ modifiers: Int32, _ pressure: Double) -> Int32 {
+    guard pressure.isFinite else { return -1 }
+    return Int32(withEntry(handle) { entry in
+        WarpStroke.timeSlicesLiveStrokes = kind == 0 || kind == 1
+        UpstreamCanvases.canvas(handle, entry).mouse(kind: Int(kind), x: x, y: y, modifiers: Int(modifiers),
+                                                   clickCount: 1, pressure: min(1, max(0, pressure)))
+        entry.noteStrokeProgress()
+        return Int64(UpstreamCanvas.cursorCode(NSCursor.current))
+    })
+}
+
+@_cdecl("compositor_canvas_magnify")
+nonisolated public func compositorCanvasMagnify(_ handle: UInt64, _ x: Double, _ y: Double, _ magnification: Double) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        UpstreamCanvases.canvas(handle, entry).magnify(x: x, y: y, magnification: magnification)
+        return 0
+    })
+}
+
+@_cdecl("compositor_canvas_scroll")
+nonisolated public func compositorCanvasScroll(_ handle: UInt64, _ x: Double, _ y: Double,
+                                               _ deltaX: Double, _ deltaY: Double, _ precise: Int32, _ modifiers: Int32) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        UpstreamCanvases.canvas(handle, entry).scroll(x: x, y: y, deltaX: deltaX, deltaY: deltaY,
+                                                    precise: precise != 0, modifiers: Int(modifiers))
+        return 0
+    })
+}
+
+@_cdecl("compositor_canvas_key")
+nonisolated public func compositorCanvasKey(_ handle: UInt64, _ keyCode: Int32, _ characters: UnsafePointer<CChar>?, _ modifiers: Int32, _ isRepeat: Int32) -> Int32 {
+    let typed = characters.map { String(cString: $0) } ?? ""
+    return Int32(withEntry(handle) { entry in
+        UpstreamCanvases.canvas(handle, entry).key(keyCode: Int(keyCode), characters: typed, modifiers: Int(modifiers), isRepeat: isRepeat != 0)
+        return 0
+    })
+}
+
+/// The overlay's pixels (width × height × 4); returns the byte count, -1 if `capacity` is too small.
+@_cdecl("compositor_canvas_overlay")
+nonisolated public func compositorCanvasOverlay(_ handle: UInt64, _ width: Int32, _ height: Int32,
+                                                _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    compositorCanvasOverlayRegion(handle, 0, 0, width, height, output, capacity)
+}
+
+/// The overlay for the canvas rect (x, y, width, height) in points, premultiplied RGBA8 at that size.
+@_cdecl("compositor_canvas_overlay_region")
+nonisolated public func compositorCanvasOverlayRegion(_ handle: UInt64, _ x: Int32, _ y: Int32, _ width: Int32, _ height: Int32,
+                                                      _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard width > 0, height > 0, Int(width) * Int(height) <= 50_000_000 else { return -1 }
+    let count = Int(width) * Int(height) * 4
+    guard let output, capacity >= count else { return Int64(count) }
+    return withEntry(handle) { entry in
+        let bytes = UpstreamCanvases.canvas(handle, entry).overlay(region: CGRect(x: Int(x), y: Int(y), width: Int(width), height: Int(height)))
+        bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: min(count, bytes.count)) }
+        return Int64(bytes.count)
+    }
+}
+
+/// Whether the overlay changed since it was last drawn: 0 no, 1 yes — `rect` (x, y, width, height, points, top-left)
+/// then holds the part that did.
+/// The canvas for the view rect (x, y, width, height points) at `scale`, as upstream draws it (see drawCanvas); the byte
+/// count is width*scale x height*scale x 4 (rounded up). Returns the byte count, or -1.
+@_cdecl("compositor_canvas_draw")
+nonisolated public func compositorCanvasDraw(_ handle: UInt64, _ x: Double, _ y: Double, _ width: Double, _ height: Double,
+                                             _ scale: Double, _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    guard width > 0, height > 0, scale > 0, width * height * scale * scale <= 80_000_000 else { return -1 }
+    let count = Int((width * scale).rounded(.up)) * Int((height * scale).rounded(.up)) * 4
+    guard let output, capacity >= count else { return Int64(count) }
+    return withEntry(handle) { entry in
+        let bytes = UpstreamCanvases.canvas(handle, entry).drawCanvas(region: CGRect(x: x, y: y, width: width, height: height),
+                                                                        scale: CGFloat(scale))
+        bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: min(count, $0.count)) }
+        return Int64(bytes.count)
+    }
+}
+
+@_cdecl("compositor_canvas_overlay_invalid")
+nonisolated public func compositorCanvasOverlayInvalid(_ handle: UInt64, _ rect: UnsafeMutablePointer<Double>?) -> Int32 {
+    Int32(withEntry(handle) { entry in
+        guard let dirty = UpstreamCanvases.canvas(handle, entry).overlayInvalidRect() else { return 0 }
+        if let rect { rect[0] = dirty.minX; rect[1] = dirty.minY; rect[2] = dirty.width; rect[3] = dirty.height }
+        return 1
+    })
+}
+
+/// Pure modifier-key changes (Shift / Ctrl / Alt / Meta with no character): keep HeldModifiers live for the options bar.
+@_cdecl("compositor_modifiers_changed")
+nonisolated public func compositorModifiersChanged(_ modifiers: Int32) {
+    onMain {
+        // Touch HeldModifiers so its local monitor is registered before the first flagsChanged.
+        _ = HeldModifiers.shared
+        NSEvent.applyChordModifiers(Int(modifiers))
+    }
+}
+
+/// The shell's SF Symbol renderer: (name, width, height, r, g, b, a, output) → 0 when it drew the symbol into `output`
+/// (width × height premultiplied RGBA8).
+public typealias SymbolRenderFunction = @convention(c) (UnsafePointer<CChar>?, Int32, Int32, Double, Double, Double, Double,
+                                                        UnsafeMutablePointer<UInt8>?) -> Int32
+
+@_cdecl("compositor_set_symbol_renderer")
+nonisolated public func compositorSetSymbolRenderer(_ render: SymbolRenderFunction?) {
+    guard let render else { NSImage.symbolRenderer = nil; return }
+    NSImage.symbolRenderer = { name, width, height, color in
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let status = name.withCString { symbol in
+            bytes.withUnsafeMutableBufferPointer { render(symbol, Int32(width), Int32(height), color.0, color.1, color.2, color.3, $0.baseAddress) }
+        }
+        guard status == 0 else { return nil }
+        return CGImage(PortableImage(PixelBuffer(width: width, height: height, bytes: bytes)))
+    }
+}
+
+/// The cursor upstream's code last set (NSCursor.set()), as UpstreamCanvas.cursorCode maps it — for views outside the
+/// canvas that set it themselves (NumericScrub's resize arrows while hovering a label).
+@_cdecl("compositor_current_cursor")
+nonisolated public func compositorCurrentCursor() -> Int32 {
+    onMain { UpstreamCanvas.cursorCode(NSCursor.current) }
+}
+
+/// The current cursor's picture (a custom cursor: upstream draws it), premultiplied RGBA8, with its size and hot spot.
+/// Returns the byte count (call with a nil output to size it), -1 when the cursor has no picture.
+@_cdecl("compositor_canvas_cursor_image")
+nonisolated public func compositorCanvasCursorImage(_ width: UnsafeMutablePointer<Int32>?, _ height: UnsafeMutablePointer<Int32>?,
+                                                    _ hotX: UnsafeMutablePointer<Double>?, _ hotY: UnsafeMutablePointer<Double>?,
+                                                    _ output: UnsafeMutablePointer<UInt8>?, _ capacity: Int) -> Int64 {
+    onMain {
+        let cursor = NSCursor.current
+        guard let image = cursor.image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return -1 }
+        let raster = image.portableImage
+        guard raster.kind == .rgba else { return -1 }
+        width?.pointee = Int32(raster.width); height?.pointee = Int32(raster.height)
+        hotX?.pointee = Double(cursor.hotSpot.x); hotY?.pointee = Double(cursor.hotSpot.y)
+        let bytes = raster.bytes
+        if let output, capacity >= bytes.count { bytes.withUnsafeBufferPointer { output.update(from: $0.baseAddress!, count: bytes.count) } }
+        return Int64(bytes.count)
+    }
+}

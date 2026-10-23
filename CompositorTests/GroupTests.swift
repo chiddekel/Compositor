@@ -77,7 +77,7 @@ struct GroupTests {
         session.addBlankLayer()
         let child = try #require(session.activeLayerID)
         let snapshot = try #require(session.projectSnapshot())
-        #expect(snapshot.manifest.version == 8)
+        #expect(snapshot.manifest.version == ProjectManifest.current)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Groups-\(UUID()).comp")
         defer { try? FileManager.default.removeItem(at: url) }
         try await ProjectStore.shared.save(snapshot, to: url)
@@ -105,5 +105,134 @@ struct GroupTests {
         rasterParent.parentID = nil
         rasterParent.isGroup = false
         #expect(throws: ProjectError.self) { try LayerHierarchy.validate([rasterParent, nested]) }
+    }
+
+    @Test func ungroupLayersRestoresChildrenAtTheFoldersSpotAndUndoes() throws {
+        let session = EditorSession()
+        session.createDocument(width: 100, height: 100)
+        session.addBlankLayer()
+        let below = try #require(session.activeLayerID)
+        #expect(!session.canUngroupLayers, "a plain layer has nothing to unwrap")
+        session.addGroup()
+        let group = try #require(session.activeLayerID)
+        session.addBlankLayer()
+        let childA = try #require(session.activeLayerID)
+        session.addBlankLayer()
+        let childB = try #require(session.activeLayerID)
+        session.selectLayer(nil)
+        session.addBlankLayer()
+        let above = try #require(session.activeLayerID)
+        #expect(session.document?.layers.map(\.parentID) == [nil, nil, group, group, nil])
+
+        session.selectLayer(group)
+        #expect(session.canUngroupLayers)
+        let undoCount = session.history.undoCount
+        session.ungroupLayers()
+        let layers = try #require(session.document?.layers)
+        #expect(!layers.contains { $0.id == group }, "the folder itself goes")
+        #expect(layers.first { $0.id == childA }?.parentID == nil)
+        #expect(layers.first { $0.id == childB }?.parentID == nil)
+        // Spliced in where the folder sat: below stays below both children, above stays above both.
+        let order = layers.map(\.id)
+        #expect(order.firstIndex(of: below)! < order.firstIndex(of: childA)!)
+        #expect(order.firstIndex(of: childA)! < order.firstIndex(of: childB)!)
+        #expect(order.firstIndex(of: childB)! < order.firstIndex(of: above)!)
+        #expect(session.selectedLayerIDs == [childA, childB])
+        #expect(session.history.undoCount == undoCount + 1)
+        #expect(session.history.undoName == "Ungroup Layers")
+
+        session.undo()
+        #expect(session.document?.layers.first { $0.id == childA }?.parentID == group)
+        #expect(session.document?.layers.first { $0.id == group }?.isGroup == true)
+        session.redo()
+        #expect(session.document?.layers.count == 4)
+    }
+
+    @Test func ungroupPreservesClippingBetweenTwoOfAFoldersOwnChildren() throws {
+        let session = EditorSession()
+        session.createDocument(width: 100, height: 100)
+        session.addBlankLayer()
+        let base = try #require(session.activeLayerID)
+        session.addBlankLayer()
+        let clipped = try #require(session.activeLayerID)
+        session.linkMask(source: base, target: clipped)
+        session.selectLayers([base, clipped], primary: base)
+        session.groupSelectedLayers()
+        let group = try #require(session.activeLayerID)
+
+        session.ungroupLayers()
+        // Spliced in together at the folder's old spot, so the pair stays adjacent.
+        #expect(session.document?.layers.first { $0.id == clipped }?.maskSourceID == base)
+    }
+
+    @Test func ungroupingReleasesClippingThatNoLongerMakesSense() throws {
+        let session = EditorSession()
+        session.createDocument(width: 100, height: 100)
+        session.addBlankLayer()
+        let outsideBase = try #require(session.activeLayerID)
+        session.addBlankLayer()
+        let between = try #require(session.activeLayerID)
+        session.addBlankLayer()
+        let childSource = try #require(session.activeLayerID)
+        // A clip can be set up across a folder boundary — `linkMask` doesn't forbid it — even though the two
+        // layers aren't really adjacent once the folder is in between.
+        session.linkMask(source: outsideBase, target: childSource)
+        session.selectLayer(childSource)
+        session.groupSelectedLayers()
+        let group = try #require(session.activeLayerID)
+        #expect(session.document?.layers.map(\.id) == [outsideBase, between, group, childSource])
+
+        session.ungroupLayers()
+        // Ungrouped, `childSource` lands right after `between` — no longer next to its base — so the clip goes.
+        #expect(session.document?.layers.map(\.id) == [outsideBase, between, childSource])
+        #expect(session.document?.layers.first { $0.id == childSource }?.maskSourceID == nil)
+    }
+
+    @Test func panelSearchAndTypeFilterNarrowTheRows() throws {
+        let session = EditorSession()
+        session.createDocument(width: 50, height: 50)
+        session.addBlankLayer()
+        let blank = try #require(session.activeLayerID)
+        session.renameLayer(blank, to: "Sky")
+        session.addAdjustment(.levels)
+        session.adjustmentEditingID = nil // The Levels editor would block the layers that follow.
+        let adjustment = try #require(session.activeLayerID)
+        session.addGroup()
+        let folder = try #require(session.activeLayerID)
+        session.renameLayer(folder, to: "Portraits")
+        session.addBlankLayer()
+        let inside = try #require(session.activeLayerID)
+        session.renameLayer(inside, to: "Portrait")
+        let everything = session.filteredLayerRows
+        #expect(everything.map(\.depth) == [0, 1, 0, 0])
+
+        // The search looks inside closed folders too, and matches part of a name.
+        session.toggleGroupExpansion(folder)
+        session.layerSearchText = "port"
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [folder, inside])
+        session.layerSearchText = " sky "
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [blank])
+
+        // The type toggles narrow by kind, on their own and together with the search.
+        session.layerSearchText = ""
+        // A matching folder brings everything inside it along.
+        session.layerTypeFilter = [.folder, .adjustment]
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [folder, inside, adjustment])
+        session.layerSearchText = "sky"
+        #expect(session.filteredLayerRows.isEmpty)
+        session.layerSearchText = ""
+        session.layerTypeFilter = [.image]
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [inside, blank])
+        // Selected narrows to the selection, and follows it.
+        session.layerTypeFilter = [.selected]
+        session.selectLayer(blank)
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [blank])
+        session.selectLayer(adjustment)
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [adjustment])
+        // With everything off the whole list is back, folders as collapsed as they were.
+        session.toggleGroupExpansion(folder)
+        session.layerTypeFilter = []
+        #expect(session.filteredLayerRows.map(\.depth) == [0, 1, 0, 0])
+        #expect(session.filteredLayerRows.map { $0.layer.id } == session.layerRows.map { $0.layer.id })
     }
 }

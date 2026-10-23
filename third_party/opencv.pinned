@@ -2,7 +2,7 @@
 #
 # The actual source archive is NOT committed to this repo. flatpak-builder
 # fetches the URL below at build time and verifies the sha256 (declared in
-# com.wonderassembly.Compositor.yaml, Module "opencv"). This file is the
+# com.compositor.Client.yaml, Module "opencv"). This file is the
 # human-readable pin record; the manifest is the source of truth.
 #
 # Build: static, minimal modules (core,imgproc), bundled third-party

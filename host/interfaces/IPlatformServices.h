@@ -19,14 +19,22 @@
 #include <QColor>
 #include <QImage>
 #include <QString>
+#include <QStringList>
+#include <functional>
 #include <memory>
 
 class IFileDialogService {
 public:
     virtual ~IFileDialogService() = default;
     virtual QString chooseImageToOpen() = 0;
+    /// Several images at once (upstream's importer allows multiple selection).
+    virtual QStringList chooseImagesToImport() {
+        const QString path = chooseImageToOpen();
+        return path.isEmpty() ? QStringList() : QStringList{path};
+    }
     virtual QString chooseProjectToOpen() = 0;
-    virtual QString chooseProjectSavePath() = 0;
+    /// Suggested path or file name (e.g. Untitled.comp); empty lets the dialog pick a default.
+    virtual QString chooseProjectSavePath(const QString &suggestedPath = {}) = 0;
     /// `formatName` is "PNG", "JPEG", ...; `filter` a Qt-style name-filter string.
     virtual QString chooseExportPath(const QString &formatName, const QString &filter) = 0;
 };
@@ -44,6 +52,12 @@ public:
     virtual ~IColorPickerService() = default;
     /// Invalid colour when cancelled.
     virtual QColor pick(const QColor &initial, const QString &title) = 0;
+    /// Same, reporting the working colour as it changes, so the caller can preview it live (upstream previews text
+    /// and effect colours while its picker is open). Pickers without live updates fall back to `pick`.
+    virtual QColor pick(const QColor &initial, const QString &title, const std::function<void(const QColor &)> &preview) {
+        (void)preview;
+        return pick(initial, title);
+    }
 };
 
 class IUserNotifier {
@@ -51,6 +65,8 @@ public:
     virtual ~IUserNotifier() = default;
     virtual void warn(const QString &title, const QString &text) = 0;
 };
+
+#include "IUpdateService.h"
 
 class IStorageLocator {
 public:
@@ -67,6 +83,7 @@ struct PlatformServices {
     std::shared_ptr<IColorPickerService> colors;
     std::shared_ptr<IUserNotifier> notifier;
     std::shared_ptr<IStorageLocator> storage;
+    std::shared_ptr<IUpdateService> updates;
 
     /// Qt Widgets implementations (defined in QtPlatformServices.h).
     static PlatformServices qtDefaults();

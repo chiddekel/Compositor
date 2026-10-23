@@ -187,6 +187,6 @@ ctest --test-dir build --output-on-failure
 
 # 3. Build and launch the sandboxed Flatpak package
 flatpak-builder --disable-rofiles-fuse --user --install --force-clean \
-  build-flatpak com.wonderassembly.Compositor.yaml
-flatpak run com.wonderassembly.Compositor
+  build-flatpak com.compositor.Client.yaml
+flatpak run com.compositor.Client
 ```

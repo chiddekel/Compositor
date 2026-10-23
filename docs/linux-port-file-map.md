@@ -200,3 +200,4 @@ These are preliminary engineering ranges, not measured delivery promises. Human 
 
 Overall order of magnitude: 3–6 engineer-months for a dependable full port, or roughly 5–10 calendar weeks of closely supervised assisted work with continuous verification. Re-estimate after the first working journey. Vulkan is not the dominant workstream. No runtime integration, pixel equivalence or release timing has been demonstrated yet.
 
+<img width="1920" height="1080" alt="obraz" src="https://github.com/user-attachments/assets/f8499744-5c95-43bc-a51d-f195a67ceceb" />

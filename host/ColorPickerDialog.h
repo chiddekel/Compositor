@@ -165,10 +165,14 @@ public:
     }
 
     QColor color() const { return m_color; }
+    /// Called with the working colour every time it changes (drag, hue, channel, hex).
+    std::function<void(const QColor &)> onColorChanged;
 
     // Returns an invalid colour when cancelled.
-    static QColor getColor(const QColor &initial, QWidget *parent, const QString &title) {
+    static QColor getColor(const QColor &initial, QWidget *parent, const QString &title,
+                           const std::function<void(const QColor &)> &preview = {}) {
         ColorPickerDialog dialog(initial, title, parent);
+        dialog.onColorChanged = preview;
         return dialog.exec() == QDialog::Accepted ? dialog.color() : QColor();
     }
 
@@ -184,6 +188,7 @@ private:
         m_hex->setText(m_color.name(QColor::HexRgb).toUpper().mid(1));
         m_swatch->setStyleSheet(QString("background: %1; border: 1px solid #55565a; border-radius: 4px;").arg(m_color.name()));
         m_updating = false;
+        if (onColorChanged) onColorChanged(m_color);
     }
 
     QColor m_color;

@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# run-compositor.sh — Interactive launcher for Compositor on GNU/Linux.
+#
+# Runs Compositor under the Flatpak KDE 6.10 SDK with hardware GPU (DRI/Vulkan),
+# Wayland / X11 display socket forwarding, and Skia/Qt image bridge backends.
+#
+# Usage:
+#   ./scripts/run-compositor.sh [options] [path/to/image.png | path/to/project.cproject]
+#
+# Options:
+#   --install-desktop    Register Compositor in ~/.local/share/applications and icons
+#   --session-smoke      Run Swift composition root session journey self-test
+#   --dialog-smoke       Run Qt modal dialogs automated journey
+#   --io-smoke           Run Qt/libheif image codecs smoke test
+#   --layers-smoke       Run Qt layers dock interactive smoke test
+#   --brush-smoke        Run Qt brush engine smoke test
+#   --transform-smoke    Run Move / Free Transform: Ctrl+T enter, Enter apply, Esc reset
+#   --combo-smoke        Run native selection, gradient, pixel move, transform, text and refusal journeys
+#   --offscreen          Run headless using Qt offscreen platform plugin
+#   --release            Optimized build (~5x faster painting/rendering; slower first build)
+#   -h, --help           Show this help message
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SKIA_BRIDGE="${COMPOSITOR_SKIA_BRIDGE:-"$ROOT/build/lib/libCompositorSkiaBridge.so"}"
+IMAGEIO_BACKEND="${COMPOSITOR_IMAGEIO_BACKEND:-"$ROOT/build/lib/libCompositorQtImageIO.so"}"
+PDF_BACKEND="${COMPOSITOR_PDF_BACKEND:-"$ROOT/.build/linux-contract-native/libCompositorPDFBackend.so"}"
+
+# The SDK version must match the manifest's runtime-version exactly — the binary links against whatever Qt that
+# SDK ships, and a mismatched host SDK (e.g. a different major/minor Qt) fails at dynamic-link time with a missing
+# symbol-version error. Read it from the manifest instead of hardcoding a version: we don't control which Flatpak
+# runtimes are installed on a given machine, only which one the manifest declares this app is built against.
+MANIFEST="$ROOT/com.compositor.Client.yaml"
+SDK_VERSION="$(sed -n "s/^runtime-version: *['\"]\\?\\([0-9.]*\\)['\"]\\?.*/\\1/p" "$MANIFEST" | head -n1)"
+if [[ -z "$SDK_VERSION" ]]; then
+    echo "error: couldn't read runtime-version from $MANIFEST" >&2
+    exit 1
+fi
+SDK_REF="org.kde.Sdk//$SDK_VERSION"
+if ! flatpak info "$SDK_REF" >/dev/null 2>&1; then
+    echo "error: $SDK_REF is not installed (manifest requires it). Install with:" >&2
+    echo "  flatpak install flathub org.kde.Sdk//$SDK_VERSION" >&2
+    exit 1
+fi
+
+# Fallback to scratchpad if build/lib does not exist
+if [[ ! -f "$SKIA_BRIDGE" ]]; then
+    FALLBACK_SKIA=$(find /tmp/claude-1000 -name "libCompositorSkiaBridge.so" 2>/dev/null | head -n 1 || true)
+    if [[ -n "$FALLBACK_SKIA" && -f "$FALLBACK_SKIA" ]]; then
+        mkdir -p "$ROOT/build/lib"
+        cp -p "$FALLBACK_SKIA" "$ROOT/build/lib/"
+        SKIA_BRIDGE="$ROOT/build/lib/libCompositorSkiaBridge.so"
+    fi
+fi
+
+if [[ ! -f "$IMAGEIO_BACKEND" ]]; then
+    FALLBACK_IMAGEIO=$(find /tmp/claude-1000 -name "libCompositorQtImageIO.so" 2>/dev/null | head -n 1 || true)
+    if [[ -n "$FALLBACK_IMAGEIO" && -f "$FALLBACK_IMAGEIO" ]]; then
+        mkdir -p "$ROOT/build/lib"
+        cp -p "$FALLBACK_IMAGEIO" "$ROOT/build/lib/"
+        IMAGEIO_BACKEND="$ROOT/build/lib/libCompositorQtImageIO.so"
+    fi
+fi
+
+if [[ "${1:-}" == "--install-desktop" ]]; then
+    echo "Installing Compositor desktop integration..."
+    APP_DIR="${XDG_DATA_HOME:-"$HOME/.local/share"}/applications"
+    ICON_BASE="${XDG_DATA_HOME:-"$HOME/.local/share"}/icons/hicolor"
+    mkdir -p "$APP_DIR"
+
+    # Install icons
+    for size in 16 32 64 128 256 512 1024; do
+        SRC_ICON="$ROOT/Compositor/Assets.xcassets/AppIcon.appiconset/app-icon-${size}.png"
+        if [[ -f "$SRC_ICON" ]]; then
+            DST_DIR="$ICON_BASE/${size}x${size}/apps"
+            mkdir -p "$DST_DIR"
+            cp -p "$SRC_ICON" "$DST_DIR/com.compositor.Client.png"
+        fi
+    done
+
+    # Generate desktop entry pointing to this launcher script
+    cat > "$APP_DIR/com.compositor.Client.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Compositor
+GenericName=Image Editor
+Comment=A free, open-source, Photoshop-style image editor
+Exec=$ROOT/scripts/run-compositor.sh %F
+Icon=com.compositor.Client
+Terminal=false
+Categories=Graphics;Photography;2DGraphics;RasterGraphics;
+MimeType=application/x-compositor-project;application/pdf;image/png;image/jpeg;image/heic;image/heif;image/tiff;image/webp;
+Keywords=photo;editor;image;layers;compositing;
+EOF
+
+    update-desktop-database "$APP_DIR" 2>/dev/null || true
+    gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-"$HOME/.local/share"}/icons/hicolor" 2>/dev/null || true
+    echo "Compositor successfully installed to $APP_DIR/com.compositor.Client.desktop"
+    exit 0
+fi
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    head -n 21 "${BASH_SOURCE[0]}" | tail -n 17 | sed 's/^#//;s/^ //'
+    exit 0
+fi
+
+# With the SDK installed both per-user and system-wide, flatpak run stops to ask which one; prefer the user copy.
+SDK_INSTALLATION=()
+if flatpak info --user "$SDK_REF" >/dev/null 2>&1; then SDK_INSTALLATION=(--user); fi
+
+FLATPAK_ARGS=(
+    "${SDK_INSTALLATION[@]}"
+    --command=bash
+    --devel
+    --filesystem=host
+    --filesystem=/tmp
+    --share=ipc
+    --device=dri
+    --socket=session-bus
+    # Mount org.freedesktop.Sdk.Extension.swift6 into /usr/lib/sdk/swift6
+    # (KDE Sdk declares the Extension point; branch must match Sdk metadata, currently 25.08).
+    --env=FLATPAK_ENABLE_SDK_EXT=swift6
+)
+
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    FLATPAK_ARGS+=(--socket=wayland)
+fi
+
+if [[ -n "${DISPLAY:-}" ]]; then
+    FLATPAK_ARGS+=(--socket=fallback-x11 --env=DISPLAY="$DISPLAY")
+fi
+
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    FLATPAK_ARGS+=(--filesystem="$XDG_RUNTIME_DIR")
+fi
+
+OFFSCREEN=0
+CONFIG=debug
+PASSTHROUGH_ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--offscreen" ]]; then
+        OFFSCREEN=1
+    elif [[ "$arg" == "--release" ]]; then
+        CONFIG=release
+    else
+        PASSTHROUGH_ARGS+=("$arg")
+    fi
+done
+
+ENV_EXPORTS="export COMPOSITOR_SKIA_BRIDGE='$SKIA_BRIDGE'; export COMPOSITOR_IMAGEIO_BACKEND='$IMAGEIO_BACKEND'; export COMPOSITOR_PDF_BACKEND='$PDF_BACKEND';"
+if [[ "$OFFSCREEN" -eq 1 ]]; then
+    ENV_EXPORTS+=" export QT_QPA_PLATFORM=offscreen;"
+fi
+
+flatpak run "${FLATPAK_ARGS[@]}" "$SDK_REF" -c "
+    cd '$ROOT'
+    $ENV_EXPORTS
+    # --product, not --target: for an executable target, 'swift build --target' can report success without
+    # actually invoking the final link step (confirmed — it leaves stale object files up to date and skips
+    # relinking even after 'swift package clean'), silently leaving a missing or stale binary. --product always
+    # builds and links the real deliverable.
+    # A failed build must not fall through to running the previous binary (stale code passing for new).
+    /usr/lib/sdk/swift6/bin/swift build -c $CONFIG --product CompositorHostBootstrap || exit 1
+    # Upstream resources read through Bundle.main (the executable's directory on Linux).
+    install -m644 Compositor/Resources/CameraRawTables.bin Compositor/Resources/CameraRawShadows.bin .build/x86_64-unknown-linux-gnu/$CONFIG/
+    exec .build/x86_64-unknown-linux-gnu/$CONFIG/CompositorHostBootstrap "\$@"
+" bash "${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}"

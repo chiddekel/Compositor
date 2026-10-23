@@ -1,0 +1,36 @@
+name: Optional desktop previews
+on:
+  workflow_dispatch:
+  push:
+    branches: [GNU_Linux]
+    paths: ['desktop/**', 'scripts/desktop-integration.py', 'tests/test_*provider.py', 'tests/test_desktop_integration.py', '.github/workflows/desktop-previews.yml']
+  pull_request:
+    branches: [GNU_Linux]
+    paths: ['desktop/**', 'scripts/desktop-integration.py', 'tests/test_*provider.py', 'tests/test_desktop_integration.py', '.github/workflows/desktop-previews.yml']
+permissions:
+  contents: read
+jobs:
+  providers:
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - name: Install host provider dependencies
+        run: dnf install -y git cmake gcc-c++ make kf6-kio-devel kf6-kcoreaddons-devel kf6-kio-extras qt6-qtbase-devel nautilus nautilus-python dolphin python3-gobject python3-pillow xorg-x11-server-Xvfb xorg-x11-xauth xdotool dbus-daemon gvfs ImageMagick
+      - uses: actions/checkout@v4
+      - run: python3 tests/test_desktop_integration.py
+      - run: cmake -S desktop/kde -B .build/desktop-preview -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build .build/desktop-preview --parallel 2
+      - run: QT_QPA_PLATFORM=offscreen ctest --test-dir .build/desktop-preview --output-on-failure
+      - name: Prepare unprivileged desktop session
+        run: |
+          useradd --create-home compositor-test
+          mkdir -p .build/desktop-evidence
+          chown compositor-test .build/desktop-evidence
+      - run: runuser -u compositor-test -- python3 tests/test_nautilus_provider.py --evidence .build/desktop-evidence
+      - run: runuser -u compositor-test -- python3 tests/test_dolphin_provider.py --plugin .build/desktop-preview/plugins/kf6/thumbcreator/acompositorpreview.so --evidence .build/desktop-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-provider-evidence
+          path: .build/desktop-evidence
+          if-no-files-found: error

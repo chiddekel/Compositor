@@ -2,21 +2,40 @@
 
 Adobe Photoshop costs too much and tools like GIMP don’t feel familiar enough for me to stay in flow. That’s why I built Compositor.
 
-The goal was to create a full-featured image editor that is completely free and open source. I use Photoshop for compositing and post-processing, so Compositor is built around that workflow - with the tools needed to create a pixel-perfect final image.
+The goal was to create a full-featured image editor that is completely free and open source. I used to use Photoshop for compositing and post-processing, so Compositor is built around that workflow - with the tools needed to create a pixel-perfect final image.
 
 Because it’s open source, you can download the Xcode project and add, remove, or modify any feature to fit your workflow.
+
+**Jump to:** [Features](#features) · [macOS build](#requirements) · [**Linux port**](#linux-port) · [Releasing](#releasing) · [License](#license)
+
+## Installation
+
+### Linux alpha (Flatpak)
+
+Install the x86_64 alpha from the [Linux download page](https://chiddekel.github.io/Compositor/).
+The installed app's **Check for Updates…** menu updates it through Flatpak.
+See [Flatpak releases](docs/flatpak-releases.md) for installation, updating, and publishing.
+
+### Download
+Get Compositor from [robbietilton.com/compositor](https://robbietilton.com/compositor), or download the latest release directly from [GitHub Releases](https://github.com/robbietilton/Compositor/releases/latest).
+
+### Homebrew
+
+```sh
+brew install --cask robbietilton-compositor
+```
 
 ## Features
 
 ### Layers
-- Layers and folders, with blend modes and opacity — a folder's opacity dims everything inside it
-- Layer masks: paint, fill, invert, blur and feather them; link or unlink them to transform a mask on its own
+- Layers and folders, with opacity and Photoshop's full set of blend modes in its order — a folder's opacity dims everything inside it
+- Layer masks: paint, fill, invert, blur and feather them anywhere on the canvas, past the layer's own pixels; link or unlink them to transform a mask on its own
 - Clipping masks and folder masks
-- Adjustment layers: Hue/Saturation, Levels, Curves, Exposure, Gradient Map and Grain
-- Layer effects: Stroke, Drop Shadow, Color Overlay, Inner Shadow and Outer Glow, rendered on the GPU and editable at any time
+- Adjustment layers: Hue/Saturation, Levels, Curves, Exposure, Gradient Map, Grain, Black & White, Color Balance, Invert, and filter layers: Gaussian Blur, Motion Blur, Progressive Blur, Noise, Bloom / Glow and RGB Split
+- Layer effects: Stroke, Drop Shadow, Color Overlay, Inner Shadow, Outer Glow and Inner Glow, rendered on the GPU and editable at any time
 - Merge Down, Merge Layers and Merge Group (⌘E)
-- Duplicate, rename inline, reorder and nest by drag and drop; Option-drag to duplicate
-- Drag layers between open projects
+- Duplicate, rename inline, reorder and nest by drag and drop; Option-drag to duplicate; a right-click menu in the Layers panel
+- Copy and paste whole layers and folders (⌘C/⌘V with no selection), within a project or between projects, or drag them between projects
 
 ### Transform
 - Non-destructive move, scale, rotate and flip — images keep their full resolution however small you make them
@@ -35,6 +54,7 @@ Because it’s open source, you can download the Xcode project and add, remove, 
 
 ### Painting and retouching
 - Brush with size, hardness, opacity and smoothing, in Paint or Erase mode (B and E), and Shift for straight lines
+- Pen pressure for the Brush's size and opacity, on a graphics tablet
 - Spot Healing Brush (content-aware)
 - Clone Stamp, aligned or not, sampling one layer or all of them
 - Blur tool, on pixels or masks
@@ -43,69 +63,112 @@ Because it’s open source, you can download the Xcode project and add, remove, 
 - Eyedropper and a full color picker
 
 ### Adjustments and filters
-- Levels (with Auto), Curves, Hue/Saturation, Exposure, Gradient Map, Grain and Invert
+- Camera Raw filter: light, color, curves, color mixer, color grading, detail, optics and geometry, in a panel beside the canvas; each section resets to its defaults from its header
+- Levels (with Auto), Curves, Hue/Saturation, Exposure, Gradient Map, Grain, Black & White, Color Balance and Invert
 - Gaussian Blur and Motion Blur that spread past a layer's edges
-- Add Noise, Lens Correction and Remove Background
+- Add Noise, Vignette, Bloom / Glow, Dither, Scanlines, RGB Split, Tonal Contrast, Lens Correction and Remove Background
 - Live previews, limited to the selection when there is one
+- Last Filter (⌃⌘F) runs the last filter again with the same settings
 
 ### Canvas and files
 - Multiple projects in tabs
-- Rulers (⌘R), guides dragged from them, a layout grid, and Snap To for guides, grid, layers and document bounds
-- Crop with snapping, and Option for symmetric cropping
-- Canvas Size and Image Size
+- Search Commands (⌘F): find every menu command and tool by name, as in Raycast or Obsidian, and run it with Return
+- Toggle Fullscreen (F): the canvas alone on black over the whole screen, with every panel put away; F or Esc brings them back
+- Rulers (⌘R), guides dragged from them, a layout grid with adjustable spacing and subdivisions, and Snap To for guides, grid, layers and document bounds
+- Crop with snapping, ratios including 3:4 and 9:16, and Option for symmetric cropping; with a selection, the crop starts at it
+- Canvas Size, Image Size and Trim
+- The tool bar moves into two columns when the window is too short for one
+- A Navigator minimap in the canvas's corner from 300% zoom: the whole document in small with a box around the view; click or drag to move there (View › Navigator)
 - Sharp high-quality downsampling when zoomed out, and a pixel grid when zoomed in
-- Import JPEG, PNG, HEIC, TIFF and Photoshop PSD (8-bit RGB only; not PSB or CMYK). PSD folders, masks, a subset of blend modes, and fill rectangles/ellipses stay editable; text and other vectors become pixels. A conversion report is shown before anything is applied.
-- Export JPEG with a live preview (⇧⌥⌘S); Copy Merged
+- Import JPEG, PNG, HEIC, TIFF, WebP, SVG, PDF (every page its own layer, at 300 DPI or fitted to the canvas), animated GIF (one layer whose frames show in a strip under the canvas, to play, paint on, duplicate, delete and retime), camera RAW (with a develop step first) and Photoshop PSD and PSB (8-bit RGB; not CMYK). Each Photoshop artboard opens in a tab of its own; folders, masks, blend modes, fill rectangles/ellipses, and simple horizontal text stay editable; other vectors and vertical text become pixels. A conversion report is shown before anything is applied.
+- Large documents: the memory budget scales with your Mac, and a Photoshop file too big to open has its layers cropped to the canvas instead
+- Export PNG (⇧⌘E), Export JPEG (⇧⌥⌘S), and Export As (⇧⌥⌘W) for PNG, JPEG, a one-page PDF at the print size or, with a GIF layer, an animated GIF, scaled if you like, with a live preview, JPEG quality and file size; Channel Pack in Export As packs layers into a PNG's red, green, blue and alpha for game textures, and RGB Split's Split to Layers turns a layer back into those four; Copy Merged
+- Keep working while a project saves
 - Photoshop-style keyboard shortcuts throughout, remappable in Edit > Keyboard Shortcuts
+- Drag a number's label to scrub its value, as in Photoshop
 - Automatic updates, signed and notarized
+
+### Works with AI agents
+- AI agents and scripts can build and edit projects directly: a `.comp` is a folder of PNG layers and a manifest, and an open project updates live as it's written. See [Writing Compositor projects](docs/writing-comp-files.md)
 
 ## Requirements
 
-- macOS 26.5 or later
+- macOS 26.0 or later on a Mac with Apple silicon
 - Xcode 26 or later (to build from source)
+
+## Translations
+
+Compositor is English only for now, and translation pull requests aren't being accepted. It's maintained by one person, every new string would need translating from then on, and translations in languages I don't read can't be reviewed. I'll revisit this once the app settles; until then, please don't open localization PRs.
+
+## Other platforms
+
+Compositor is macOS only. These unofficial ports are made by others, not reviewed or supported by me, so please report issues to them:
+
+- [CompositorWindows](https://github.com/Cengokill/CompositorWindows) by [@Cengokill](https://github.com/Cengokill): Windows
+- [Composa](https://github.com/dvdstelt/Composa) by [@dvdstelt](https://github.com/dvdstelt): Windows and Linux
+- [CompositorLX](https://github.com/ClaudiuJitea/compositorLX) by [@ClaudiuJitea](https://github.com/ClaudiuJitea): Linux
+
+More are listed in [#23 (Windows)](https://github.com/robbietilton/Compositor/issues/23) and [#19 (Linux)](https://github.com/robbietilton/Compositor/issues/19).
 
 ## Building
 
 Open `Compositor.xcodeproj` and run the **Compositor** scheme.
 
-### Linux (Flatpak)
+## Linux Port
 
-The Linux port builds entirely inside the Flatpak SDK sandbox — it never links
-the build host's installed system libraries. Qt6 comes from the KDE SDK (6.11, compatible with 6.10),
-Swift from the `swift6` SDK extension (Freedesktop 26.08 branch, Swift 6.3.3), and
-Skia + OpenCV are vendored as pinned Flatpak modules compiled into `/app`.
+Runs on GNU/Linux via Flatpak. Upstream Swift/SwiftUI compiles unmodified against a Linux
+compat layer (AppKit/CoreGraphics/SwiftUI) — same look and behavior as macOS, custom title
+bar included.
 
-Install the runtime, SDK, and Swift extension (one-time):
+### Requirements
 
 ```
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak install --user flathub \
     org.kde.Platform//6.11 org.kde.Sdk//6.11 \
     org.freedesktop.Sdk.Extension.swift6//26.08
 ```
 
-Build and install the app:
+Version must match the manifest's `runtime-version` — mismatched SDK/runtime fails to link.
+
+### Run it
 
 ```
-flatpak-builder --user --install --force-clean build-dir \
-    com.wonderassembly.Compositor.yaml
+flatpak-builder --user --install --force-clean build-dir com.compositor.Client.yaml
+flatpak run com.compositor.Client
 ```
 
-Run:
+No native title bar: drag the header to move the window, double-click to maximize.
+
+Headless: `QT_QPA_PLATFORM=offscreen flatpak run com.compositor.Client --help`
+
+Optional Nautilus/Dolphin project previews and the independent macOS/Linux render
+comparison are described in [render parity and desktop previews](docs/render-parity-and-desktop-previews.md).
+
+### Dev loop
+
+[`scripts/run-compositor.sh`](scripts/run-compositor.sh) — builds from the working tree, runs from `.build/`, seconds not minutes:
 
 ```
-flatpak run com.wonderassembly.Compositor
+./scripts/run-compositor.sh              # build + run
+./scripts/run-compositor.sh --offscreen  # headless
 ```
 
-Headless smoke test (no display):
+Smoke tests (add `--offscreen`):
+
+| Flag | Checks |
+|---|---|
+| `--session-smoke` | new/paint/render/undo/redo/close |
+| `--dialog-smoke` | resize, undo, autosave, save/reopen |
+| `--io-smoke` | image codecs |
+| `--layers-smoke` | layers dock |
+| `--brush-smoke` | brush + blend + paint |
+
+<details>
+<summary>Manual build (what the script automates)</summary>
 
 ```
-QT_QPA_PLATFORM=offscreen flatpak run com.wonderassembly.Compositor --help
-```
-
-Local development (build from the working tree inside the sandbox):
-
-```
-flatpak-builder --run build-dir com.wonderassembly.Compositor.yaml bash
+flatpak-builder --run build-dir com.compositor.Client.yaml bash
 # inside the sandbox:
 export PATH=/usr/lib/sdk/swift6/bin:$PATH
 swift build -c release --static-swift-stdlib
@@ -117,9 +180,37 @@ cmake --build build
 QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 ```
 
-The Skia and OpenCV source archives are not committed to the repo; `flatpak-builder`
-fetches and verifies them (pinned `sha256` in the manifest) at build time.
-Provenance records live in `third_party/skia.pinned` and `third_party/opencv.pinned`.
+Linux dependency source archives, including Skia's required dependencies and GN,
+are committed with pinned checksums and license notices. See
+[Vendored Linux dependencies](docs/vendored-linux-dependencies.md) for offline
+verification, build instructions and the update procedure.
+
+</details>
+
+### Docs
+
+| | |
+|---|---|
+| [`docs/platform-abstraction.md`](docs/platform-abstraction.md) | macOS API → Linux/Qt mapping |
+| [`docs/linux-port-file-map.md`](docs/linux-port-file-map.md) | which files are reused vs. replaced |
+| [`docs/project-format.md`](docs/project-format.md) | the `.comp` file format |
+| [`linux/upstream-parity.json`](linux/upstream-parity.json) | every UI override, and why |
+| [`linux/UPSTREAM_TEST_EXCLUSIONS.md`](linux/UPSTREAM_TEST_EXCLUSIONS.md) | skipped upstream tests, and why |
+| [`docs/upstream-test-baseline.md`](docs/upstream-test-baseline.md) | the correct `swift test` invocation (env vars, flags) and current pass count |
+
+**Contributing:** extend `Sources/Compat/` before adding to `Sources/Overrides/`. Overrides are
+a last resort for the handful of cases that need the Objective-C runtime or missing AppKit —
+same public API either way.
+
+### Known issues
+
+- **Correction to an earlier version of this note**: running `AdjustmentLayerTests`/`ProjectTests` without
+  `COMPOSITOR_SKIA_BRIDGE`/`COMPOSITOR_IMAGEIO_BACKEND` set produces blank pixels (every `CGContext` silently
+  no-ops when no Skia bridge resolves — see `docs/upstream-test-baseline.md`), which was previously misdiagnosed
+  here as a native pixel-kernel/Accelerate-vImage portability bug. It isn't — it's a missing test prerequisite.
+  Run tests the way `docs/upstream-test-baseline.md` documents and this doesn't happen (260+/260+ passing).
+- InnerGlow renders on every effects tier (Vulkan, OpenCV, C++), matching upstream's Metal passes; the prebuilt
+  opt-in Skia tier (`COMPOSITOR_EFFECTS=skia`) does not draw it.
 
 ## Releasing
 

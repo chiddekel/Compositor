@@ -1,0 +1,12 @@
+--- a/Compositor/IO/GIFDecoder.swift
++++ b/Compositor/IO/GIFDecoder.swift
+@@ -45,8 +45,7 @@
+         }
+         if let edited = animation.framePixels[index] { return edited }
+         return try autoreleasepool {
+-            guard let reader = CGImageSourceCreateWithData(animation.source.data as CFData,
+-                [kCGImageSourceShouldCache: false] as CFDictionary) else { throw ImageImportError.unreadable }
++            guard let reader = animation.source.imageSource else { throw ImageImportError.unreadable }
+             _ = try frameSize(reader, index: sourceIndex)
+             guard let decoded = CGImageSourceCreateImageAtIndex(reader, sourceIndex,
+                 [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw ImageImportError.unreadable }

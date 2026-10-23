@@ -1,0 +1,30 @@
+--- a/Compositor/Rendering/TransformOverlay.swift
++++ b/Compositor/Rendering/TransformOverlay.swift
+@@ -23,8 +23,17 @@
+         showsRotation = false
+     }
+ 
++    /// Preferred hit reach in view points; small objects still need a draggable interior.
++    static var hitSlop: CGFloat { TouchTargets.large ? 28 : 16 }
++
+     func hit(_ point: CGPoint) -> TransformDrag.Mode? {
+-        func near(_ other: CGPoint) -> Bool { hypot(point.x - other.x, point.y - other.y) <= 10 }
++        // Leave the middle third of even the shortest edge available for moving the object.
++        let shortestSide = [(0, 2), (2, 4), (4, 6), (6, 0)].map { edge in
++            let a = handles[edge.0], b = handles[edge.1]
++            return hypot(b.x - a.x, b.y - a.y)
++        }.min() ?? 0
++        let slop = min(Self.hitSlop, shortestSide / 3)
++        func near(_ other: CGPoint) -> Bool { hypot(point.x - other.x, point.y - other.y) <= slop }
+         if showsRotation, near(rotationHandle) { return .rotate }
+         if let index = handles.firstIndex(where: near) { return .resize(index) }
+         for (start, end, handle) in [(0, 2, 1), (2, 4, 3), (4, 6, 5), (6, 0, 7)] {
+@@ -33,7 +42,7 @@
+             let lengthSquared = dx * dx + dy * dy
+             guard lengthSquared > 0 else { continue }
+             let t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared
+-            if (0...1).contains(t), hypot(point.x - a.x - t * dx, point.y - a.y - t * dy) <= 10 {
++            if (0...1).contains(t), hypot(point.x - a.x - t * dx, point.y - a.y - t * dy) <= slop {
+                 return .resize(handle)
+             }
+         }

@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+TryExec=compositor-thumbnailer
+Exec=compositor-thumbnailer %i %o %s
+MimeType=application/x-compositor-project;

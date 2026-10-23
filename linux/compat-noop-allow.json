@@ -1,0 +1,33 @@
+{
+  "animation": {
+    "reason": "Animations are not run on Linux; the state change still happens, instantly (tab reorder slide, Transform inspector transition). Visual only.",
+    "uses": [
+      "Compositor/UI/ProjectTabs.swift: .animation(isDragged ? nil : .easeOut(duration: 0.15), value: reorder?.targetIndex)",
+      "Compositor/UI/TransformInspector.swift: .animation(.easeOut(duration: 0.12), value: pending)"
+    ]
+  },
+  "fileImporter": {
+    "reason": "The Qt shell presents the native file chooser when session.showsImporter is set (bridge state `showsImporter`, command `dismissImporter`).",
+    "uses": [
+      "Compositor/ContentView.swift: .fileImporter(isPresented: $session.showsImporter,"
+    ]
+  },
+  "navigationTitle": {
+    "reason": "Upstream hides the title (titleVisibility = .hidden); the shell titles the window from the project itself (SessionWindow setWindowTitle).",
+    "uses": [
+      "Compositor/ContentView.swift: .navigationTitle(session.projectURL?.deletingPathExtension().lastPathComponent ?? \"Untitled\")"
+    ]
+  },
+  "preferredColorScheme": {
+    "reason": "The Linux shell is always dark (Fusion with the dark palette), which is what `.dark` asks for.",
+    "uses": [
+      "Compositor/ContentView.swift: .preferredColorScheme(.dark)"
+    ]
+  },
+  "sharedBackgroundVisibility": {
+    "reason": "macOS 26 toolbar glass; the Linux header bar is drawn by the shell without it.",
+    "uses": [
+      "Compositor/ContentView.swift: .sharedBackgroundVisibility(.hidden)"
+    ]
+  }
+}
