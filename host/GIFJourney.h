@@ -3,6 +3,7 @@
 #include <QAbstractButton>
 #include <QDir>
 #include <QImageReader>
+#include <QMenu>
 #include <QPushButton>
 #include <QToolBar>
 
@@ -28,6 +29,15 @@ inline int run(QApplication &) {
             return nullptr;
         };
         pump([&] { return timeline() && timeline()->isVisible() && frame(3) && play(); }, "GIF timeline controls missing");
+        pump([&] {
+            for (auto *button : timeline()->findChildren<QPushButton *>()) {
+                if (button->isVisible() && button->text() == QString::fromUtf8("40–160ms") && button->menu()) {
+                    for (auto *action : button->menu()->actions())
+                        if (action->text() == QString::fromUtf8("40–160 ms · Original")) return true;
+                }
+            }
+            return false;
+        }, "GIF original delay range missing from button or menu");
         const auto original = window.sessionState();
         pump([&] { return frame(2) && frame(2)->isEnabled(); }, "GIF frame selection remained disabled");
         click(frame(2));
@@ -89,7 +99,7 @@ inline int run(QApplication &) {
         require(window.height() == 600, "tool rail resized the window instead of adapting");
         window.resize(1200, 1100);
         pump([&] { return rail->width() < 92; }, "tool rail did not return to one column");
-        qInfo("Qt GIF OK (import, timeline controls, frame pixels/history, play/pause, save/reopen, GIF export timing and short-window tool columns)");
+        qInfo("Qt GIF OK (import, timeline controls and original delay labels, frame pixels/history, play/pause, save/reopen, GIF export timing and short-window tool columns)");
         return 0;
     } catch (const std::exception &error) {
         qCritical("Qt GIF failed: %s", error.what()); return 1;

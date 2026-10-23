@@ -19,7 +19,9 @@ final class GIFDecoderLifetimeTests: XCTestCase {
             for _ in 0..<count { CGImageDestinationAddImage(destination, image, nil) }
             XCTAssertTrue(CGImageDestinationFinalize(destination))
             var source: GIFSource? = try GIFDecoder.source(sink as Data, name: "Scaling")
-            weak var reader = source?.imageSource
+            // Upstream owns the lazy reader now; observe its lifetime through the serialized accessor.
+            weak var reader: CGImageSource?
+            try XCTUnwrap(source).withReader { reader = $0 }
             let before = reads(nil)
             for index in 0..<count {
                 let animation = GIFAnimation(source: try XCTUnwrap(source))
