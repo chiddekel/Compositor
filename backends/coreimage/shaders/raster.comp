@@ -36,7 +36,7 @@ vec4 dispersion(uvec2 pixel) {
         float t=n==1 ? 0 : (float(i)+jitter)/float(n)*2-1;
         vec3 weight=vec3(smoothstep(-0.3,1.0,t),1-smoothstep(0.0,1.0,abs(t))+0.05,smoothstep(-0.3,1.0,-t));
         for (uint j=0;j<m;++j) {
-            float v=m==1 ? 0 : (float(j)+jitter)/float(m);
+            float v=m==1 ? 0 : (float(j)+jitter)/float(m)-0.5;
             vec4 c=dispersionTap(at-spread*t-streak*v);
             color+=weight*c.rgb; alpha+=weight*c.a; total+=weight;
         }

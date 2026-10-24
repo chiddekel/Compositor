@@ -39,7 +39,7 @@ extern "C" int compositor_dispersion_render(CompositorVulkanRaster *gpu, unsigne
             float t=n==1 ? 0 : (float(i)+jitter)/float(n)*2-1;
             float weight[3]{smooth(-0.3f,1,t),1-smooth(0,1,std::abs(t))+0.05f,smooth(-0.3f,1,-t)};
             for (unsigned j=0;j<m;++j) {
-                float u=m==1 ? 0 : (float(j)+jitter)/float(m);
+                float u=m==1 ? 0 : (float(j)+jitter)/float(m)-0.5f;
                 float qx=ax-dx*(p[4]*t+p[5]*u), qy=ay-dy*(p[4]*t+p[5]*u);
                 float a=tap(qx,qy,3);
                 for (int c=0;c<3;++c) {

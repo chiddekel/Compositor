@@ -2,7 +2,7 @@
   "upstream_remote": "upstream",
   "upstream_ref": "upstream/main",
   "ledger_base": "a1bd74c",
-  "ledger_to": "a5c900d",
+  "ledger_to": "c9c7531",
   "protected_roots": [
     "Compositor",
     "CompositorTests",
@@ -44,7 +44,7 @@
     "Compositor/UI/LatinKeys.swift": "Sources/Overrides/LatinKeys.swift (generated: native keyboard-layout lookup replaces Carbon; upstream event normalization retained)",
     "Compositor/Document/ProjectWorkspace.swift": "Sources/Overrides/ProjectWorkspace.swift (generated: import-session ownership at tab creation; original workspace and artboard algorithms retained)"
   },
-  "status": "Integrated upstream through a5c900d: GIF playback uses the saved timing scheduler and displays original delay values. GIFAnimation and GIFDecoder now compile unchanged from upstream; obsolete Linux reader overrides are retired. Verification: docs/upstream-a5c900d-integration.md.",
+  "status": "Implemented upstream 1.5.8 through c9c7531: restored format 15/16 loading, revised Prism controls, and threshold-100 light density through generic Core Image area maximum, red float output, and circular morphology. Focused tests, serial tests, source integrity and native CTest targets pass; the full parallel suite retains 15 GPU availability failures and the unresolved RGB Split tail-pixel discrepancy. Verification: docs/upstream-1.5.8-integration.md.",
   "drift": {
     "Sources/Overrides/ContentView.swift": {
       "mode": "generated",

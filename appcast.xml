@@ -3,17 +3,16 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.5.6</title>
-      <pubDate>Fri, 23 Oct 2026 03:20:29 +0000</pubDate>
-      <sparkle:version>52</sparkle:version>
-      <sparkle:shortVersionString>1.5.6</sparkle:shortVersionString>
+      <title>Version 1.5.8</title>
+      <pubDate>Sat, 24 Oct 2026 04:48:14 +0000</pubDate>
+      <sparkle:version>54</sparkle:version>
+      <sparkle:shortVersionString>1.5.8</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.6</link>
-      <changes><![CDATA[- Animated GIFs: a GIF imports as one layer with its frames in a strip under the canvas, to play, paint on, duplicate, delete and retime; Export As saves animated GIFs.
-- Search the Layers panel by name, or show only one kind of layer or the selected ones.
-- The tool bar moves into two columns when the window is too short for one.
-- Canvas Size keeps the zoom, so added or trimmed canvas shows as such.]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.6/Compositor.dmg" sparkle:edSignature="ZvnDG9w6T6/SX+ZCQa2SmIwlq/7EkctjVl+KASjjbikERspBjgsjJA3L7/XOmg695BWYaaVgtSSqMLFatwcjBw==" length="8490463" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.8</link>
+      <changes><![CDATA[Projects saved by 1.5.4 and 1.5.5 open again.
+Filter › Lens Effects: Prism copies stay crisp and echo into the shadows, one way or both, with Blur in place of Reach.
+Lens Effects' Threshold goes to 100%, down to just the brightest one or two lights.]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.8/Compositor.dmg" sparkle:edSignature="1ooGzsFahg2XNc19yBDci4ICIRb5qTFq6w2Jy5P5O2Tql1oy5Tc6hdlCJD2/+zIefkiq4uzzrLT7li916iAoDQ==" length="8539058" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

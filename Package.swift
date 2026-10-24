@@ -134,6 +134,7 @@ let package = Package(
                 "MetalBrushCoverage.swift",
                 "MetalCameraRawLookup.swift",
                 "MetalDispersion.swift",
+                "MetalBokeh.swift",
                 "MetalLayerEffects.swift",
                 "MetalWarp.swift",
                 "NavigatorGeometry.swift",

@@ -1,0 +1,26 @@
+name: RGB Metal parity reference
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [verify/rgb-metal-parity]
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Capture the unchanged upstream shader and jitter
+        run: swift scripts/check-parity-rgb-macos.swift "$GITHUB_WORKSPACE" > rgb-metal-parity.json
+      - name: Retain the reference output
+        uses: actions/upload-artifact@v4
+        with:
+          name: rgb-metal-parity
+          path: rgb-metal-parity.json
+          if-no-files-found: error

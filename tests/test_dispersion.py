@@ -14,7 +14,8 @@ def main(path):
     lib.compositor_vulkan_raster_submissions.argtypes = [C.c_void_p]
     lib.compositor_vulkan_raster_submissions.restype = C.c_uint64
     lib.compositor_dispersion_render.argtypes = [C.c_void_p, C.c_uint, C.c_uint, floats, floats, floats]
-    gpu = lib.compositor_vulkan_raster_create(0)
+    # Permit Mesa lavapipe so SDK/CI machines without a physical GPU exercise the shader too.
+    gpu = lib.compositor_vulkan_raster_create(1)
     width, height = 61, 45
     source = [0.0] * (width * height * 4)
     for y in range(20, 25):
@@ -44,7 +45,15 @@ def main(path):
             streak = parameters.copy()
             streak[5], streak[10] = 16, 8
             blurred = run(streak, driver=driver)
-            assert sum(blurred[(22 * width + x) * 4 + 3] for x in range(44, 49)) > 0
+            assert sum(blurred[(22 * width + x) * 4 + 3] for x in range(36, 41)) > 0
+            # Blur without a spectral split spreads both ways and keeps the light's center.
+            centered = streak.copy()
+            centered[4], centered[9], centered[10] = 0, 1, 64
+            symmetric = run(centered, driver=driver)
+            weights = [symmetric[(22 * width + x) * 4 + 3] for x in range(width)]
+            centroid = sum(x * weight for x, weight in enumerate(weights)) / sum(weights)
+            assert abs(centroid - 30) < 0.6, centroid
+            assert sum(weights[20:28]) > 0 and sum(weights[33:41]) > 0
             radial = parameters.copy()
             radial[7] = 1
             radial_result = run(radial, driver=driver)

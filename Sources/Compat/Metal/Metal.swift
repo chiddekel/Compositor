@@ -9,6 +9,7 @@ public enum MTLPixelFormat: Int {
     case bgra8Unorm = 80
     case r8Unorm = 10
     case rgba32Float = 125
+    case rgba16Float = 115
 }
 
 public struct MTLRegion {
@@ -60,14 +61,14 @@ public final class MTLTexture {
     public var usage: MTLTextureUsage
     /// Native pixel bytes, top-left rows. Float textures contain four IEEE Float32 samples per texel.
     public var rgbaBytes: [UInt8]
-    public var bytesPerPixel: Int { pixelFormat == .rgba32Float ? 16 : pixelFormat == .r8Unorm ? 1 : 4 }
+    public var bytesPerPixel: Int { pixelFormat == .rgba32Float ? 16 : pixelFormat == .rgba16Float ? 8 : pixelFormat == .r8Unorm ? 1 : 4 }
 
     public init(descriptor: MTLTextureDescriptor) {
         width = descriptor.width
         height = descriptor.height
         pixelFormat = descriptor.pixelFormat
         usage = descriptor.usage
-        let bpp = pixelFormat == .rgba32Float ? 16 : pixelFormat == .r8Unorm ? 1 : 4
+        let bpp = pixelFormat == .rgba32Float ? 16 : pixelFormat == .rgba16Float ? 8 : pixelFormat == .r8Unorm ? 1 : 4
         rgbaBytes = [UInt8](repeating: 0, count: max(1, width * height * bpp))
     }
 

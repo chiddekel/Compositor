@@ -59,6 +59,7 @@ public struct CIFormat: Hashable, Sendable {
     public static let RGBAh = CIFormat(rawValue: 5)
     /// 16-bit unsigned per channel (RAW dither path).
     public static let RGBA16 = CIFormat(rawValue: 6)
+    public static let Rf = CIFormat(rawValue: 7)
 }
 
 public let kCIInputImageKey = "inputImage"
@@ -71,6 +72,7 @@ public let kCIInputTransformKey = "inputTransform"
 public let kCIInputCenterKey = "inputCenter"
 public let kCIInputScaleKey = "inputScale"
 public let kCIInputAspectRatioKey = "inputAspectRatio"
+public let kCIInputExtentKey = "inputExtent"
 
 // MARK: - Graph
 
@@ -95,6 +97,10 @@ private indirect enum Node {
     /// CIMaximumComponent: each pixel's brightest color component in all three (gray), alpha kept.
     case maxComponent(Node)
     case alphaOne(Node, CGRect)
+    case transfer(Node, Bool)
+    case morphology(Node, Int, Int, Bool)
+    case discMaximum(Node, Double)
+    case areaMaximum(Node, CGRect)
     case gaussian(Node, Double)
     case variableBlur(Node, Node, Double)
     case bloom(Node, Double, Double)          // radius, intensity
@@ -133,6 +139,10 @@ private indirect enum Node {
         case .bitmap(let image): return CGRect(x: 0, y: 0, width: image.width, height: image.height)
         case .color, .random, .clamp, .linearGradient, .radialGradient, .tile: return infiniteExtent
         case .crop(let n, let r): return n.extent.intersection(r)
+        case .transfer(let n, _): return n.extent
+        case .areaMaximum: return CGRect(x: 0, y: 0, width: 1, height: 1)
+        case .discMaximum(let n, let radius): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(radius), dy: -ceil(radius))
+        case .morphology(let n, let w, let h, _): return n.extent.insetBy(dx: -CGFloat(w / 2), dy: -CGFloat(h / 2))
         case .gaussian(let n, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .variableBlur(let n, _, let s): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(s * 3), dy: -ceil(s * 3))
         case .bloom(let n, let r, _): return n.extent.isInfiniteLike ? n.extent : n.extent.insetBy(dx: -ceil(r * 3), dy: -ceil(r * 3))
@@ -493,6 +503,24 @@ private indirect enum Node {
                 }
             } }
             return out
+        case .transfer(let n, let toLinear):
+            var out = n.eval(region, env)
+            Gamma.map(&out, toLinear ? Gamma.toLinear : Gamma.toSRGB)
+            return out
+        case .areaMaximum(let n, let extent):
+            let source = n.eval(extent.integral, env)
+            var value = [Float](repeating: -.infinity, count: 4)
+            for index in stride(from: 0, to: source.data.count, by: 4) {
+                for channel in 0..<4 { value[channel] = max(value[channel], source.data[index + channel]) }
+            }
+            if source.data.isEmpty { value = [Float](repeating: 0, count: 4) }
+            return Raster(rect: CGRect(x: 0, y: 0, width: 1, height: 1), data: value).cropped(to: region)
+        case .discMaximum(let n, let radius):
+            let padded = region.insetBy(dx: -ceil(radius), dy: -ceil(radius))
+            return LensRaster.discMaximum(n.eval(padded, env), radius: radius, region: region)
+        case .morphology(let n, let width, let height, let maximum):
+            let padded = region.insetBy(dx: -CGFloat(width / 2), dy: -CGFloat(height / 2))
+            return LensRaster.morphology(n.eval(padded, env), width: width, height: height, maximum: maximum, region: region)
         case .gaussian(let n, let sigma):
             let pad = ceil(sigma * 3)
             return RasterFilters.gaussian(n.eval(region.insetBy(dx: -pad, dy: -pad), env), sigma: sigma, output: region)
@@ -727,6 +755,24 @@ public final class CIImage: @unchecked Sendable {
 
     fileprivate init(node: Node) { self.node = node }
 
+    public convenience init(bitmapData: Data, bytesPerRow: Int, size: CGSize, format: CIFormat, colorSpace: CGColorSpace?) {
+        guard size.width.isFinite, size.height.isFinite, size.width >= 1, size.height >= 1,
+              size.width <= 65536, size.height <= 65536,
+              [.RGBA8, .RGBA16, .RGBAh, .RGBAf].contains(format) else {
+            self.init(node: .crop(.color(.clear), .null))
+            return
+        }
+        let width = Int(size.width), height = Int(size.height)
+        let depth: PortableImage.Depth = format == .RGBAh ? .half : format == .RGBAf ? .float32 : format == .RGBA16 ? .uint16 : .uint8
+        let pixelBytes = format == .RGBAf ? 16 : format == .RGBA8 ? 4 : 8
+        guard bytesPerRow >= width * pixelBytes, bytesPerRow <= bitmapData.count / height else {
+            self.init(node: .crop(.color(.clear), .null))
+            return
+        }
+        self.init(cgImage: CGImage(PortableImage(width: width, height: height, kind: .rgba, depth: depth,
+            bytesPerRow: bytesPerRow, bytes: Array(bitmapData))))
+    }
+
     public convenience init(cgImage: CGImage) {
         self.init(cgImage: cgImage, topDownRows: false)
     }
@@ -872,7 +918,8 @@ public class CIFilter {
         "CIOverlayBlendMode",
         "CIPerspectiveTransform", "CIPerspectiveTransformWithExtent", "CIPinLightBlendMode", "CIRadialGradient", "CIRandomGenerator",
         "CISaturationBlendMode", "CIScreenBlendMode", "CISoftLightBlendMode", "CISubtractBlendMode",
-        "CIVividLightBlendMode"]
+        "CIVividLightBlendMode", "CIToneCurve", "CISRGBToneCurveToLinear", "CILinearToSRGBToneCurve",
+        "CIMorphologyRectangleMinimum", "CIMorphologyRectangleMaximum", "CIAreaMaximum", "CIMorphologyMaximum"]
 
     public init?(name: String) {
         guard Self.supportedNames.contains(name) else { return nil }
@@ -915,6 +962,25 @@ public class CIFilter {
         }
         guard let input = image(kCIInputImageKey) else { return nil }
         switch name {
+        case "CIAreaMaximum":
+            let extent = (inputs[kCIInputExtentKey] as? CIVector)?.cgRectValue ?? input.extent
+            guard !extent.isInfiniteLike, !extent.isEmpty, !extent.isNull else { return nil }
+            return CIImage(node: .areaMaximum(input.node, extent))
+        case "CIMorphologyMaximum":
+            let radius = number(kCIInputRadiusKey, 5)
+            guard radius.isFinite else { return nil }
+            return CIImage(node: .discMaximum(input.node, max(0, radius)))
+        case "CISRGBToneCurveToLinear", "CILinearToSRGBToneCurve":
+            return CIImage(node: .transfer(input.node, name == "CISRGBToneCurveToLinear"))
+        case "CIToneCurve":
+            let points = (0..<5).map { index -> CGPoint in
+                let v = inputs["inputPoint\(index)"] as? CIVector
+                return CGPoint(x: v?[0] ?? Double(index) / 4, y: v?[1] ?? Double(index) / 4)
+            }
+            return CIImage(node: .curves(input.node, LensRaster.toneTable(points), 0...1))
+        case "CIMorphologyRectangleMinimum", "CIMorphologyRectangleMaximum":
+            func size(_ key: String) -> Int { Int(min(301, max(1, number(key, 5))).rounded()) | 1 }
+            return CIImage(node: .morphology(input.node, size("inputWidth"), size("inputHeight"), name == "CIMorphologyRectangleMaximum"))
         case "CIGaussianBlur": return input.applyingGaussianBlur(sigma: number(kCIInputRadiusKey, 10))
         case "CIMaskedVariableBlur":
             guard let mask = image("inputMask") else { return nil }
@@ -1167,6 +1233,22 @@ public final class CIContext: @unchecked Sendable {
 
     public func render(_ image: CIImage, toBitmap bitmap: UnsafeMutableRawPointer, rowBytes: Int, bounds: CGRect,
                        format: CIFormat, colorSpace: CGColorSpace?) {
+        if format == .Rf {
+            let region = bounds.integral
+            guard region.width >= 1, region.height >= 1, region.width * region.height <= 200_000_000,
+                  rowBytes >= Int(region.width) * MemoryLayout<Float>.stride else { return }
+            var source = image.node.eval(region, Env(linear: linearWorkingSpace, gpu: gpu))
+            if let colorSpace {
+                let linear = colorSpace.name.contains("Linear")
+                if linear != linearWorkingSpace { Gamma.map(&source, linear ? Gamma.toLinear : Gamma.toSRGB) }
+            }
+            var row = [Float](repeating: 0, count: source.width)
+            for y in 0..<source.height {
+                for x in 0..<source.width { row[x] = source.data[source.index(x, source.height - 1 - y)] }
+                _ = row.withUnsafeBytes { bytes in memcpy(bitmap.advanced(by: y * rowBytes), bytes.baseAddress!, bytes.count) }
+            }
+            return
+        }
         // Half and 32-bit floats, in the requested space: linear light only for a linear one (32-bit floats in an
         // extended sRGB space stay encoded, as Core Image writes them).
         if format == .RGBAh || format == .RGBAf {
