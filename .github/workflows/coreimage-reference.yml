@@ -23,7 +23,7 @@ jobs:
           from pathlib import Path
           reference = json.loads(Path('coreimage-reference.json').read_text())
           assert reference['platform'] == 'macOS' and reference['schema'] == 1
-          assert len(reference['inputs']) == 2 and len(reference['cases']) == 266
+          assert len(reference['inputs']) == 2 and len(reference['cases']) == 306
           keys = [json.dumps({key: value for key, value in item.items() if key != 'output'}, sort_keys=True)
                   for item in reference['cases']]
           assert len(set(keys)) == len(keys)
@@ -39,7 +39,7 @@ jobs:
                   if kind == 'float':
                       assert all(math.isfinite(value[0]) for value in struct.iter_unpack('<f', raw))
                   buffers += 1
-          assert buffers == 536
+          assert buffers == 616
           print(f'Validated {len(reference["cases"])} native cases and {buffers} buffers')
           PY
       - uses: actions/upload-artifact@v4

@@ -70,6 +70,14 @@ func filtered(_ name: String, input: CIImage, parameters: [String: Any]) throws 
     return output
 }
 
+func describeExtent(_ image: CIImage) -> [String: Any] {
+    let rect = image.extent
+    if rect.isInfinite { return ["infinite": true] }
+    if rect.isNull { return ["null": true] }
+    return ["x": Double(rect.minX), "y": Double(rect.minY),
+            "width": Double(rect.width), "height": Double(rect.height)]
+}
+
 func capture() throws -> [String: Any] {
     var inputs = [[String: Any]](), cases = [[String: Any]]()
     for fixture in ["opaque-gradient", "impulse"] {
@@ -94,7 +102,17 @@ func capture() throws -> [String: Any] {
         inputs.append(["fixture": fixture, "identity": try render(input)])
         for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 5, 10, 17, 35] {
             let output = try filtered("CIGaussianBlur", input: input, parameters: [kCIInputRadiusKey: radius])
-            cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius, "output": try render(output)])
+            cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius,
+                          "inputExtent": describeExtent(input), "outputExtent": describeExtent(output),
+                          "output": try render(output)])
+            if radius == 0.5 || radius == 5 {
+                for offset in [14.4, -14.4] {
+                    let shifted = output.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
+                    cases.append(["fixture": fixture, "filter": "gaussian-affine", "radius": radius,
+                                  "translationX": offset, "blurredExtent": describeExtent(output),
+                                  "outputExtent": describeExtent(shifted), "output": try render(shifted)])
+                }
+            }
             if radius == 10 {
                 // The default Gaussian adjustment pads by its three-sigma halo plus two pixels.
                 // Materialize that padding so graph fusion cannot remove the input-grid control.
@@ -129,18 +147,33 @@ func capture() throws -> [String: Any] {
                 let blurred = try filtered("CIGaussianBlur", input: scaled, parameters: [kCIInputRadiusKey: 0.5])
                 let restored = blurred.transformed(by: CGAffineTransform(scaleX: CGFloat(1 / aspect), y: 1))
                 cases.append(["fixture": fixture, "filter": "lanczos-gaussian-roundtrip", "radius": 0.5,
-                              "aspectRatio": aspect, "output": try render(restored)])
+                              "aspectRatio": aspect, "scaledExtent": describeExtent(scaled),
+                              "blurredExtent": describeExtent(blurred), "outputExtent": describeExtent(restored),
+                              "output": try render(restored)])
             }
         }
         for offset in [14.4, -14.4, 14.688, -14.112] {
             let moved = input.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
             cases.append(["fixture": fixture, "filter": "CIAffineTransform", "radius": 0,
-                          "translationX": offset, "output": try render(moved)])
+                          "translationX": offset, "outputExtent": describeExtent(moved), "output": try render(moved)])
             let linear = input.unpremultiplyingAlpha().settingAlphaOne(in: input.extent)
                 .applyingFilter("CISRGBToneCurveToLinear")
             let shifted = linear.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
             cases.append(["fixture": fixture, "filter": "linear-alpha-one-affine", "radius": 0,
-                          "translationX": offset, "output": try render(shifted)])
+                          "translationX": offset, "preparedExtent": describeExtent(linear),
+                          "outputExtent": describeExtent(shifted), "output": try render(shifted)])
+            // Isolate each pointwise step so a change in sampling order cannot be mistaken for edge clamping.
+            let variants: [(String, CIImage)] = [
+                ("unpremultiply-affine", input.unpremultiplyingAlpha()),
+                ("alpha-one-affine", input.settingAlphaOne(in: input.extent)),
+                ("linear-affine", input.applyingFilter("CISRGBToneCurveToLinear")),
+                ("unpremultiply-alpha-one-affine", input.unpremultiplyingAlpha().settingAlphaOne(in: input.extent))]
+            for (name, prepared) in variants {
+                let transformed = prepared.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
+                cases.append(["fixture": fixture, "filter": name, "radius": 0, "translationX": offset,
+                              "preparedExtent": describeExtent(prepared), "outputExtent": describeExtent(transformed),
+                              "output": try render(transformed)])
+            }
         }
         for radius in [1.0, 10, 35] {
             for intensity in [0.0, 0.02, 0.05, 0.1, 0.25, 0.5, 0.75, 1] {
