@@ -42,16 +42,28 @@ func describe(_ data: Data, bits: Int) -> [String: Any] {
      "bitsPerComponent": bits, "rgbaBase64": data.base64EncodedString(), "sha256": digest(data)]
 }
 
-func render(_ image: CIImage) throws -> [String: Any] {
+func render(_ image: CIImage, bitmapBytes: Bool = false) throws -> [String: Any] {
     var floats = [Float](repeating: 0, count: width * height * 4)
     floats.withUnsafeMutableBytes { buffer in
         context.render(image, toBitmap: buffer.baseAddress!, rowBytes: width * 16,
                        bounds: bounds, format: .RGBAf, colorSpace: space)
     }
     let floatData = floats.withUnsafeBytes { Data($0) }
-    guard let result = context.createCGImage(image, from: bounds, format: .RGBA8, colorSpace: space),
-          result.width == width, result.height == height else {
-        throw CaptureError.failed("Cannot create native RGBA8 image")
+    if bitmapBytes {
+        // A hard crop can make createCGImage return only the intersection (or nil for disjoint bounds).
+        // toBitmap always records the requested fixed-size domain, including its transparent exterior.
+        var bytes = Data(count: width * height * 4)
+        bytes.withUnsafeMutableBytes { buffer in
+            context.render(image, toBitmap: buffer.baseAddress!, rowBytes: width * 4,
+                           bounds: bounds, format: .RGBA8, colorSpace: space)
+        }
+        return ["float": describe(floatData, bits: 32), "byte": describe(bytes, bits: 8)]
+    }
+    guard let result = context.createCGImage(image, from: bounds, format: .RGBA8, colorSpace: space) else {
+        throw CaptureError.failed("Cannot create native RGBA8 image with extent \(image.extent)")
+    }
+    guard result.width == width, result.height == height else {
+        throw CaptureError.failed("Unexpected native RGBA8 size \(result.width)x\(result.height) for extent \(image.extent)")
     }
     let target = try bitmap()
     target.setBlendMode(.copy)
@@ -186,7 +198,8 @@ func capture() throws -> [String: Any] {
                 cases.append(["fixture": fixture, "filter": "alpha-one-rectangle", "radius": 0,
                               "rectangle": [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)],
                               "translationX": offset, "preparedExtent": describeExtent(prepared),
-                              "outputExtent": describeExtent(output), "output": try render(output)])
+                              "outputExtent": describeExtent(output), "byteRender": "CIContext.toBitmap",
+                              "output": try render(output, bitmapBytes: true)])
             }
         }
         for radius in [1.0, 10, 35] {

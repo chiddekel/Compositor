@@ -12,6 +12,9 @@ alpha replacement and the sRGB transfer function from the complete preparation c
 Four Gaussian magnification cases separate scaling from Lanczos intermediates. Eight alpha-rectangle controls
 use smaller and disjoint bounds, both directly and after translation, to distinguish extent metadata from pixel
 masking before changing alpha replacement behavior.
+The alpha-rectangle byte buffers use `CIContext.render(toBitmap:)`, recorded in their recipe metadata, because
+`createCGImage` can shrink or reject a hard-cropped image outside the requested bounds. All other byte recipes
+retain their original CGImage export path; float buffers consistently use the fixed-size bitmap API.
 
 These controls investigate two unresolved compatibility behaviors: sampling a blurred scaled intermediate
 and sampling through pointwise color operations. They do not establish a replacement algorithm by themselves.
