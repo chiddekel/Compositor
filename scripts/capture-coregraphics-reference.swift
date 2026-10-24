@@ -76,6 +76,58 @@ func captureAffine(_ source: CGContext, width: Int, height: Int, scaleX: Double,
 }
 
 // Separate native glyph placement from smoothing and baseline rasterization.
+func captureTextParagraphGeometry() throws -> [[String: Any]] {
+    let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("third_party/fonts/inter/Inter-Regular.ttf")
+    CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+    let recipes: [(String, String, Double, Double, Double, Double, Int)] = [
+        ("tight-leading", "Ag Ω", 12.5, 10, 0, 1e7, 0),
+        ("loose-leading", "Ag Ω", 12.5, 19.25, 0, 1e7, 0),
+        ("wrapped", "Ag Ω", 12.5, 0, 0, 18, 0),
+        ("tracking", "Ag Ω", 12.5, 0, 1.25, 1e7, 0),
+        ("centered", "Ag Ω", 12.5, 0, 0, 80, 1),
+        ("right-aligned", "Ag Ω", 12.5, 0, 0, 80, 2),
+        ("multiline", "Ag Ω\nAg Ω", 12.5, 0, 0, 1e7, 0),
+        ("combining", "Ag\u{0301} Ω", 12.5, 0, 0, 1e7, 0),
+        ("ligature", "office", 24, 0, 0, 1e7, 0),
+        ("surrogate", "A😀\nΩ", 12.5, 0, 0, 1e7, 0),
+        ("bidi-controls", "A\u{202E}BC\u{202C} Ω", 12.5, 0, 0, 1e7, 0)]
+    var cases = [[String: Any]]()
+    for (name, content, size, height, tracking, width, alignment) in recipes {
+        guard let font = NSFont(name: "Inter-Regular", size: size) else {
+            throw CaptureError.failed("Cannot resolve paragraph geometry font")
+        }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = height
+        paragraph.maximumLineHeight = height
+        paragraph.alignment = alignment == 1 ? .center : alignment == 2 ? .right : .left
+        paragraph.lineBreakMode = .byWordWrapping
+        let text = NSAttributedString(string: content, attributes: [.font: font, .kern: tracking, .paragraphStyle: paragraph])
+        let storage = NSTextStorage(attributedString: text)
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(containerSize: NSSize(width: width, height: 1e7))
+        container.lineFragmentPadding = 0
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        manager.ensureLayout(for: container)
+        let range = manager.glyphRange(for: container)
+        var glyphs = [[String: Any]]()
+        for index in range.location..<(range.location + range.length) {
+            let location = manager.location(forGlyphAt: index)
+            var effectiveRange = NSRange(location: NSNotFound, length: 0)
+            let fragment = manager.lineFragmentRect(forGlyphAt: index, effectiveRange: &effectiveRange)
+            glyphs.append(["glyph": Int(manager.glyph(at: index)), "characterIndex": manager.characterIndexForGlyph(at: index),
+                           "location": [Double(location.x), Double(location.y)],
+                           "lineFragment": [Double(fragment.minX), Double(fragment.minY), Double(fragment.width), Double(fragment.height)],
+                           "effectiveRange": [effectiveRange.location, effectiveRange.length]])
+        }
+        cases.append(["name": name, "text": content, "face": font.fontName, "size": size,
+                      "lineHeight": height, "tracking": tracking, "width": width, "alignment": alignment,
+                      "utf16Length": text.length, "controlGlyph": Int(NSControlGlyph), "glyphs": glyphs])
+    }
+    return cases
+}
+
 func captureTextGeometry() throws -> [[String: Any]] {
     let fonts = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("third_party/fonts/inter")
@@ -392,7 +444,8 @@ func capture() throws -> [String: Any] {
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
             "nonseparablePairs": try captureNonseparablePairs(),
-            "text": try captureText(), "textGeometry": try captureTextGeometry()]
+            "text": try captureText(), "textGeometry": try captureTextGeometry(),
+            "textParagraphGeometry": try captureTextParagraphGeometry()]
 }
 
 do {

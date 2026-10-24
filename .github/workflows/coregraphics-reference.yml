@@ -81,6 +81,28 @@ jobs:
           assert buffers == 144
           print('Validated eighteen text layouts, seventy-two glyph records and 144 native baseline buffers')
           PY
+      - name: Validate native paragraph geometry
+        run: |
+          python3 - <<'PY'
+          import json, math
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['textParagraphGeometry']
+          assert len(cases) == 11
+          assert {c['name'] for c in cases} == {'tight-leading', 'loose-leading', 'wrapped', 'tracking',
+              'centered', 'right-aligned', 'multiline', 'combining', 'ligature', 'surrogate', 'bidi-controls'}
+          for case in cases:
+              assert case['face'] == 'Inter-Regular'
+              assert 0 <= case['controlGlyph'] <= 0xFFFFFFFF
+              assert len(case['text'].encode('utf-16-le')) // 2 == case['utf16Length']
+              assert case['glyphs'] and all(math.isfinite(case[k]) for k in ['size', 'lineHeight', 'tracking', 'width'])
+              for glyph in case['glyphs']:
+                  assert 0 <= glyph['glyph'] <= 0xFFFFFFFF and 0 <= glyph['characterIndex'] < case['utf16Length']
+                  assert len(glyph['location']) == 2 and len(glyph['lineFragment']) == 4
+                  assert all(math.isfinite(v) for key in ['location', 'lineFragment'] for v in glyph[key])
+                  start, count = glyph['effectiveRange']
+                  assert 0 <= start < len(case['glyphs']) and 0 < count <= len(case['glyphs']) - start
+          print('Validated eleven native paragraph layouts, including leading, wrapping and Unicode controls')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: coregraphics-reference
