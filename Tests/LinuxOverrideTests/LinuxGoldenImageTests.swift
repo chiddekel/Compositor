@@ -157,10 +157,19 @@ struct LinuxGoldenImageTests {
         let file = Self.directory.appendingPathComponent(category, isDirectory: true)
             .appendingPathComponent(name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: " ", with: "_") + ".png")
         let rendered = try throughPNG(image)
-        guard !Self.updating, FileManager.default.fileExists(atPath: file.path) else {
+        if let directory = ProcessInfo.processInfo.environment["COMPOSITOR_GOLDEN_ARTIFACTS"] {
+            let artifact = URL(fileURLWithPath: directory).appendingPathComponent(category, isDirectory: true)
+                .appendingPathComponent(file.lastPathComponent)
+            try FileManager.default.createDirectory(at: artifact.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try rendered.data.write(to: artifact)
+        }
+        if Self.updating {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try rendered.data.write(to: file)
-            if !Self.updating { Issue.record("No baseline for \(category)/\(name): written to \(file.path); review and commit it") }
+            return
+        }
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            Issue.record("No baseline for \(category)/\(name): capture with COMPOSITOR_GOLDEN_ARTIFACTS and review it")
             return
         }
         let baseline = try decode(try Data(contentsOf: file))

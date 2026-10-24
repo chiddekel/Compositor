@@ -700,11 +700,16 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
             struct Entry { QString kind, field, savedField; double value; int occurrence = 0; };
             const QList<Entry> entries{{"Gaussian Blur", "Radius", "blurRadius", 1.5},
                 {"Motion Blur", "Angle", "motionAngle", 90}, {"Add Noise", "Amount", "noiseAmount", 55},
-                {"Black & White", "Reds", "blackWhiteSettings", 80},
-                {"Color Balance", "Yellow / Blue", "colorBalanceSettings", 60, 1}, {"Invert", "", "", 0}};
+                {"Black & White", "Reds", "blackWhiteSettings.reds", 80},
+                {"Color Balance", "Yellow / Blue", "colorBalanceSettings.midYellowBlue", 60, 1},
+                {"Vignette", "Amount", "filterLayerSettings.vignette.amount", 80},
+                {"Lens Effects", "Amount", "filterLayerSettings.lens.flareAmount", 80},
+                {"Tonal Contrast", "Amount", "filterLayerSettings.tonal.amount", 100}, {"Invert", "", "", 0}};
             QImage image(64, 64, QImage::Format_RGBA8888); image.fill(Qt::transparent);
             for (int y = 12; y < 48; ++y) for (int x = 12; x < 48; ++x)
                 image.setPixelColor(x, y, QColor(40 + (x * 7) % 180, 30 + (y * 5) % 180, 20 + ((x + y) * 3) % 180));
+            // A real highlight makes Lens Effects' thresholded light visible when its amount changes.
+            for (int y = 26; y < 32; ++y) for (int x = 28; x < 34; ++x) image.setPixelColor(x, y, Qt::white);
             const QString path = temporary.filePath("modern-adjustment.png");
             check(image.save(path), "modern adjustment fixture save failed");
             const auto panel = [&]() -> QDialog * {
@@ -862,14 +867,15 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                 const QString project = temporary.filePath(entry.kind + ".comp");
                 check(writeProjectPackage(project), "modern adjustment package write failed");
                 QFile manifest(project + "/manifest.json"); check(manifest.open(QIODevice::ReadOnly), "modern adjustment manifest missing");
-                const auto records = QJsonDocument::fromJson(manifest.readAll()).object().value("layers").toArray();
+                const auto savedManifest = QJsonDocument::fromJson(manifest.readAll()).object();
+                check(savedManifest.value("version").toInt() == 18, "modern adjustment package did not use format 18");
+                const auto records = savedManifest.value("layers").toArray();
                 check(records.size() == 2, "modern adjustment package lost its source or adjustment");
                 const auto saved = records.last().toObject().value("adjustment").toObject();
                 check(saved.value("kind").toString() == entry.kind, "modern adjustment package saved the wrong kind");
                 if (editable) {
-                    auto value = saved.value(entry.savedField);
-                    if (entry.kind == "Black & White") value = value.toObject().value("reds");
-                    if (entry.kind == "Color Balance") value = value.toObject().value("midYellowBlue");
+                    QJsonValue value(saved);
+                    for (const auto &key : entry.savedField.split('.')) value = value.toObject().value(key);
                     check(value.isDouble() && std::abs(value.toDouble() - entry.value) < 0.00001,
                         "modern adjustment package did not retain the visible numeric edit");
                 }
@@ -10119,8 +10125,8 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(textFile.open(QIODevice::ReadOnly), "format-11 native manifest missing");
         textManifest = QJsonDocument::fromJson(textFile.readAll()).object(); textFile.close();
         const auto savedText = textManifest.value("layers").toArray().last().toObject().value("text").toObject();
-        // New saves use version 17 (GIF layers); font runs arrived in version 11.
-        require(textManifest.value("version").toInt() == 17, "native save did not write current format 17");
+        // New saves use version 18 (finishing adjustment layers); font runs arrived in version 11.
+        require(textManifest.value("version").toInt() == 18, "native save did not write current format 18");
         require(savedText.value("fontRuns").toArray() == chosenRuns, "format-11 save lost chosen font runs");
         require(savedText.value("colorRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "format-11 save lost overlapping color runs");

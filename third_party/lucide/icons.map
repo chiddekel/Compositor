@@ -83,3 +83,7 @@ minus custom/minus
 # Local playback symbols for the GIF timeline and export preview.
 play.fill custom/play
 pause.fill custom/pause
+# Adjustment layers added with project format 18.
+camera.aperture custom/aperture
+circle.dashed.inset.filled circle-dashed
+circle.lefthalf.striped.horizontal contrast

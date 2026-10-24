@@ -17,6 +17,9 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 
 OUTPUTS = {
+    'Sources/Overrides/AdjustmentEditing.swift': (
+        'Compositor/Document/AdjustmentEditing.swift', 'linux/patches/adjustment-editing-linux.patch',
+        'Finishing layer editors retain their independent settings objects; legacy adjustment fields do not overwrite unrelated defaults.'),
     'Sources/Overrides/ProjectWorkspace.swift': (
         'Compositor/Document/ProjectWorkspace.swift', 'linux/patches/project-workspace-linux.patch',
         'Register newly created artboard sessions with the importing native window; upstream tab/import algorithms are unchanged.'),

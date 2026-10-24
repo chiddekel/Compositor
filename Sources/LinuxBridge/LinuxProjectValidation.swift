@@ -72,6 +72,12 @@ enum LinuxProjectValidation {
                 if [.progressiveBlur, .bloomGlow, .rgbSplit].contains(adjustment.kind) || adjustment.filterLayerSettings != nil {
                     guard manifest.version >= 16 else { throw ProjectError.invalid }
                 }
+                // Vignette, Lens Effects and Tonal Contrast layers arrived in version 18.
+                let filterLayer = adjustment.filterLayerSettings
+                if [.vignette, .lensEffects, .tonalContrast].contains(adjustment.kind)
+                    || filterLayer?.vignette != nil || filterLayer?.tonal != nil || filterLayer?.lens != nil {
+                    guard manifest.version >= 18 else { throw ProjectError.invalid }
+                }
             }
             // Layer masks arrived in version 4, folder masks in version 6.
             guard layer.maskFile == nil || (manifest.version >= (layer.isGroup == true ? 6 : 4)

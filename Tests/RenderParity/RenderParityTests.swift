@@ -116,6 +116,23 @@ struct RenderParityTests {
                         adjustment.filterLayerSettings = settings
                     case .blackWhite: adjustment.blackWhite.reds = amount > 0 ? 200 : -100
                     case .colorBalance: adjustment.colorBalance.midCyanRed = amount * 2
+                    case .vignette:
+                        var settings = VignetteLayerSettings()
+                        settings.amount = amount > 0 ? 80 : 10
+                        settings.roundness = amount > 0 ? -50 : 100
+                        adjustment.filterLayer.vignette = settings
+                    case .tonalContrast:
+                        var settings = TonalLayerSettings()
+                        settings.amount = amount > 0 ? 100 : 10
+                        settings.radius = amount > 0 ? 35 : 2
+                        adjustment.filterLayer.tonal = settings
+                    case .lensEffects:
+                        var settings = LensEffectSettings()
+                        settings.effect = amount > 0 ? .prism : .mist
+                        settings.prismCopies = 4
+                        settings.prismOffset = 15
+                        settings.mistStrength = 80
+                        adjustment.filterLayer.lens = settings
                     case .invert: break
                     }
                 }

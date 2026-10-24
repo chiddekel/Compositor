@@ -5,6 +5,10 @@ import CoreImageKernels
 enum MetalCompute {
     private static let driver = DispersionDriver()
     static func execute(_ encoder: MTLComputeCommandEncoder) throws {
+        if encoder.pipeline?.name == "vignette" || encoder.pipeline?.name == "tonalContrast" {
+            try FinishingCompute.execute(encoder)
+            return
+        }
         if encoder.pipeline?.name == "bokeh" {
             try BokehCompute.execute(encoder)
             return

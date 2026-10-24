@@ -1,0 +1,36 @@
+--- a/Compositor/Document/AdjustmentEditing.swift
++++ b/Compositor/Document/AdjustmentEditing.swift
+@@ -43,18 +43,21 @@
+             case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
+                  .progressiveBlur, .bloomGlow, .rgbSplit, .vignette, .lensEffects, .tonalContrast:
+                 var settings = original.filterLayer.applied(to: FilterSettings())
+-                settings.curves = original.curves
+-                settings.exposure = original.exposure
+-                settings.gradientMap = original.gradientMap
+-                settings.grain = original.grain
+-                settings.blackWhite = original.blackWhite
+-                settings.colorBalance = original.colorBalance
+-                settings.radius = original.gaussianRadius
+-                settings.angle = original.resolvedMotionAngle
+-                settings.distance = original.resolvedMotionDistance
+-                settings.amount = original.resolvedNoiseAmount
+-                settings.gaussian = original.resolvedNoiseGaussian
+-                settings.monochromatic = original.resolvedNoiseMonochromatic
++                // These later layers carry their settings in independent objects.
++                if ![.vignette, .lensEffects, .tonalContrast].contains(original.kind) {
++                    settings.curves = original.curves
++                    settings.exposure = original.exposure
++                    settings.gradientMap = original.gradientMap
++                    settings.grain = original.grain
++                    settings.blackWhite = original.blackWhite
++                    settings.colorBalance = original.colorBalance
++                    settings.radius = original.gaussianRadius
++                    settings.angle = original.resolvedMotionAngle
++                    settings.distance = original.resolvedMotionDistance
++                    settings.amount = original.resolvedNoiseAmount
++                    settings.gaussian = original.resolvedNoiseGaussian
++                    settings.monochromatic = original.resolvedNoiseMonochromatic
++                }
+                 filterEdit = try FilterEdit(kind: original.kind.filterKind ?? .curves, layer: layer, selection: nil, settings: settings)
+             }
+             adjustmentOriginal = original
