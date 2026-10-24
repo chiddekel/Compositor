@@ -18,6 +18,42 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
       - name: Capture the unchanged upstream shader and jitter
         run: swift scripts/check-parity-rgb-macos.swift "$GITHUB_WORKSPACE" > rgb-metal-parity.json
+      - name: Validate complete native buffers
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          data = json.loads(Path('rgb-metal-parity.json').read_text())
+          assert data['schema'] == 1 and data['platform'] == 'macOS'
+          source = Path('Compositor/Rendering/MetalDispersion.swift').read_text()
+          shader = source.split('private static let source = """\n', 1)[1].split('\n"""', 1)[0]
+          assert hashlib.sha256(shader.encode()).hexdigest() == data['shaderSHA256']
+          assert hashlib.sha256(Path('scripts/check-parity-rgb-macos.swift').read_bytes()).hexdigest() == data['scriptSHA256']
+          assert data['parameterStride'] == 72 and data['passesUpstreamTailAssertion']
+          expected = {'source': (61, 61, 8), 'flat': (61, 61, 8), 'streaked': (61, 61, 8),
+                      'jitter': (61, 61, 32), 'strictJitter': (61, 61, 32),
+                      'wideJitter': (192, 144, 32), 'wideStrictJitter': (192, 144, 32)}
+          assert set(data['buffers']) == set(expected)
+          buffers = {}
+          for name, (width, height, bits) in expected.items():
+              item = data['buffers'][name]
+              assert (item['width'], item['height'], item['bitsPerComponent']) == (width, height, bits)
+              assert item['rowBytes'] == width * 4 * bits // 8
+              raw = base64.b64decode(item['rgbaBase64'], validate=True)
+              assert len(raw) == item['rowBytes'] * height
+              assert hashlib.sha256(raw).hexdigest() == item['sha256']
+              if bits == 32:
+                  assert all(math.isfinite(v[0]) for v in struct.iter_unpack('<f', raw))
+              buffers[name] = raw
+          assert hashlib.sha256(buffers['source']).hexdigest() == data['fixtureSHA256']
+          for point in data['edgePixels']:
+              offset = (point['y'] * 61 + point['x']) * 4
+              assert list(buffers['flat'][offset:offset + 4]) == point['flatRGBA']
+              assert list(buffers['streaked'][offset:offset + 4]) == point['streakedRGBA']
+              for name, field in [('jitter', 'diagnosticArithmetic'), ('strictJitter', 'strictDiagnosticArithmetic')]:
+                  assert list(struct.unpack_from('<4f', buffers[name], offset * 4)) == point[field]
+          print('Validated seven native source/output/jitter buffers and all edge samples')
+          PY
       - name: Retain the reference output
         uses: actions/upload-artifact@v4
         with:

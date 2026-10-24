@@ -1,4 +1,4 @@
-// Capture RGB Split's edge pixels and sine-based jitter on a native Metal device.
+// Capture RGB Split's pixels and sine-based jitter on a native Metal device.
 // Run from the checkout: swift scripts/check-parity-rgb-macos.swift "$PWD" > rgb-metal-parity.json
 // The production shader is read unchanged from upstream's protected source, not copied into this probe.
 #if os(macOS)
@@ -23,6 +23,12 @@ struct Parameters {
     var rowSign: Float = 1
 }
 
+func describe(_ data: Data, width: Int, height: Int, bits: Int) -> [String: Any] {
+    ["width": width, "height": height, "rowBytes": width * 4 * bits / 8,
+     "bitsPerComponent": bits, "rgbaBase64": data.base64EncodedString(),
+     "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
+}
+
 func capture() throws -> [String: Any] {
     let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? FileManager.default.currentDirectoryPath)
     let path = root.appendingPathComponent("Compositor/Rendering/MetalDispersion.swift")
@@ -42,13 +48,14 @@ func capture() throws -> [String: Any] {
     let hashSource = """
     #include <metal_stdlib>
     using namespace metal;
-    kernel void hashProbe(device float4 *values [[buffer(0)]], uint2 pixel [[thread_position_in_grid]]) {
-        if (pixel.x >= 61 || pixel.y >= 61) return;
+    kernel void hashProbe(device float4 *values [[buffer(0)]], constant uint2 &dimensions [[buffer(1)]],
+                          uint2 pixel [[thread_position_in_grid]]) {
+        if (pixel.x >= dimensions.x || pixel.y >= dimensions.y) return;
         float phase = dot(float2(pixel), float2(12.9898, 78.233));
         float sine = sin(phase);
         float noise = sine * 43758.5453;
         float jitter = \(jitterExpression);
-        values[pixel.y * 61 + pixel.x] = float4(phase, sine, noise, jitter);
+        values[pixel.y * dimensions.x + pixel.x] = float4(phase, sine, noise, jitter);
     }
     """
     guard MemoryLayout<Parameters>.stride == 72,
@@ -80,8 +87,7 @@ func capture() throws -> [String: Any] {
     descriptor.usage = [.shaderRead, .shaderWrite]
     descriptor.storageMode = .shared
     guard let input = device.makeTexture(descriptor: descriptor),
-          let output = device.makeTexture(descriptor: descriptor),
-          let hashes = device.makeBuffer(length: size * size * MemoryLayout<SIMD4<Float>>.stride, options: .storageModeShared) else {
+          let output = device.makeTexture(descriptor: descriptor) else {
         throw ProbeError.failed("Cannot allocate Metal probe buffers")
     }
     let region = MTLRegionMake2D(0, 0, size, size)
@@ -107,23 +113,40 @@ func capture() throws -> [String: Any] {
     }
     let flat = try run(Parameters(distance: 8, blur: 0, spectral: 8, smear: 1))
     let streaked = try run(Parameters(distance: 4, blur: 16, spectral: 4, smear: 8))
-    func observe(_ pipeline: MTLComputePipelineState) throws -> [SIMD4<Float>] {
-        guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
+    func observe(_ pipeline: MTLComputePipelineState, width: Int = 61, height: Int = 61) throws -> [SIMD4<Float>] {
+        guard let hashes = device.makeBuffer(length: width * height * MemoryLayout<SIMD4<Float>>.stride,
+                                            options: .storageModeShared),
+              let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
             throw ProbeError.failed("Cannot encode jitter observer")
         }
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(hashes, offset: 0, index: 0)
-        encoder.dispatchThreads(MTLSize(width: size, height: size, depth: 1),
+        var dimensions = SIMD2<UInt32>(UInt32(width), UInt32(height))
+        encoder.setBytes(&dimensions, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 1)
+        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         encoder.endEncoding()
         command.commit()
         command.waitUntilCompleted()
         guard command.status == .completed else { throw command.error ?? ProbeError.failed("Jitter observer failed") }
-        let values = hashes.contents().bindMemory(to: SIMD4<Float>.self, capacity: size * size)
-        return Array(UnsafeBufferPointer(start: values, count: size * size))
+        let values = hashes.contents().bindMemory(to: SIMD4<Float>.self, capacity: width * height)
+        return Array(UnsafeBufferPointer(start: values, count: width * height))
     }
     let jitter = try observe(hashPipeline)
     let strictJitter = try observe(strictHashPipeline)
+    let wideJitter = try observe(hashPipeline, width: 192, height: 144)
+    let wideStrictJitter = try observe(strictHashPipeline, width: 192, height: 144)
+    func describeFloats(_ values: [SIMD4<Float>], width: Int, height: Int) -> [String: Any] {
+        values.withUnsafeBytes { describe(Data($0), width: width, height: height, bits: 32) }
+    }
+    let buffers: [String: Any] = [
+        "source": describe(Data(pixels), width: size, height: size, bits: 8),
+        "flat": describe(Data(flat), width: size, height: size, bits: 8),
+        "streaked": describe(Data(streaked), width: size, height: size, bits: 8),
+        "jitter": describeFloats(jitter, width: size, height: size),
+        "strictJitter": describeFloats(strictJitter, width: size, height: size),
+        "wideJitter": describeFloats(wideJitter, width: 192, height: 144),
+        "wideStrictJitter": describeFloats(wideStrictJitter, width: 192, height: 144)]
     let flatAlpha = (44...48).map { Int(flat[(30 * size + $0) * 4 + 3]) }
     let streakedAlpha = (44...48).map { Int(streaked[(30 * size + $0) * 4 + 3]) }
     let edgePixels: [[String: Any]] = (40...48).map { x in
@@ -133,7 +156,10 @@ func capture() throws -> [String: Any] {
          "flatRGBA": (0..<4).map { Int(flat[(30 * size + x) * 4 + $0]) },
          "streakedRGBA": (0..<4).map { Int(streaked[(30 * size + x) * 4 + $0]) }]
     }
-    return ["device": device.name, "os": ProcessInfo.processInfo.operatingSystemVersionString,
+    return ["schema": 1, "platform": "macOS", "device": device.name,
+        "os": ProcessInfo.processInfo.operatingSystemVersionString,
+        "scriptSHA256": SHA256.hash(data: try Data(contentsOf: URL(fileURLWithPath: #filePath)))
+            .map { String(format: "%02x", $0) }.joined(),
         "shaderSHA256": SHA256.hash(data: Data(source.utf8)).map { String(format: "%02x", $0) }.joined(),
         "fixture": "61x61 transparent RGBA8, white pixels x/y 28...32, row 30",
         "fixtureSHA256": SHA256.hash(data: Data(pixels)).map { String(format: "%02x", $0) }.joined(),
@@ -141,7 +167,8 @@ func capture() throws -> [String: Any] {
         "diagnosticArithmeticComponents": ["phase", "sine", "noise", "jitter"],
         "flatTailAlpha": flatAlpha, "streakedTailAlpha": streakedAlpha,
         "passesUpstreamTailAssertion": flatAlpha.reduce(0, +) == 0 && streakedAlpha.reduce(0, +) > 0,
-        "edgePixels": edgePixels]
+        "edgePixels": edgePixels, "buffers": buffers,
+        "bufferFormat": "Packed top-down RGBA8 or little-endian float4; diagnostic channels are phase, sine, noise, jitter"]
 }
 
 do {

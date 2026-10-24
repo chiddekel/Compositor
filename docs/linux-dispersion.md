@@ -44,11 +44,22 @@ spectral direction, blur streaks, the radial center, alpha bounds, different reg
 translated origins, negative row direction and edge extension. Hardware success requires actual
 submissions; a CPU fallback cannot count as the Vulkan pass.
 
-The kernel's `sin`/`fract` sampling jitter depends on the device's transcendental precision. A 64 × 48
-scene measured a maximum CPU/Vulkan difference of 34.65 eight-bit levels at individual samples,
-with a mean absolute difference of 0.696 levels (`/tmp/compositor-fc02107-dispersion-backend-diff.log`).
-RGB Split's Linux golden checks therefore compare channel means and spreads, alongside the independent
-spatial/alpha tests above. Existing deterministic golden images retain their one-level pixel tolerance.
+The published kernel's `sin`/`fract` sampling jitter depends on the device's transcendental precision.
+A local shader correction protects phase arithmetic and evaluates the reduced sine accurately before
+the amplified hash. Five sharp-alpha component comparisons on AMD RADV improve from maximum errors
+of 3.98–94.18 byte levels to less than 0.72. The new pixel-level component regression fails against
+the original shader and passes with the correction; native Metal edge references remain unchanged.
+The local automatic-backend application corpus improves from 136/173 to 137/173 passing native
+comparisons. Thirty-six native discrepancies remain. This correction is not yet committed; existing
+golden thresholds and baseline PNGs are unchanged. See `docs/upstream-format18-integration.md`.
+
+`scripts/check-parity-rgb-macos.swift` reads the protected upstream shader and captures it on a native
+Metal device. In addition to the original edge samples, the manual `rgb-metal-parity.yml` workflow
+retains seven complete buffers: the 61×61 source and two RGBA8 outputs, default/strict 61×61 arithmetic
+observers, and default/strict 192×144 observers. Observer float4 channels are phase, sine, noise and
+jitter. SHA-256, packed sizes, finite float values and consistency with every edge sample are validated
+before artifact upload. These diagnostics separate arithmetic from sampling and output quantization;
+they do not by themselves establish a replacement algorithm.
 
 The contract script also runs upstream `FilterTests` and `FilterLayerTests`, and the native
 `--combo-smoke --dispersion-probe` journey checks the visible panel, Cancel, commit, Undo/Redo,
