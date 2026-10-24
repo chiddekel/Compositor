@@ -101,7 +101,7 @@ NSString outputs, but fails at 12.5 points for every face and both smoothing
 settings. A blanket descender substitution therefore does not reproduce native
 placement.
 
-The Linux layout manager currently uses approximate character advances for
+The published Linux layout manager uses approximate character advances for
 `location(forGlyphAt:)`, even when Qt renders the shaped glyphs. For example,
 the second glyph of Regular at 36 points has native x = 24.837890625; the
 approximation returns 19.8. NSString also delegates to the same drawing entry
@@ -127,3 +127,47 @@ Additional local evidence:
 - `.build/evidence/text-smoothing-direction-probe.cpp` and
   `.build/evidence/text-freetype-outline-probe.cpp`: the additional diagnostic
   sources; corresponding logs record their layout metrics.
+
+## Local shaped-geometry candidate
+
+Native run `40139350571` adds eleven paragraph controls for explicit tight/loose
+leading, wrapping, tracking, alignment, multiple lines, combined characters,
+ligatures, surrogate pairs and bidirectional controls. All validators pass, and
+all eight preceding reference groups are exactly unchanged. The artifact records
+`NSControlGlyph` as 16777215; it is wider than an ordinary 16-bit font glyph ID.
+
+The local adapter exposes Qt's shaped glyph geometry through `TextBackend` to
+NSLayoutManager. The original eighteen layouts and seventy-two glyph positions
+pass both the C++ contracts and a separate Swift regression. Follow-up native
+runs `40140372483` and `40140952248` expand the paragraph fixture to 45 controls.
+All 44 controls using the same bundled Inter fonts match native geometry. They establish that explicit
+leading retains fractional baseline offsets, `.kern = 0` disables pair kerning,
+and AppKit retains null glyphs for code units absorbed into combined characters
+and surrogate pairs. Wrapped trailing spaces remain part of the glyph stream
+even when Qt omits them from drawable glyph runs.
+
+Bidirectional control advances are normalized in both geometry and painting,
+including nested controls, wrapping and positive/negative tracking. Per-character
+Qt glyph queries retain UTF-16 associations that bulk queries lose around some
+fallback runs. Explicit tracking accepts both `CGFloat` and `NSNumber` values,
+including Swift `Double` attributes. The Swift regressions pass all 63 captured
+layouts. C++ contracts also check 22 raster comparisons, including preservation
+of default text color after a partially colored, tracked paragraph. The latter
+regression fails before painter state is restored around adjusted drawing.
+
+The remaining emoji control records different source fonts: Apple Color Emoji
+on macOS and Noto Color Emoji on Linux. It checks UTF-16/null/control semantics
+without equating different fonts' glyph IDs or metrics. This does not resolve the
+nine image-level text comparisons or native smoothing.
+
+The separate regression file preserves the canonical shared corpus source hash.
+The final CPU run validates provenance at 140/173 native comparisons. All 173
+decoded images and all 93 golden candidates remain unchanged after the numeric
+tracking and painter state corrections. The golden suite still reports sixteen
+pending differences. No golden baseline is replaced.
+
+The final paragraph artifact is under `.build/evidence/upstream-format18-text-tracked-bidi-native/`.
+`text-control-budget-comparison.json` records the 45 geometry results.
+`text-final-rendering-preservation.json` records the unchanged
+images, and `upstream-format18-text-final-cpu-parity-diff/report.json`
+contains the fresh native comparison.

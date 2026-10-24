@@ -9,6 +9,12 @@ import Glibc
 /// test runner) loads the same functions from the Qt image-codec library, as `ImageCodec` does for images. Without
 /// either, the text system keeps its approximate built-in layout.
 public enum TextBackend {
+    static func tracking(in attributes: [NSAttributedString.Key: Any]?) -> CGFloat {
+        if let value = attributes?[.kern] as? CGFloat { return value }
+        if let value = attributes?[.kern] as? NSNumber { return CGFloat(value.doubleValue) }
+        return 0
+    }
+
     private typealias FamilyFn = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int) -> Int64
     private static let familyFn: FamilyFn? = {
         let paths = [ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? "",
@@ -141,6 +147,58 @@ public enum TextBackend {
         return nil
     }()
 
+    private typealias GeometryFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Double, Double, Double, Double,
+        Int32, UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int) -> Int64
+    private static let geometryFn: GeometryFn? = {
+        #if canImport(Glibc)
+        let env = ProcessInfo.processInfo.environment["COMPOSITOR_IMAGEIO_BACKEND"] ?? ""
+        for path in [env, "libCompositorQtImageIO.so", "/app/lib/libCompositorQtImageIO.so"] where !path.isEmpty {
+            guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else { continue }
+            guard let symbol = dlsym(handle, "compositor_qt_text_geometry_attributes") else { dlclose(handle); continue }
+            return unsafeBitCast(symbol, to: GeometryFn.self)
+        }
+        #endif
+        return nil
+    }()
+
+    struct Geometry: Decodable {
+        struct Glyph: Decodable {
+            let id: UInt32
+            let character: Int
+            let x: CGFloat
+            let y: CGFloat
+            let line: Int
+        }
+        struct Line: Decodable {
+            let y: CGFloat
+            let height: CGFloat
+            let start: Int
+            let count: Int
+        }
+        let glyphs: [Glyph]
+        let lines: [Line]
+    }
+
+    /// Glyphs and line fragments from the same shaped text used for rendering.
+    static func geometry(_ string: NSAttributedString, maxWidth: CGFloat) -> Geometry? {
+        let attributes = string.length > 0 ? string.attributes(at: 0, effectiveRange: nil) : [:]
+        let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 12)
+        let tracking = Self.tracking(in: attributes)
+        let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle
+        let alignment: Int32 = paragraph?.alignment == .center ? 1 : paragraph?.alignment == .right ? 2 : 0
+        guard let geometryFn, let json = attributesJSON(string, font: font, color: .black) else { return nil }
+        return string.string.withCString { text in font._backendName.withCString { name in json.withCString { runs in
+            let leading = Double(paragraph?.minimumLineHeight ?? 0)
+            let count = geometryFn(text, name, Double(font.pointSize), Double(tracking), leading, Double(maxWidth),
+                                   alignment, runs, nil, 0)
+            guard count > 0, count <= 64 * 1024 * 1024 else { return nil }
+            var bytes = [CChar](repeating: 0, count: Int(count))
+            guard geometryFn(text, name, Double(font.pointSize), Double(tracking), leading, Double(maxWidth),
+                             alignment, runs, &bytes, bytes.count) == count else { return nil }
+            return try? JSONDecoder().decode(Geometry.self, from: bytes.withUnsafeBytes { Data($0) })
+        } } }
+    }
+
     /// Effective ranges combine overlapping color/font attributes before crossing
     /// the ABI. Qt therefore receives disjoint ranges in the same UTF-16 units.
     private static func attributesJSON(_ string: NSAttributedString, font: NSFont, color: NSColor) -> String? {
@@ -149,6 +207,7 @@ public enum TextBackend {
             let face = attributes[.font] as? NSFont ?? font
             let ink = attributes[.foregroundColor] as? NSColor ?? color
             runs.append(["location": range.location, "length": range.length, "font": face._backendName,
+                         "kerning": attributes[.kern] == nil,
                          "size": Double(face.pointSize), "color": [Double(ink.redComponent), Double(ink.greenComponent),
                              Double(ink.blueComponent), Double(ink.alphaComponent)]])
         }
@@ -159,7 +218,7 @@ public enum TextBackend {
     public static func layout(_ string: NSAttributedString, maxWidth: CGFloat) -> Layout? {
         let attributes = string.length > 0 ? string.attributes(at: 0, effectiveRange: nil) : [:]
         let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 12)
-        let tracking = attributes[.kern] as? CGFloat ?? 0
+        let tracking = Self.tracking(in: attributes)
         let leading = (attributes[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0
         guard let functions = attributedFunctions,
               let json = attributesJSON(string, font: font, color: .black) else {
@@ -177,7 +236,7 @@ public enum TextBackend {
         let attributes = string.length > 0 ? string.attributes(at: 0, effectiveRange: nil) : [:]
         let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 12)
         let color = attributes[.foregroundColor] as? NSColor ?? .black
-        let tracking = attributes[.kern] as? CGFloat ?? 0
+        let tracking = Self.tracking(in: attributes)
         let leading = (attributes[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0
         guard let functions = attributedFunctions, let json = attributesJSON(string, font: font, color: color) else {
             var runs: [(NSRange, NSColor)] = []

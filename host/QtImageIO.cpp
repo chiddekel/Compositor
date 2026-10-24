@@ -21,6 +21,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTextLayout>
+#include <QGlyphRun>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -989,6 +990,113 @@ struct TextLines {
     double coordinateScale = 1;
 };
 
+bool directionalTextControl(ushort code) {
+    return (code >= 0x202A && code <= 0x202E) || (code >= 0x2066 && code <= 0x2069);
+}
+
+struct TextControlLayout {
+    std::vector<double> offsets;
+    std::vector<double> locations;
+};
+
+// Keep Qt's shaped glyphs, but allocate format-control advances at AppKit's
+// logical insertion boundaries. The same offsets drive geometry and painting.
+TextControlLayout textControlLayout(const QTextLayout &layout, double tracking, double scale) {
+    const QString text = layout.text();
+    if (std::none_of(text.begin(), text.end(), [](QChar c) { return directionalTextControl(c.unicode()); })) return {};
+    TextControlLayout result;
+    result.offsets.resize(text.size() + 1, 0);
+    result.locations.resize(text.size(), std::numeric_limits<double>::quiet_NaN());
+    bool controlOnlyRTL = false;
+    for (const QChar character : text) {
+        const auto direction = character.direction();
+        if (direction == QChar::DirLRE || direction == QChar::DirLRO || direction == QChar::DirLRI || direction == QChar::DirL) break;
+        if (direction == QChar::DirRLE || direction == QChar::DirRLO || direction == QChar::DirRLI
+            || direction == QChar::DirR || direction == QChar::DirAL) { controlOnlyRTL = true; break; }
+    }
+    struct Slot { int character; double left, right; bool rtl, control; };
+    for (int lineIndex = 0; lineIndex < layout.lineCount(); ++lineIndex) {
+        const QTextLine line = layout.lineAt(lineIndex);
+        std::vector<Slot> entries;
+        for (int character = line.textStart(); character < line.textStart() + line.textLength(); ++character) {
+            if (!layout.isValidCursorPosition(character)) continue;
+            const bool control = directionalTextControl(text[character].unicode());
+            const auto runs = line.glyphRuns(character, 1, QTextLayout::RetrieveAll);
+            if (!runs.empty()) {
+                const auto bounds = runs.first().boundingRect();
+                entries.push_back({character, bounds.left() / scale, bounds.right() / scale, runs.first().isRightToLeft(), control});
+            } else if (text[character].isSpace()) {
+                QFont font = layout.font();
+                for (const auto &format : layout.formats())
+                    if (character >= format.start && character < format.start + format.length) font = format.format.font().resolve(font);
+                const QRawFont raw = QRawFont::fromFont(font);
+                const auto ids = raw.glyphIndexesForString(QString(text[character]));
+                const auto advances = raw.advancesForGlyphIndexes(ids);
+                const double advance = advances.isEmpty() ? 0 : advances.first().x() / scale + tracking;
+                const double leading = line.cursorToX(character, QTextLine::Leading) / scale;
+                const double trailing = line.cursorToX(character, QTextLine::Trailing) / scale;
+                const bool rtl = leading != trailing ? trailing < leading : text.isRightToLeft();
+                const double left = rtl ? leading - advance : leading;
+                entries.push_back({character, left, left + advance, rtl, false});
+            }
+        }
+        std::vector<std::pair<double, double>> advances;
+        for (const Slot &slot : entries) if (slot.control) advances.push_back({slot.right, std::max(0.0, slot.right - slot.left)});
+        std::sort(advances.begin(), advances.end());
+        std::vector<double> prefix(advances.size() + 1, 0);
+        for (size_t i = 0; i < advances.size(); ++i) prefix[i + 1] = prefix[i] + advances[i].second;
+        const auto stripped = [&](double position) {
+            const auto end = std::upper_bound(advances.begin(), advances.end(), position,
+                [](double value, const auto &advance) { return value < advance.first; });
+            return position - prefix[size_t(end - advances.begin())];
+        };
+        std::vector<Slot> controls;
+        std::vector<int> following(entries.size(), -1), preceding(entries.size(), -1);
+        int neighbor = -1;
+        for (size_t i = 0; i < entries.size(); ++i) {
+            preceding[i] = neighbor;
+            if (!entries[i].control) neighbor = int(i);
+        }
+        neighbor = -1;
+        for (size_t i = entries.size(); i-- > 0;) {
+            following[i] = neighbor;
+            if (!entries[i].control) neighbor = int(i);
+        }
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const Slot &slot = entries[i];
+            if (!slot.control) continue;
+            bool rtl = controlOnlyRTL;
+            double anchor = stripped(slot.left);
+            if (following[i] >= 0) {
+                const Slot &next = entries[size_t(following[i])];
+                rtl = next.rtl; anchor = stripped(rtl ? next.right : next.left);
+            } else if (preceding[i] >= 0) {
+                const Slot &previous = entries[size_t(preceding[i])];
+                rtl = previous.rtl; anchor = stripped(rtl ? previous.left : previous.right);
+            }
+            controls.push_back({slot.character, anchor, anchor, rtl, true});
+        }
+        std::stable_sort(controls.begin(), controls.end(), [](const Slot &a, const Slot &b) {
+            if (a.left != b.left) return a.left < b.left;
+            if (a.rtl != b.rtl) return a.rtl;
+            return a.rtl ? a.character > b.character : a.character < b.character;
+        });
+        const double advance = std::max(0.0, tracking);
+        for (size_t i = 0; i < controls.size(); ++i) result.locations[controls[i].character] = controls[i].left + i * advance;
+        for (const Slot &slot : entries) {
+            if (slot.control) continue;
+            const double left = stripped(slot.left);
+            const auto end = std::upper_bound(controls.begin(), controls.end(), left,
+                [](double value, const Slot &control) { return value < control.left; });
+            result.offsets[slot.character] = left + size_t(end - controls.begin()) * advance - slot.left;
+        }
+        for (int character = line.textStart() + 1; character < line.textStart() + line.textLength(); ++character)
+            if (!layout.isValidCursorPosition(character)) result.offsets[character] = result.offsets[character - 1];
+    }
+    if (std::all_of(result.offsets.begin(), result.offsets.end(), [](double value) { return value == 0; })) result.offsets.clear();
+    return result;
+}
+
 // Lays the text out as AppKit does with a fixed line height (min = max): each line `lineHeight` tall, its baseline
 // `lineHeight - descent` down, wrapping at `maxWidth` when positive; tracking is extra space after every character.
 // A color over part of the text: UTF-16 offsets into the whole string, premultiplied-free RGBA 0...1.
@@ -1013,6 +1121,7 @@ bool attributeRuns(const char *json, int count, double tracking, std::vector<Att
         QTextCharFormat format;
         QFont font = fontFor(name.toUtf8().constData(), size);
         font.setLetterSpacing(QFont::AbsoluteSpacing, tracking);
+        font.setKerning(object.value("kerning").toBool(true));
         format.setFont(font);
         const auto color = object.value("color").toArray();
         if (!color.isEmpty()) {
@@ -1075,6 +1184,19 @@ TextLines layOut(const char *utf8, const char *fontName, double pixelSize, doubl
                 range.format.setFont(scaled);
             }
             formats << range;
+        }
+        if (tracking < 0) {
+            for (int character = 0; character < text.size(); ++character) {
+                if (!directionalTextControl(text[character].unicode())) continue;
+                QFont controlFont = font;
+                for (const auto &format : formats)
+                    if (character >= format.start && character < format.start + format.length)
+                        controlFont = format.format.font().resolve(controlFont);
+                controlFont.setLetterSpacing(QFont::AbsoluteSpacing, 0);
+                QTextLayout::FormatRange control;
+                control.start = character; control.length = 1; control.format.setFont(controlFont);
+                formats << control;
+            }
         }
         if (!formats.isEmpty()) layout->setFormats(formats);
         paragraphStart += int(text.size()) + 1;
@@ -1143,11 +1265,46 @@ int32_t textRenderRuns(const char *text, const char *fontName, double pixelSize,
         painter.scale(1 / lines.coordinateScale, 1 / lines.coordinateScale);
         painter.setPen(QColor::fromRgbF(float(r), float(g), float(b), float(a)));
         for (const auto &layout : lines.paragraphs) {
+            const auto controlLayout = textControlLayout(*layout, tracking, lines.coordinateScale);
+            const auto &offsets = controlLayout.offsets;
             for (int i = 0; i < layout->lineCount(); ++i) {
                 const QTextLine line = layout->lineAt(i);
                 const double slack = width - line.naturalTextWidth() / lines.coordinateScale;
                 const double x = alignment == 1 ? slack / 2 : alignment == 2 ? slack : 0;
-                line.draw(&painter, QPointF(x * lines.coordinateScale, 0));
+                if (offsets.empty()) line.draw(&painter, QPointF(x * lines.coordinateScale, 0));
+                else {
+                    painter.save();
+                    const int start = line.textStart(), end = start + line.textLength();
+                    std::vector<int> cuts{start, end};
+                    for (int character = start + 1; character < end; ++character)
+                        if (offsets[character] != offsets[character - 1]) cuts.push_back(character);
+                    for (const auto &format : layout->formats()) {
+                        if (format.start > start && format.start < end) cuts.push_back(format.start);
+                        const int limit = format.start + format.length;
+                        if (limit > start && limit < end) cuts.push_back(limit);
+                    }
+                    std::sort(cuts.begin(), cuts.end());
+                    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+                    for (size_t part = 0; part + 1 < cuts.size(); ++part) {
+                        const int from = cuts[part], length = cuts[part + 1] - from;
+                        QBrush ink(QColor::fromRgbF(float(r), float(g), float(b), float(a)));
+                        for (const auto &format : layout->formats())
+                            if (from >= format.start && from < format.start + format.length
+                                && format.format.hasProperty(QTextFormat::ForegroundBrush)) ink = format.format.foreground();
+                        painter.setPen(QPen(ink, 0));
+                        const QPointF origin((x + offsets[from]) * lines.coordinateScale, 0);
+                        for (const QGlyphRun &run : layout->glyphRuns(from, length, QTextLayout::RetrieveAll)) {
+                            painter.save();
+                            if (run.flags().testFlag(QGlyphRun::SplitLigature)) {
+                                const auto bounds = run.boundingRect().translated(origin).normalized();
+                                painter.setClipRect(QRectF(bounds.left(), 0, bounds.width(), h * lines.coordinateScale), Qt::IntersectClip);
+                            }
+                            painter.drawGlyphRun(origin, run);
+                            painter.restore();
+                        }
+                    }
+                    painter.restore();
+                }
             }
         }
     }
@@ -1285,6 +1442,132 @@ extern "C" int32_t compositor_qt_text_render_attributes(const char *text, const 
     std::vector<AttributeRun> runs;
     if (!attributeRuns(json, QString::fromUtf8(text ? text : "").size(), tracking, runs)) return -1;
     return textRenderRuns(text, fontName, size, tracking, leading, maxWidth, alignment, boxWidth, r, g, b, a, {}, pixels, width, height, runs);
+}
+
+// Geometry comes from the same shaped lines as measurement and drawing. UTF-16
+// cluster indices keep glyph indices separate from character indices (ligatures,
+// combining marks and surrogate pairs need not have one glyph per code unit).
+extern "C" int64_t compositor_qt_text_geometry_attributes(const char *text, const char *fontName, double size, double tracking,
+                                                          double leading, double maxWidth, int32_t alignment, const char *json,
+                                                          char *buffer, size_t capacity) {
+    if (!qGuiApp) return -2;
+    if (!std::isfinite(size) || size <= 0 || size > 2000 || !std::isfinite(tracking)
+        || !std::isfinite(leading) || leading < 0 || !std::isfinite(maxWidth) || maxWidth < 0
+        || alignment < 0 || alignment > 2) return -1;
+    const QString string = QString::fromUtf8(text ? text : "");
+    std::vector<AttributeRun> attributes;
+    if (!attributeRuns(json, string.size(), tracking, attributes)) return -1;
+    const auto laidOut = layOut(text, fontName, size, tracking, leading, maxWidth, {}, attributes);
+    const double scale = laidOut.coordinateScale;
+    const double width = std::max(maxWidth, laidOut.width);
+    QJsonArray glyphs, fragments;
+    constexpr quint32 controlGlyph = 0x00FFFFFF; // AppKit's NSControlGlyph is a 32-bit NSGlyph, not a CGGlyph.
+    int paragraphStart = 0, lineIndex = 0;
+    for (const auto &paragraph : laidOut.paragraphs) {
+        const auto controlLayout = textControlLayout(*paragraph, tracking, scale);
+        const auto &trackingOffsets = controlLayout.offsets;
+        for (int index = 0; index < paragraph->lineCount(); ++index, ++lineIndex) {
+            const QTextLine line = paragraph->lineAt(index);
+            const double logicalY = lineIndex * laidOut.lineHeight;
+            const double baseline = (line.y() + line.ascent()) / scale;
+            const double fragmentBaseline = laidOut.lineHeight - std::round(line.descent() / scale);
+            const double slack = width - line.naturalTextWidth() / scale;
+            const double alignedX = alignment == 1 ? slack / 2 : alignment == 2 ? slack : 0;
+            struct Glyph {
+                quint32 id;
+                int character;
+                double x, y;
+                QRawFont font;
+            };
+            std::vector<Glyph> lineGlyphs;
+            const int from = paragraphStart + line.textStart();
+            const int to = from + line.textLength();
+            bool hasDirectionalControls = false;
+            for (int character = from; character < to; ++character)
+                hasDirectionalControls |= directionalTextControl(string[character].unicode());
+            const auto appendRuns = [&](const QList<QGlyphRun> &runs, int character = -1) {
+                for (const QGlyphRun &run : runs) {
+                    const auto ids = run.glyphIndexes();
+                    const auto positions = run.positions();
+                    const auto characters = run.stringIndexes();
+                    if (ids.size() != positions.size() || ids.size() != characters.size()) return false;
+                    for (qsizetype i = 0; i < ids.size(); ++i) {
+                        const int local = character < 0 ? int(characters[i]) : character - paragraphStart;
+                        if (local < line.textStart() || local >= line.textStart() + line.textLength()) return false;
+                        const double x = alignedX + positions[i].x() / scale + (trackingOffsets.empty() ? 0 : trackingOffsets[local]);
+                        const double y = positions[i].y() / scale - baseline + fragmentBaseline;
+                        if (run.flags().testFlag(QGlyphRun::SplitLigature)
+                            && std::any_of(lineGlyphs.begin(), lineGlyphs.end(), [&](const Glyph &g) {
+                                return g.id == ids[i] && g.x == x && g.y == y && g.font == run.rawFont();
+                            })) continue;
+                        lineGlyphs.push_back({ids[i], character < 0 ? paragraphStart + int(characters[i]) : character,
+                                             x, y, run.rawFont()});
+                    }
+                }
+                return true;
+            };
+            if (hasDirectionalControls) {
+                // Merged Qt runs can mislabel source indices across format controls.
+                // Character-sized queries retain their actual UTF-16 associations.
+                for (int character = from; character < to; ++character) {
+                    const int local = character - paragraphStart;
+                    if (directionalTextControl(string[character].unicode()) || !paragraph->isValidCursorPosition(local)) continue;
+                    if (!appendRuns(paragraph->glyphRuns(local, 1, QTextLayout::RetrieveAll), character)) return -1;
+                }
+            } else if (!appendRuns(paragraph->glyphRuns(line.textStart(), line.textLength(), QTextLayout::RetrieveAll))) {
+                return -1;
+            }
+            // Qt omits control characters and wrapped trailing spaces from
+            // glyph runs. AppKit still includes them in its glyph indices.
+            std::vector<bool> represented(size_t(to - from), false);
+            for (const Glyph &glyph : lineGlyphs) represented[size_t(glyph.character - from)] = true;
+            for (int character = from; character < to; ++character) {
+                if (represented[size_t(character - from)]) continue;
+                quint32 id = 0; // NSNullGlyph retains code units absorbed into a shaped cluster.
+                if (string[character] == QLatin1Char('\t') || string[character] == QLatin1Char('\r')
+                    || directionalTextControl(string[character].unicode())) {
+                    id = controlGlyph;
+                } else if (string[character].isSpace()) {
+                    QFont font = paragraph->font();
+                    const int local = character - paragraphStart;
+                    for (const auto &format : paragraph->formats())
+                        if (local >= format.start && local < format.start + format.length)
+                            font = format.format.font().resolve(font);
+                    const auto ids = QRawFont::fromFont(font).glyphIndexesForString(QString(string[character]));
+                    id = ids.isEmpty() ? 0 : ids.first();
+                }
+                const int local = character - paragraphStart;
+                lineGlyphs.push_back({id, character, alignedX + line.cursorToX(local) / scale
+                                     + (trackingOffsets.empty() ? 0 : trackingOffsets[local]),
+                                     fragmentBaseline});
+            }
+            if (index + 1 == paragraph->lineCount() && paragraphStart + paragraph->text().size() < string.size())
+                lineGlyphs.push_back({controlGlyph, paragraphStart + int(paragraph->text().size()),
+                                     alignedX + line.naturalTextWidth() / scale, fragmentBaseline});
+            std::stable_sort(lineGlyphs.begin(), lineGlyphs.end(), [](const Glyph &a, const Glyph &b) {
+                return a.character < b.character;
+            });
+            // Format-control positions use the same normalized allocation as painting.
+            for (Glyph &glyph : lineGlyphs) {
+                if (!directionalTextControl(string[glyph.character].unicode())) continue;
+                const int local = glyph.character - paragraphStart;
+                if (std::isfinite(controlLayout.locations[local])) glyph.x = alignedX + controlLayout.locations[local];
+            }
+            const qsizetype start = glyphs.size();
+            for (const Glyph &glyph : lineGlyphs)
+                glyphs.append(QJsonObject{{"id", qint64(glyph.id)}, {"character", glyph.character},
+                                         {"x", glyph.x}, {"y", glyph.y}, {"line", lineIndex}});
+            fragments.append(QJsonObject{{"y", logicalY}, {"height", laidOut.lineHeight},
+                                         {"start", qint64(start)}, {"count", qint64(lineGlyphs.size())}});
+        }
+        paragraphStart += int(paragraph->text().size()) + 1;
+    }
+    const QByteArray result = QJsonDocument(QJsonObject{{"glyphs", glyphs}, {"lines", fragments}}).toJson(QJsonDocument::Compact);
+    if (buffer) {
+        if (capacity < size_t(result.size())) return -1;
+        std::memcpy(buffer, result.constData(), size_t(result.size()));
+    }
+    return result.size();
 }
 
 extern "C" int compositor_qt_text_functions(CompositorTextLayoutFn *layout, CompositorTextRenderFn *render) {

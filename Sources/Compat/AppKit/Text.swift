@@ -171,24 +171,38 @@ open class NSTextContainer {
     }
 
     nonisolated open func glyphRange(for container: NSTextContainer) -> NSRange {
-        NSRange(location: 0, length: textStorage?.attributedString.length ?? 0)
+        NSRange(location: 0, length: geometry(in: container)?.glyphs.count ?? textStorage?.attributedString.length ?? 0)
     }
 
     nonisolated open var numberOfGlyphs: Int {
-        textStorage?.attributedString.length ?? 0
+        geometry()?.glyphs.count ?? textStorage?.attributedString.length ?? 0
     }
 
     nonisolated open func ensureLayout(for container: NSTextContainer) {}
 
-    /// The line a glyph sits on and its origin in that line, laid out exactly as `drawGlyphs` draws: fixed advances
-    /// (0.55 em plus tracking), lines `minimumLineHeight` or 1.2 em apart, wrapping at the container's width, each
-    /// glyph drawn in an em-tall box from the line's top — so its baseline is about 0.8 em down.
+    nonisolated private func geometry(in container: NSTextContainer? = nil) -> TextBackend.Geometry? {
+        guard let textStorage else { return nil }
+        let width = (container ?? textContainers.first)?.size.width ?? .greatestFiniteMagnitude
+        return TextBackend.geometry(textStorage.attributedString, maxWidth: width >= 1e5 ? 0 : max(0, width))
+    }
+
+    nonisolated open func glyph(at glyphIndex: Int) -> UInt32 {
+        guard let geometry = geometry(), geometry.glyphs.indices.contains(glyphIndex) else { return 0 }
+        return geometry.glyphs[glyphIndex].id
+    }
+
+    nonisolated open func characterIndexForGlyph(at glyphIndex: Int) -> Int {
+        guard let geometry = geometry(), geometry.glyphs.indices.contains(glyphIndex) else { return glyphIndex }
+        return geometry.glyphs[glyphIndex].character
+    }
+
+    /// Approximate placement for processes without the host text engine.
     nonisolated private func placement(ofGlyphAt index: Int) -> (line: Int, x: CGFloat, lineHeight: CGFloat, pointSize: CGFloat, width: CGFloat) {
         let attrString = textStorage?.attributedString ?? NSAttributedString(string: "")
         let attrs = attrString.length > 0 ? attrString.attributes(at: 0, effectiveRange: nil) : [:]
         let font = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
         let paragraph = attrs[.paragraphStyle] as? NSParagraphStyle
-        let tracking = (attrs[.kern] as? CGFloat) ?? 0
+        let tracking = TextBackend.tracking(in: attrs)
         let pointSize = font.pointSize > 0 ? font.pointSize : 12
         let lineHeight = (paragraph?.minimumLineHeight ?? 0) > 0 ? paragraph!.minimumLineHeight : pointSize * 1.2
         let containerWidth = textContainers.first?.size.width ?? .greatestFiniteMagnitude
@@ -204,6 +218,12 @@ open class NSTextContainer {
     }
 
     nonisolated open func lineFragmentRect(forGlyphAt glyphIndex: Int, effectiveRange: UnsafeMutablePointer<NSRange>?) -> CGRect {
+        if let geometry = geometry(), geometry.glyphs.indices.contains(glyphIndex) {
+            let line = geometry.lines[geometry.glyphs[glyphIndex].line]
+            let width = textContainers.first?.size.width ?? .greatestFiniteMagnitude
+            effectiveRange?.pointee = NSRange(location: line.start, length: line.count)
+            return CGRect(x: 0, y: line.y, width: width == .greatestFiniteMagnitude ? 0 : width, height: line.height)
+        }
         let p = placement(ofGlyphAt: glyphIndex)
         effectiveRange?.pointee = NSRange(location: 0, length: numberOfGlyphs)
         return CGRect(x: 0, y: CGFloat(p.line) * p.lineHeight, width: p.width == .greatestFiniteMagnitude ? 0 : p.width, height: p.lineHeight)
@@ -211,6 +231,10 @@ open class NSTextContainer {
 
     /// The glyph's origin (baseline) relative to its line fragment.
     nonisolated open func location(forGlyphAt glyphIndex: Int) -> CGPoint {
+        if let geometry = geometry(), geometry.glyphs.indices.contains(glyphIndex) {
+            let glyph = geometry.glyphs[glyphIndex]
+            return CGPoint(x: glyph.x, y: glyph.y)
+        }
         let p = placement(ofGlyphAt: glyphIndex)
         let attrString = textStorage?.attributedString ?? NSAttributedString(string: "")
         if let real = TextBackend.layout(attrString, maxWidth: 0) {
@@ -231,7 +255,7 @@ open class NSTextContainer {
         let font = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
         let color = (attrs[.foregroundColor] as? NSColor) ?? NSColor.black
         let paragraph = attrs[.paragraphStyle] as? NSParagraphStyle
-        let tracking = (attrs[.kern] as? CGFloat) ?? 0
+        let tracking = TextBackend.tracking(in: attrs)
 
         let pointSize = font.pointSize > 0 ? font.pointSize : 12
         let lineHeight = (paragraph?.minimumLineHeight ?? 0) > 0 ? paragraph!.minimumLineHeight : pointSize * 1.2
@@ -378,7 +402,7 @@ open class NSTextStorage {
 extension NSString {
     public func size(withAttributes attrs: [NSAttributedString.Key: Any]? = nil) -> CGSize {
         let font = (attrs?[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 12)
-        if let real = TextBackend.layout(self as String, font: font, tracking: (attrs?[.kern] as? CGFloat) ?? 0,
+        if let real = TextBackend.layout(self as String, font: font, tracking: TextBackend.tracking(in: attrs),
                                          lineHeight: 0, maxWidth: 0) {
             return CGSize(width: real.width, height: real.height)
         }

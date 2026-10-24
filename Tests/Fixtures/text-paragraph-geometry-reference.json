@@ -1,0 +1,6234 @@
+{
+  "schema": 1,
+  "nativeRun": "40140952248",
+  "nativeCommit": "2eccf17d3424b7fd5270a95a297f57da498d042c",
+  "captureSha256": "feb1fc9037d6ce9367a8d8a65cbe01a05e919630c906f9c1170fa0d5e104ac15",
+  "cases": [
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            10
+          ],
+          "location": [
+            0,
+            7
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            10
+          ],
+          "location": [
+            8.624267578125,
+            7
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            10
+          ],
+          "location": [
+            16.290283203125,
+            7
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            10
+          ],
+          "location": [
+            19.805908203125,
+            7
+          ]
+        }
+      ],
+      "lineHeight": 10,
+      "name": "tight-leading",
+      "size": 12.5,
+      "text": "Ag \u03a9",
+      "tracking": 0,
+      "utf16Length": 4,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            19.25
+          ],
+          "location": [
+            0,
+            16.25
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            19.25
+          ],
+          "location": [
+            8.624267578125,
+            16.25
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            19.25
+          ],
+          "location": [
+            16.290283203125,
+            16.25
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            19.25
+          ],
+          "location": [
+            19.805908203125,
+            16.25
+          ]
+        }
+      ],
+      "lineHeight": 19.25,
+      "name": "loose-leading",
+      "size": 12.5,
+      "text": "Ag \u03a9",
+      "tracking": 0,
+      "utf16Length": 4,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            3
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            18,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            3
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            18,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            3
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            18,
+            15
+          ],
+          "location": [
+            16.290283203125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            3,
+            1
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            15,
+            18,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "wrapped",
+      "size": 12.5,
+      "text": "Ag \u03a9",
+      "tracking": 0,
+      "utf16Length": 4,
+      "width": 18,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            18.790283203125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            23.555908203125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "tracking",
+      "size": 12.5,
+      "text": "Ag \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 4,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 1,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            25.284423828125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            33.90869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            41.57470703125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            45.09033203125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "centered",
+      "size": 12.5,
+      "text": "Ag \u03a9",
+      "tracking": 0,
+      "utf16Length": 4,
+      "width": 80,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 2,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            50.56884765625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            59.193115234375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            66.859130859375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            80,
+            15
+          ],
+          "location": [
+            70.374755859375,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "right-aligned",
+      "size": 12.5,
+      "text": "Ag \u03a9",
+      "tracking": 0,
+      "utf16Length": 4,
+      "width": 80,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.290283203125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            19.805908203125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.43115234375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            5,
+            4
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            15,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            5,
+            4
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            15,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            5,
+            4
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            15,
+            10000000,
+            15
+          ],
+          "location": [
+            16.290283203125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            5,
+            4
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            15,
+            10000000,
+            15
+          ],
+          "location": [
+            19.805908203125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "multiline",
+      "size": 12.5,
+      "text": "Ag \u03a9\nAg \u03a9",
+      "tracking": 0,
+      "utf16Length": 9,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 666,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 0,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.290283203125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.290283203125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            19.805908203125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "combining",
+      "size": 12.5,
+      "text": "Ag\u0301 \u03a9",
+      "tracking": 0,
+      "utf16Length": 5,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 790,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            0,
+            23
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 647,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            14.390625,
+            23
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 647,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            23.2734375,
+            23
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 689,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            32.15625,
+            23
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 586,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            37.96875,
+            23
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 614,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            51.6796875,
+            23
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "ligature",
+      "size": 24,
+      "text": "office",
+      "tracking": 0,
+      "utf16Length": 6,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            21
+          ],
+          "location": [
+            0,
+            16
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 2096,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            21
+          ],
+          "location": [
+            8.624267578125,
+            16
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 0,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            21
+          ],
+          "location": [
+            25.624267578125,
+            16
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            4
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            21
+          ],
+          "location": [
+            25.624267578125,
+            16
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            4,
+            1
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            21,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "surrogate",
+      "size": 12.5,
+      "text": "A\ud83d\ude00\n\u03a9",
+      "tracking": 0,
+      "utf16Length": 5,
+      "width": 10000000,
+      "nativeFallbacks": [
+        {
+          "advances": [
+            [
+              17,
+              0
+            ]
+          ],
+          "font": {
+            "ascent": 15.625,
+            "descent": 4.8828125,
+            "family": "Apple Color Emoji",
+            "file": "Apple Color Emoji.ttc",
+            "leading": 0,
+            "name": "AppleColorEmoji",
+            "size": 12.5
+          },
+          "glyphs": [
+            2096
+          ],
+          "range": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            17.755126953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-controls",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.802978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-left-override",
+      "size": 12.5,
+      "text": "A\u202dBC\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.802978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-right-embedding",
+      "size": 12.5,
+      "text": "A\u202bBC\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.802978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-left-embedding",
+      "size": 12.5,
+      "text": "A\u202aBC\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.802978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-right-isolate",
+      "size": 12.5,
+      "text": "A\u2067BC\u2069 \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.802978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-left-isolate",
+      "size": 12.5,
+      "text": "A\u2066BC\u2069 \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            39.07470703125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.89599609375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            21.76513671875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            18.24951171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-unmatched",
+      "size": 12.5,
+      "text": "A\u202eBC \u03a9",
+      "tracking": 0,
+      "utf16Length": 6,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            42.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            34.28955078125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.1376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.1376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 84,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.2685546875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.1376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 95,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            42.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 9,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            42.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 10,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            45.98388671875,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-nested",
+      "size": 12.5,
+      "text": "A\u202eB\u202dCD\u202cE\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 11,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.683837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.255126953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-tracking",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            0,
+            23
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            49.79296875,
+            23
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            34.08984375,
+            23
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            16.55859375,
+            23
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            49.79296875,
+            23
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            49.79296875,
+            23
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            56.54296875,
+            23
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-size24",
+      "size": 24,
+      "text": "A\u202eBC\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            2
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            2
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-only",
+      "size": 12.5,
+      "text": "\u202e\u202c",
+      "tracking": 0,
+      "utf16Length": 2,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.43115234375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.806884765625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            13.140869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.625244140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-initial",
+      "size": 12.5,
+      "text": "\u202eAg \u03a9\u202c",
+      "tracking": 0,
+      "utf16Length": 6,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            17.755126953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 84,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            53.363037109375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 95,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            45.849609375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 9,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 137,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            38.470458984375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 10,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            53.363037109375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 11,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            53.363037109375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 12,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            56.878662109375,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-adjacent",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c D\u202eEF\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 13,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.802978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-first-strong",
+      "size": 12.5,
+      "text": "A\u2068BC\u2069 \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            42.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            34.28955078125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.15869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.15869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.15869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 84,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.1376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 95,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            42.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 9,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            42.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 10,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            45.98388671875,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-back-to-back",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c\u202eDE\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 11,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            12.139892578125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-empty",
+      "size": 12.5,
+      "text": "A\u202e\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 5,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            3
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            20,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            3
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            20,
+            15
+          ],
+          "location": [
+            16.802978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            3
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            20,
+            15
+          ],
+          "location": [
+            8.624267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            3,
+            3
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            15,
+            20,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            3,
+            3
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            15,
+            20,
+            15
+          ],
+          "location": [
+            9.130859375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            3,
+            3
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            15,
+            20,
+            15
+          ],
+          "location": [
+            9.130859375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            6,
+            1
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            30,
+            20,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-wrapped",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c \u03a9",
+      "tracking": 0,
+      "utf16Length": 7,
+      "width": 20,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.124267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.552978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-left-override-tracking",
+      "size": 12.5,
+      "text": "A\u202dBC\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.124267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.552978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-right-embedding-tracking",
+      "size": 12.5,
+      "text": "A\u202bBC\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.124267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.552978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-left-embedding-tracking",
+      "size": 12.5,
+      "text": "A\u202aBC\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.124267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.552978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-right-isolate-tracking",
+      "size": 12.5,
+      "text": "A\u2067BC\u2069 \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.124267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.552978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-left-isolate-tracking",
+      "size": 12.5,
+      "text": "A\u2066BC\u2069 \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            45.32470703125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            35.89599609375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.51513671875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.74951171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-unmatched-tracking",
+      "size": 12.5,
+      "text": "A\u202eBC \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 6,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            51.21826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            41.78955078125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            19.8876953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            21.1376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 84,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            31.5185546875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            18.6376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 95,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            52.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 9,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            53.71826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 10,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            58.48388671875,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-nested-tracking",
+      "size": 12.5,
+      "text": "A\u202eB\u202dCD\u202cE\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 11,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            0,
+            23
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            53.54296875,
+            23
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            36.58984375,
+            23
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            17.80859375,
+            23
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            54.79296875,
+            23
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            56.04296875,
+            23
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            29
+          ],
+          "location": [
+            64.04296875,
+            23
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-size24-tracking",
+      "size": 24,
+      "text": "A\u202eBC\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            2
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            1.25,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            2
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-only-tracking",
+      "size": 12.5,
+      "text": "\u202e\u202c",
+      "tracking": 1.25,
+      "utf16Length": 2,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            35.68115234375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            25.806884765625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.890869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            12.125244140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            1.25,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-initial-tracking",
+      "size": 12.5,
+      "text": "\u202eAg \u03a9\u202c",
+      "tracking": 1.25,
+      "utf16Length": 6,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            29.683837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.255126953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 84,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            64.613037109375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 95,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            55.849609375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 9,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 137,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            47.220458984375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 10,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            65.863037109375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 11,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            67.113037109375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 12,
+          "effectiveRange": [
+            0,
+            13
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            71.878662109375,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-adjacent-tracking",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c D\u202eEF\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 13,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.124267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            20.552978515625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.933837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            32.183837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            36.949462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-first-strong-tracking",
+      "size": 12.5,
+      "text": "A\u2068BC\u2069 \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            51.21826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            41.78955078125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            31.40869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            30.15869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            28.90869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 84,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            18.6376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 95,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            52.46826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 9,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            53.71826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 10,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            58.48388671875,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-back-to-back-tracking",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c\u202eDE\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 11,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.124267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            12.374267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            5
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            17.139892578125,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-empty-tracking",
+      "size": 12.5,
+      "text": "A\u202e\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 5,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            2
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            20,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            2
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            20,
+            15
+          ],
+          "location": [
+            9.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            2,
+            2
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            15,
+            20,
+            15
+          ],
+          "location": [
+            10.380859375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            2,
+            2
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            15,
+            20,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            4,
+            3
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            30,
+            20,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            4,
+            3
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            30,
+            20,
+            15
+          ],
+          "location": [
+            1.25,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            4,
+            3
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            30,
+            20,
+            15
+          ],
+          "location": [
+            6.015625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-wrapped-tracking",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c \u03a9",
+      "tracking": 1.25,
+      "utf16Length": 7,
+      "width": 20,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            23.683837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            16.255126953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            7.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            23.683837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            23.683837890625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            7
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            26.449462890625,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-negative-tracking",
+      "size": 12.5,
+      "text": "A\u202eBC\u202c \u03a9",
+      "tracking": -0.75,
+      "utf16Length": 7,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            38.71826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 65,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            31.28955078125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            14.6376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 73,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            14.6376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 84,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            23.0185546875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 6,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            14.6376953125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 7,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 95,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            7.874267578125,
+            12
+          ]
+        },
+        {
+          "characterIndex": 8,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            38.71826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 9,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            38.71826171875,
+            12
+          ]
+        },
+        {
+          "characterIndex": 10,
+          "effectiveRange": [
+            0,
+            11
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            41.48388671875,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-nested-negative-tracking",
+      "size": 12.5,
+      "text": "A\u202eB\u202dCD\u202cE\u202c \u03a9",
+      "tracking": -0.75,
+      "utf16Length": 11,
+      "width": 10000000,
+      "nativeFallbacks": []
+    },
+    {
+      "alignment": 0,
+      "controlGlyph": 16777215,
+      "face": "Inter-Regular",
+      "glyphs": [
+        {
+          "characterIndex": 0,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            26.43115234375,
+            12
+          ]
+        },
+        {
+          "characterIndex": 1,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 2,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            18.556884765625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 2,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 658,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            11.640869140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 3,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1777,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            8.875244140625,
+            12
+          ]
+        },
+        {
+          "characterIndex": 4,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 1042,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        },
+        {
+          "characterIndex": 5,
+          "effectiveRange": [
+            0,
+            6
+          ],
+          "glyph": 16777215,
+          "lineFragment": [
+            0,
+            0,
+            10000000,
+            15
+          ],
+          "location": [
+            0,
+            12
+          ]
+        }
+      ],
+      "lineHeight": 0,
+      "name": "bidi-initial-negative-tracking",
+      "size": 12.5,
+      "text": "\u202eAg \u03a9\u202c",
+      "tracking": -0.75,
+      "utf16Length": 6,
+      "width": 10000000,
+      "nativeFallbacks": []
+    }
+  ]
+}
