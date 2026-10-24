@@ -86,10 +86,14 @@ jobs:
           python3 - <<'PY'
           import json, math
           from pathlib import Path
-          cases = json.loads(Path('coregraphics-reference.json').read_text())['textParagraphGeometry']
-          assert len(cases) == 11
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          cases = reference['textParagraphGeometry']
+          assert len(cases) == 24
           assert {c['name'] for c in cases} == {'tight-leading', 'loose-leading', 'wrapped', 'tracking',
-              'centered', 'right-aligned', 'multiline', 'combining', 'ligature', 'surrogate', 'bidi-controls'}
+              'centered', 'right-aligned', 'multiline', 'combining', 'ligature', 'surrogate', 'bidi-controls',
+              'bidi-left-override', 'bidi-right-embedding', 'bidi-left-embedding', 'bidi-right-isolate',
+              'bidi-left-isolate', 'bidi-unmatched', 'bidi-nested', 'bidi-tracking', 'bidi-size24',
+              'bidi-only', 'bidi-initial', 'bidi-adjacent', 'bidi-first-strong'}
           for case in cases:
               assert case['face'] == 'Inter-Regular'
               assert 0 <= case['controlGlyph'] <= 0xFFFFFFFF
@@ -101,7 +105,20 @@ jobs:
                   assert all(math.isfinite(v) for key in ['location', 'lineFragment'] for v in glyph[key])
                   start, count = glyph['effectiveRange']
                   assert 0 <= start < len(case['glyphs']) and 0 < count <= len(case['glyphs']) - start
-          print('Validated eleven native paragraph layouts, including leading, wrapping and Unicode controls')
+          fallback = reference['textFallbackFonts']
+          assert len(fallback) == 3 and {c['name'] for c in fallback} == {'plain', 'surrogate', 'bidi-controls'}
+          for case in fallback:
+              assert case['primary']['name'] == 'Inter-Regular' and case['runs']
+              length = len(case['text'].encode('utf-16-le')) // 2
+              for run in case['runs']:
+                  start, count = run['range']
+                  assert 0 <= start < length and 0 < count <= length - start
+                  assert run['font']['name'] and run['font']['file']
+                  assert all(math.isfinite(run['font'][k]) for k in ['size', 'ascent', 'descent', 'leading'])
+                  assert len(run['glyphs']) == len(run['advances'])
+                  assert all(0 <= glyph <= 65535 for glyph in run['glyphs'])
+                  assert all(math.isfinite(v) for advance in run['advances'] for v in advance)
+          print('Validated 24 native paragraph layouts and three fallback font controls')
           PY
       - uses: actions/upload-artifact@v4
         with:

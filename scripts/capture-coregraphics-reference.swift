@@ -91,7 +91,20 @@ func captureTextParagraphGeometry() throws -> [[String: Any]] {
         ("combining", "Ag\u{0301} Ω", 12.5, 0, 0, 1e7, 0),
         ("ligature", "office", 24, 0, 0, 1e7, 0),
         ("surrogate", "A😀\nΩ", 12.5, 0, 0, 1e7, 0),
-        ("bidi-controls", "A\u{202E}BC\u{202C} Ω", 12.5, 0, 0, 1e7, 0)]
+        ("bidi-controls", "A\u{202E}BC\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-left-override", "A\u{202D}BC\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-right-embedding", "A\u{202B}BC\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-left-embedding", "A\u{202A}BC\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-right-isolate", "A\u{2067}BC\u{2069} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-left-isolate", "A\u{2066}BC\u{2069} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-unmatched", "A\u{202E}BC Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-nested", "A\u{202E}B\u{202D}CD\u{202C}E\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-tracking", "A\u{202E}BC\u{202C} Ω", 12.5, 0, 1.25, 1e7, 0),
+        ("bidi-size24", "A\u{202E}BC\u{202C} Ω", 24, 0, 0, 1e7, 0),
+        ("bidi-only", "\u{202E}\u{202C}", 12.5, 0, 0, 1e7, 0),
+        ("bidi-initial", "\u{202E}Ag Ω\u{202C}", 12.5, 0, 0, 1e7, 0),
+        ("bidi-adjacent", "A\u{202E}BC\u{202C} D\u{202E}EF\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-first-strong", "A\u{2068}BC\u{2069} Ω", 12.5, 0, 0, 1e7, 0)]
     var cases = [[String: Any]]()
     for (name, content, size, height, tracking, width, alignment) in recipes {
         guard let font = NSFont(name: "Inter-Regular", size: size) else {
@@ -124,6 +137,40 @@ func captureTextParagraphGeometry() throws -> [[String: Any]] {
         cases.append(["name": name, "text": content, "face": font.fontName, "size": size,
                       "lineHeight": height, "tracking": tracking, "width": width, "alignment": alignment,
                       "utf16Length": text.length, "controlGlyph": Int(NSControlGlyph), "glyphs": glyphs])
+    }
+    return cases
+}
+
+func captureTextFallbackFonts() throws -> [[String: Any]] {
+    guard let primary = NSFont(name: "Inter-Regular", size: 12.5) else {
+        throw CaptureError.failed("Cannot resolve fallback-control primary font")
+    }
+    func describeFont(_ font: CTFont) -> [String: Any] {
+        let url = CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL
+        return ["name": CTFontCopyPostScriptName(font) as String, "family": CTFontCopyFamilyName(font) as String,
+                "size": Double(CTFontGetSize(font)), "ascent": Double(CTFontGetAscent(font)),
+                "descent": Double(CTFontGetDescent(font)), "leading": Double(CTFontGetLeading(font)),
+                "file": url?.lastPathComponent ?? "unknown"]
+    }
+    var cases = [[String: Any]]()
+    for (name, content) in [("plain", "Ag Ω"), ("surrogate", "A😀\nΩ"),
+                             ("bidi-controls", "A\u{202E}BC\u{202C} Ω")] {
+        let text = NSAttributedString(string: content, attributes: [.font: primary, .kern: 0])
+        let line = CTLineCreateWithAttributedString(text as CFAttributedString)
+        var runs = [[String: Any]]()
+        for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+            let attributes = CTRunGetAttributes(run) as NSDictionary
+            let font = attributes[kCTFontAttributeName] as! CTFont
+            let range = CTRunGetStringRange(run)
+            var glyphs = [CGGlyph](repeating: 0, count: CTRunGetGlyphCount(run))
+            var advances = [CGSize](repeating: .zero, count: glyphs.count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
+            CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
+            runs.append(["font": describeFont(font), "range": [range.location, range.length],
+                         "glyphs": glyphs.map { Int($0) },
+                         "advances": advances.map { [Double($0.width), Double($0.height)] }])
+        }
+        cases.append(["name": name, "text": content, "primary": describeFont(primary as CTFont), "runs": runs])
     }
     return cases
 }
@@ -445,7 +492,7 @@ func capture() throws -> [String: Any] {
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
             "nonseparablePairs": try captureNonseparablePairs(),
             "text": try captureText(), "textGeometry": try captureTextGeometry(),
-            "textParagraphGeometry": try captureTextParagraphGeometry()]
+            "textParagraphGeometry": try captureTextParagraphGeometry(), "textFallbackFonts": try captureTextFallbackFonts()]
 }
 
 do {
