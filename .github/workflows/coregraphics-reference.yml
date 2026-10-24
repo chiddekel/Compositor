@@ -36,6 +36,51 @@ jobs:
               assert all(raw[i + channel] <= raw[i + 3] for i in range(0, 32, 4) for channel in range(3))
           print('Validated eight source/backdrop pairs, six recipes and thirteen buffers')
           PY
+      - name: Validate native text geometry and baseline controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math
+          from pathlib import Path
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          geometry = reference['textGeometry']
+          expected = {(face, size) for face in ['Inter-Regular', 'Inter-Bold', 'Inter-Light']
+                      for size in [12, 24, 36, 12.5, 24.5, 36.5]}
+          assert len(geometry) == 18 and {(c['face'], c['size']) for c in geometry} == expected
+          assert all(c['matchesBundledFont'] and c['bundledSha256'] == c['resolvedSha256'] for c in reference['text'])
+          buffers = 0
+          for case in geometry:
+              assert len(case['glyphs']) == 4
+              assert [g['characterIndex'] for g in case['glyphs']] == [0, 1, 2, 3]
+              for glyph in case['glyphs']:
+                  assert 0 <= glyph['glyph'] <= 65535
+                  assert all(math.isfinite(v) for key in ['location', 'advance', 'bounds', 'lineFragment'] for v in glyph[key])
+              assert all(math.isfinite(v) for v in case['usedRect'])
+              assert case['lineHeight'] > 0 and all(math.isfinite(v) for v in case['coreTextMetrics'].values())
+              runs = case['coreTextRuns']
+              assert sum(len(run['glyphs']) for run in runs) == 4
+              for run in runs:
+                  assert len(run['glyphs']) == len(run['positions']) == len(run['advances'])
+                  assert all(math.isfinite(v) for key in ['positions', 'advances'] for point in run[key] for v in point)
+              draws = case['draws']
+              assert len(draws) == 8
+              assert {(d['engine'], d['smoothing'], d.get('baselinePolicy')) for d in draws} == {
+                  (engine, smoothing, policy) for smoothing in [True, False]
+                  for engine, policies in [('NSLayoutManager', [None]),
+                                           ('CTLine', ['rounded-ascent', 'fractional-ascent', 'descent'])]
+                  for policy in policies}
+              for draw in draws:
+                  if draw['engine'] == 'CTLine':
+                      assert math.isfinite(draw['baselineOffset'])
+                  item = draw['output']
+                  assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (96, 144, 384, 8)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == 384 * 144 and hashlib.sha256(raw).hexdigest() == item['sha256']
+                  assert any(raw[3::4]), 'Native text draw is empty'
+                  assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
+                  buffers += 1
+          assert buffers == 144
+          print('Validated eighteen text layouts, seventy-two glyph records and 144 native baseline buffers')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: coregraphics-reference

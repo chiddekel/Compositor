@@ -75,6 +75,96 @@ func captureAffine(_ source: CGContext, width: Int, height: Int, scaleX: Double,
             "translationY": translationY, "output": try describe(warped)]
 }
 
+// Separate native glyph placement from smoothing and baseline rasterization.
+func captureTextGeometry() throws -> [[String: Any]] {
+    let fonts = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("third_party/fonts/inter")
+    let faces = ["Inter-Regular", "Inter-Bold", "Inter-Light"]
+    for face in faces {
+        CTFontManagerRegisterFontsForURL(fonts.appendingPathComponent("\(face).ttf") as CFURL, .process, nil)
+    }
+    func rect(_ value: CGRect) -> [Double] {
+        [Double(value.origin.x), Double(value.origin.y), Double(value.width), Double(value.height)]
+    }
+    var cases = [[String: Any]]()
+    for face in faces {
+        for size in [12.0, 24.0, 36.0, 12.5, 24.5, 36.5] {
+            guard let font = NSFont(name: face, size: size) else {
+                throw CaptureError.failed("Cannot resolve geometry font: \(face)")
+            }
+            let text = NSAttributedString(string: "Ag Ω", attributes: [.font: font, .foregroundColor: NSColor.white])
+            let storage = NSTextStorage(attributedString: text)
+            let manager = NSLayoutManager()
+            let container = NSTextContainer(containerSize: NSSize(width: 1e7, height: 1e7))
+            container.lineFragmentPadding = 0
+            storage.addLayoutManager(manager)
+            manager.addTextContainer(container)
+            manager.ensureLayout(for: container)
+            let range = manager.glyphRange(for: container)
+            var glyphs = [[String: Any]]()
+            for index in range.location..<(range.location + range.length) {
+                guard let converted = CGGlyph(exactly: manager.glyph(at: index)) else {
+                    throw CaptureError.failed("Text geometry glyph is outside the Core Text range")
+                }
+                var glyph = converted
+                var advance = CGSize.zero
+                CTFontGetAdvancesForGlyphs(font as CTFont, .horizontal, &glyph, &advance, 1)
+                let bounds = CTFontGetBoundingRectsForGlyphs(font as CTFont, .horizontal, &glyph, nil, 1)
+                let location = manager.location(forGlyphAt: index)
+                glyphs.append(["glyph": Int(glyph), "characterIndex": manager.characterIndexForGlyph(at: index),
+                               "location": [Double(location.x), Double(location.y)],
+                               "advance": [Double(advance.width), Double(advance.height)], "bounds": rect(bounds),
+                               "lineFragment": rect(manager.lineFragmentRect(forGlyphAt: index, effectiveRange: nil))])
+            }
+            let line = CTLineCreateWithAttributedString(text as CFAttributedString)
+            var ascent = CGFloat.zero, descent = CGFloat.zero, leading = CGFloat.zero
+            let width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+            var coreTextRuns = [[String: Any]]()
+            for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+                let count = CTRunGetGlyphCount(run)
+                var ids = [CGGlyph](repeating: 0, count: count)
+                var positions = [CGPoint](repeating: .zero, count: count)
+                var advances = [CGSize](repeating: .zero, count: count)
+                CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &ids)
+                CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+                CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
+                coreTextRuns.append(["glyphs": ids.map { Int($0) },
+                                     "positions": positions.map { [Double($0.x), Double($0.y)] },
+                                     "advances": advances.map { [Double($0.width), Double($0.height)] }])
+            }
+            let lineHeight = manager.defaultLineHeight(for: font)
+            let baselines = [("rounded-ascent", lineHeight - ceil(font.ascender)),
+                             ("fractional-ascent", lineHeight - font.ascender),
+                             ("descent", -font.descender)]
+            var draws = [[String: Any]]()
+            for smoothing in [true, false] {
+                let layoutContext = try bitmap(width: 96, height: 144)
+                layoutContext.setAllowsFontSmoothing(smoothing)
+                layoutContext.setShouldSmoothFonts(smoothing)
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: layoutContext, flipped: false)
+                manager.drawGlyphs(forGlyphRange: range, at: CGPoint(x: 4, y: 20))
+                NSGraphicsContext.restoreGraphicsState()
+                draws.append(["engine": "NSLayoutManager", "smoothing": smoothing, "output": try describe(layoutContext)])
+                for (name, baseline) in baselines {
+                    let context = try bitmap(width: 96, height: 144)
+                    context.setAllowsFontSmoothing(smoothing)
+                    context.setShouldSmoothFonts(smoothing)
+                    context.textPosition = CGPoint(x: 4, y: 20 + baseline)
+                    CTLineDraw(line, context)
+                    draws.append(["engine": "CTLine", "baselinePolicy": name, "baselineOffset": Double(baseline),
+                                  "smoothing": smoothing, "output": try describe(context)])
+                }
+            }
+            cases.append(["face": face, "size": size, "glyphs": glyphs, "usedRect": rect(manager.usedRect(for: container)),
+                          "lineHeight": Double(lineHeight), "coreTextRuns": coreTextRuns,
+                          "coreTextMetrics": ["width": width, "ascent": Double(ascent),
+                                              "descent": Double(descent), "leading": Double(leading)], "draws": draws])
+        }
+    }
+    return cases
+}
+
 // Resolve the actual face as well as its pixels: matching a PostScript name alone
 // does not prove that the macOS and Linux renderers selected the same font file.
 func captureText() throws -> [[String: Any]] {
@@ -302,7 +392,7 @@ func capture() throws -> [String: Any] {
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
             "nonseparablePairs": try captureNonseparablePairs(),
-            "text": try captureText()]
+            "text": try captureText(), "textGeometry": try captureTextGeometry()]
 }
 
 do {
