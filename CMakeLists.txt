@@ -311,7 +311,7 @@ if(Qt6_FOUND)
 
     # Native text and lowered controls must preserve system font traits.
     add_executable(test_font_traits tests/test_font_traits.cpp)
-    target_link_libraries(test_font_traits PRIVATE Qt6::Gui)
+    target_link_libraries(test_font_traits PRIVATE Qt6::Gui CompositorQtImageIO)
     add_test(NAME CompositorCore.FontTraits COMMAND test_font_traits)
     set_tests_properties(CompositorCore.FontTraits PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

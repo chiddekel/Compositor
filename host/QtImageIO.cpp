@@ -986,13 +986,14 @@ int32_t encodeStraightImage(const uint8_t *pixels, int32_t width, int32_t height
 struct TextLines {
     std::vector<std::unique_ptr<QTextLayout>> paragraphs;
     double width = 0, height = 0, lineHeight = 0, baseline = 0;
+    double coordinateScale = 1;
 };
 
 // Lays the text out as AppKit does with a fixed line height (min = max): each line `lineHeight` tall, its baseline
 // `lineHeight - descent` down, wrapping at `maxWidth` when positive; tracking is extra space after every character.
 // A color over part of the text: UTF-16 offsets into the whole string, premultiplied-free RGBA 0...1.
 struct ColorRun { int start, length; QColor color; };
-struct AttributeRun { int start, length; QTextCharFormat format; };
+struct AttributeRun { int start, length; QTextCharFormat format; double pixelSize; };
 
 // Canonical, nonoverlapping attributed ranges from NSAttributedString. Both
 // measuring and drawing use these exact formats, including font and color.
@@ -1020,7 +1021,7 @@ bool attributeRuns(const char *json, int count, double tracking, std::vector<Att
                                                   component.toDouble() < 0 || component.toDouble() > 1) return false;
             format.setForeground(QColor::fromRgbF(color[0].toDouble(), color[1].toDouble(), color[2].toDouble(), color[3].toDouble()));
         }
-        runs.push_back({int(start), int(length), format});
+        runs.push_back({int(start), int(length), format, size});
         previousEnd = int(start + length);
     }
     return true;
@@ -1029,9 +1030,23 @@ bool attributeRuns(const char *json, int count, double tracking, std::vector<Att
 TextLines layOut(const char *utf8, const char *fontName, double pixelSize, double tracking, double lineHeight, double maxWidth,
                  const std::vector<ColorRun> &runs = {}, const std::vector<AttributeRun> &attributes = {}) {
     TextLines out;
-    const QFont font = [&] { QFont f = fontFor(fontName, pixelSize); f.setLetterSpacing(QFont::AbsoluteSpacing, tracking); return f; }();
+    // QFontDatabase rounds even floating-point point sizes to whole pixels.
+    // Lay out fractional sizes in a larger coordinate space, then draw through
+    // its inverse transform. Qt still owns shaping, fallback and mixed-font runs.
+    bool fractional = pixelSize != std::round(pixelSize);
+    double largestSize = pixelSize;
+    for (const auto &run : attributes) {
+        fractional = fractional || run.pixelSize != std::round(run.pixelSize);
+        largestSize = std::max(largestSize, run.pixelSize);
+    }
+    const double scale = out.coordinateScale = fractional ? std::max(1.0, std::min(64.0, std::floor(32768 / largestSize))) : 1;
+    const QFont font = [&] {
+        QFont f = fontFor(fontName, pixelSize * scale);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, tracking * scale);
+        return f;
+    }();
     const QFontMetricsF metrics(font);
-    out.lineHeight = lineHeight > 0 ? lineHeight : pixelSize * 1.2;
+    out.lineHeight = lineHeight > 0 ? lineHeight * scale : std::round(metrics.lineSpacing() / scale) * scale;
     out.baseline = out.lineHeight - metrics.descent();
     const QStringList paragraphs = QString::fromUtf8(utf8 ? utf8 : "").split('\n');
     int lines = 0, paragraphStart = 0;
@@ -1053,6 +1068,12 @@ TextLines layOut(const char *utf8, const char *fontName, double pixelSize, doubl
             if (to <= from) continue;
             QTextLayout::FormatRange range;
             range.start = from - paragraphStart; range.length = to - from; range.format = run.format;
+            if (scale != 1) {
+                QFont scaled = range.format.font();
+                scaled.setPixelSize(std::max(1, int(std::lround(run.pixelSize * scale))));
+                scaled.setLetterSpacing(QFont::AbsoluteSpacing, tracking * scale);
+                range.format.setFont(scaled);
+            }
             formats << range;
         }
         if (!formats.isEmpty()) layout->setFormats(formats);
@@ -1064,7 +1085,7 @@ TextLines layOut(const char *utf8, const char *fontName, double pixelSize, doubl
         for (;;) {
             QTextLine line = layout->createLine();
             if (!line.isValid()) break;
-            line.setLineWidth(maxWidth > 0 ? maxWidth : 1e7);
+            line.setLineWidth(maxWidth > 0 ? maxWidth * scale : 1e7);
             const double baseline = attributes.empty() ? out.baseline : out.lineHeight - line.descent();
             if (lines == 0) out.baseline = baseline;
             line.setPosition(QPointF(0, lines * out.lineHeight + baseline - line.ascent()));
@@ -1075,6 +1096,10 @@ TextLines layOut(const char *utf8, const char *fontName, double pixelSize, doubl
         out.paragraphs.push_back(std::move(layout));
     }
     out.height = std::max(1, lines) * out.lineHeight;
+    out.width /= scale;
+    out.height /= scale;
+    out.lineHeight /= scale;
+    out.baseline /= scale;
     return out;
 }
 
@@ -1115,13 +1140,14 @@ int32_t textRenderRuns(const char *text, const char *fontName, double pixelSize,
     {
         QPainter painter(&image);
         painter.setRenderHint(QPainter::TextAntialiasing, true);
+        painter.scale(1 / lines.coordinateScale, 1 / lines.coordinateScale);
         painter.setPen(QColor::fromRgbF(float(r), float(g), float(b), float(a)));
         for (const auto &layout : lines.paragraphs) {
             for (int i = 0; i < layout->lineCount(); ++i) {
                 const QTextLine line = layout->lineAt(i);
-                const double slack = width - line.naturalTextWidth();
+                const double slack = width - line.naturalTextWidth() / lines.coordinateScale;
                 const double x = alignment == 1 ? slack / 2 : alignment == 2 ? slack : 0;
-                line.draw(&painter, QPointF(x, 0));
+                line.draw(&painter, QPointF(x * lines.coordinateScale, 0));
             }
         }
     }
@@ -1205,7 +1231,9 @@ extern "C" int32_t compositor_qt_svg_render(const uint8_t *data, size_t length, 
 // The font's vertical metrics in points (NSFont's ascender, descender — negative, below the baseline — and leading).
 extern "C" int compositor_qt_font_metrics(const char *name, double pointSize, double *ascent, double *descent, double *leading) {
     if (!qGuiApp) return 0;   // fonts need a QGuiApplication (bare test processes have none): the caller's estimate stands
-    const QFontMetricsF metrics(fontFor(name, pointSize));
+    QRawFont metrics = QRawFont::fromFont(fontFor(name, pointSize));
+    if (pointSize != std::round(pointSize)) metrics.setPixelSize(pointSize);
+    if (!metrics.isValid()) return 0;
     if (ascent) *ascent = metrics.ascent();
     if (descent) *descent = -metrics.descent();
     if (leading) *leading = metrics.leading();

@@ -205,7 +205,7 @@ public enum TextBackend {
 
     public struct Layout { public let width: CGFloat; public let height: CGFloat; public let baseline: CGFloat }
 
-    /// Size and first baseline of `text`, lines `lineHeight` apart (0: 1.2 em), wrapping at `maxWidth` (0: never).
+    /// Size and first baseline of `text`, lines `lineHeight` apart (0: the font's default), wrapping at `maxWidth` (0: never).
     public static func layout(_ text: String, font: NSFont, tracking: CGFloat, lineHeight: CGFloat, maxWidth: CGFloat) -> Layout? {
         _ = autoloaded
         guard let layoutFn else { return nil }
