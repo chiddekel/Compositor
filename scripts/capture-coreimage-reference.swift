@@ -25,6 +25,18 @@ func bitmap() throws -> CGContext {
     return result
 }
 
+func padded(_ image: CGImage, margin: Int) throws -> CIImage {
+    guard let target = CGContext(data: nil, width: image.width + margin * 2, height: image.height + margin * 2,
+        bitsPerComponent: 8, bytesPerRow: (image.width + margin * 2) * 4, space: space,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+        throw CaptureError.failed("Cannot allocate padded bitmap")
+    }
+    target.setBlendMode(.copy)
+    target.draw(image, in: CGRect(x: margin, y: margin, width: image.width, height: image.height))
+    guard let result = target.makeImage() else { throw CaptureError.failed("Cannot create padded source image") }
+    return CIImage(cgImage: result)
+}
+
 func describe(_ data: Data, bits: Int) -> [String: Any] {
     ["width": width, "height": height, "rowBytes": width * 4 * bits / 8,
      "bitsPerComponent": bits, "rgbaBase64": data.base64EncodedString(), "sha256": digest(data)]
@@ -79,9 +91,21 @@ func capture() throws -> [String: Any] {
         guard let image = source.makeImage() else { throw CaptureError.failed("Cannot create source image") }
         let input = CIImage(cgImage: image)
         inputs.append(["fixture": fixture, "identity": try render(input)])
-        for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 5, 17, 35] {
+        for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 5, 10, 17, 35] {
             let output = try filtered("CIGaussianBlur", input: input, parameters: [kCIInputRadiusKey: radius])
             cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius, "output": try render(output)])
+            if radius == 10 {
+                // The default Gaussian adjustment pads by its three-sigma halo plus two pixels.
+                // Materialize that padding so graph fusion cannot remove the input-grid control.
+                let margin = Int(ceil(radius * 3 + 2))
+                let expanded = try padded(image, margin: margin)
+                let restore = CGAffineTransform(translationX: -CGFloat(margin), y: -CGFloat(margin))
+                cases.append(["fixture": fixture, "filter": "identity-padding", "radius": 0,
+                              "sourcePadding": margin, "output": try render(expanded.transformed(by: restore))])
+                let blurred = try filtered("CIGaussianBlur", input: expanded, parameters: [kCIInputRadiusKey: radius])
+                cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius,
+                              "sourcePadding": margin, "output": try render(blurred.transformed(by: restore))])
+            }
         }
         for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 10 / sqrt(12.0), 35 / sqrt(12.0)] {
             for degrees in [0.0, -35, 35] {
