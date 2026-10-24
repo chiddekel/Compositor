@@ -190,8 +190,33 @@ func capture() throws -> [String: Any] {
                 guard error == kvImageNoError else { throw CaptureError.failed("vImage scale failed: \(error)") }
                 alternatives[name] = try describe(scaled)
             }
+            var affine = [String: Any]()
+            let ratio = 1.0 / Double(block)
+            for (phaseName, phase) in [("zero", 0.0), ("positive-half", (1 - ratio) / 2),
+                                       ("negative-half", (ratio - 1) / 2)] {
+                for (qualityName, quality) in [("default", vImage_Flags(kvImageNoFlags)),
+                                               ("high", vImage_Flags(kvImageHighQualityResampling))] {
+                    for (edgeName, edge) in [("extend", vImage_Flags(kvImageEdgeExtend)),
+                                             ("transparent", vImage_Flags(kvImageBackgroundColorFill))] {
+                        let warped = try bitmap(width: small.width, height: small.height)
+                        var inputBuffer = vImage_Buffer(data: source.data, height: vImagePixelCount(height),
+                            width: vImagePixelCount(width), rowBytes: source.bytesPerRow)
+                        var outputBuffer = vImage_Buffer(data: warped.data, height: vImagePixelCount(small.height),
+                            width: vImagePixelCount(small.width), rowBytes: warped.bytesPerRow)
+                        var transform = vImage_AffineTransform_Double(a: ratio, b: 0, c: 0, d: ratio, tx: phase, ty: phase)
+                        let background: [UInt8] = [0, 0, 0, 0]
+                        let error = background.withUnsafeBufferPointer { color in
+                            vImageAffineWarpD_ARGB8888(&inputBuffer, &outputBuffer, nil, &transform,
+                                                       color.baseAddress, quality | edge)
+                        }
+                        guard error == kvImageNoError else { throw CaptureError.failed("vImage affine warp failed: \(error)") }
+                        affine["\(phaseName)-\(qualityName)-\(edgeName)"] = [
+                            "scale": ratio, "translation": phase, "output": try describe(warped)]
+                    }
+                }
+            }
             cases.append(["fixture": fixture, "block": block, "input": try describe(source),
-                          "output": try describe(small), "vImage": alternatives])
+                          "output": try describe(small), "vImage": alternatives, "vImageAffine": affine])
         }
     }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
