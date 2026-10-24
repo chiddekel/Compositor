@@ -16,6 +16,26 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
       - name: Capture native bitmap sampling
         run: swift scripts/capture-coregraphics-reference.swift > coregraphics-reference.json
+      - name: Validate paired Hue and Saturation controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json
+          from pathlib import Path
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          assert reference['schema'] == 1 and reference['platform'] == 'macOS'
+          pairs = reference['nonseparablePairs']
+          assert len(pairs['labels']) == len(set(pairs['labels'])) == 8
+          assert len(pairs['cases']) == 6
+          assert {(c['mode'], c['opacity']) for c in pairs['cases']} == {
+              (mode, opacity) for mode in ['hue', 'saturation'] for opacity in [1, 0.5, 0.25]}
+          buffers = [pairs['source']] + [case[key] for case in pairs['cases'] for key in ['input', 'output']]
+          for item in buffers:
+              assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (8, 1, 32, 8)
+              raw = base64.b64decode(item['rgbaBase64'], validate=True)
+              assert len(raw) == 32 and hashlib.sha256(raw).hexdigest() == item['sha256']
+              assert all(raw[i + channel] <= raw[i + 3] for i in range(0, 32, 4) for channel in range(3))
+          print('Validated eight source/backdrop pairs, six recipes and thirteen buffers')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: coregraphics-reference

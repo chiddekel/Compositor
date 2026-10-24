@@ -178,6 +178,49 @@ func captureBlend(_ mode: CGBlendMode) throws -> [String: Any] {
     return ["source": try describe(source), "cases": cases]
 }
 
+func captureNonseparablePairs() throws -> [String: Any] {
+    // Isolate rounding when opacity collapses the source hue or the backdrop's
+    // saturation. These pairs include the application corpus's remaining edge cases.
+    let pairs: [(String, [UInt8], [UInt8])] = [
+        ("source-nearly-gray", [199, 200, 200, 255], [56, 217, 213, 255]),
+        ("clipped-saturation", [20, 31, 138, 160], [32, 50, 100, 255]),
+        ("clipped-saturation-second", [23, 40, 138, 160], [37, 64, 100, 255]),
+        ("backdrop-nearly-gray", [62, 62, 138, 160], [99, 100, 100, 255]),
+        ("backdrop-small-range", [62, 65, 138, 160], [99, 104, 100, 255]),
+        ("gray-translucent", [100, 100, 100, 255], [100, 10, 50, 128]),
+        ("clear-source", [0, 0, 0, 0], [10, 20, 30, 128]),
+        ("clear-backdrop", [1, 1, 1, 1], [0, 0, 0, 0])]
+    let source = try bitmap(width: pairs.count, height: 1)
+    guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
+        throw CaptureError.failed("Missing nonseparable source pixels")
+    }
+    for (index, pair) in pairs.enumerated() {
+        for channel in 0..<4 { pixels[index * 4 + channel] = pair.1[channel] }
+    }
+    guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make nonseparable source image") }
+    var cases = [[String: Any]]()
+    for (name, mode) in [("hue", CGBlendMode.hue), ("saturation", CGBlendMode.saturation)] {
+        for opacity in [1.0, 0.5, 0.25] {
+            let target = try bitmap(width: pairs.count, height: 1)
+            guard let pixels = target.data?.assumingMemoryBound(to: UInt8.self) else {
+                throw CaptureError.failed("Missing nonseparable backdrop pixels")
+            }
+            for (index, pair) in pairs.enumerated() {
+                for channel in 0..<4 { pixels[index * 4 + channel] = pair.2[channel] }
+            }
+            let initial = try describe(target)
+            target.interpolationQuality = .none
+            target.translateBy(x: 0, y: 1)
+            target.scaleBy(x: 1, y: -1)
+            target.setAlpha(opacity)
+            target.setBlendMode(mode)
+            target.draw(image, in: CGRect(x: 0, y: 0, width: pairs.count, height: 1))
+            cases.append(["mode": name, "opacity": opacity, "input": initial, "output": try describe(target)])
+        }
+    }
+    return ["labels": pairs.map { $0.0 }, "source": try describe(source), "cases": cases]
+}
+
 func capture() throws -> [String: Any] {
     let width = 96, height = 72
     var cases = [[String: Any]]()
@@ -258,6 +301,7 @@ func capture() throws -> [String: Any] {
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
+            "nonseparablePairs": try captureNonseparablePairs(),
             "text": try captureText()]
 }
 
