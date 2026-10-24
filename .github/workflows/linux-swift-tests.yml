@@ -59,3 +59,14 @@ jobs:
           flatpak-builder --run --filesystem="$PWD" build-ci-sdk com.compositor.Client.yaml \
             bash "$PWD/scripts/linux-contract-tests.sh" \
               --filter 'ToolCombinationTests|PendingGradientTests|LayerEffectsBackendTests|UpstreamEditorTests|HistoryTests|TouchTargetsTests|HostingMeasurementTests|LayoutDimensionBoundsTests|LayersPanelWidthTests|WarpCommitParityTests|RawDevelopCapabilityTests|FilterTests|SpotHealingTests|NativeScrollGeometryTests|NativeSessionLifetimeTests|NativeTableKeyboardTests|SystemFontTests|NativeMaskGeometryTests|FloatingPanelTests|ColourManagementTests|HeicTiffImportTests|CompressionCompatTests|ChannelPackTests|PSDArtboardTests|FilterLayerTests|AdjustmentLayerTests|LayerSearchIntegrationTests|CanvasSizeBridgeTests|AnimatedGIFCodecTests|ImageRegistryLeaseTests|GIFDecoderLifetimeTests|ProjectTests|RGBSplitCenteringTests|LensEffectsTests|LensCoreImageTests|LensBackendTests|LensControlsIntegrationTests|GIFTimelineIntegrationTests|GIFLayerTests|GIFPreviewPlaybackTests|ToolRailTests|GroupTests|UpdateCheckTests|CompositorTests'
+
+      - name: Parallel save and native callback contracts
+        timeout-minutes: 5
+        run: |
+          flatpak-builder --run --filesystem="$PWD" build-ci-sdk com.compositor.Client.yaml \
+            env PATH=/usr/lib/sdk/swift6/bin:/usr/bin:/bin QT_QPA_PLATFORM=offscreen \
+            COMPOSITOR_SKIA_BRIDGE="$PWD/.build/linux-contract-native/libCompositorSkiaBridge.so" \
+            COMPOSITOR_IMAGEIO_BACKEND="$PWD/.build/linux-contract-native/libCompositorQtImageIO.so" \
+            COMPOSITOR_PDF_BACKEND="$PWD/.build/linux-contract-native/libCompositorPDFBackend.so" \
+            swift test -c release --scratch-path .build --skip-build --parallel \
+              --filter 'ProjectSaveSnapshotTests|PendingGradientTests|LensControlsIntegrationTests|KeyboardShortcutsLinuxTests|SwiftUIButtonEventTests'

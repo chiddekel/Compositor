@@ -6,11 +6,10 @@ import ImageIO
 
 @MainActor
 struct ProjectSaveSnapshotTests {
-    // Swift Testing may run MainActor on a dispatch-main worker rather than the
-    // process main thread. Enter the C bridge from a detached task so its queue
-    // hop cannot recursively dispatch_sync the queue currently running this test.
+    // Enter the synchronous C bridge on native workers, as the Qt host does.
+    // Save/preview calls can wait for actors and must leave Swift workers free.
     private func create() async throws -> (UInt64, UpstreamEditor) {
-        let handle = await Task.detached { compositorSessionCreate() }.value
+        let handle = await onNativeWorker { compositorSessionCreate() }
         let editor = try #require(Sessions.entries[handle]?.editor)
         #expect(editor.importRGBA([UInt8](repeating: 255, count: 16 * 12 * 4), width: 16, height: 12, name: "Original", replacing: true) == 0)
         return (handle, editor)
@@ -27,23 +26,23 @@ struct ProjectSaveSnapshotTests {
     @Test(arguments: [false, true]) func recoveryLoadHasNoSaveDestinationOrWatcher(recovery: Bool) async throws {
         let (source, editor) = try await create()
         defer { Sessions.entries.removeValue(forKey: source) }
-        let token = await Task.detached { compositorSaveCapture(source) }.value
+        let token = await onNativeWorker { compositorSaveCapture(source) }
         defer { compositorSaveRelease(token) }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("recovery-load-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let package = directory.appendingPathComponent("autosave.comp", isDirectory: true)
-        #expect(await Task.detached { package.path.withCString { compositorSaveWritePackage(token, $0, 0) } }.value == 0)
-        let handle = await Task.detached { compositorSessionCreate() }.value
+        #expect(await onNativeWorker { package.path.withCString { compositorSaveWritePackage(token, $0, 0) } } == 0)
+        let handle = await onNativeWorker { compositorSessionCreate() }
         defer { Sessions.entries.removeValue(forKey: handle) }
-        let result = await Task.detached {
+        let result = await onNativeWorker {
             var width: Int32 = 0, height: Int32 = 0
             let code = package.path.withCString {
                 recovery ? compositorSessionLoadRecovery(handle, $0, &width, &height)
                     : compositorSessionLoadPackage(handle, $0, &width, &height)
             }
             return (code, width, height)
-        }.value
+        }
         #expect(result.0 == 0 && result.1 == 16 && result.2 == 12)
         let loaded = try #require(Sessions.entries[handle]?.editor)
         #expect(loaded.session.activeLayerID == editor.session.activeLayerID)
@@ -61,12 +60,12 @@ struct ProjectSaveSnapshotTests {
 
     @Test func workerReadsFrozenMetadataAndPixelsAfterEditsAndClose() async throws {
         let (handle, e) = try await create()
-        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        let token = await onNativeWorker { compositorSaveCapture(handle) }
         defer { compositorSaveRelease(token) }
         #expect(token != 0)
         #expect(e.importRGBA([UInt8](repeating: 0, count: 8 * 8 * 4), width: 8, height: 8, name: "Replacement", replacing: true) == 0)
-        await Task.detached { compositorSessionClose(handle) }.value
-        let frozen = try await Task.detached {
+        await onNativeWorker { compositorSessionClose(handle) }
+        let frozen = try await onNativeWorker {
             #expect(!Thread.isMainThread)
             let manifest = try Self.manifest(token)
             let id = Array(try #require(manifest.layers.first).id.uuidString.utf8)
@@ -77,9 +76,9 @@ struct ProjectSaveSnapshotTests {
             #expect(compositorSaveExportLayer(token, id, id.count, 0, &pixels, pixels.count, &width, &height) == size)
             #expect(pixels.allSatisfy { $0 == 255 })
             return manifest
-        }.value
+        }
         #expect(frozen.layers.first?.name == "Original")
-        #expect(await Task.detached { compositorSaveMarkSaved(token) }.value == -6)
+        #expect(await onNativeWorker { compositorSaveMarkSaved(token) } == -6)
         compositorSaveRelease(token)
         #expect(compositorSaveExportManifest(token, nil, 0) == -1)
     }
@@ -105,14 +104,14 @@ struct ProjectSaveSnapshotTests {
         } }
         #expect(e.importRGBA(pixels, width: 16, height: 12, name: "Captured red", replacing: true) == 0)
         let frozen = try #require(e.session.projectSnapshot())
-        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        let token = await onNativeWorker { compositorSaveCapture(handle) }
         defer { compositorSaveRelease(token) }
         #expect(e.importRGBA([UInt8](repeating: 255, count: 8 * 8 * 4), width: 8, height: 8, name: "New white", replacing: true) == 0)
-        await Task.detached { compositorSessionClose(handle) }.value
-        let data = try await Task.detached {
+        await onNativeWorker { compositorSessionClose(handle) }
+        let data = try await onNativeWorker {
             #expect(!Thread.isMainThread)
             return try Self.preview(token)
-        }.value
+        }
         let expected = try #require(await ImageExporter.shared.quickLookImages(frozen))
         #expect(data == expected.preview)
         let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
@@ -124,7 +123,7 @@ struct ProjectSaveSnapshotTests {
         #expect(decoded.bytes[red] > 240 && decoded.bytes[red + 1] < 15 && decoded.bytes[red + 2] < 15)
         #expect(decoded.bytes[white] > 240 && decoded.bytes[white + 1] > 240 && decoded.bytes[white + 2] > 240)
         #expect(decoded.bytes[red + 3] == 255 && decoded.bytes[white + 3] == 255)
-        #expect(try await Task.detached { try Self.preview(token) }.value == data)
+        #expect(try await onNativeWorker { try Self.preview(token) } == data)
         #expect(compositorSaveExportPreview(token, nil, -1) == -1)
         compositorSaveRelease(token)
         #expect(compositorSaveExportPreview(token, nil, 0) == -1)
@@ -134,17 +133,17 @@ struct ProjectSaveSnapshotTests {
         let (handle, e) = try await create()
         defer { Sessions.entries.removeValue(forKey: handle) }
         #expect(e.importRGBA([UInt8](repeating: 255, count: 2050 * 8 * 4), width: 2050, height: 8, name: "Wide", replacing: true) == 0)
-        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        let token = await onNativeWorker { compositorSaveCapture(handle) }
         defer { compositorSaveRelease(token) }
-        let data = try await Task.detached { try Self.preview(token) }.value
+        let data = try await onNativeWorker { try Self.preview(token) }
         let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
         let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
         #expect(image.width == 1024 && image.height == 4)
         let manifest = ProjectManifest(documentID: UUID(), width: 8000, height: 8000, activeLayerID: nil, layers: [])
         #expect(e.importManifest(try JSONEncoder().encode(manifest)) == 0)
-        let large = await Task.detached { compositorSaveCapture(handle) }.value
+        let large = await onNativeWorker { compositorSaveCapture(handle) }
         defer { compositorSaveRelease(large) }
-        #expect(await Task.detached { compositorSaveExportPreview(large, nil, 0) }.value == 0)
+        #expect(await onNativeWorker { compositorSaveExportPreview(large, nil, 0) } == 0)
     }
 
     @Test(arguments: [false, true]) func workerPackagePreservesDeepPixelsAfterReplacementAndClose(hdr: Bool) async throws {
@@ -162,15 +161,15 @@ struct ProjectSaveSnapshotTests {
         }
         let image = try #require(context.makeImage())
         e.session.document?.layers[0].asset = try hdr ? DeepLayer.wideAsset(image, name: "Frozen deep") : DeepLayer.asset(image, name: "Frozen deep")
-        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        let token = await onNativeWorker { compositorSaveCapture(handle) }
         defer { compositorSaveRelease(token) }
         #expect(e.importRGBA([UInt8](repeating: 0, count: 4 * 4 * 4), width: 4, height: 4, name: "Newer", replacing: true) == 0)
-        await Task.detached { compositorSessionClose(handle) }.value
+        await onNativeWorker { compositorSessionClose(handle) }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("deep-save-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let package = directory.appendingPathComponent("saved.comp")
-        #expect(await Task.detached { package.path.withCString { compositorSaveWritePackage(token, $0, 1) } }.value == 0)
+        #expect(await onNativeWorker { package.path.withCString { compositorSaveWritePackage(token, $0, 1) } } == 0)
         #expect(FileManager.default.fileExists(atPath: package.appendingPathComponent("QuickLook/Preview.jpg").path))
         let loaded = try await ProjectStore.shared.load(from: package)
         let asset = try #require(loaded.images.values.first)
@@ -185,15 +184,15 @@ struct ProjectSaveSnapshotTests {
             else { #expect(abs(Int(actual[i]) - Int(pixels[i])) <= 1) }
         }
         let autosave = directory.appendingPathComponent("autosave.comp")
-        #expect(await Task.detached { autosave.path.withCString { compositorSaveWritePackage(token, $0, 0) } }.value == 0)
+        #expect(await onNativeWorker { autosave.path.withCString { compositorSaveWritePackage(token, $0, 0) } } == 0)
         #expect(!FileManager.default.fileExists(atPath: autosave.appendingPathComponent("QuickLook/Preview.jpg").path))
-        let reopened = await Task.detached { compositorSessionCreate() }.value
+        let reopened = await onNativeWorker { compositorSessionCreate() }
         defer { Sessions.entries.removeValue(forKey: reopened) }
-        let reopenedResult = await Task.detached {
+        let reopenedResult = await onNativeWorker {
             var width: Int32 = 0, height: Int32 = 0
             let code = package.path.withCString { compositorSessionLoadPackage(reopened, $0, &width, &height) }
             return (code, width, height)
-        }.value
+        }
         #expect(reopenedResult.0 == 0 && reopenedResult.1 == 256 && reopenedResult.2 == 8)
         #expect(Sessions.entries[reopened]?.editor.session.activeLayer?.asset?.deep != nil)
         #expect("relative.comp".withCString { compositorSaveWritePackage(token, $0, 0) } == -1)
@@ -209,12 +208,12 @@ struct ProjectSaveSnapshotTests {
         e.session.beginEdit("Before capture")
         e.session.document?.layers[0].name = "Captured"
         e.session.endEdit()
-        let token = await Task.detached { compositorSaveCapture(handle) }.value
+        let token = await onNativeWorker { compositorSaveCapture(handle) }
         defer { compositorSaveRelease(token) }
         e.session.beginEdit("After capture")
         e.session.document?.layers[0].name = "Newer edit"
         e.session.endEdit()
-        #expect(await Task.detached { compositorSaveMarkSaved(token) }.value == 0)
+        #expect(await onNativeWorker { compositorSaveMarkSaved(token) } == 0)
         #expect(e.session.history.isModified)
         #expect(await e.commandAsync(Data(#"{"version":1,"action":"undo"}"#.utf8)) == 0)
         #expect(e.session.activeLayerID == layer)
@@ -230,17 +229,17 @@ struct ProjectSaveSnapshotTests {
         e.session.beginEdit("Unsaved edit")
         e.session.document?.layers[0].name = "Unsaved"
         e.session.endEdit()
-        let autosave = await Task.detached { compositorSaveCapture(handle) }.value
+        let autosave = await onNativeWorker { compositorSaveCapture(handle) }
         compositorSaveRelease(autosave)
         #expect(e.session.history.isModified)
-        let pending = await Task.detached { compositorSaveCapture(handle) }.value
+        let pending = await onNativeWorker { compositorSaveCapture(handle) }
         defer { compositorSaveRelease(pending) }
         let manifest = try e.exportManifest()
         #expect(e.importManifest(manifest) == 0)
         e.session.beginEdit("Edit reloaded document")
         e.session.document?.layers[0].name = "After reload"
         e.session.endEdit()
-        #expect(await Task.detached { compositorSaveMarkSaved(pending) }.value == -1)
+        #expect(await onNativeWorker { compositorSaveMarkSaved(pending) } == -1)
         #expect(e.session.history.isModified)
     }
 }
