@@ -88,12 +88,16 @@ jobs:
           from pathlib import Path
           reference = json.loads(Path('coregraphics-reference.json').read_text())
           cases = reference['textParagraphGeometry']
-          assert len(cases) == 24
-          assert {c['name'] for c in cases} == {'tight-leading', 'loose-leading', 'wrapped', 'tracking',
+          base = {'tight-leading', 'loose-leading', 'wrapped', 'tracking',
               'centered', 'right-aligned', 'multiline', 'combining', 'ligature', 'surrogate', 'bidi-controls',
               'bidi-left-override', 'bidi-right-embedding', 'bidi-left-embedding', 'bidi-right-isolate',
               'bidi-left-isolate', 'bidi-unmatched', 'bidi-nested', 'bidi-tracking', 'bidi-size24',
-              'bidi-only', 'bidi-initial', 'bidi-adjacent', 'bidi-first-strong'}
+              'bidi-only', 'bidi-initial', 'bidi-adjacent', 'bidi-first-strong',
+              'bidi-back-to-back', 'bidi-empty', 'bidi-wrapped'}
+          tracked = {name + '-tracking' for name in base if name.startswith('bidi-')
+                     and name not in {'bidi-controls', 'bidi-tracking'}}
+          negative = {'bidi-negative-tracking', 'bidi-nested-negative-tracking', 'bidi-initial-negative-tracking'}
+          assert len(cases) == 45 and {c['name'] for c in cases} == base | tracked | negative
           for case in cases:
               assert case['face'] == 'Inter-Regular'
               assert 0 <= case['controlGlyph'] <= 0xFFFFFFFF
@@ -118,7 +122,7 @@ jobs:
                   assert len(run['glyphs']) == len(run['advances'])
                   assert all(0 <= glyph <= 65535 for glyph in run['glyphs'])
                   assert all(math.isfinite(v) for advance in run['advances'] for v in advance)
-          print('Validated 24 native paragraph layouts and three fallback font controls')
+          print('Validated 45 native paragraph layouts and three fallback font controls')
           PY
       - uses: actions/upload-artifact@v4
         with:

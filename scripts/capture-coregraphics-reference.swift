@@ -80,7 +80,7 @@ func captureTextParagraphGeometry() throws -> [[String: Any]] {
     let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("third_party/fonts/inter/Inter-Regular.ttf")
     CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-    let recipes: [(String, String, Double, Double, Double, Double, Int)] = [
+    var recipes: [(String, String, Double, Double, Double, Double, Int)] = [
         ("tight-leading", "Ag Ω", 12.5, 10, 0, 1e7, 0),
         ("loose-leading", "Ag Ω", 12.5, 19.25, 0, 1e7, 0),
         ("wrapped", "Ag Ω", 12.5, 0, 0, 18, 0),
@@ -104,7 +104,17 @@ func captureTextParagraphGeometry() throws -> [[String: Any]] {
         ("bidi-only", "\u{202E}\u{202C}", 12.5, 0, 0, 1e7, 0),
         ("bidi-initial", "\u{202E}Ag Ω\u{202C}", 12.5, 0, 0, 1e7, 0),
         ("bidi-adjacent", "A\u{202E}BC\u{202C} D\u{202E}EF\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
-        ("bidi-first-strong", "A\u{2068}BC\u{2069} Ω", 12.5, 0, 0, 1e7, 0)]
+        ("bidi-first-strong", "A\u{2068}BC\u{2069} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-back-to-back", "A\u{202E}BC\u{202C}\u{202E}DE\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-empty", "A\u{202E}\u{202C} Ω", 12.5, 0, 0, 1e7, 0),
+        ("bidi-wrapped", "A\u{202E}BC\u{202C} Ω", 12.5, 0, 0, 20, 0)]
+    let trackingControls = recipes.filter { $0.0.hasPrefix("bidi-") && $0.0 != "bidi-controls" && $0.4 == 0 }
+    recipes += trackingControls.map { (name, text, size, height, _, width, alignment) in
+        (name + "-tracking", text, size, height, 1.25, width, alignment)
+    }
+    recipes += [("bidi-negative-tracking", "A\u{202E}BC\u{202C} Ω", 12.5, 0, -0.75, 1e7, 0),
+                ("bidi-nested-negative-tracking", "A\u{202E}B\u{202D}CD\u{202C}E\u{202C} Ω", 12.5, 0, -0.75, 1e7, 0),
+                ("bidi-initial-negative-tracking", "\u{202E}Ag Ω\u{202C}", 12.5, 0, -0.75, 1e7, 0)]
     var cases = [[String: Any]]()
     for (name, content, size, height, tracking, width, alignment) in recipes {
         guard let font = NSFont(name: "Inter-Regular", size: size) else {
