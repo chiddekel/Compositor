@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -14,6 +15,39 @@ spec.loader.exec_module(parity)
 
 
 class RenderParityTests(unittest.TestCase):
+    def test_backend_paths_use_the_render_working_directory(self):
+        spec = importlib.util.spec_from_file_location('render', ROOT / 'scripts/render-parity.py')
+        render = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(render)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = root / 'native/libBackend.so'
+            library.parent.mkdir()
+            library.write_bytes(b'backend fixture')
+            env = {'COMPOSITOR_SKIA_BRIDGE': 'native/libBackend.so',
+                   'COMPOSITOR_IMAGEIO_BACKEND': str(library),
+                   'COMPOSITOR_PDF_BACKEND': './native/libBackend.so'}
+            with patch.object(render, 'ROOT', root):
+                metadata = render.prepare_native_backends(env)
+            for variable in env:
+                self.assertEqual(env[variable], str(library))
+            for key in ['skia_bridge', 'imageio_backend', 'pdf_backend']:
+                self.assertEqual(metadata[key + '_sha256'], render.digest(library))
+                self.assertEqual(metadata[key + '_path'], str(library))
+
+    def test_loader_soname_does_not_hash_a_same_named_local_file(self):
+        spec = importlib.util.spec_from_file_location('render', ROOT / 'scripts/render-parity.py')
+        render = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(render)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'libBackend.so').write_bytes(b'not necessarily the loader-selected backend')
+            env = {'COMPOSITOR_IMAGEIO_BACKEND': 'libBackend.so'}
+            with patch.object(render, 'ROOT', root):
+                metadata = render.prepare_native_backends(env)
+            self.assertEqual(env['COMPOSITOR_IMAGEIO_BACKEND'], 'libBackend.so')
+            self.assertEqual(metadata, {'imageio_backend_configured': 'libBackend.so'})
+
     def test_dng_strings_crop_and_strip_payload_are_consistent(self):
         spec = importlib.util.spec_from_file_location('parity_inputs', ROOT / 'scripts/parity-inputs.py')
         inputs = importlib.util.module_from_spec(spec)

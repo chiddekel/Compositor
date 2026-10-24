@@ -24,6 +24,24 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def prepare_native_backends(env):
+    """Normalize explicit paths to Swift's working directory; sonames remain loader-resolved."""
+    result = {}
+    for variable, key in [('COMPOSITOR_SKIA_BRIDGE', 'skia_bridge'),
+                          ('COMPOSITOR_IMAGEIO_BACKEND', 'imageio_backend'),
+                          ('COMPOSITOR_PDF_BACKEND', 'pdf_backend')]:
+        library = env.get(variable)
+        if not library:
+            continue
+        result[key + '_configured'] = library
+        if '/' in library:
+            path = (ROOT / library).resolve()
+            env[variable] = str(path)
+            result[key + '_path'] = str(path)
+            result[key + '_sha256'] = digest(path)
+    return result
+
+
 def tree_digest(folder):
     entries = [(p.relative_to(folder).as_posix(), digest(p)) for p in sorted(folder.rglob('*')) if p.is_file()]
     if not entries:
@@ -38,6 +56,7 @@ def render(args):
     upstream = subprocess.check_output(['git', 'rev-parse', args.upstream + '^{commit}'], cwd=ROOT, text=True).strip()
     original_inputs = tree_digest(inputs)
     env = dict(os.environ, COMPOSITOR_PARITY_OUTPUT=str(output), COMPOSITOR_PARITY_INPUT=str(inputs))
+    native_backends = prepare_native_backends(env) if platform.system() == 'Linux' else {}
     output.mkdir(parents=True)
     if platform.system() == 'Darwin':
         with tempfile.TemporaryDirectory(prefix='compositor-parity-mac-') as temporary:
@@ -91,7 +110,7 @@ def render(args):
                         print(f'Could not extract XCTest summary: {error}', flush=True)
     elif platform.system() == 'Linux':
         run('swift', 'test', '-c', 'release', '--scratch-path', str(args.scratch), '--jobs', str(args.jobs),
-            '--filter', 'RenderParityTests', env=env, cwd=ROOT)
+            *(['--skip-build'] if args.skip_build else []), '--filter', 'RenderParityTests', env=env, cwd=ROOT)
     else:
         raise ValueError('unsupported rendering platform')
     if tree_digest(inputs) != original_inputs:
@@ -113,6 +132,12 @@ def render(args):
                                                                     else ['swift', '--version'], text=True).strip()},
                 'cases': cases, 'images_sha256': {name: digest(output / name) for c in cases
                                                 for name in ([c['file'], c['samples']] if 'samples' in c else [c['file']])}}
+    if platform.system() == 'Linux':
+        manifest['environment']['reused_test_executable'] = args.skip_build
+        for key, value in native_backends.items():
+            if key.endswith('_path') and digest(Path(value)) != native_backends[key[:-5] + '_sha256']:
+                raise ValueError('native backend changed during the render')
+        manifest['environment'].update(native_backends)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
@@ -123,4 +148,6 @@ if __name__ == '__main__':
     parser.add_argument('--upstream', default='upstream/main')
     parser.add_argument('--scratch', type=Path, default=ROOT / '.build/evidence/swift-build')
     parser.add_argument('--jobs', type=int, default=4)
+    parser.add_argument('--skip-build', action='store_true',
+                        help='Reuse Linux test binaries when only dynamically loaded native backends changed')
     render(parser.parse_args())
