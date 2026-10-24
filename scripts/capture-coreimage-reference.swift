@@ -112,6 +112,30 @@ func capture() throws -> [String: Any] {
         guard let image = source.makeImage() else { throw CaptureError.failed("Cannot create source image") }
         let input = CIImage(cgImage: image)
         inputs.append(["fixture": fixture, "identity": try render(input)])
+        let toneProfiles: [(String, [[Double]])] = [
+            ("identity", [[0, 0], [0.25, 0.25], [0.5, 0.5], [0.75, 0.75], [1, 1]]),
+            ("threshold-75", [[0, 0], [0.75, 0], [0.85, 0.25], [0.9375, 0.7], [1, 1]]),
+            ("threshold-95", [[0, 0], [0.95, 0], [0.97, 0.25], [0.9875, 0.7], [1, 1]]),
+            ("contrast", [[0, 0], [0.25, 0.15], [0.5, 0.5], [0.75, 0.85], [1, 1]])]
+        for (profile, points) in toneProfiles {
+            for gain in [1.0, 2.0] {
+                let source = input.applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: gain, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: gain, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: gain, w: 0),
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
+                guard let filter = CIFilter(name: "CIToneCurve") else { throw CaptureError.failed("Missing CIToneCurve") }
+                filter.setValue(source, forKey: kCIInputImageKey)
+                for index in 0..<5 {
+                    filter.setValue(CIVector(x: points[index][0], y: points[index][1]), forKey: "inputPoint\(index)")
+                }
+                guard let output = filter.outputImage else { throw CaptureError.failed("Missing tone curve output") }
+                let extrapolate = filter.inputKeys.contains("inputExtrapolate") ? filter.value(forKey: "inputExtrapolate") : nil
+                cases.append(["fixture": fixture, "filter": "CIToneCurve", "radius": 0, "profile": profile,
+                              "points": points, "sourceGain": gain, "defaultExtrapolate": extrapolate ?? NSNull(),
+                              "outputExtent": describeExtent(output), "output": try render(output)])
+            }
+        }
         for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 5, 10, 17, 35] {
             let output = try filtered("CIGaussianBlur", input: input, parameters: [kCIInputRadiusKey: radius])
             cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius,
