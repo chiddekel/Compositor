@@ -127,7 +127,8 @@ def render(args):
     manifest = {'schema': 1, 'platform': 'macOS' if platform.system() == 'Darwin' else 'Linux',
                 'upstream': upstream, 'corpus_sha256': digest(CORPUS), 'inputs_sha256': original_inputs,
                 'environment': {'os': platform.platform(), 'machine': platform.machine(),
-                                'backend': os.environ.get('COMPOSITOR_COREIMAGE_BACKEND', 'Apple Core Image'),
+                                'backend': os.environ.get('COMPOSITOR_COREIMAGE_BACKEND',
+                                                         'automatic' if platform.system() == 'Linux' else 'Apple Core Image'),
                                 'toolchain': subprocess.check_output(['xcrun', 'swift', '--version'] if platform.system() == 'Darwin'
                                                                     else ['swift', '--version'], text=True).strip()},
                 'cases': cases, 'images_sha256': {name: digest(output / name) for c in cases
