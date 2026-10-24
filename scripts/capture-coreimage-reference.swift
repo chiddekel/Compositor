@@ -106,6 +106,10 @@ func capture() throws -> [String: Any] {
                           "inputExtent": describeExtent(input), "outputExtent": describeExtent(output),
                           "output": try render(output)])
             if radius == 0.5 || radius == 5 {
+                let magnified = output.transformed(by: CGAffineTransform(scaleX: 2, y: 1))
+                cases.append(["fixture": fixture, "filter": "gaussian-magnified", "radius": radius,
+                              "scaleX": 2, "blurredExtent": describeExtent(output),
+                              "outputExtent": describeExtent(magnified), "output": try render(magnified)])
                 for offset in [14.4, -14.4] {
                     let shifted = output.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
                     cases.append(["fixture": fixture, "filter": "gaussian-affine", "radius": radius,
@@ -173,6 +177,16 @@ func capture() throws -> [String: Any] {
                 cases.append(["fixture": fixture, "filter": name, "radius": 0, "translationX": offset,
                               "preparedExtent": describeExtent(prepared), "outputExtent": describeExtent(transformed),
                               "output": try render(transformed)])
+            }
+        }
+        for rect in [bounds.insetBy(dx: 24, dy: 18), CGRect(x: 120, y: 0, width: 24, height: height)] {
+            let prepared = input.settingAlphaOne(in: rect)
+            for offset in [0.0, 14.4] {
+                let output = prepared.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
+                cases.append(["fixture": fixture, "filter": "alpha-one-rectangle", "radius": 0,
+                              "rectangle": [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)],
+                              "translationX": offset, "preparedExtent": describeExtent(prepared),
+                              "outputExtent": describeExtent(output), "output": try render(output)])
             }
         }
         for radius in [1.0, 10, 35] {

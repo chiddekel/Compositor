@@ -1,7 +1,7 @@
 # Core Image sampling diagnostics
 
 The manual `coreimage-reference.yml` workflow runs the native macOS capture with an unmanaged Core Image
-context. It validates 306 cases and 616 byte/float buffers, including SHA-256 checks, dimensions, finite float
+context. It validates 318 cases and 640 byte/float buffers, including SHA-256 checks, dimensions, finite float
 values and unique recipe metadata. The artifact contains synthetic pixels only.
 
 The capture includes direct Gaussian, motion, masked blur and Lanczos controls, scale–blur–inverse-scale
@@ -9,6 +9,9 @@ compositions, affine translations and materialized impulse phases. Extent metada
 and null bounds without serializing nonfinite JSON numbers. Eight translated Gaussian cases expose blurred
 pixels crossing the original input boundary. Thirty-two additional affine cases isolate unpremultiplication,
 alpha replacement and the sRGB transfer function from the complete preparation chain.
+Four Gaussian magnification cases separate scaling from Lanczos intermediates. Eight alpha-rectangle controls
+use smaller and disjoint bounds, both directly and after translation, to distinguish extent metadata from pixel
+masking before changing alpha replacement behavior.
 
 These controls investigate two unresolved compatibility behaviors: sampling a blurred scaled intermediate
 and sampling through pointwise color operations. They do not establish a replacement algorithm by themselves.
