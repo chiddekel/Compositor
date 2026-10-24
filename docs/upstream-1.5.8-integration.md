@@ -48,11 +48,33 @@ tests, RGB Split centering, and new compatibility cases for area-reduction exten
 order and padding, working-space conversion, circular dilation and tiled output. A full-filter test checks that
 Threshold 100 rejects small glints while retaining the stronger light source. Linux CI selects these suites.
 
-The RGB Split tail-pixel discrepancy and device-availability limits documented for 1.5.7 remain open; 1.5.8 does
-not change that shader or its upstream test. The first native Metal
+The initial 1.5.8 verification retained the RGB Split tail-pixel discrepancy and device-availability limits
+documented for 1.5.7; upstream 1.5.8 does not change that shader or its test. The first native Metal
 [reference capture](https://github.com/chiddekel/Compositor/actions/runs/40099667440) passed on Apple's paravirtual
 device, macOS 26.6.2. Both shader and fixture hashes match the local probe. At pixel (44, 30), the original shader
 produces blurred alpha 9/255, with zero alpha in the unblurred tail. Its diagnostic jitter is 0.8752594, versus
 Linux libm's 0.2852325. This confirms a platform arithmetic discrepancy rather than an obsolete upstream assertion.
 The probe now observes phase, sine, noise and jitter with both default and disabled fast math to locate the
-difference; that follow-up capture remains pending. These diagnostic kernels do not modify the production shader.
+difference. The [follow-up capture](https://github.com/chiddekel/Compositor/actions/runs/40100150422) also passed:
+disabling fast math returns sine/jitter values close to Linux libm. The default Metal values match float-cycle
+range reduction and a fused dot product, which identifies the compatible arithmetic used below. These diagnostic
+kernels do not modify the production shader.
+
+The compatibility backend now performs that reduction and dot product explicitly on CPU and Vulkan, with a
+regenerated shader header. On CPU, all nine captured blurred pixels match the Metal bytes exactly; the unblurred
+pixels differ by at most one byte. The checked-in native reference includes device/OS, shader/fixture hashes,
+arithmetic diagnostics and the capture URL. Its regression fails against the old CPU implementation and passes
+with the fix, alongside the existing standalone spectrum/centering/ROI/alpha checks. The unchanged upstream
+`rgbSplitSpreadsASpectrumAlongItsAngle` test now passes; all 16 selected Swift filter and centering tests pass.
+The full follow-up executes all 180 XCTest cases successfully and 1,033 parallel Swift tests with exactly the
+15 device-availability issues listed above; RGB Split passes and no additional failures appear. All 48 serial
+Swift tests and 16 CTest targets pass, as do source/generator/shader/ledger integrity and coverage checks. The
+release application builds and links; its Qt filter journey passes all 42 cases. The verification script reports
+one failed gate, the parallel suite's unavailable-GPU assertions. Evidence is in
+`.build/evidence/upstream-1.5.8/rgb-fix/`. The full suite remains nonzero for unavailable GPU devices, and Vulkan
+execution remains unverified. This does not establish bitwise parity across all devices or images.
+
+The first full macOS render-corpus job built and passed its native tests, then correctly rejected an incomplete
+case catalog: upstream now emits `Lens Effects-default` and `Lens Effects-extreme`. Both cases are now included;
+the catalog matches all 164 captured macOS images and all seven parity-tool tests pass. The full cross-platform
+comparison remains pending.

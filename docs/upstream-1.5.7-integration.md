@@ -106,5 +106,6 @@ an artifact. Once the workflow is present on the default branch, it can be dispa
 
 The probe passes Swift syntax parsing and Linux type checking, and its unsupported-platform guard exits with an
 error and no JSON on Linux. Workflow YAML, branch trigger and permission checks pass. Its native Metal branch is
-prepared but remains unexecuted. Expected shader/fixture hashes are recorded in
+prepared but was unexecuted during the initial 1.5.7 verification. Native captures and the resulting arithmetic
+fix are documented in the [1.5.8 follow-up](upstream-1.5.8-integration.md). Expected shader/fixture hashes are recorded in
 `.build/evidence/upstream-1.5.7/rgb-probe-expected-hashes.json` for validating a returned reference artifact.

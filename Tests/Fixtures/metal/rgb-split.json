@@ -1,0 +1,295 @@
+{
+  "device": "Apple Paravirtual device",
+  "diagnosticArithmeticComponents": [
+    "phase",
+    "sine",
+    "noise",
+    "jitter"
+  ],
+  "edgePixels": [
+    {
+      "diagnosticArithmetic": [
+        2866.58203125,
+        0.992642879486084,
+        43436.609375,
+        0.609375
+      ],
+      "diagnosticJitter": 0.609375,
+      "flatRGBA": [
+        20,
+        1,
+        0,
+        20
+      ],
+      "streakedRGBA": [
+        53,
+        16,
+        0,
+        53
+      ],
+      "strictDiagnosticArithmetic": [
+        2866.58203125,
+        0.992656409740448,
+        43437.203125,
+        0.203125
+      ],
+      "x": 40,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2879.57177734375,
+        0.9547427296638489,
+        41778.15625,
+        0.15625
+      ],
+      "diagnosticJitter": 0.15625,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        16,
+        4,
+        0,
+        16
+      ],
+      "strictDiagnosticArithmetic": [
+        2879.57177734375,
+        0.9547107219696045,
+        41776.75390625,
+        0.75390625
+      ],
+      "x": 41,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2892.5615234375,
+        0.7482465505599976,
+        32742.181640625,
+        0.181640625
+      ],
+      "diagnosticJitter": 0.181640625,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strictDiagnosticArithmetic": [
+        2892.5615234375,
+        0.748177170753479,
+        32739.146484375,
+        0.146484375
+      ],
+      "x": 42,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2905.551513671875,
+        0.409444123506546,
+        17916.6796875,
+        0.6796875
+      ],
+      "diagnosticJitter": 0.6796875,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        15,
+        1,
+        0,
+        15
+      ],
+      "strictDiagnosticArithmetic": [
+        2905.551513671875,
+        0.40930381417274475,
+        17910.541015625,
+        0.541015625
+      ],
+      "x": 43,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2918.541259765625,
+        -0.0015339801320806146,
+        -67.12474060058594,
+        0.8752593994140625
+      ],
+      "diagnosticJitter": 0.8752593994140625,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        9,
+        0,
+        0,
+        9
+      ],
+      "strictDiagnosticArithmetic": [
+        2918.541259765625,
+        -0.001684579998254776,
+        -73.71477508544922,
+        0.28522491455078125
+      ],
+      "x": 44,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2931.531005859375,
+        -0.41224122047424316,
+        -18039.076171875,
+        0.923828125
+      ],
+      "diagnosticJitter": 0.923828125,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strictDiagnosticArithmetic": [
+        2931.531005859375,
+        -0.4123755097389221,
+        -18044.953125,
+        0.046875
+      ],
+      "x": 45,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2944.52099609375,
+        -0.7502783536911011,
+        -32831.08984375,
+        0.91015625
+      ],
+      "diagnosticJitter": 0.91015625,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strictDiagnosticArithmetic": [
+        2944.52099609375,
+        -0.7504083514213562,
+        -32836.77734375,
+        0.22265625
+      ],
+      "x": 46,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2957.5107421875,
+        -0.9556507468223572,
+        -41817.88671875,
+        0.11328125
+      ],
+      "diagnosticJitter": 0.11328125,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strictDiagnosticArithmetic": [
+        2957.5107421875,
+        -0.9557077288627625,
+        -41820.3828125,
+        0.6171875
+      ],
+      "x": 47,
+      "y": 30
+    },
+    {
+      "diagnosticArithmetic": [
+        2970.50048828125,
+        -0.9922667145729065,
+        -43420.1484375,
+        0.8515625
+      ],
+      "diagnosticJitter": 0.8515625,
+      "flatRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "streakedRGBA": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "strictDiagnosticArithmetic": [
+        2970.50048828125,
+        -0.9922431707382202,
+        -43419.12109375,
+        0.87890625
+      ],
+      "x": 48,
+      "y": 30
+    }
+  ],
+  "fixture": "61x61 transparent RGBA8, white pixels x/y 28...32, row 30",
+  "fixtureSHA256": "a33818737439113d72b3d8a343fa7d18f964da2da93b05f8adbe66b265fc6896",
+  "flatTailAlpha": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "jitterExpression": "fract(sin(dot(float2(pixel), float2(12.9898, 78.233))) * 43758.5453)",
+  "os": "Version 26.6.2 (Build 25G83)",
+  "parameterStride": 72,
+  "passesUpstreamTailAssertion": true,
+  "shaderSHA256": "49ee52cd68f3139052f5119826c2cb4009a590a202fa03d8885766c938b222cb",
+  "streakedTailAlpha": [
+    9,
+    0,
+    0,
+    0,
+    0
+  ],
+  "captureURL": "https://github.com/chiddekel/Compositor/actions/runs/40100150422",
+  "captureCommit": "ae4ea3a6789e05584b1213a27bf0f5432bfcd86a"
+}

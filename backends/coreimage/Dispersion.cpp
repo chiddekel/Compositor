@@ -3,6 +3,15 @@
 #include <cmath>
 
 namespace {
+float dispersionSine(float phase) {
+    // Metal's default fast sine reduces in float cycles. libm's full-precision reduction
+    // changes the amplified hash enough to move samples at the blur's outer edge.
+    float cycle=phase*0.15915494309189535f;
+    cycle-=std::round(cycle);
+    if (cycle>0.25f) cycle=0.5f-cycle;
+    else if (cycle<-0.25f) cycle=-0.5f-cycle;
+    return std::sin(cycle*6.283185307179586f);
+}
 float smooth(float a, float b, float x) {
     x=std::clamp((x-a)/(b-a),0.0f,1.0f); return x*x*(3-2*x);
 }
@@ -33,7 +42,8 @@ extern "C" int compositor_dispersion_render(CompositorVulkanRaster *gpu, unsigne
         float ax=p[11]+float(x)+0.5f, ay=p[12]+p[15]*(float(y)+0.5f);
         float dx=p[7] ? (ax-p[0])/std::max(p[6],1.0f) : p[2];
         float dy=p[7] ? (ay-p[1])/std::max(p[6],1.0f) : p[3];
-        float noise=std::sin(float(x)*12.9898f+float(y)*78.233f)*43758.5453f;
+        float phase=std::fma(float(y),78.233f,float(x)*12.9898f);
+        float noise=dispersionSine(phase)*43758.5453f;
         float jitter=noise-std::floor(noise), color[3]{}, alpha[3]{}, total[3]{};
         for (unsigned i=0;i<n;++i) {
             float t=n==1 ? 0 : (float(i)+jitter)/float(n)*2-1;

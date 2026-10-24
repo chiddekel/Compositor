@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Exercise the spectral compute backend independently of Swift and the application renderer."""
 import ctypes as C
+import hashlib
+import json
 import math
+from pathlib import Path
 import sys
 
 
 def main(path):
+    root = Path(__file__).resolve().parent.parent
+    reference = json.loads((root / 'Tests/Fixtures/metal/rgb-split.json').read_text())
+    upstream = (root / 'Compositor/Rendering/MetalDispersion.swift').read_text()
+    shader = upstream.split('private static let source = """\n', 1)[1].split('\n"""', 1)[0]
+    assert hashlib.sha256(shader.encode()).hexdigest() == reference['shaderSHA256']
     lib = C.CDLL(path)
     floats = C.POINTER(C.c_float)
     lib.compositor_vulkan_raster_create.argtypes = [C.c_int]
@@ -33,6 +41,21 @@ def main(path):
     try:
         drivers = [None, gpu] if gpu else [None]
         for driver in drivers:
+            # Native Metal output, captured from the unchanged upstream shader. Fast-math
+            # rounding may differ by a byte, but the outer blurred tail must survive.
+            square = [0.0] * (61 * 61 * 4)
+            for y in range(28, 33):
+                for x in range(28, 33):
+                    square[(y * 61 + x) * 4:(y * 61 + x) * 4 + 4] = [1.0] * 4
+            assert hashlib.sha256(bytes(int(v * 255) for v in square)).hexdigest() == reference['fixtureSHA256']
+            for distance, blur, spectral, smear, key in [(8, 0, 8, 1, 'flatRGBA'), (4, 16, 4, 8, 'streakedRGBA')]:
+                settings = [30.5, 30.5, 1, 0, distance, blur, 1, 0, 0, spectral, smear,
+                            0, 0, 0, 0, 1, 61, 61, 0, 0]
+                captured = run(settings, pixels=square, w=61, h=61, driver=driver)
+                for point in reference['edgePixels']:
+                    start = (point['y'] * 61 + point['x']) * 4
+                    actual = [round(value * 255) for value in captured[start:start + 4]]
+                    assert max(abs(a - b) for a, b in zip(actual, point[key])) <= 2, (point, actual, key)
             # Direction, continuous spectrum, streaks, radial center and associated alpha.
             out = run(parameters, driver=driver)
             red = sum(out[(22 * width + x) * 4] for x in range(34, 42))
