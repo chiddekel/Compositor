@@ -1,0 +1,124 @@
+// Native blur references using the same unmanaged CIContext as PixelAdjust.
+#if os(macOS)
+import Foundation
+import CoreGraphics
+import CoreImage
+import CryptoKit
+
+enum CaptureError: Error { case failed(String) }
+
+let width = 96, height = 72
+let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+let space = CGColorSpace(name: CGColorSpace.sRGB)!
+let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+
+func digest(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+func bitmap() throws -> CGContext {
+    guard let result = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+        bytesPerRow: width * 4, space: space,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+        throw CaptureError.failed("Cannot allocate bitmap")
+    }
+    return result
+}
+
+func describe(_ data: Data, bits: Int) -> [String: Any] {
+    ["width": width, "height": height, "rowBytes": width * 4 * bits / 8,
+     "bitsPerComponent": bits, "rgbaBase64": data.base64EncodedString(), "sha256": digest(data)]
+}
+
+func render(_ image: CIImage) throws -> [String: Any] {
+    var floats = [Float](repeating: 0, count: width * height * 4)
+    floats.withUnsafeMutableBytes { buffer in
+        context.render(image, toBitmap: buffer.baseAddress!, rowBytes: width * 16,
+                       bounds: bounds, format: .RGBAf, colorSpace: space)
+    }
+    let floatData = floats.withUnsafeBytes { Data($0) }
+    guard let result = context.createCGImage(image, from: bounds, format: .RGBA8, colorSpace: space) else {
+        throw CaptureError.failed("Cannot create native RGBA8 image")
+    }
+    let target = try bitmap()
+    target.setBlendMode(.copy)
+    target.draw(result, in: bounds)
+    guard let pixels = target.data else { throw CaptureError.failed("Missing bitmap pixels") }
+    var bytes = Data()
+    for y in 0..<height {
+        bytes.append(pixels.advanced(by: y * target.bytesPerRow).assumingMemoryBound(to: UInt8.self), count: width * 4)
+    }
+    return ["float": describe(floatData, bits: 32), "byte": describe(bytes, bits: 8)]
+}
+
+func filtered(_ name: String, input: CIImage, parameters: [String: Any]) throws -> CIImage {
+    guard let filter = CIFilter(name: name, parameters: parameters.merging([kCIInputImageKey: input]) { _, input in input }),
+          let output = filter.outputImage else { throw CaptureError.failed("Cannot create \(name)") }
+    return output
+}
+
+func capture() throws -> [String: Any] {
+    var inputs = [[String: Any]](), cases = [[String: Any]]()
+    for fixture in ["opaque-gradient", "impulse"] {
+        let source = try bitmap()
+        guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
+            throw CaptureError.failed("Missing source pixels")
+        }
+        for y in 0..<height { for x in 0..<width {
+            let at = y * source.bytesPerRow + x * 4
+            if fixture == "opaque-gradient" {
+                pixels[at] = UInt8(x * 255 / (width - 1))
+                pixels[at + 1] = UInt8(y * 255 / (height - 1))
+                pixels[at + 2] = 100
+                pixels[at + 3] = 255
+            } else {
+                let value: UInt8 = x == width / 2 && y == height / 2 ? 255 : 0
+                for c in 0..<4 { pixels[at + c] = value }
+            }
+        } }
+        guard let image = source.makeImage() else { throw CaptureError.failed("Cannot create source image") }
+        let input = CIImage(cgImage: image)
+        inputs.append(["fixture": fixture, "identity": try render(input)])
+        for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 5, 17, 35] {
+            let output = try filtered("CIGaussianBlur", input: input, parameters: [kCIInputRadiusKey: radius])
+            cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius, "output": try render(output)])
+        }
+        for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 10 / sqrt(12.0), 35 / sqrt(12.0)] {
+            for degrees in [0.0, -35, 35] {
+                let output = try filtered("CIMotionBlur", input: input, parameters: [
+                    kCIInputRadiusKey: radius, kCIInputAngleKey: degrees * .pi / 180])
+                cases.append(["fixture": fixture, "filter": "CIMotionBlur", "radius": radius,
+                              "degrees": degrees, "output": try render(output)])
+            }
+        }
+        for radius in [1.0, 10, 35] {
+            for intensity in [0.0, 0.02, 0.05, 0.1, 0.25, 0.5, 0.75, 1] {
+                let mask = CIImage(color: CIColor(red: intensity, green: intensity, blue: intensity, alpha: 1))
+                let output = try filtered("CIMaskedVariableBlur", input: input, parameters: [
+                    kCIInputRadiusKey: radius, "inputMask": mask])
+                cases.append(["fixture": fixture, "filter": "CIMaskedVariableBlur", "radius": radius,
+                              "maskIntensity": intensity, "output": try render(output)])
+            }
+        }
+    }
+    return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
+            "recipe": "PixelAdjust unmanaged CIContext; finite input with transparent exterior; constant infinite masks",
+            "floatFormat": "RGBAFloat32LE in CIContext toBitmap row order; compare identity to determine orientation",
+            "byteFormat": "premultiplied RGBA8; CGImage copied into identity-CTM bitmap; packed memory rows",
+            "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
+            "inputs": inputs, "cases": cases]
+}
+
+do {
+    let data = try JSONSerialization.data(withJSONObject: capture(), options: [.prettyPrinted, .sortedKeys])
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+} catch {
+    FileHandle.standardError.write(Data("Core Image capture failed: \(error)\n".utf8))
+    exit(1)
+}
+#else
+import Foundation
+FileHandle.standardError.write(Data("Core Image capture requires native macOS.\n".utf8))
+exit(1)
+#endif

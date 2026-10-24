@@ -1,0 +1,23 @@
+name: Core Image blur reference
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Capture native blur kernels and mask intensities
+        run: swift scripts/capture-coreimage-reference.swift > coreimage-reference.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coreimage-reference
+          path: coreimage-reference.json
+          if-no-files-found: error
