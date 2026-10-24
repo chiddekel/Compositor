@@ -38,6 +38,24 @@ func describe(_ context: CGContext) throws -> [String: Any] {
             "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
 }
 
+func captureAffine(_ source: CGContext, width: Int, height: Int, scaleX: Double, scaleY: Double,
+                   translationX: Double, translationY: Double, flags: vImage_Flags) throws -> [String: Any] {
+    let warped = try bitmap(width: width, height: height)
+    var input = vImage_Buffer(data: source.data, height: vImagePixelCount(source.height),
+        width: vImagePixelCount(source.width), rowBytes: source.bytesPerRow)
+    var output = vImage_Buffer(data: warped.data, height: vImagePixelCount(height),
+        width: vImagePixelCount(width), rowBytes: warped.bytesPerRow)
+    var transform = vImage_AffineTransform_Double(a: scaleX, b: 0, c: 0, d: scaleY,
+                                               tx: translationX, ty: translationY)
+    let background: [UInt8] = [0, 0, 0, 0]
+    let error = background.withUnsafeBufferPointer { color in
+        vImageAffineWarpD_ARGB8888(&input, &output, nil, &transform, color.baseAddress, flags)
+    }
+    guard error == kvImageNoError else { throw CaptureError.failed("vImage affine warp failed: \(error)") }
+    return ["scaleX": scaleX, "scaleY": scaleY, "translationX": translationX,
+            "translationY": translationY, "output": try describe(warped)]
+}
+
 // Resolve the actual face as well as its pixels: matching a PostScript name alone
 // does not prove that the macOS and Linux renderers selected the same font file.
 func captureText() throws -> [[String: Any]] {
@@ -192,26 +210,20 @@ func capture() throws -> [String: Any] {
             }
             var affine = [String: Any]()
             let ratio = 1.0 / Double(block)
-            for (phaseName, phase) in [("zero", 0.0), ("positive-half", (1 - ratio) / 2),
-                                       ("negative-half", (ratio - 1) / 2)] {
-                for (qualityName, quality) in [("default", vImage_Flags(kvImageNoFlags)),
-                                               ("high", vImage_Flags(kvImageHighQualityResampling))] {
-                    for (edgeName, edge) in [("extend", vImage_Flags(kvImageEdgeExtend)),
-                                             ("transparent", vImage_Flags(kvImageBackgroundColorFill))] {
-                        let warped = try bitmap(width: small.width, height: small.height)
-                        var inputBuffer = vImage_Buffer(data: source.data, height: vImagePixelCount(height),
-                            width: vImagePixelCount(width), rowBytes: source.bytesPerRow)
-                        var outputBuffer = vImage_Buffer(data: warped.data, height: vImagePixelCount(small.height),
-                            width: vImagePixelCount(small.width), rowBytes: warped.bytesPerRow)
-                        var transform = vImage_AffineTransform_Double(a: ratio, b: 0, c: 0, d: ratio, tx: phase, ty: phase)
-                        let background: [UInt8] = [0, 0, 0, 0]
-                        let error = background.withUnsafeBufferPointer { color in
-                            vImageAffineWarpD_ARGB8888(&inputBuffer, &outputBuffer, nil, &transform,
-                                                       color.baseAddress, quality | edge)
+            for (geometry, scaleX, scaleY) in [("nominal", ratio, ratio),
+                    ("corners", Double(small.width - 1) / Double(width - 1),
+                     Double(small.height - 1) / Double(height - 1))] {
+                for (phaseName, phase) in [("zero", 0.0), ("positive-half", 0.5), ("negative-half", -0.5)] {
+                    for (qualityName, quality) in [("default", vImage_Flags(kvImageNoFlags)),
+                                                   ("high", vImage_Flags(kvImageHighQualityResampling))] {
+                        for (edgeName, edge) in [("extend", vImage_Flags(kvImageEdgeExtend)),
+                                                 ("transparent", vImage_Flags(kvImageBackgroundColorFill))] {
+                            let prefix = geometry == "nominal" ? "" : "corners-"
+                            affine["\(prefix)\(phaseName)-\(qualityName)-\(edgeName)"] = try captureAffine(source,
+                                width: small.width, height: small.height, scaleX: scaleX, scaleY: scaleY,
+                                translationX: (1 - scaleX) * phase, translationY: (1 - scaleY) * phase,
+                                flags: quality | edge)
                         }
-                        guard error == kvImageNoError else { throw CaptureError.failed("vImage affine warp failed: \(error)") }
-                        affine["\(phaseName)-\(qualityName)-\(edgeName)"] = [
-                            "scale": ratio, "translation": phase, "output": try describe(warped)]
                     }
                 }
             }
