@@ -61,7 +61,18 @@ jitter. SHA-256, packed sizes, finite float values and consistency with every ed
 before artifact upload. These diagnostics separate arithmetic from sampling and output quantization;
 they do not by themselves establish a replacement algorithm.
 
+Native run `40134093484` passes all seven buffer validations. The shader hash, source fixture, nine
+edge samples, tail assertions and default/strict edge arithmetic are identical to the earlier capture.
+The 192×144 default observer matches the CPU's phase at every pixel, but sine differs by at most
+`1.7881393432617188e-7`; after hash amplification, 92 pixels differ by more than half a sampling interval.
+An isolated replay of the application's default filter reproduces its 17-byte maximum error using CPU
+jitter. Substituting the independently captured native jitter, with the source and gather unchanged,
+reduces this to one byte. This establishes the remaining hash discrepancy's cause; captured jitter is
+diagnostic data and is not used by the production renderer. The complete 61×61 production-kernel
+captures already match CPU within two bytes for the flat split and one for the streaked split.
+
 The contract script also runs upstream `FilterTests` and `FilterLayerTests`, and the native
 `--combo-smoke --dispersion-probe` journey checks the visible panel, Cancel, commit, Undo/Redo,
-and Split to Layers. These application checks still need a successful run for the current merge;
-backend-only results do not establish complete application parity.
+and Split to Layers. The rebuilt local candidate passes this journey on AMD Vulkan, including exact
+commit Undo/Redo and Split to Layers hierarchy/history (`upstream-format18-dispersion-native-journey.log`
+under `.build/evidence/`). This does not close the 36 remaining native comparison failures.
