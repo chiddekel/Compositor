@@ -5,6 +5,8 @@ import Foundation
 import CoreGraphics
 import CryptoKit
 import Accelerate
+import AppKit
+import CoreText
 
 enum CaptureError: Error { case failed(String) }
 
@@ -34,6 +36,66 @@ func describe(_ context: CGContext) throws -> [String: Any] {
     return ["width": context.width, "height": context.height, "rowBytes": context.width * 4,
             "rgbaBase64": data.base64EncodedString(),
             "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
+}
+
+// Resolve the actual face as well as its pixels: matching a PostScript name alone
+// does not prove that the macOS and Linux renderers selected the same font file.
+func captureText() throws -> [[String: Any]] {
+    let fonts = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("third_party/fonts/inter")
+    let faces = ["Inter-Regular", "Inter-Bold", "Inter-Light"]
+    for face in faces {
+        let url = fonts.appendingPathComponent("\(face).ttf")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw CaptureError.failed("Missing bundled font: \(face)")
+        }
+        // A duplicate registration is harmless; the resolved file is recorded below.
+        CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+    }
+    var cases = [[String: Any]]()
+    for face in faces {
+        let bundledData = try Data(contentsOf: fonts.appendingPathComponent("\(face).ttf"))
+        let bundledHash = SHA256.hash(data: bundledData).map { String(format: "%02x", $0) }.joined()
+        for size in [12.0, 24.0, 36.0, 12.5, 24.5, 36.5] {
+            guard let font = NSFont(name: face, size: size),
+                  let resolvedURL = CTFontCopyAttribute(font as CTFont, kCTFontURLAttribute) as? URL else {
+                throw CaptureError.failed("Cannot resolve native font: \(face)")
+            }
+            let resolvedData = try Data(contentsOf: resolvedURL)
+            let resolvedHash = SHA256.hash(data: resolvedData).map { String(format: "%02x", $0) }.joined()
+            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
+            let measured = ("Ag Ω" as NSString).size(withAttributes: attributes)
+            var draws = [[String: Any]]()
+            for variant in ["default", "no-smoothing", "no-antialias", "white-on-black", "black-on-white"] {
+                let context = try bitmap(width: 96, height: 72)
+                if variant == "white-on-black" || variant == "black-on-white" {
+                    context.setFillColor(gray: variant == "black-on-white" ? 1 : 0, alpha: 1)
+                    context.fill(CGRect(x: 0, y: 0, width: 96, height: 72))
+                }
+                if variant == "no-smoothing" {
+                    context.setAllowsFontSmoothing(false)
+                    context.setShouldSmoothFonts(false)
+                }
+                if variant == "no-antialias" { context.setShouldAntialias(false) }
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+                ("Ag Ω" as NSString).draw(at: CGPoint(x: 4, y: 20), withAttributes: [
+                    .font: font, .foregroundColor: variant == "black-on-white" ? NSColor.black : NSColor.white])
+                NSGraphicsContext.restoreGraphicsState()
+                draws.append(["variant": variant, "output": try describe(context)])
+            }
+            cases.append(["face": face, "size": size, "resolvedName": font.fontName,
+                          "bundledSha256": bundledHash, "resolvedSha256": resolvedHash,
+                          "matchesBundledFont": bundledHash == resolvedHash,
+                          "resolvedFile": resolvedURL.lastPathComponent,
+                          "ascender": font.ascender, "descender": font.descender,
+                          "leading": font.leading, "capHeight": font.capHeight, "xHeight": font.xHeight,
+                          "defaultLineHeight": NSLayoutManager().defaultLineHeight(for: font),
+                          "measuredWidth": measured.width, "measuredHeight": measured.height,
+                          "draws": draws])
+        }
+    }
+    return cases
 }
 
 func captureBlend(_ mode: CGBlendMode) throws -> [String: Any] {
@@ -136,7 +198,8 @@ func capture() throws -> [String: Any] {
             "format": "sRGB premultiplied RGBA8; packed bitmap-memory rows", "quality": "high",
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
-            "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation)]
+            "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
+            "text": try captureText()]
 }
 
 do {
