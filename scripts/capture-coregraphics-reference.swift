@@ -36,7 +36,7 @@ func describe(_ context: CGContext) throws -> [String: Any] {
             "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
 }
 
-func captureSourceOver() throws -> [String: Any] {
+func captureBlend(_ mode: CGBlendMode) throws -> [String: Any] {
     let side = 256
     let source = try bitmap(width: side, height: side)
     guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
@@ -70,7 +70,7 @@ func captureSourceOver() throws -> [String: Any] {
             target.translateBy(x: 0, y: CGFloat(side))
             target.scaleBy(x: 1, y: -1)
             target.setAlpha(opacity)
-            target.setBlendMode(.normal)
+            target.setBlendMode(mode)
             target.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
             cases.append(["background": background, "opacity": opacity, "input": initial,
                           "output": try describe(target)])
@@ -135,7 +135,8 @@ func capture() throws -> [String: Any] {
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "format": "sRGB premultiplied RGBA8; packed bitmap-memory rows", "quality": "high",
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
-            "sourceOver": try captureSourceOver()]
+            "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
+            "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation)]
 }
 
 do {
