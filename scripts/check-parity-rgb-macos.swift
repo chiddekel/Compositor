@@ -42,10 +42,13 @@ func capture() throws -> [String: Any] {
     let hashSource = """
     #include <metal_stdlib>
     using namespace metal;
-    kernel void hashProbe(device float *values [[buffer(0)]], uint2 pixel [[thread_position_in_grid]]) {
+    kernel void hashProbe(device float4 *values [[buffer(0)]], uint2 pixel [[thread_position_in_grid]]) {
         if (pixel.x >= 61 || pixel.y >= 61) return;
+        float phase = dot(float2(pixel), float2(12.9898, 78.233));
+        float sine = sin(phase);
+        float noise = sine * 43758.5453;
         float jitter = \(jitterExpression);
-        values[pixel.y * 61 + pixel.x] = jitter;
+        values[pixel.y * 61 + pixel.x] = float4(phase, sine, noise, jitter);
     }
     """
     guard MemoryLayout<Parameters>.stride == 72,
@@ -58,12 +61,17 @@ func capture() throws -> [String: Any] {
     }
     let library = try device.makeLibrary(source: source, options: nil)
     let hashLibrary = try device.makeLibrary(source: hashSource, options: nil)
+    let strictOptions = MTLCompileOptions()
+    strictOptions.fastMathEnabled = false
+    let strictHashLibrary = try device.makeLibrary(source: hashSource, options: strictOptions)
     guard let function = library.makeFunction(name: "disperse"),
-          let hashFunction = hashLibrary.makeFunction(name: "hashProbe") else {
+          let hashFunction = hashLibrary.makeFunction(name: "hashProbe"),
+          let strictHashFunction = strictHashLibrary.makeFunction(name: "hashProbe") else {
         throw ProbeError.failed("Cannot compile probe entry points")
     }
     let pipeline = try device.makeComputePipelineState(function: function)
     let hashPipeline = try device.makeComputePipelineState(function: hashFunction)
+    let strictHashPipeline = try device.makeComputePipelineState(function: strictHashFunction)
     let size = 61, rowBytes = size * 4
     var pixels = [UInt8](repeating: 0, count: size * size * 4)
     for y in 28...32 { for x in 28...32 { for channel in 0..<4 { pixels[(y * size + x) * 4 + channel] = 255 } } }
@@ -73,7 +81,7 @@ func capture() throws -> [String: Any] {
     descriptor.storageMode = .shared
     guard let input = device.makeTexture(descriptor: descriptor),
           let output = device.makeTexture(descriptor: descriptor),
-          let hashes = device.makeBuffer(length: size * size * MemoryLayout<Float>.stride, options: .storageModeShared) else {
+          let hashes = device.makeBuffer(length: size * size * MemoryLayout<SIMD4<Float>>.stride, options: .storageModeShared) else {
         throw ProbeError.failed("Cannot allocate Metal probe buffers")
     }
     let region = MTLRegionMake2D(0, 0, size, size)
@@ -99,22 +107,29 @@ func capture() throws -> [String: Any] {
     }
     let flat = try run(Parameters(distance: 8, blur: 0, spectral: 8, smear: 1))
     let streaked = try run(Parameters(distance: 4, blur: 16, spectral: 4, smear: 8))
-    guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
-        throw ProbeError.failed("Cannot encode jitter observer")
+    func observe(_ pipeline: MTLComputePipelineState) throws -> [SIMD4<Float>] {
+        guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
+            throw ProbeError.failed("Cannot encode jitter observer")
+        }
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(hashes, offset: 0, index: 0)
+        encoder.dispatchThreads(MTLSize(width: size, height: size, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { throw command.error ?? ProbeError.failed("Jitter observer failed") }
+        let values = hashes.contents().bindMemory(to: SIMD4<Float>.self, capacity: size * size)
+        return Array(UnsafeBufferPointer(start: values, count: size * size))
     }
-    encoder.setComputePipelineState(hashPipeline)
-    encoder.setBuffer(hashes, offset: 0, index: 0)
-    encoder.dispatchThreads(MTLSize(width: size, height: size, depth: 1),
-        threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
-    encoder.endEncoding()
-    command.commit()
-    command.waitUntilCompleted()
-    guard command.status == .completed else { throw command.error ?? ProbeError.failed("Jitter observer failed") }
-    let jitter = hashes.contents().bindMemory(to: Float.self, capacity: size * size)
+    let jitter = try observe(hashPipeline)
+    let strictJitter = try observe(strictHashPipeline)
     let flatAlpha = (44...48).map { Int(flat[(30 * size + $0) * 4 + 3]) }
     let streakedAlpha = (44...48).map { Int(streaked[(30 * size + $0) * 4 + 3]) }
     let edgePixels: [[String: Any]] = (40...48).map { x in
-        ["x": x, "y": 30, "diagnosticJitter": Double(jitter[30 * size + x]),
+        ["x": x, "y": 30, "diagnosticJitter": Double(jitter[30 * size + x].w),
+         "diagnosticArithmetic": (0..<4).map { Double(jitter[30 * size + x][$0]) },
+         "strictDiagnosticArithmetic": (0..<4).map { Double(strictJitter[30 * size + x][$0]) },
          "flatRGBA": (0..<4).map { Int(flat[(30 * size + x) * 4 + $0]) },
          "streakedRGBA": (0..<4).map { Int(streaked[(30 * size + x) * 4 + $0]) }]
     }
@@ -123,6 +138,7 @@ func capture() throws -> [String: Any] {
         "fixture": "61x61 transparent RGBA8, white pixels x/y 28...32, row 30",
         "fixtureSHA256": SHA256.hash(data: Data(pixels)).map { String(format: "%02x", $0) }.joined(),
         "jitterExpression": jitterExpression, "parameterStride": MemoryLayout<Parameters>.stride,
+        "diagnosticArithmeticComponents": ["phase", "sine", "noise", "jitter"],
         "flatTailAlpha": flatAlpha, "streakedTailAlpha": streakedAlpha,
         "passesUpstreamTailAssertion": flatAlpha.reduce(0, +) == 0 && streakedAlpha.reduce(0, +) > 0,
         "edgePixels": edgePixels]

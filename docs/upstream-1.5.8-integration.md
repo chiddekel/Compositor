@@ -49,5 +49,10 @@ order and padding, working-space conversion, circular dilation and tiled output.
 Threshold 100 rejects small glints while retaining the stronger light source. Linux CI selects these suites.
 
 The RGB Split tail-pixel discrepancy and device-availability limits documented for 1.5.7 remain open; 1.5.8 does
-not change that shader or its upstream test. The native Metal probe is available through the manual
-`RGB Metal parity reference` workflow; its reference capture remains pending.
+not change that shader or its upstream test. The first native Metal
+[reference capture](https://github.com/chiddekel/Compositor/actions/runs/40099667440) passed on Apple's paravirtual
+device, macOS 26.6.2. Both shader and fixture hashes match the local probe. At pixel (44, 30), the original shader
+produces blurred alpha 9/255, with zero alpha in the unblurred tail. Its diagnostic jitter is 0.8752594, versus
+Linux libm's 0.2852325. This confirms a platform arithmetic discrepancy rather than an obsolete upstream assertion.
+The probe now observes phase, sine, noise and jitter with both default and disabled fast math to locate the
+difference; that follow-up capture remains pending. These diagnostic kernels do not modify the production shader.
