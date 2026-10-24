@@ -44,14 +44,31 @@ spectral direction, blur streaks, the radial center, alpha bounds, different reg
 translated origins, negative row direction and edge extension. Hardware success requires actual
 submissions; a CPU fallback cannot count as the Vulkan pass.
 
-The published kernel's `sin`/`fract` sampling jitter depends on the device's transcendental precision.
-A local shader correction protects phase arithmetic and evaluates the reduced sine accurately before
-the amplified hash. Five sharp-alpha component comparisons on AMD RADV improve from maximum errors
-of 3.98–94.18 byte levels to less than 0.72. The new pixel-level component regression fails against
+The upstream kernel's `sin`/`fract` sampling jitter depends on the device's transcendental precision.
+The Vulkan shader protects phase arithmetic and evaluates a degree-21 sine polynomial in double
+precision after reducing the angle to −π/2…π/2. This prevents the amplified hash from turning a
+one-ulp device sine error into a nearly full-interval sample change. Float64 is already a backend
+requirement; the correction adds no device requirement. Five sharp-alpha comparisons on AMD RADV
+improve from maximum errors of 3.98–94.18 byte levels to less than 0.72. The new pixel-level regression fails against
 the original shader and passes with the correction; native Metal edge references remain unchanged.
-The local automatic-backend application corpus improves from 136/173 to 137/173 passing native
-comparisons. Thirty-six native discrepancies remain. This correction is not yet committed; existing
-golden thresholds and baseline PNGs are unchanged. See `docs/upstream-format18-integration.md`.
+The combined candidate's automatic-backend application corpus improved from 136/173 to 137/173
+passing native comparisons at that checkpoint. This correction does not establish complete native
+pixel parity. Existing golden thresholds and baseline PNGs are unchanged.
+See `docs/upstream-format18-integration.md` for the other renderer candidates.
+
+Fresh verification on AMD Radeon Graphics (RADV RENOIR) passes the independent CPU/Vulkan
+contracts and 74 Swift hardware tests across 15 suites. Rebuilding the original committed shader
+fails the new sharp-alpha regression with an 87.58-byte maximum error. Generated SPIR-V and the
+complete upstream-content guard pass. All 93 fresh GPU golden candidates match the CPU candidates;
+the shared worktree retains sixteen pending golden differences from other renderer changes.
+
+A separate checkout of published `64e5df8`, with only the three dispersion code/test files
+applied, builds its own native bridge and passes 81 tests across 16 suites. All 93 decoded
+golden images are identical to the committed baselines. It also passes the original Skia
+bridge contracts and the native RGB Split panel/history journey. Camera Raw lookup assets
+are installed beside the test runner, as in `linux-contract-tests.sh`; without that setup,
+two unrelated Camera Raw tests correctly report missing tables. The isolated verification
+and source hashes are recorded under `.build/evidence/dispersion-isolated-*`.
 
 `scripts/check-parity-rgb-macos.swift` reads the protected upstream shader and captures it on a native
 Metal device. In addition to the original edge samples, the manual `rgb-metal-parity.yml` workflow
@@ -75,4 +92,4 @@ The contract script also runs upstream `FilterTests` and `FilterLayerTests`, and
 `--combo-smoke --dispersion-probe` journey checks the visible panel, Cancel, commit, Undo/Redo,
 and Split to Layers. The rebuilt local candidate passes this journey on AMD Vulkan, including exact
 commit Undo/Redo and Split to Layers hierarchy/history (`upstream-format18-dispersion-native-journey.log`
-under `.build/evidence/`). This does not close the 36 remaining native comparison failures.
+under `.build/evidence/`). This does not close the remaining native comparison failures.

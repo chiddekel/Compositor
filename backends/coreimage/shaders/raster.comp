@@ -14,11 +14,25 @@ layout(std430,binding=4) readonly buffer Values { vec4 values[]; };
 float parameter(uint i) { return values[i/4][i%4]; }
 float dispersionSine(float phase) {
     // Match Metal's float-cycle reduction before the sine hash amplifies its rounding.
-    float cycle=phase*0.15915494309189535;
+    precise float cycle=phase*0.15915494309189535;
     cycle-=round(cycle);
     if (cycle>0.25) cycle=0.5-cycle;
     else if (cycle<-0.25) cycle=-0.5-cycle;
-    return sin(cycle*6.283185307179586);
+    // A one-ulp device sin error can wrap fract's amplified hash to the opposite
+    // end of a sample interval. Evaluate the reduced angle accurately instead.
+    precise float angle=cycle*6.283185307179586;
+    precise double a=double(angle), z=a*a;
+    precise double poly=1.0lf/51090942171709440000.0lf;
+    poly=poly*z-1.0lf/121645100408832000.0lf;
+    poly=poly*z+1.0lf/355687428096000.0lf;
+    poly=poly*z-1.0lf/1307674368000.0lf;
+    poly=poly*z+1.0lf/6227020800.0lf;
+    poly=poly*z-1.0lf/39916800.0lf;
+    poly=poly*z+1.0lf/362880.0lf;
+    poly=poly*z-1.0lf/5040.0lf;
+    poly=poly*z+1.0lf/120.0lf;
+    poly=poly*z-1.0lf/6.0lf;
+    return float(a+a*z*poly);
 }
 vec4 dispersionTap(vec2 q) {
     vec2 size=vec2(parameter(16),parameter(17));
@@ -38,7 +52,7 @@ vec4 dispersion(uvec2 pixel) {
                                          : vec2(parameter(2),parameter(3));
     vec2 spread=axis*parameter(4), streak=axis*parameter(5);
     uint n=max(uint(parameter(9)),1u), m=max(uint(parameter(10)),1u);
-    float phase=fma(float(pixel.y),78.233,float(pixel.x)*12.9898);
+    precise float phase=fma(float(pixel.y),78.233,float(pixel.x)*12.9898);
     float jitter=fract(dispersionSine(phase)*43758.5453);
     vec3 color=vec3(0), alpha=vec3(0), total=vec3(0);
     for (uint i=0;i<n;++i) {

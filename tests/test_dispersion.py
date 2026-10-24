@@ -101,6 +101,23 @@ def main(path):
             assert max(abs(a - b) for a, b in zip(edge, [0.2, 0.3, 0.4, 0.5] * 4)) < 1e-5
         if gpu:
             assert lib.compositor_vulkan_raster_submissions(gpu) >= 6
+            # Sharp alpha boundaries expose individual jitter errors hidden by
+            # averages. The unqualified GPU phase/sine produced errors up to
+            # 94/255 on this image, despite passing the statistics below.
+            wide, tall = 192, 144
+            disc = []
+            for y in range(tall):
+                for x in range(wide):
+                    a = float((x - 96) ** 2 + (y - 72) ** 2 < 48 ** 2)
+                    disc.extend([a * x / (wide - 1), a * y / (tall - 1), a * 0.4, a])
+            for distance, blur, spectral, smear in [(8, 0, 8, 1), (4, 16, 4, 8),
+                                                    (18, 0, 8, 1), (40, 4, 16, 4), (0, 40, 1, 64)]:
+                settings = [96, 72, 0.819152, -0.573576, distance, blur, 96, 0, 0,
+                            spectral, smear, 0, 0, 0, 0, 1, wide, tall, 0, 0]
+                cpu = run(settings, pixels=disc, w=wide, h=tall)
+                hardware = run(settings, pixels=disc, w=wide, h=tall, driver=gpu)
+                error = max(abs(a - b) for a, b in zip(cpu, hardware)) * 255
+                assert error <= 2, (distance, blur, spectral, smear, error)
             # sin/fract jitter can differ between GPU and libm. Hold the overall signal to the same mean/spread;
             # the pixel/geometry assertions above apply independently to each backend.
             ramp = []
