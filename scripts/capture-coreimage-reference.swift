@@ -76,6 +76,28 @@ func render(_ image: CIImage, bitmapBytes: Bool = false) throws -> [String: Any]
     return ["float": describe(floatData, bits: 32), "byte": describe(bytes, bits: 8)]
 }
 
+func renderRegion(_ image: CIImage, in rect: CGRect, freshContext: Bool) -> [String: Any] {
+    let renderer = freshContext
+        ? CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull(), .cacheIntermediates: false])
+        : context
+    let regionWidth = Int(rect.width), regionHeight = Int(rect.height)
+    var floats = [Float](repeating: 0, count: regionWidth * regionHeight * 4)
+    floats.withUnsafeMutableBytes { buffer in
+        renderer.render(image, toBitmap: buffer.baseAddress!, rowBytes: regionWidth * 16,
+                       bounds: rect, format: .RGBAf, colorSpace: space)
+    }
+    var bytes = Data(count: regionWidth * regionHeight * 4)
+    bytes.withUnsafeMutableBytes { buffer in
+        renderer.render(image, toBitmap: buffer.baseAddress!, rowBytes: regionWidth * 4,
+                       bounds: rect, format: .RGBA8, colorSpace: space)
+    }
+    func packed(_ data: Data, bits: Int) -> [String: Any] {
+        ["width": regionWidth, "height": regionHeight, "rowBytes": regionWidth * 4 * bits / 8,
+         "bitsPerComponent": bits, "rgbaBase64": data.base64EncodedString(), "sha256": digest(data)]
+    }
+    return ["float": packed(floats.withUnsafeBytes { Data($0) }, bits: 32), "byte": packed(bytes, bits: 8)]
+}
+
 func filtered(_ name: String, input: CIImage, parameters: [String: Any]) throws -> CIImage {
     guard let filter = CIFilter(name: name, parameters: parameters.merging([kCIInputImageKey: input]) { _, input in input }),
           let output = filter.outputImage else { throw CaptureError.failed("Cannot create \(name)") }
@@ -92,6 +114,7 @@ func describeExtent(_ image: CIImage) -> [String: Any] {
 
 func capture() throws -> [String: Any] {
     var inputs = [[String: Any]](), cases = [[String: Any]]()
+    var regionalProbes: [(fixture: String, radius: Double, image: CIImage)] = []
     for fixture in ["opaque-gradient", "impulse"] {
         let source = try bitmap()
         guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
@@ -146,6 +169,7 @@ func capture() throws -> [String: Any] {
                 cases.append(["fixture": fixture, "filter": "gaussian-magnified", "radius": radius,
                               "scaleX": 2, "blurredExtent": describeExtent(output),
                               "outputExtent": describeExtent(magnified), "output": try render(magnified)])
+                regionalProbes.append((fixture, radius, magnified))
                 for offset in [14.4, -14.4] {
                     let shifted = output.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
                     cases.append(["fixture": fixture, "filter": "gaussian-affine", "radius": radius,
@@ -253,6 +277,21 @@ func capture() throws -> [String: Any] {
             let output = try filtered("CIGaussianBlur", input: input, parameters: [kCIInputRadiusKey: radius])
             cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius,
                           "sourceOffsetX": offset, "output": try render(output)])
+        }
+    }
+    // Keep the preceding recipes' render order unchanged before probing cache-sensitive regional requests.
+    for probe in regionalProbes {
+        for freshContext in [false, true] {
+            for sampleBounds in [CGRect(x: 0, y: 0, width: 192, height: 72),
+                                 CGRect(x: 20, y: 8, width: 32, height: 24),
+                                 CGRect(x: 80, y: 24, width: 32, height: 24)] {
+                cases.append(["fixture": probe.fixture, "filter": "gaussian-magnified-region", "radius": probe.radius,
+                              "scaleX": 2, "sampleBounds": [Double(sampleBounds.minX), Double(sampleBounds.minY),
+                                                           Double(sampleBounds.width), Double(sampleBounds.height)],
+                              "contextPolicy": freshContext ? "fresh-no-cache" : "shared-default-cache",
+                              "byteRender": "CIContext.toBitmap", "outputExtent": describeExtent(probe.image),
+                              "output": renderRegion(probe.image, in: sampleBounds, freshContext: freshContext)])
+            }
         }
     }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,

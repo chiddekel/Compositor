@@ -1,7 +1,7 @@
 # Core Image sampling diagnostics
 
 The manual `coreimage-reference.yml` workflow runs the native macOS capture with an unmanaged Core Image
-context. It validates 334 cases and 672 byte/float buffers, including SHA-256 checks, dimensions, finite float
+context. It validates 358 cases and 720 byte/float buffers, including SHA-256 checks, dimensions, finite float
 values and unique recipe metadata. The artifact contains synthetic pixels only.
 
 The capture includes direct Gaussian, motion, masked blur and Lanczos controls, scale–blur–inverse-scale
@@ -19,12 +19,20 @@ Sixteen tone-curve controls cover identity, two lens highlight thresholds and co
 doubled RGB inputs. They record the native extrapolation default when the filter exposes that parameter.
 Apple specifies a gamma-2 perceptual working space for this filter in the
 [Core Image Filter Reference](https://developer.apple.com/library/archive/documentation/GraphicsImaging/Reference/CoreImageFilterReference/).
+Twenty-four additional Gaussian magnification probes compare complete 192×72 renders with two interior 32×24
+requests. Their `sampleBounds` metadata defines dimensions and world coordinates; both output types use the
+bitmap API. They use both the shared context's default cache and fresh contexts with intermediate caching
+disabled, recorded as `contextPolicy`. This separates request boundaries from cache reuse when checking
+interior tile behavior. Other capture recipes retain their 96×72 output buffers.
 
 These controls investigate two unresolved compatibility behaviors: sampling a blurred scaled intermediate
 and sampling through pointwise color operations. They do not establish a replacement algorithm by themselves.
 Compare the original 266 recipes with the preceding capture from run `40125848219`, matching recipe parameters
 while excluding newly added extent metadata, and require unchanged byte and float hashes.
 
-The production Lanczos candidate remains local. Its direct reference tests pass, but broad testing exposes
-an additional upstream faint-flare assertion, and the application corpus still passes 135/173 comparisons.
+The production candidate remains local. Native pointwise, blur and tone references pass, and the perceptual
+tone correction resolves the upstream faint-flare assertion. The application corpus passes 137/173 comparisons,
+including all nine format-18 adjustment cases. An AMD Vulkan run passes all 186 XCTest cases, 48 serial Swift
+tests and nine native adjustment journeys; the 1,038-test parallel run reports only 12 proposed golden changes.
+The Gaussian tile-sampling rule remains under review until the regional probes establish native behavior.
 Existing golden baselines and application comparison thresholds are unchanged.
