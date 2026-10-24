@@ -78,3 +78,24 @@ The first full macOS render-corpus job built and passed its native tests, then c
 case catalog: upstream now emits `Lens Effects-default` and `Lens Effects-extreme`. Both cases are now included;
 the catalog matches all 164 captured macOS images and all seven parity-tool tests pass. The full cross-platform
 comparison remains pending.
+
+The subsequent [native macOS corpus job](https://github.com/chiddekel/Compositor/actions/runs/40101971068)
+passes and exports all 164 cases. The artifact's upstream commit, corpus hash and every image/sample checksum
+match. A local CPU render uses the same downloaded inputs, completes successfully and produces a valid matching
+manifest. The comparison passes 123 cases and fails 41: adjustments 11, blends 6, export 1, filters 6, RAW 5,
+shapes 3 and text 9. All five color, six effect and six transform cases pass, as do both Lens Effects cases.
+The RGB Split single-fixture regression is fixed, but the full image corpus still exposes edge-pixel differences;
+the nine-pixel reference does not prove complete RGB Split parity. No comparison threshold was relaxed.
+Reports, manifests and difference images are under `.build/evidence/upstream-1.5.8/full-parity-*`.
+
+Dithering's alpha differs before its C kernel, during high-quality downsampling. Linux maps `.high` to Skia's
+Catmull–Rom sampler; native output has a different edge response. `capture-coregraphics-reference.swift` and the
+manual `Core Graphics sampling reference` workflow capture the same bitmap/draw recipe for the overlay fixture,
+horizontal/vertical impulses and constant controls at scales 1, 2 and 6. The diagnostic passes local parsing,
+Linux type checking, its unsupported-platform guard and workflow checks; native execution remains pending.
+
+SwiftShader is not a suitable replacement for the unavailable Vulkan device: its
+[capability implementation](https://github.com/google/swiftshader/blob/cddb5c91b23ff70a1f607ea31610aa0d7f4b5ad5/src/Vulkan/VkPhysicalDevice.cpp)
+reports no Float64, Float32 denormal preservation or round-to-even support. No driver was installed and the
+renderer requirements remain intact. The fork's macOS Verify and upstream-sync guard workflows pass on both
+branches at `af6cb99`; the Linux contracts and remaining render-parity workflow jobs are still running.
