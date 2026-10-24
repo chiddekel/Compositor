@@ -34,5 +34,8 @@ The production candidate remains local. Native pointwise, blur and tone referenc
 tone correction resolves the upstream faint-flare assertion. The application corpus passes 137/173 comparisons,
 including all nine format-18 adjustment cases. An AMD Vulkan run passes all 186 XCTest cases, 48 serial Swift
 tests and nine native adjustment journeys; the 1,038-test parallel run reports only 12 proposed golden changes.
-The Gaussian tile-sampling rule remains under review until the regional probes establish native behavior.
+Native run `40131936749` validates all 358 cases and 720 buffers, preserving the preceding 334 outputs.
+Its interior requests differ from cropping a full render by up to 0.7471 byte units, identically with both cache
+policies. The regional regression checks native byte output within one level and tile-versus-full float
+differences within `1/1024`; it passes in both CPU and AMD Vulkan configurations and resolves the tile review.
 Existing golden baselines and application comparison thresholds are unchanged.
