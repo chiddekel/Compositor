@@ -14,8 +14,34 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
-      - name: Capture native blur kernels and mask intensities
+      - name: Capture native blur, sampling, and mask references
         run: swift scripts/capture-coreimage-reference.swift > coreimage-reference.json
+      - name: Validate native reference buffers
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          reference = json.loads(Path('coreimage-reference.json').read_text())
+          assert reference['platform'] == 'macOS' and reference['schema'] == 1
+          assert len(reference['inputs']) == 2 and len(reference['cases']) == 266
+          keys = [json.dumps({key: value for key, value in item.items() if key != 'output'}, sort_keys=True)
+                  for item in reference['cases']]
+          assert len(set(keys)) == len(keys)
+          buffers = 0
+          for output in [item['identity'] for item in reference['inputs']] + [item['output'] for item in reference['cases']]:
+              for kind, bits in [('byte', 8), ('float', 32)]:
+                  item = output[kind]
+                  assert item['width'] == 96 and item['height'] == 72
+                  assert item['bitsPerComponent'] == bits and item['rowBytes'] == 96 * 4 * bits // 8
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if kind == 'float':
+                      assert all(math.isfinite(value[0]) for value in struct.iter_unpack('<f', raw))
+                  buffers += 1
+          assert buffers == 536
+          print(f'Validated {len(reference["cases"])} native cases and {buffers} buffers')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: coreimage-reference

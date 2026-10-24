@@ -1,4 +1,4 @@
-// Native blur references using the same unmanaged CIContext as PixelAdjust.
+// Native blur and sampling references using the same unmanaged CIContext as PixelAdjust.
 #if os(macOS)
 import Foundation
 import CoreGraphics
@@ -49,7 +49,8 @@ func render(_ image: CIImage) throws -> [String: Any] {
                        bounds: bounds, format: .RGBAf, colorSpace: space)
     }
     let floatData = floats.withUnsafeBytes { Data($0) }
-    guard let result = context.createCGImage(image, from: bounds, format: .RGBA8, colorSpace: space) else {
+    guard let result = context.createCGImage(image, from: bounds, format: .RGBA8, colorSpace: space),
+          result.width == width, result.height == height else {
         throw CaptureError.failed("Cannot create native RGBA8 image")
     }
     let target = try bitmap()
@@ -108,12 +109,38 @@ func capture() throws -> [String: Any] {
             }
         }
         for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 10 / sqrt(12.0), 35 / sqrt(12.0)] {
-            for degrees in [0.0, -35, 35] {
+            // Cardinal and near-cardinal angles distinguish blur weights from rotation sampling.
+            for degrees in [0.0, -35, 35, 90, -90, 180, 360, 0.125] {
                 let output = try filtered("CIMotionBlur", input: input, parameters: [
                     kCIInputRadiusKey: radius, kCIInputAngleKey: degrees * .pi / 180])
                 cases.append(["fixture": fixture, "filter": "CIMotionBlur", "radius": radius,
                               "degrees": degrees, "output": try render(output)])
             }
+        }
+        for aspect in [1.0, 0.5, 1 / 6.0, 1 / 12.0, 1 / 30.0, 1 / 90.0, 1 / 115.2] {
+            let scaled = try filtered("CILanczosScaleTransform", input: input, parameters: [
+                kCIInputScaleKey: 1.0, kCIInputAspectRatioKey: aspect])
+            cases.append(["fixture": fixture, "filter": "CILanczosScaleTransform", "radius": 0,
+                          "aspectRatio": aspect,
+                          "extent": [Double(scaled.extent.minX), Double(scaled.extent.minY),
+                                     Double(scaled.extent.width), Double(scaled.extent.height)],
+                          "output": try render(scaled)])
+            if aspect < 1 {
+                let blurred = try filtered("CIGaussianBlur", input: scaled, parameters: [kCIInputRadiusKey: 0.5])
+                let restored = blurred.transformed(by: CGAffineTransform(scaleX: CGFloat(1 / aspect), y: 1))
+                cases.append(["fixture": fixture, "filter": "lanczos-gaussian-roundtrip", "radius": 0.5,
+                              "aspectRatio": aspect, "output": try render(restored)])
+            }
+        }
+        for offset in [14.4, -14.4, 14.688, -14.112] {
+            let moved = input.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
+            cases.append(["fixture": fixture, "filter": "CIAffineTransform", "radius": 0,
+                          "translationX": offset, "output": try render(moved)])
+            let linear = input.unpremultiplyingAlpha().settingAlphaOne(in: input.extent)
+                .applyingFilter("CISRGBToneCurveToLinear")
+            let shifted = linear.transformed(by: CGAffineTransform(translationX: CGFloat(offset), y: 0))
+            cases.append(["fixture": fixture, "filter": "linear-alpha-one-affine", "radius": 0,
+                          "translationX": offset, "output": try render(shifted)])
         }
         for radius in [1.0, 10, 35] {
             for intensity in [0.0, 0.02, 0.05, 0.1, 0.25, 0.5, 0.75, 1] {
@@ -123,6 +150,25 @@ func capture() throws -> [String: Any] {
                 cases.append(["fixture": fixture, "filter": "CIMaskedVariableBlur", "radius": radius,
                               "maskIntensity": intensity, "output": try render(output)])
             }
+        }
+    }
+    // Materialize the impulse at successive pixels so a graph translation cannot hide sampling phases.
+    for offset in 0..<8 {
+        let source = try bitmap()
+        guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
+            throw CaptureError.failed("Missing phase source pixels")
+        }
+        for at in 0..<(source.bytesPerRow * height) { pixels[at] = 0 }
+        let at = (height / 2) * source.bytesPerRow + (width / 2 + offset) * 4
+        for channel in 0..<4 { pixels[at + channel] = 255 }
+        guard let image = source.makeImage() else { throw CaptureError.failed("Cannot create phase source image") }
+        let input = CIImage(cgImage: image), fixture = "impulse-phase-\(offset)"
+        cases.append(["fixture": fixture, "filter": "identity-phase", "radius": 0,
+                      "sourceOffsetX": offset, "output": try render(input)])
+        for radius in [5.0, 10] {
+            let output = try filtered("CIGaussianBlur", input: input, parameters: [kCIInputRadiusKey: radius])
+            cases.append(["fixture": fixture, "filter": "CIGaussianBlur", "radius": radius,
+                          "sourceOffsetX": offset, "output": try render(output)])
         }
     }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
