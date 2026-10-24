@@ -10,10 +10,13 @@ import CoreText
 
 enum CaptureError: Error { case failed(String) }
 
-func bitmap(width: Int, height: Int) throws -> CGContext {
-    guard let result = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-        bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+func bitmap(width: Int, height: Int, floating: Bool = false) throws -> CGContext {
+    let components = floating ? CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+                              : CGBitmapInfo.byteOrder32Big.rawValue
+    guard let result = CGContext(data: nil, width: width, height: height, bitsPerComponent: floating ? 32 : 8,
+        bytesPerRow: width * (floating ? 16 : 4),
+        space: CGColorSpace(name: floating ? CGColorSpace.extendedSRGB : CGColorSpace.sRGB)!,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | components) else {
         throw CaptureError.failed("Cannot allocate native bitmap")
     }
     result.translateBy(x: 0, y: CGFloat(height))
@@ -24,18 +27,34 @@ func bitmap(width: Int, height: Int) throws -> CGContext {
 func bytes(_ context: CGContext) throws -> Data {
     guard let data = context.data else { throw CaptureError.failed("Missing bitmap data") }
     var result = Data()
+    let packedRowBytes = context.width * context.bitsPerPixel / 8
     for y in 0..<context.height {
         result.append(data.advanced(by: y * context.bytesPerRow).assumingMemoryBound(to: UInt8.self),
-                      count: context.width * 4)
+                      count: packedRowBytes)
     }
     return result
 }
 
 func describe(_ context: CGContext) throws -> [String: Any] {
     let data = try bytes(context)
-    return ["width": context.width, "height": context.height, "rowBytes": context.width * 4,
+    return ["width": context.width, "height": context.height, "rowBytes": context.width * context.bitsPerPixel / 8,
+            "bitsPerComponent": context.bitsPerComponent,
             "rgbaBase64": data.base64EncodedString(),
             "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
+}
+
+func sampleCoreGraphics(_ image: CGImage, block: Int, floating: Bool = false) throws -> CGContext {
+    let small = try bitmap(width: (image.width + block - 1) / block,
+                           height: (image.height + block - 1) / block, floating: floating)
+    small.saveGState()
+    small.interpolationQuality = .high
+    small.translateBy(x: 0, y: CGFloat(image.height) / CGFloat(block))
+    small.scaleBy(x: 1, y: -1)
+    small.setBlendMode(.copy)
+    small.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width) / CGFloat(block),
+                                 height: CGFloat(image.height) / CGFloat(block)))
+    small.restoreGState()
+    return small
 }
 
 func captureAffine(_ source: CGContext, width: Int, height: Int, scaleX: Double, scaleY: Double,
@@ -186,16 +205,17 @@ func capture() throws -> [String: Any] {
             }
         } }
         guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make source image") }
+        let floatSource = try bitmap(width: width, height: height, floating: true)
+        guard let floats = floatSource.data?.assumingMemoryBound(to: Float.self) else {
+            throw CaptureError.failed("Missing floating-point source pixels")
+        }
+        for y in 0..<height { for x in 0..<(width * 4) {
+            floats[y * floatSource.bytesPerRow / MemoryLayout<Float>.size + x] = Float(pointer[y * source.bytesPerRow + x]) / 255
+        } }
+        guard let floatImage = floatSource.makeImage() else { throw CaptureError.failed("Cannot make floating-point source image") }
         for block in [1, 2, 6] {
-            let small = try bitmap(width: (width + block - 1) / block, height: (height + block - 1) / block)
-            small.saveGState()
-            small.interpolationQuality = .high
-            small.translateBy(x: 0, y: CGFloat(height) / CGFloat(block))
-            small.scaleBy(x: 1, y: -1)
-            small.setBlendMode(.copy)
-            small.draw(image, in: CGRect(x: 0, y: 0,
-                width: CGFloat(width) / CGFloat(block), height: CGFloat(height) / CGFloat(block)))
-            small.restoreGState()
+            let small = try sampleCoreGraphics(image, block: block)
+            let floatSmall = try sampleCoreGraphics(floatImage, block: block, floating: true)
             var alternatives = [String: Any]()
             for (name, flags) in [("default", vImage_Flags(kvImageNoFlags)),
                                   ("high", vImage_Flags(kvImageHighQualityResampling))] {
@@ -228,7 +248,9 @@ func capture() throws -> [String: Any] {
                 }
             }
             cases.append(["fixture": fixture, "block": block, "input": try describe(source),
-                          "output": try describe(small), "vImage": alternatives, "vImageAffine": affine])
+                          "output": try describe(small), "vImage": alternatives, "vImageAffine": affine,
+                          "floating": ["format": "extended-sRGB premultiplied RGBAFloat32LE",
+                                       "input": try describe(floatSource), "output": try describe(floatSmall)]])
         }
     }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
