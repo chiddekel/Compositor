@@ -70,3 +70,60 @@ validation checks capture hashes, verifies native alpha equality with the corpus
 and verifies default Qt alpha equality with the current Linux corpus before
 reporting the experimental variants. These are diagnostic checks; they do not
 constitute a passing application parity run.
+
+## Native glyph geometry and drawing origins
+
+Native run `40138401718`, from commit `14328c2`, adds a separate `textGeometry`
+group: eighteen layouts, seventy-two glyph records and 144 nonempty 96×144
+buffers. It records NSLayoutManager glyph locations, line fragments, bounds and
+advances, plus Core Text glyph runs. Drawing controls compare NSLayoutManager
+with three Core Text baseline policies, with smoothing enabled and disabled.
+The larger canvas retains the direct layout-manager output without clipping.
+Native compilation and both workflow validators pass. All seven preceding
+capture groups, including the existing `text` group, are exactly unchanged.
+
+Native NSString and NSLayoutManager use different drawing origins when the
+graphics context is marked unflipped. The layout-manager output matches the
+NSString alpha pixels exactly after a vertical translation in all 36 pairs:
+
+| Font size | Layout-manager baseline within the line | Translation from layout manager to NSString |
+| --- | ---: | ---: |
+| 12 | 12 | -9 |
+| 24 | 23 | -17 |
+| 36 | 35 | -26 |
+| 12.5 | 12 | -9 |
+| 24.5 | 24 | -18 |
+| 36.5 | 35 | -26 |
+
+These values hold for all three bundled faces and both smoothing settings. A
+Core Text baseline based only on the font's descender matches 30 of the 36
+NSString outputs, but fails at 12.5 points for every face and both smoothing
+settings. A blanket descender substitution therefore does not reproduce native
+placement.
+
+The Linux layout manager currently uses approximate character advances for
+`location(forGlyphAt:)`, even when Qt renders the shaped glyphs. For example,
+the second glyph of Regular at 36 points has native x = 24.837890625; the
+approximation returns 19.8. NSString also delegates to the same drawing entry
+point, although the native origin controls distinguish those APIs. Correcting
+these shared paths requires checking multiline and flipped contexts as well as
+single-line origins; the capture does not yet establish those cases.
+
+Further isolated experiments model directional expansion and FreeType outline
+emboldening. The best overlap rises to 0.9612, still below 0.97. No experimental
+coverage model or origin correction has been applied to production. Skia's
+[Core Text scaler implementation](https://github.com/google/skia/blob/main/src/ports/SkScalerContext_mac_ct.cpp)
+also distinguishes smoothed outline dilation from ordinary antialiasing; it
+does not provide the missing native dilation algorithm.
+
+Additional local evidence:
+
+- `.build/evidence/upstream-format18-text-geometry-native/coregraphics-reference.json`:
+  the successful native artifact.
+- `.build/evidence/text-native-geometry-comparison.json`: all 144 baseline
+  comparisons and the 36 exact translated layout-manager matches.
+- `.build/evidence/text-smoothing-comparison.json`: all 279 smoothing experiments,
+  image hashes and the two additional source hashes.
+- `.build/evidence/text-smoothing-direction-probe.cpp` and
+  `.build/evidence/text-freetype-outline-probe.cpp`: the additional diagnostic
+  sources; corresponding logs record their layout metrics.
