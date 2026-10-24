@@ -64,6 +64,10 @@ inline QCheckBox *toggle(QDialog *sheet, const QString &title) {
 inline void type(QDialog *sheet, const QString &title, const QString &value) {
     QPointer<QLineEdit> edit = field(sheet, title); edit->setFocus(); key(edit, Qt::Key_A, Qt::ControlModifier);
     for (const auto character : value) { require(edit, "canvas size typing retired its field"); key(edit, 0, Qt::NoModifier, QString(character)); }
+    if (!edit || edit->text() != value || !edit->hasFocus() || edit->cursorPosition() != value.size())
+        qWarning() << "Canvas size typing state" << title << "expected" << value
+            << "actual" << (edit ? edit->text() : QString())
+            << "focused" << (edit && edit->hasFocus()) << "cursor" << (edit ? edit->cursorPosition() : -1);
     require(edit && edit->text() == value && edit->hasFocus() && edit->cursorPosition() == value.size(),
         "canvas size typing lost text, focus or cursor");
 }
