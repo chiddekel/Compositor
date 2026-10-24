@@ -4,6 +4,7 @@
 import Foundation
 import CoreGraphics
 import CryptoKit
+import Accelerate
 
 enum CaptureError: Error { case failed(String) }
 
@@ -72,8 +73,20 @@ func capture() throws -> [String: Any] {
             small.draw(image, in: CGRect(x: 0, y: 0,
                 width: CGFloat(width) / CGFloat(block), height: CGFloat(height) / CGFloat(block)))
             small.restoreGState()
+            var alternatives = [String: Any]()
+            for (name, flags) in [("default", vImage_Flags(kvImageNoFlags)),
+                                  ("high", vImage_Flags(kvImageHighQualityResampling))] {
+                let scaled = try bitmap(width: small.width, height: small.height)
+                var inputBuffer = vImage_Buffer(data: source.data, height: vImagePixelCount(height),
+                    width: vImagePixelCount(width), rowBytes: source.bytesPerRow)
+                var outputBuffer = vImage_Buffer(data: scaled.data, height: vImagePixelCount(small.height),
+                    width: vImagePixelCount(small.width), rowBytes: scaled.bytesPerRow)
+                let error = vImageScale_ARGB8888(&inputBuffer, &outputBuffer, nil, flags)
+                guard error == kvImageNoError else { throw CaptureError.failed("vImage scale failed: \(error)") }
+                alternatives[name] = try describe(scaled)
+            }
             cases.append(["fixture": fixture, "block": block, "input": try describe(source),
-                          "output": try describe(small)])
+                          "output": try describe(small), "vImage": alternatives])
         }
     }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,

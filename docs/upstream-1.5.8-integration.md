@@ -94,6 +94,12 @@ manual `Core Graphics sampling reference` workflow capture the same bitmap/draw 
 horizontal/vertical impulses and constant controls at scales 1, 2 and 6. The diagnostic passes local parsing,
 Linux type checking, its unsupported-platform guard and workflow checks; native execution remains pending.
 
+The first [native sampling capture](https://github.com/chiddekel/Compositor/actions/runs/40103412068) passes all
+24 cases on macOS 26.6.2. Every buffer hash and size validates, all eight scale-1 controls are byte-identical,
+and constant colors stay unchanged at scales 2 and 6. Nearest-expanding the captured overlay alpha reproduces
+both native Dither alpha planes exactly, confirming the downsample stage as the source of their alpha mismatch.
+The probe now also captures native vImage scaling with default and high-quality flags; that comparison is pending.
+
 SwiftShader is not a suitable replacement for the unavailable Vulkan device: its
 [capability implementation](https://github.com/google/swiftshader/blob/cddb5c91b23ff70a1f607ea31610aa0d7f4b5ad5/src/Vulkan/VkPhysicalDevice.cpp)
 reports no Float64, Float32 denormal preservation or round-to-even support. No driver was installed and the
