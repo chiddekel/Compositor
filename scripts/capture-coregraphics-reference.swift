@@ -544,7 +544,7 @@ func captureCurveCoverage() throws -> [[String: Any]] {
         let t = transform.1
         var flattenedCopies = [[String: Any]]()
         for threshold in [0.1, 0.25, 0.5, 0.6, 1.0, 10.0] {
-            let copy: CGPath? = path.copy(flatteningWithThreshold: threshold)
+            let copy = CGPathCreateCopyByFlattening(path, threshold)
             guard let copy else { throw CaptureError.failed("Cannot flatten native path") }
             let target = try bitmap(width: 96, height: 72)
             target.concatenate(transform.1)
