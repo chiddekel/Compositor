@@ -130,3 +130,11 @@ are byte-identical between CPU and Vulkan. The native reference regression
 measures a one-byte maximum error on both backends. All 1,288 Swift/XCTest
 checks and the native RGB Split panel/history journey pass. Verification uses
 the `dispersion-model-isolated-` evidence prefix; baseline PNGs are unchanged.
+
+
+`COMPOSITOR_COREIMAGE_BACKEND=cpu` selects the Core Image graph backend. The separate
+Metal-compatible dispersion driver can still use an available Vulkan device. The
+CPU/Vulkan corpus equality above used matching hardware access for that driver.
+For a wholly software profile, remove hardware device access as well, and record
+both settings: a controlled variable-blur qualification observed a repeatable
+one-pixel difference in RGB Split when device access alone changed.

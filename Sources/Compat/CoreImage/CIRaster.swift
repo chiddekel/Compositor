@@ -141,30 +141,9 @@ enum Gamma {
 // MARK: - Filters over rasters
 
 enum RasterFilters {
-    /// Spatially varying Gaussian blur, interpolated in variance between logarithmically spaced radii.
-    /// Only two blurred rasters are retained; premultiplied float channels keep alpha and HDR precision.
+    /// Spatially varying blur uses the native reduction pyramid and its request-boundary sampling.
     static func variableBlur(_ input: Raster, mask: Raster, radius: Double, output region: CGRect) -> Raster {
-        var lower = input.cropped(to: region)
-        guard radius > 0 && radius.isFinite else { return lower }
-        let mask = mask.cropped(to: region)
-        var output = lower
-        let radii = stride(from: 0, to: mask.data.count, by: 4).map { i -> Double in
-            let luminance = Double(mask.data[i] * 0.2126 + mask.data[i + 1] * 0.7152 + mask.data[i + 2] * 0.0722)
-            return luminance.isFinite ? min(1, max(0, luminance)) * radius : 0
-        }
-        var from = 0.0
-        while from < radius {
-            let to = min(radius, max(0.5, from * sqrt(2)))
-            let upper = gaussian(input, sigma: to, output: region)
-            for pixel in 0..<radii.count where radii[pixel] > from && radii[pixel] <= to {
-                let amount = Float((radii[pixel] * radii[pixel] - from * from) / (to * to - from * from))
-                let i = pixel * 4
-                for channel in 0..<4 { output.data[i + channel] = lower.data[i + channel] * (1 - amount) + upper.data[i + channel] * amount }
-            }
-            lower = upper
-            from = to
-        }
-        return output
+        VariableBlurRaster.render(input, mask: mask, radius: radius, output: region)
     }
 
     /// Separable Gaussian. The input raster already includes the margin the kernel needs.

@@ -13,11 +13,11 @@ The workflow checks the exact recipe matrix, finite float values, buffer hashes
 and zero-mask identity. Existing recipes retain their render order.
 
 These probes investigate Progressive Blur's native pyramid and interpolation.
-They do not change the Linux renderer or establish rendering parity. Existing
-constant-mask captures show an identity boundary near effective radius 0.75 and
-logarithmic blending between pyramid levels, which the current variance-based
-Gaussian approximation does not reproduce. The phase captures distinguish the
-level filters and sampling geometry before a replacement is implemented.
+The initial constant-mask captures showed an identity boundary near effective
+radius 0.75 and logarithmic blending between pyramid levels, which the preceding
+variance-based Gaussian approximation did not reproduce. The phase captures
+distinguish the level filters and sampling geometry. Implementation qualification
+is recorded below; the diagnostic probes alone do not establish application parity.
 
 Native run `40198914398` validates the first 96 probes. Its 48 constant-mask byte
 and float outputs match the earlier capture exactly. Direct levels at radii 1.5
@@ -27,8 +27,8 @@ reconstruction with 1/256 sampler fractions matches all 48 low-level phase probe
 within 0.00381 byte levels. After aligning the pyramid in Core Image coordinates,
 four larger-radius finite-gradient controls still differ by up to 13.6 levels;
 these are not resolved by the prototype. The coarser
-and clamped probes investigate that limitation. Production variable blur remains
-unchanged.
+and clamped probes investigate that limitation. Those initial probes preceded
+the production replacement described below.
 
 The capture also appends 36 request-region controls. Each renders the same
 original view with margins 0, 16, 64 and 256, using a fresh unmanaged context to
@@ -62,6 +62,46 @@ six mask inputs, 32 linear/radial-mask cases through the UI's maximum radius 250
 eight colored-mask cases, and eight finite-geometry cases. They distinguish mask
 channel semantics, saturation, translated/cropped extents and spatially varying
 selection from the already qualified constant-mask arithmetic.
+
+## Variable-blur compatibility implementation
+
+`VariableBlurRaster` owns the reduction, reconstruction and request-region planning,
+separately from graph evaluation. The source is reduced with the native four-by-four
+cross kernel. Cubic B-spline reconstruction uses 1/256 sampler fractions, and levels
+blend logarithmically from the identity boundary at effective radius 0.75. The mask
+uses its green channel at half-float working precision. The highest level clamps to
+its requested linear-sampling bounds; earlier levels retain the next reduction's
+footprint. Finite extents follow six integral half-scale reductions. Premultiplied
+negative/HDR values remain intact.
+
+Native run `40203326961` validates the final 54 controls, preserving all 414 earlier
+bitmap pairs. `NativeVariableBlurReferenceTests` checks all 258 variable-blur controls,
+including spatial masks, colored masks, translated/cropped geometry and request
+margins, against independently captured bytes and floats with the unchanged one-byte
+limit. Both CPU and required Vulkan configurations pass, along with all four upstream
+Progressive Blur tests. A full varying-mask CPU render preserves extended colors
+within `4.77e-7` at both 512×512 and 1920×1080; observed times were approximately
+43 ms and 302 ms, respectively, without imposing a machine-dependent timing limit.
+The published predecessor fails the focused native default-radius test by 13 levels.
+
+The lossless fixture records native-run, capture-commit and source SHA256 provenance.
+Regenerate or verify it from the downloaded graph capture with:
+
+```sh
+python3 scripts/gen-variable-blur-reference.py coreimage-graph-reference.json \
+  --source-run 40203326961 --source-commit 315cc14 --check
+```
+
+The isolated 173-image application corpus improves from 132 to 137 native comparisons;
+all five Progressive Blur cases pass and no previously passing case is lost. With
+matched device access, the other 168 decoded images remain identical. Removing GPU
+access also changes one pixel in the pre-existing RGB Split case, reproducibly: the
+Core Image CPU setting does not disable the separate Metal-compatible dispersion
+driver. Evidence uses the `variable-pyramid-` prefix. Two Progressive Blur Linux golden
+images are updated after native qualification and visual review; comparison limits
+and all other baselines remain unchanged. This does not resolve the remaining
+Gaussian, motion, RGB Split, RAW and text discrepancies in the combined development
+worktree.
 
 The manual `coreimage-reference.yml` workflow runs the native macOS capture with an unmanaged Core Image
 context. It validates 358 cases and 720 byte/float buffers, including SHA-256 checks, dimensions, finite float
