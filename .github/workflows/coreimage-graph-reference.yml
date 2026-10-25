@@ -1,0 +1,60 @@
+name: Core Image filter graph diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Capture native filter descriptions and bitmap hashes
+        run: swift scripts/capture-coreimage-graph.swift > coreimage-graph-reference.json
+      - name: Validate diagnostic recipes
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, math, re
+          from pathlib import Path
+          reference = json.loads(Path('coreimage-graph-reference.json').read_text())
+          assert reference['schema'] == 1 and reference['platform'] == 'macOS'
+          assert reference['diagnosticDescriptions'] is True
+          assert reference['scriptSha256'] == hashlib.sha256(Path('scripts/capture-coreimage-graph.swift').read_bytes()).hexdigest()
+          cases = reference['cases']
+          assert len(reference['inputs']) == 2 and len(cases) == 164
+          keys = {(c['fixture'], c['filter'], c['radius'], c.get('degrees')) for c in cases}
+          expected = {(fixture, 'CIGaussianBlur', radius, None)
+                      for fixture in ['opaque-gradient', 'impulse']
+                      for radius in [0, 0.1, 0.5, 1 / math.sqrt(3), 1, 2, 5, 10, 17, 35]}
+          expected |= {(fixture, 'CIMotionBlur', radius, degrees)
+                       for fixture in ['opaque-gradient', 'impulse']
+                       for radius in [0, 0.1, 0.5, 1 / math.sqrt(3), 1, 2, 10 / math.sqrt(12), 35 / math.sqrt(12)]
+                       for degrees in [0, -35, 35, 37, 90, -90, 180, 360, 0.125]}
+          assert len(keys) == 164 and keys == expected
+          for case in cases:
+              assert case['fixture'] in ['opaque-gradient', 'impulse']
+              assert case['filter'] in ['CIGaussianBlur', 'CIMotionBlur']
+              assert math.isfinite(case['radius']) and case['radius'] >= 0
+              assert math.isfinite(case.get('degrees', 0))
+          for case in reference['inputs'] + cases:
+              output = case['output']
+              assert (output['width'], output['height']) == (96, 72)
+              assert (output['byteBytes'], output['floatBytes']) == (96 * 72 * 4, 96 * 72 * 16)
+              assert output['floatFinite'] is True
+              assert all(re.fullmatch('[0-9a-f]{64}', output[key]) for key in ['byteSha256', 'floatSha256'])
+              for key in ['descriptionBeforeRender', 'descriptionAfterRender']:
+                  assert isinstance(output[key], str) and 0 < len(output[key]) <= 65536
+              assert output['descriptionTruncated'] is False
+          print('Validated 164 native graph recipes and 166 pairs of bitmap hashes')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coreimage-graph-reference
+          path: coreimage-graph-reference.json
+          if-no-files-found: error
