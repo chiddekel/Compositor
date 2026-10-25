@@ -711,6 +711,48 @@ func captureStrokeOutlines(_ strokes: [[String: Any]]) throws -> [[String: Any]]
     }
 }
 
+func captureSamplingLinearity() throws -> [[String: Any]] {
+    let width = 96, height = 72
+    var cases = [[String: Any]]()
+    func append(_ mode: String, axis: Int, position: Int = 48, base: Double = 0, amplitude: Double = 1) throws {
+        let source = try bitmap(width: width, height: height, floating: true)
+        guard let pixels = source.data?.assumingMemoryBound(to: Float.self) else {
+            throw CaptureError.failed("Missing sampling-linearity source")
+        }
+        let length = axis == 0 ? width : height
+        for y in 0..<height { for x in 0..<width {
+            let coordinate = axis == 0 ? x : y
+            let value = mode == "ramp" ? Double(coordinate) / Double(length - 1)
+                : mode == "checker" ? Double(coordinate % 2)
+                : base + (coordinate == position ? amplitude : 0)
+            let at = y * source.bytesPerRow / MemoryLayout<Float>.size + x * 4
+            pixels[at] = Float(value)
+            pixels[at + 1] = 0.25
+            pixels[at + 2] = 0.75
+            pixels[at + 3] = 1
+        } }
+        guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make sampling-linearity image") }
+        for block in [2, 6] {
+            let output = try sampleCoreGraphics(image, block: block, floating: true)
+            cases.append(["mode": mode, "axis": axis, "position": position, "base": base,
+                          "amplitude": amplitude, "block": block,
+                          "input": try describe(source), "output": try describe(output)])
+        }
+    }
+    for axis in [0, 1] {
+        for position in [48, 49, 50, 51] {
+            for base in [0.0, 0.5] {
+                for amplitude in [0.25, 0.5, 1.0] {
+                    try append("impulse", axis: axis, position: position, base: base, amplitude: amplitude)
+                }
+            }
+        }
+        try append("ramp", axis: axis)
+        try append("checker", axis: axis)
+    }
+    return cases
+}
+
 func capture() throws -> [String: Any] {
     let width = 96, height = 72
     var cases = [[String: Any]]()
@@ -789,6 +831,7 @@ func capture() throws -> [String: Any] {
     let strokes = try captureStrokeCoverage()
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "format": "sRGB premultiplied RGBA8; packed bitmap-memory rows", "quality": "high",
+            "samplingLinearity": try captureSamplingLinearity(),
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),

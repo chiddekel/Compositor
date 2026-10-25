@@ -83,6 +83,32 @@ jobs:
               assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
           print('Validated 109 curves, 91 outlines, 1090 flattened copies, 109 rebuilt paths and 1399 buffers')
           PY
+      - name: Validate high-quality sampling linearity controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingLinearity']
+          assert len(cases) == 104
+          keys = {(c['mode'], c['axis'], c['position'], c['base'], c['amplitude'], c['block']) for c in cases}
+          assert len(keys) == 104
+          assert sum(c['mode'] == 'impulse' for c in cases) == 96
+          assert sum(c['mode'] == 'ramp' for c in cases) == 4
+          assert sum(c['mode'] == 'checker' for c in cases) == 4
+          for case in cases:
+              assert case['axis'] in [0, 1] and case['block'] in [2, 6]
+              for key in ['input', 'output']:
+                  item = case[key]
+                  expected = (96, 72) if key == 'input' else (96 // case['block'], 72 // case['block'])
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == 32 and item['rowBytes'] == item['width'] * 16
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                             for p in struct.iter_unpack('<4f', raw))
+          print('Validated 104 sampling-linearity recipes and 208 native floating-point buffers')
+          PY
       - name: Validate coverage opacity and transform controls
         run: |
           python3 - <<'PY'
