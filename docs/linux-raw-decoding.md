@@ -57,3 +57,18 @@ existing golden candidates are unchanged. Native comparison remains 141/173
 in the combined local renderer candidate, with the five RAW color gates still
 unresolved. See `raw16-isolated-verification.json` and
 `raw16-rendering-change-summary.json` for the independent and combined checks.
+
+## Native tone diagnostics
+
+The manual `raw-reference.yml` workflow captures Apple's decoder defaults and
+seven explicit boost/exposure recipes for each of the five canonical DNGs and
+the independent precision ramp. Every recipe uses a fresh `CIRAWFilter` and the
+same half-float, extended-linear-sRGB working context as upstream `RawImporter`.
+It retains an interior row as float linear sRGB, float encoded sRGB, and sixteen-bit
+encoded sRGB. Raw samples, input hashes, decoder settings and buffer hashes remain
+in the artifact; no averaging or curve fitting changes the captured values.
+
+`scripts/validate-raw-reference.py` checks all six source hashes, 48 recipes and
+144 buffers before upload. These diagnostic controls help distinguish Apple's
+boost interpretation from color conversion and integer quantization. They do
+not replace the full application corpus or establish a matching Linux tone curve.
