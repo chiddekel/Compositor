@@ -454,7 +454,7 @@ func captureStrokeCoverage() throws -> [[String: Any]] {
                       "transform": [t.a, t.b, t.c, t.d, t.tx, t.ty], "output": try describe(context)])
     }
     for (index, angle) in angles.enumerated() {
-        for width in [0.5, 1.0, 3.0, 7.0] {
+        for width in [0.5, 1.0, 1.5, 2.0, 3.0, 7.0] {
             for phase in [0.0, 0.25] {
                 try append("angle-\(index)-width-\(width)-phase-\(phase)", degrees: angle, width: width,
                            phase: phase, transform: transforms[0], cap: ("butt", .butt))
