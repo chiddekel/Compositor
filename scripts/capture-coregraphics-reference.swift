@@ -541,6 +541,35 @@ func smoothCoverageRectangle(_ rect: CGRect, radius: CGFloat) -> CGPath {
     return path
 }
 
+func reorderedLinearCoveragePath(_ source: CGPath, reversed: Bool) throws -> CGPath {
+    var points = [CGPoint]()
+    var valid = true
+    source.applyWithBlock { pointer in
+        let element = pointer.pointee
+        switch element.type {
+        case .moveToPoint:
+            if !points.isEmpty { valid = false }
+            points.append(element.points[0])
+        case .addLineToPoint: points.append(element.points[0])
+        case .closeSubpath: break
+        default: valid = false
+        }
+    }
+    if points.count > 1, points.first == points.last { points.removeLast() }
+    guard valid, points.count >= 3 else { throw CaptureError.failed("Expected one linear coverage contour") }
+    if reversed {
+        points.reverse()
+    } else {
+        let offset = points.count / 2
+        points = Array(points.dropFirst(offset)) + Array(points.prefix(offset))
+    }
+    let result = CGMutablePath()
+    result.move(to: points[0])
+    for point in points.dropFirst() { result.addLine(to: point) }
+    result.closeSubpath()
+    return result
+}
+
 func captureCurveCoverage() throws -> [[String: Any]] {
     var cases = [[String: Any]]()
     let sizes = [CGSize(width: 4, height: 4), CGSize(width: 12, height: 8),
@@ -600,6 +629,18 @@ func captureCurveCoverage() throws -> [[String: Any]] {
                     sample.fillPath()
                     coverageControls.append(["name": label, "alpha": alpha, "pretransformed": pretransformed,
                                              "floating": floating, "output": try describe(sample)])
+                }
+                for (label, reversed) in [("reversed-opaque", true), ("rotated-opaque", false)] {
+                    let sample = try bitmap(width: 96, height: 72)
+                    sample.concatenate(transform.1)
+                    sample.setShouldAntialias(true)
+                    let reordered = try reorderedLinearCoveragePath(copy, reversed: reversed)
+                    sample.addPath(reordered)
+                    sample.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+                    sample.fillPath()
+                    coverageControls.append(["name": label, "alpha": 1.0, "pretransformed": false,
+                                             "floating": false, "path": describePath(reordered),
+                                             "output": try describe(sample)])
                 }
             }
         }
