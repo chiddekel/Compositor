@@ -47,6 +47,32 @@ jobs:
           assert buffers == 720
           print(f'Validated {len(reference["cases"])} native cases and {buffers} buffers')
           PY
+      - name: Validate native Gaussian working-precision controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coreimage-reference.json').read_text())['workingPrecision']
+          assert len(cases) == 504
+          assert len({(c['fixture'], c['alphaLevel'], c['radius'], c['sourceFormat'], c['workingFormat']) for c in cases}) == 504
+          for case in cases:
+              assert case['fixture'] in ['opaque-rectangle', 'step-x', 'step-y', 'impulse']
+              assert case['alphaLevel'] in [0.25, 0.5, 1] and case['radius'] in [0.5, 1, 2, 5, 10, 17, 35]
+              assert case['sourceFormat'] in ['RGBA8', 'RGBAf']
+              assert case['workingFormat'] in ['default', 'RGBAh', 'RGBAf']
+              assert case['contextPolicy'] == 'shared-no-cache'
+              items = [(case['input'], 32 if case['sourceFormat'] == 'RGBAf' else 8),
+                       (case['output']['float'], 32), (case['output']['byte'], 8)]
+              for item, bits in items:
+                  assert (item['width'], item['height'], item['bitsPerComponent']) == (96, 72, bits)
+                  assert item['rowBytes'] == 96 * 4 * bits // 8
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * 72
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if bits == 32:
+                      assert all(math.isfinite(value[0]) for value in struct.iter_unpack('<f', raw))
+          print('Validated 504 working-precision recipes and 1512 native bitmap buffers')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: coreimage-reference

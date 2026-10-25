@@ -112,6 +112,74 @@ func describeExtent(_ image: CIImage) -> [String: Any] {
             "width": Double(rect.width), "height": Double(rect.height)]
 }
 
+func captureWorkingPrecision() throws -> [[String: Any]] {
+    var cases = [[String: Any]]()
+    var renderers = [(String, CIContext)]()
+    for name in ["default", "RGBAh", "RGBAf"] {
+        var options: [CIContextOption: Any] = [.workingColorSpace: NSNull(), .outputColorSpace: NSNull(),
+                                             .cacheIntermediates: false]
+        if name != "default" {
+            options[.workingFormat] = NSNumber(value: (name == "RGBAh" ? CIFormat.RGBAh : CIFormat.RGBAf).rawValue)
+        }
+        renderers.append((name, CIContext(options: options)))
+    }
+    for floating in [false, true] {
+        for fixture in ["opaque-rectangle", "step-x", "step-y", "impulse"] {
+            for alphaLevel in [1.0, 0.5, 0.25] {
+                let components = floating ? CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+                                          : CGBitmapInfo.byteOrder32Big.rawValue
+                guard let source = CGContext(data: nil, width: width, height: height, bitsPerComponent: floating ? 32 : 8,
+                    bytesPerRow: width * (floating ? 16 : 4), space: space,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | components), let pixels = source.data else {
+                    throw CaptureError.failed("Cannot allocate working-precision source")
+                }
+                for y in 0..<height { for x in 0..<width {
+                    let inside = fixture == "opaque-rectangle" || (fixture == "step-x" && x < width / 2)
+                        || (fixture == "step-y" && y < height / 2)
+                        || (fixture == "impulse" && x == width / 2 && y == height / 2)
+                    let alpha = inside ? alphaLevel : 0
+                    let values = [alpha * 0.25, alpha * 0.5, alpha * 0.75, alpha]
+                    if floating {
+                        let row = pixels.advanced(by: y * source.bytesPerRow).assumingMemoryBound(to: Float.self)
+                        for c in 0..<4 { row[x * 4 + c] = Float(values[c]) }
+                    } else {
+                        let row = pixels.advanced(by: y * source.bytesPerRow).assumingMemoryBound(to: UInt8.self)
+                        for c in 0..<4 { row[x * 4 + c] = UInt8((values[c] * 255).rounded()) }
+                    }
+                } }
+                guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make working-precision image") }
+                var inputBytes = Data()
+                for y in 0..<height {
+                    inputBytes.append(pixels.advanced(by: y * source.bytesPerRow).assumingMemoryBound(to: UInt8.self),
+                                      count: width * (floating ? 16 : 4))
+                }
+                let input = CIImage(cgImage: image)
+                for radius in [0.5, 1.0, 2.0, 5.0, 10.0, 17.0, 35.0] {
+                    let blurred = input.applyingGaussianBlur(sigma: radius)
+                    for (workingFormat, renderer) in renderers {
+                        var floats = [Float](repeating: 0, count: width * height * 4)
+                        floats.withUnsafeMutableBytes { buffer in
+                            renderer.render(blurred, toBitmap: buffer.baseAddress!, rowBytes: width * 16,
+                                            bounds: bounds, format: .RGBAf, colorSpace: space)
+                        }
+                        var bytes = Data(count: width * height * 4)
+                        bytes.withUnsafeMutableBytes { buffer in
+                            renderer.render(blurred, toBitmap: buffer.baseAddress!, rowBytes: width * 4,
+                                            bounds: bounds, format: .RGBA8, colorSpace: space)
+                        }
+                        cases.append(["fixture": fixture, "alphaLevel": alphaLevel, "radius": radius,
+                                      "sourceFormat": floating ? "RGBAf" : "RGBA8", "workingFormat": workingFormat,
+                                      "contextPolicy": "shared-no-cache", "input": describe(inputBytes, bits: floating ? 32 : 8),
+                                      "output": ["float": describe(floats.withUnsafeBytes { Data($0) }, bits: 32),
+                                                 "byte": describe(bytes, bits: 8)]])
+                    }
+                }
+            }
+        }
+    }
+    return cases
+}
+
 func capture() throws -> [String: Any] {
     var inputs = [[String: Any]](), cases = [[String: Any]]()
     var regionalProbes: [(fixture: String, radius: Double, image: CIImage)] = []
@@ -299,7 +367,7 @@ func capture() throws -> [String: Any] {
             "floatFormat": "RGBAFloat32LE in CIContext toBitmap row order; compare identity to determine orientation",
             "byteFormat": "premultiplied RGBA8; CGImage copied into identity-CTM bitmap; packed memory rows",
             "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
-            "inputs": inputs, "cases": cases]
+            "inputs": inputs, "cases": cases, "workingPrecision": try captureWorkingPrecision()]
 }
 
 do {
