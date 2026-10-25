@@ -76,7 +76,10 @@ retains seven complete buffers: the 61×61 source and two RGBA8 outputs, default
 observers, and default/strict 192×144 observers. Observer float4 channels are phase, sine, noise and
 jitter. SHA-256, packed sizes, finite float values and consistency with every edge sample are validated
 before artifact upload. These diagnostics separate arithmetic from sampling and output quantization;
-they do not by themselves establish a replacement algorithm.
+they do not by themselves establish a replacement algorithm. An additional default-math
+513×257 observer extends the coordinate range beyond those earlier captures. The workflow
+validates all eight buffers and requires the larger observer's overlapping rows to match
+the 192×144 observer byte for byte.
 
 Native run `40134093484` passes all seven buffer validations. The shader hash, source fixture, nine
 edge samples, tail assertions and default/strict edge arithmetic are identical to the earlier capture.
