@@ -195,7 +195,11 @@ struct GPUCanvasUploadTests {
         print("CPU canvas leaf 512x512: source \(mean(source)) ms, identity \(mean(identity)) ms, vertical flip \(mean(flip)) ms, clamped \(mean(clamped)) ms")
     }
 
-    @Test(arguments: ["uint8", "uint16", "half", "float32"], [false, true])
+    @Test(.enabled("Requires a hardware canvas backend") {
+        await MainActor.run {
+            ProcessInfo.processInfo.environment["REQUIRE_COREIMAGE_VULKAN"] == "1" || GPUCanvasRenderer.shared != nil
+        }
+    }, arguments: ["uint8", "uint16", "half", "float32"], [false, true])
     func uploadMatchesUpstreamTextureFormat(depth: String, mask: Bool) throws {
         let renderer = try #require(GPUCanvasRenderer.shared)
         let width = 4, height = 3

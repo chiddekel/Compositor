@@ -44,6 +44,7 @@ check "preview renderer generator" python3 "$ROOT/scripts/gen-preview-renderer.p
 check "Objective-C generator" python3 "$ROOT/scripts/gen-objc-overrides.py" --check
 check "patched overrides generator" python3 "$ROOT/scripts/gen-patched-overrides.py" --check
 check "test mirrors generator" python3 "$ROOT/scripts/gen-linux-test-mirrors.py" --check
+check "hardware test mirror fault tests" python3 "$ROOT/tests/test_hardware_test_mirrors.py"
 check "SF Symbol icons (every upstream symbol drawn)" python3 "$ROOT/scripts/gen-lucide-icons.py" --check
 check "About version (host/AppVersion.h)" bash "$ROOT/scripts/sync-version.sh" --check
 check "Compat SwiftUI no-ops (every upstream use explained)" python3 "$ROOT/scripts/check-compat-noops.py"

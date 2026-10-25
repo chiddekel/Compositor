@@ -286,6 +286,8 @@
   },
   "test_mirrors": {
     "CompositorTests/KeyboardShortcutTests.swift": "Tests/LinuxOverrideTests/KeyboardShortcutTests.swift",
-    "CompositorTests/LayerTests.swift": "Tests/LinuxOverrideTests/LayerTests.swift"
+    "CompositorTests/LayerTests.swift": "Tests/LinuxOverrideTests/LayerTests.swift",
+    "CompositorTests/CameraRawGPUTests.swift": "Tests/LinuxOverrideTests/CameraRawGPUTests.swift",
+    "CompositorTests/GPUCanvasTests.swift": "Tests/LinuxOverrideTests/GPUCanvasTests.swift"
   }
 }

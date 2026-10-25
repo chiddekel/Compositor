@@ -33,7 +33,9 @@ struct Upstream153AcceptanceTests {
         #expect(try editor.renderRGBA().bytes == committed)
     }
 
-    @Test func cameraRawSubmitsToHardwareWithOddPaddedRowsAndRecreatesDiscardedBuffers() throws {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REQUIRE_COREIMAGE_VULKAN"] == "1" || MetalCameraRawLookup.shared != nil,
+                   "Requires a hardware Camera Raw backend"))
+    func cameraRawSubmitsToHardwareWithOddPaddedRowsAndRecreatesDiscardedBuffers() throws {
         let lookup = try #require(MetalCameraRawLookup.shared)
         let table = try #require(CameraRawTables.identity())
         let width = 37, height = 19, stride = width * 4 + 3

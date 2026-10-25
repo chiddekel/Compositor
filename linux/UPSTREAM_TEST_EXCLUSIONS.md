@@ -1,16 +1,24 @@
-# Upstream tests not run on Linux
+# Upstream test adaptations for Linux
 
-Upstream's `CompositorTests/*.swift` are compiled **unmodified** (target `CompositorUpstreamTests`). A test file may only be
-excluded here, with a reason; individual tests are never edited.
+Upstream test bodies and assertions are retained. Most `CompositorTests/*.swift` files compile unmodified in
+`CompositorUpstreamTests`; the generated mirrors below adapt platform syntax, type names, or hardware availability.
+Every original file has exactly one compiled test implementation, checked by `scripts/check-linux-source-coverage.py`.
 
 | File | Reason |
 |---|---|
 | `LayerTests.swift` | Uses `#selector(NativeLayerList.Coordinator.…)` itself, which Linux Swift (no Objective-C interop) cannot compile. It runs as a generated mirror instead; see "Selector test mirrors" below. |
 | `KeyboardShortcutTests.swift` | `@testable Compositor` exposes its Linux `UserDefaults` alias alongside Foundation's class, making the type name ambiguous. A generated mirror spells that same type `SQLiteUserDefaults`; all test bodies and assertions are retained. |
+| `CameraRawGPUTests.swift` | The original Metal-device guard also accepts Linux's CPU-backed Metal compatibility device. Its generated mirror checks the hardware Camera Raw backend instead. |
+| `GPUCanvasTests.swift` | Its generated mirror qualifies only `zoomedOutKeepsOnlyTheReductions` against the hardware canvas backend. All other test metadata and every test body remain unchanged. |
 
 ## Per-test skips
 
-None. DocumentHistory compiles unchanged from upstream; initial New Canvas is undoable to no document.
+Hardware-only checks report skips when their backend is unavailable. `REQUIRE_COREIMAGE_VULKAN=1` forces these checks
+to run, so a hardware qualification fails on a missing backend. It does not turn a CPU device into a GPU.
+The Linux-owned Camera Raw submission and canvas texture-format checks follow the same policy. CPU canvas, RAW,
+filter, and fallback checks continue to run. The generator's `--check` rejects changed assertions or availability traits.
+
+DocumentHistory compiles unchanged from upstream; initial New Canvas is undoable to no document.
 Both formerly skipped HistoryTests run in the per-push contract and full weekly jobs.
 
 ## Format-11 tests

@@ -324,9 +324,9 @@ let package = Package(
             name: "CompositorUpstreamTests",
             dependencies: ["Compositor", "CompositorKernels", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "_Testing_XCTestEnvironment", "_Testing_AppHost"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "Accelerate", "CoreVideo", "Vision", "UniformTypeIdentifiers", "FoundationCompat", "Metal", "PDFKit", "Compression"],
             path: "CompositorTests",
-            // Upstream tests that cannot run on Linux yet (Objective-C selectors and swizzling in the test itself, the
-            // real layer table, the app's own window): listed in linux/UPSTREAM_TEST_EXCLUSIONS.md, never edited.
-            exclude: ["LayerTests.swift", "KeyboardShortcutTests.swift"],
+            // Generated mirrors adapt selectors, a defaults type name, and GPU availability metadata.
+            // Bodies/assertions remain unchanged; see linux/UPSTREAM_TEST_EXCLUSIONS.md.
+            exclude: ["LayerTests.swift", "KeyboardShortcutTests.swift", "CameraRawGPUTests.swift", "GPUCanvasTests.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
@@ -346,13 +346,14 @@ let package = Package(
         // against upstream's own behaviour.
         .testTarget(
             name: "LinuxOverrideTests",
-            dependencies: ["Compositor", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "CompatSupport"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "UniformTypeIdentifiers", "FoundationCompat", "ColorSync"],
+            dependencies: ["Compositor", "CompositorKernels", "_Testing_AppKit", "_Testing_CoreGraphics", "_Testing_CoreImage", "CompatSupport"] + ["CoreGraphics", "AppKit", "SwiftUI", "CoreImage", "ImageIO", "UniformTypeIdentifiers", "FoundationCompat", "ColorSync", "Metal"],
             path: "Tests/LinuxOverrideTests",
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
                 .enableUpcomingFeature("InferSendableFromCaptures"),
-                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat"]),
+                .unsafeFlags(["-Xfrontend", "-import-module", "-Xfrontend", "FoundationCompat",
+                              "-Xfrontend", "-import-module", "-Xfrontend", "CompositorKernels"]),
             ],
             // Same -export-dynamic as CompositorUpstreamTests: both merge into one test binary.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-export-dynamic"])]
