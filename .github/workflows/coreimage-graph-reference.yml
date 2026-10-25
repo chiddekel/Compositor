@@ -99,8 +99,27 @@ jobs:
                   original = variable_outputs[probe['fixture'], probe['radius'], probe['maskIntensity']]
                   assert probe['output']['floatSha256'] == original['floatSha256']
           identities = {c['fixture']: c['output']['byteSha256'] for c in reference['inputs']}
+          mask_inputs = reference['variableMaskInputs']
+          varying = reference['variableMaskProbes']
+          colored = reference['variableColorMaskProbes']
+          geometry = reference['variableGeometryProbes']
+          assert len(mask_inputs) == 6 and {c['maskKind'] for c in mask_inputs} == {'linear', 'radial', 'red', 'green', 'blue', 'gray'}
+          assert len(varying) == 32
+          assert {(c['fixture'], c['radius'], c['maskKind']) for c in varying} == {
+              (fixture, radius, kind) for fixture in ['opaque-gradient', 'opaque-gradient-clamped', 'impulse', 'impulse-clamped']
+              for radius in [10, 35, 55, 250] for kind in ['linear', 'radial']}
+          assert len(colored) == 8 and {(c['fixture'], c['radius'], c['maskKind']) for c in colored} == {
+              (fixture, 10, kind) for fixture in ['opaque-gradient', 'impulse'] for kind in ['red', 'green', 'blue', 'gray']}
+          assert len(geometry) == 8 and {(c['geometryKind'], c['radius']) for c in geometry} == {
+              (kind, radius) for kind in ['identity', 'translated-positive', 'translated-negative', 'cropped'] for radius in [1, 35]}
+          for probe in geometry:
+              for key in ['inputExtent', 'outputExtent']:
+                  extent = probe[key]
+                  assert set(extent) == {'x', 'y', 'width', 'height'}
+                  assert all(math.isfinite(v) for v in extent.values()) and extent['width'] > 0 and extent['height'] > 0
           for probe in variable + requests:
               assert probe['filter'] == 'CIMaskedVariableBlur'
+          for probe in variable + requests + mask_inputs + varying + colored + geometry:
               output = probe['output']
               for key, digest_key, count in [('rgbaBase64', 'byteSha256', 96 * 72 * 4),
                                              ('floatBase64', 'floatSha256', 96 * 72 * 16)]:
@@ -108,11 +127,11 @@ jobs:
                   assert len(raw) == count and hashlib.sha256(raw).hexdigest() == output[digest_key]
               values = struct.unpack('<27648f', base64.b64decode(output['floatBase64']))
               assert all(math.isfinite(v) for v in values)
-              if probe['maskIntensity'] == 0:
+              if probe.get('maskIntensity') == 0:
                   assert output['byteSha256'] == identities[probe['fixture'].removesuffix('-clamped')]
-              if probe['fixture'] == 'opaque-gradient-clamped':
+              if probe.get('fixture') == 'opaque-gradient-clamped':
                   assert all(abs(v - 1) <= 1e-6 for v in values[3::4])
-          for case in reference['inputs'] + cases + probes + variable + requests:
+          for case in reference['inputs'] + cases + probes + variable + requests + mask_inputs + varying + colored + geometry:
               output = case['output']
               assert (output['width'], output['height']) == (96, 72)
               assert (output['byteBytes'], output['floatBytes']) == (96 * 72 * 4, 96 * 72 * 16)
@@ -121,7 +140,7 @@ jobs:
               for key in ['descriptionBeforeRender', 'descriptionAfterRender']:
                   assert isinstance(output[key], str) and 0 < len(output[key]) <= 65536
               assert output['descriptionTruncated'] is False
-          print(f'Validated 164 graph recipes, {len(probes)} small-radius probes, 168 variable-blur probes, 36 request probes and {370 + len(probes)} pairs of bitmap hashes')
+          print(f'Validated 164 graph recipes, {len(probes)} small-radius probes, 168 variable-blur probes, 36 request probes, 54 mask/geometry controls and {424 + len(probes)} pairs of bitmap hashes')
           PY
       - uses: actions/upload-artifact@v4
         if: always()

@@ -49,6 +49,20 @@ within one byte; two gradient cases still differ by up to 3.06 levels. The
 request-region controls test whether those edge discrepancies depend on the
 native request bounds before changing the Linux renderer.
 
+Request run `40201272333` preserves all 378 preceding bitmap pairs. Increasing
+the native radius-10 request by 16 pixels changes the original view by 13.5 byte
+levels and brings the full-pyramid model's error below 0.17. Clamping the highest
+pyramid level to its linear-sampling request bounds reproduces that behavior:
+all 108 constant-mask and request controls are within one byte, worst 0.61.
+Earlier levels receive extra coverage from the next reduction. These numerical
+controls guide the compatibility implementation; they do not certify the app.
+
+The capture appends 54 further controls before qualifying the replacement:
+six mask inputs, 32 linear/radial-mask cases through the UI's maximum radius 250,
+eight colored-mask cases, and eight finite-geometry cases. They distinguish mask
+channel semantics, saturation, translated/cropped extents and spatially varying
+selection from the already qualified constant-mask arithmetic.
+
 The manual `coreimage-reference.yml` workflow runs the native macOS capture with an unmanaged Core Image
 context. It validates 358 cases and 720 byte/float buffers, including SHA-256 checks, dimensions, finite float
 values and unique recipe metadata. The artifact contains synthetic pixels only.

@@ -239,13 +239,68 @@ func capture() throws -> [String: Any] {
             }
         }
     }
+    let linearMask = CIFilter(name: "CILinearGradient", parameters: [
+        "inputPoint0": CIVector(x: 0, y: CGFloat(height)), "inputPoint1": CIVector(x: 0, y: 0),
+        "inputColor0": CIColor.black, "inputColor1": CIColor.white])!.outputImage!
+    let radialMask = CIFilter(name: "CIRadialGradient", parameters: [
+        kCIInputCenterKey: CIVector(x: CGFloat(width) / 2, y: CGFloat(height) / 2),
+        "inputRadius0": 0, "inputRadius1": hypot(Double(width) / 2, Double(height) / 2),
+        "inputColor0": CIColor.black, "inputColor1": CIColor.white])!.outputImage!
+    let masks = [("linear", linearMask), ("radial", radialMask)]
+    let colors: [(String, CIColor)] = [
+        ("red", CIColor(red: 1, green: 0, blue: 0)), ("green", CIColor(red: 0, green: 1, blue: 0)),
+        ("blue", CIColor(red: 0, green: 0, blue: 1)), ("gray", CIColor(red: 0.5, green: 0.5, blue: 0.5))]
+    var maskInputs = [[String: Any]](), varying = [[String: Any]](), colored = [[String: Any]]()
+    for (kind, mask) in masks {
+        maskInputs.append(["maskKind": kind, "output": try snapshot(mask, includePixels: true, includeFloats: true)])
+    }
+    for (kind, color) in colors {
+        maskInputs.append(["maskKind": kind, "output": try snapshot(CIImage(color: color), includePixels: true, includeFloats: true)])
+    }
+    for (fixture, input) in sources {
+        for clamped in [false, true] {
+            let prepared = clamped ? input.clampedToExtent() : input
+            for radius in [10.0, 35, 55, 250] {
+                for (kind, mask) in masks {
+                    let output = prepared.applyingFilter("CIMaskedVariableBlur", parameters: [
+                        "inputMask": mask, kCIInputRadiusKey: radius])
+                    varying.append(["fixture": fixture + (clamped ? "-clamped" : ""), "radius": radius,
+                                    "maskKind": kind, "outputExtent": extent(output),
+                                    "output": try snapshot(output, includePixels: true, includeFloats: true)])
+                }
+            }
+        }
+        for (kind, color) in colors {
+            let output = input.applyingFilter("CIMaskedVariableBlur", parameters: [
+                "inputMask": CIImage(color: color), kCIInputRadiusKey: 10])
+            colored.append(["fixture": fixture, "radius": 10, "maskKind": kind,
+                            "output": try snapshot(output, includePixels: true, includeFloats: true)])
+        }
+    }
+    var geometry = [[String: Any]]()
+    let source = sources.first { $0.0 == "opaque-gradient" }!.1
+    let geometries: [(String, CIImage)] = [
+        ("identity", source), ("translated-positive", source.transformed(by: CGAffineTransform(translationX: 14, y: 8))),
+        ("translated-negative", source.transformed(by: CGAffineTransform(translationX: -13, y: -7))),
+        ("cropped", source.cropped(to: CGRect(x: 3, y: 5, width: 61, height: 37)))]
+    for (kind, input) in geometries {
+        for radius in [1.0, 35] {
+            let output = input.applyingFilter("CIMaskedVariableBlur", parameters: [
+                "inputMask": CIImage(color: .white), kCIInputRadiusKey: radius])
+            geometry.append(["geometryKind": kind, "radius": radius, "inputExtent": extent(input),
+                             "outputExtent": extent(output),
+                             "output": try snapshot(output, includePixels: true, includeFloats: true)])
+        }
+    }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
             "contextDescription": String(context.debugDescription.prefix(65_536)),
             "recipe": "Unmanaged shared CIContext; finite RGBA8 sources; RGBAf bitmap and RGBA8 CGImage copied into an identity bitmap",
             "diagnosticDescriptions": true, "inputs": inputs, "cases": cases,
             "probeRadii": radii, "smallRadiusProbes": probes, "variableBlurProbes": variable,
-            "variableRequestProbes": requests]
+            "variableRequestProbes": requests, "variableMaskInputs": maskInputs,
+            "variableMaskProbes": varying, "variableColorMaskProbes": colored,
+            "variableGeometryProbes": geometry]
 }
 
 do {
