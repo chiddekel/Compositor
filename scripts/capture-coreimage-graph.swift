@@ -33,7 +33,7 @@ func extent(_ image: CIImage) -> [String: Any] {
             "width": Double(rect.width), "height": Double(rect.height)]
 }
 
-func snapshot(_ image: CIImage) throws -> [String: Any] {
+func snapshot(_ image: CIImage, includePixels: Bool = false) throws -> [String: Any] {
     let before = image.debugDescription
     var floats = [Float](repeating: 0, count: width * height * 4)
     floats.withUnsafeMutableBytes { buffer in
@@ -55,15 +55,18 @@ func snapshot(_ image: CIImage) throws -> [String: Any] {
         bytes.append(pixels.advanced(by: y * target.bytesPerRow).assumingMemoryBound(to: UInt8.self), count: width * 4)
     }
     let after = image.debugDescription
-    return ["width": width, "height": height, "floatBytes": floatData.count, "byteBytes": bytes.count,
+    var result: [String: Any] = ["width": width, "height": height, "floatBytes": floatData.count, "byteBytes": bytes.count,
             "floatSha256": digest(floatData), "byteSha256": digest(bytes), "floatFinite": true,
             "descriptionBeforeRender": String(before.prefix(65_536)),
             "descriptionAfterRender": String(after.prefix(65_536)),
             "descriptionTruncated": before.count > 65_536 || after.count > 65_536]
+    if includePixels { result["rgbaBase64"] = bytes.base64EncodedString() }
+    return result
 }
 
 func capture() throws -> [String: Any] {
     var inputs = [[String: Any]](), cases = [[String: Any]]()
+    var sources = [(String, CIImage)]()
     for fixture in ["opaque-gradient", "impulse"] {
         let source = try bitmap()
         guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
@@ -81,6 +84,7 @@ func capture() throws -> [String: Any] {
         } }
         guard let image = source.makeImage() else { throw CaptureError.failed("Cannot create source image") }
         let input = CIImage(cgImage: image)
+        sources.append((fixture, input))
         inputs.append(["fixture": fixture, "output": try snapshot(input)])
         for radius in [0.0, 0.1, 0.5, 1 / sqrt(3.0), 1, 2, 5, 10, 17, 35] {
             let output = input.applyingGaussianBlur(sigma: radius)
@@ -97,11 +101,23 @@ func capture() throws -> [String: Any] {
             }
         }
     }
+    // Keep the original recipes' render order before checking the identity-to-blur boundary.
+    var probes = [[String: Any]]()
+    for (fixture, input) in sources {
+        for radius in [0.0, 0.1, 0.125, 1 / 6.0 - 0.000001, 1 / 6.0, 1 / 6.0 + 0.000001, 0.2, 0.25, 0.3, 0.4, 0.5] {
+            for degrees in [0.0, -35] {
+                let output = input.applyingFilter("CIMotionBlur", parameters: [
+                    kCIInputRadiusKey: radius, kCIInputAngleKey: degrees * .pi / 180])
+                probes.append(["fixture": fixture, "filter": "CIMotionBlur", "radius": radius, "degrees": degrees,
+                               "outputExtent": extent(output), "output": try snapshot(output, includePixels: true)])
+            }
+        }
+    }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
             "contextDescription": String(context.debugDescription.prefix(65_536)),
             "recipe": "Unmanaged shared CIContext; finite RGBA8 sources; RGBAf bitmap and RGBA8 CGImage copied into an identity bitmap",
-            "diagnosticDescriptions": true, "inputs": inputs, "cases": cases]
+            "diagnosticDescriptions": true, "inputs": inputs, "cases": cases, "smallRadiusProbes": probes]
 }
 
 do {
