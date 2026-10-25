@@ -10,6 +10,8 @@ It uses Python's standard library and refreshes local state every second. The
 Overview shows the current Git branch, commit and changed files alongside recorded
 verification evidence. Evidence is labeled historical: editing a file or finding
 an old successful report does not count as a new passing test.
+Native motion comparisons and Swift failures beyond golden differences are shown
+separately; a missing failure count appears as `?`.
 It reads `.build/evidence/compatibility-verification-summary.json` when present,
 falling back to the older Dither verification checkpoint.
 

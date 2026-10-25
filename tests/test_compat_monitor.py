@@ -82,6 +82,23 @@ class MonitorTests(unittest.TestCase):
             (folder / "compatibility-verification-summary.json").write_text('{"application":')
             self.assertIn("No readable", monitor.evidence(root)["rows"][0])
 
+    def test_evidence_shows_motion_and_failures_beyond_golden_differences(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / ".build/evidence"
+            folder.mkdir(parents=True)
+            checkpoint = folder / "compatibility-verification-summary.json"
+            checkpoint.write_text(json.dumps({
+                "nativeMotion": {"withinOne": 530, "cases": 532},
+                "fullSwift": {"tests": 1298, "goldenIssues": 18, "nonGoldenFailures": 3}}))
+            self.assertEqual(monitor.evidence(root)["rows"], [
+                "Motion blur: 530/532", "Swift: 1298 tests; 18 golden differences",
+                "Swift other failures: 3"])
+            checkpoint.write_text(json.dumps({"fullSwift": {"nonGoldenIssues": 2}}))
+            self.assertIn("Swift other failures: 2", monitor.evidence(root)["rows"])
+            checkpoint.write_text(json.dumps({"fullSwift": {"tests": 10, "goldenIssues": 0}}))
+            self.assertIn("Swift other failures: ?", monitor.evidence(root)["rows"])
+
     def test_check_failure_stops_remaining_steps_and_sanitizes_saved_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

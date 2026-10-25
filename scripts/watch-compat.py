@@ -74,6 +74,7 @@ def evidence(root):
         for name, item in data.get("application", {}).items():
             rows.append(f"Application {name}: {item.get('passed', '?')}/{item.get('total', '?')}")
         for key, label, passed, total in [("nativeSampling", "Sampling", "withinOne", "cases"),
+                                           ("nativeMotion", "Motion blur", "withinOne", "cases"),
                                            ("curve", "Curve coverage", "withinOne", "total")]:
             item = data.get(key, {})
             if item:
@@ -81,6 +82,8 @@ def evidence(root):
         swift = data.get("fullSwift", {})
         if swift:
             rows.append(f"Swift: {swift.get('tests', '?')} tests; {swift.get('goldenIssues', '?')} golden differences")
+            other = swift.get('nonGoldenFailures', swift.get('nonGoldenIssues', '?'))
+            rows.append(f"Swift other failures: {other}")
         return {"rows": rows, "path": str(path.relative_to(root)), "updated": path.stat().st_mtime}
     except (OSError, ValueError, TypeError, AttributeError) as error:
         return {"rows": ["No readable verification summary yet: " + safe(error)], "updated": None}
