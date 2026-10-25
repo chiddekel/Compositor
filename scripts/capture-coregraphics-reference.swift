@@ -542,19 +542,7 @@ func captureCurveCoverage() throws -> [[String: Any]] {
         context.addPath(path)
         context.fillPath()
         let t = transform.1
-        var flattenedCopies = [[String: Any]]()
-        for threshold in [0.1, 0.25, 0.5, 0.6, 1.0, 10.0] {
-            let copy = CGPathCreateCopyByFlattening(path, threshold)
-            guard let copy else { throw CaptureError.failed("Cannot flatten native path") }
-            let target = try bitmap(width: 96, height: 72)
-            target.concatenate(transform.1)
-            target.setShouldAntialias(true)
-            target.setFillColor(CGColor(srgbRed: 0.8, green: 0.3, blue: 0.5, alpha: 0.7))
-            target.addPath(copy)
-            target.fillPath()
-            flattenedCopies.append(["threshold": threshold, "path": describePath(copy), "output": try describe(target)])
-        }
-        cases.append(["name": name, "family": family, "path": describePath(path), "flattened": flattenedCopies,
+        cases.append(["name": name, "family": family, "path": describePath(path),
                       "transformName": transform.0, "transform": [t.a, t.b, t.c, t.d, t.tx, t.ty],
                       "flatness": flatness.map { String($0) } ?? "default", "rgba": [0.8, 0.3, 0.5, 0.7],
                       "output": try describe(context)])
