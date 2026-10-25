@@ -83,6 +83,7 @@
 #include <QFile>
 #include <QDir>
 #include <QTimer>
+#include <QPointer>
 #include <QWindow>
 #include <QTabBar>
 #include <QEventLoop>
@@ -7469,44 +7470,61 @@ QImage exported(SessionWindow &window, const QString &path) {
 }
 void modal(SessionWindow &window, const QString &actionName, const std::function<void(QDialog *)> &body) {
     auto *action = window.findChild<QAction *>(actionName);
-    require(action != nullptr, "menu action missing");
+    require(action != nullptr, qPrintable(actionName + ": menu action missing"));
+    require(action->isEnabled(), qPrintable(actionName + ": menu action disabled"));
     QString error;
-    bool visited = false;
+    bool visited = false, completed = false;
+    QPointer<QDialog> observed;
+    QEventLoop loop;
     QTimer dispatch;
-    dispatch.setSingleShot(true);
-    QObject::connect(&dispatch, &QTimer::timeout, &window, [&] {
-        visited = true;
+    const auto finish = [&] { completed = true; loop.quit(); };
+    QObject::connect(&dispatch, &QTimer::timeout, &loop, [&] {
+        // Never wait inside a callback: presentation may be queued only after action->trigger() returns.
+        if (dispatch.interval() == 0) dispatch.setInterval(10);
+        if (visited) {
+            if (!observed || !observed->isVisible()) finish();
+            return;
+        }
         QDialog *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
         if (!dialog) {
-            // Upstream floating sheets (non-modal Qt::Tool): wait briefly for SessionWindow to host them.
-            for (int i = 0; i < 40 && !dialog; ++i) {
-                QApplication::processEvents();
-                for (auto *candidate : window.findChildren<QDialog *>()) {
-                    if (!candidate->isVisible()) continue;
-                    const QString name = candidate->objectName();
-                    if (name.startsWith(QLatin1String("floatingPanel."))
-                            || name.startsWith(QLatin1String("swiftUISheet."))) {
-                        dialog = candidate;
-                        break;
-                    }
+            for (auto *candidate : window.findChildren<QDialog *>()) {
+                if (!candidate->isVisible()) continue;
+                const QString name = candidate->objectName();
+                if (name.startsWith(QLatin1String("floatingPanel."))
+                        || name.startsWith(QLatin1String("swiftUISheet."))) {
+                    dialog = candidate;
+                    break;
                 }
-                if (!dialog) QThread::msleep(25);
             }
         }
-        if (!dialog) { error = "dialog missing"; return; }
+        if (!dialog) return;
+        observed = dialog;
+        visited = true;
         try { body(dialog); }
-        catch (const std::exception &e) { error = e.what(); dialog->reject(); }
+        catch (const std::exception &e) {
+            error = actionName + ": " + e.what();
+            if (observed) observed->reject();
+        }
+        if (!observed || !observed->isVisible()) finish();
+    });
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline, &QTimer::timeout, &loop, [&] {
+        error = actionName + (visited ? ": dialog interaction did not finish" : ": dialog was not presented");
+        if (observed) observed->reject();
+        // Also unwind an exec() that began before its dialog could be observed.
+        if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject();
+        finish();
     });
     dispatch.start(0);
+    deadline.start(10000);
     action->trigger();
-    // Non-modal floating panels return from trigger without nesting an event loop; pump until the
-    // zero-delay timer has run (modal SizeDialog/sheet.exec paths already pump inside trigger).
-    for (int i = 0; i < 80 && !visited; ++i) {
-        QApplication::processEvents();
-        if (!visited) QThread::msleep(25);
-    }
-    require(visited, "action did not open a dialog");
+    // Floating-panel bodies can schedule asynchronous interactions. Finish those before the next action.
+    if (!completed) loop.exec();
+    dispatch.stop();
+    deadline.stop();
     require(error.isEmpty(), qPrintable(error));
+    require(visited, qPrintable(actionName + ": action did not open a dialog"));
 }
 void click(QDialog *dialog, QDialogButtonBox::StandardButton which) {
     auto *buttons = dialog->findChild<QDialogButtonBox *>();
@@ -7563,6 +7581,31 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
         SessionWindow window; window.show(); QApplication::processEvents();
         const QString path = temporary.filePath("view.png");
         const QImage original = exported(window, path);
+        // A presentation can be queued only after its action returns. The helper must also wait for an
+        // asynchronous dialog interaction to finish before the next action closes or replaces its panel.
+        {
+            QAction deferred(&window);
+            deferred.setObjectName(QStringLiteral("journey.deferredDialog"));
+            bool actionFinished = false, interactionFinished = false;
+            QObject::connect(&deferred, &QAction::triggered, &window, [&] {
+                QApplication::processEvents();
+                QTimer::singleShot(0, &window, [&] {
+                    auto *dialog = new QDialog(&window, Qt::Tool);
+                    dialog->setAttribute(Qt::WA_DeleteOnClose);
+                    dialog->setObjectName(QStringLiteral("floatingPanel.journeyDeferred"));
+                    dialog->show();
+                });
+                actionFinished = true;
+            });
+            modal(window, deferred.objectName(), [&](QDialog *dialog) {
+                require(actionFinished, "dialog wait blocked the action that schedules presentation");
+                QTimer::singleShot(25, dialog, [&, dialog] {
+                    interactionFinished = true;
+                    dialog->reject();
+                });
+            });
+            require(interactionFinished, "dialog helper returned before the asynchronous interaction finished");
+        }
         // Upstream Canvas Size / Image Size sheets (modal SwiftUI via presentSwiftUISheet). Opening them mid-journey
         // races the smoke timer with awaitOnMain; exercise Cancel by finishing the sheet command with no options, and
         // verify resize through the same session commands the sheets apply.
