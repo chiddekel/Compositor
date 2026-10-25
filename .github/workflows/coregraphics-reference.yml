@@ -14,28 +14,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
-      - name: Inspect public native path declarations
-        run: |
-          xcrun swift-api-digester -dump-sdk -module CoreGraphics \
-            -sdk "$(xcrun --show-sdk-path)" -o coregraphics-public-api.json
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          api = json.loads(Path('coregraphics-public-api.json').read_text())
-          matches = []
-          def visit(node):
-              if isinstance(node, dict):
-                  name = node.get('printedName', node.get('name', ''))
-                  if 'flatten' in name.lower():
-                      matches.append({key: node.get(key) for key in ['kind', 'name', 'printedName', 'usr']})
-                  for value in node.values():
-                      visit(value)
-              elif isinstance(node, list):
-                  for value in node:
-                      visit(value)
-          visit(api)
-          print(json.dumps({'flatteningDeclarations': matches}, indent=2))
-          PY
       - name: Capture native bitmap sampling
         run: swift scripts/capture-coregraphics-reference.swift > coregraphics-reference.json
       - name: Validate native stroke coverage controls
@@ -84,7 +62,13 @@ jobs:
           for case in curves:
               assert len(case['transform']) == 6 and len(case['rgba']) == 4
               assert all(math.isfinite(v) for key in ['transform', 'rgba'] for v in case[key])
-          for case in curves + outlines:
+          flattened = [p for c in curves for p in c['flattened']]
+          assert len(flattened) == 654
+          assert all(len(c['flattened']) == 6 and {p['threshold'] for p in c['flattened']} ==
+                     {0.1, 0.25, 0.5, 0.6, 1.0, 10.0} for c in curves)
+          for case in flattened:
+              assert all(s['verb'] in {'move', 'line', 'close'} for s in case['path'])
+          for case in curves + outlines + flattened:
               assert case['path'] and case['path'][0]['verb'] == 'move'
               for segment in case['path']:
                   assert len(segment['points']) == point_counts[segment['verb']]
@@ -95,7 +79,7 @@ jobs:
               assert len(raw) == 384 * 72 and hashlib.sha256(raw).hexdigest() == item['sha256']
               assert any(raw[3::4]), 'Native path draw is empty'
               assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
-          print('Validated 109 curved paths, 91 stroke outlines and 200 native buffers')
+          print('Validated 109 curves, 91 stroke outlines, 654 flattened copies and 854 native buffers')
           PY
       - name: Validate paired Hue and Saturation controls
         run: |
@@ -208,7 +192,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: coregraphics-reference
-          path: |
-            coregraphics-reference.json
-            coregraphics-public-api.json
+          path: coregraphics-reference.json
           if-no-files-found: error
