@@ -796,6 +796,26 @@ func captureSamplingCorners() throws -> [[String: Any]] {
     return cases
 }
 
+func captureSamplingSignals() throws -> [[String: Any]] {
+    var cases = [[String: Any]]()
+    for alpha in [255, 128] {
+        let source = try bitmap(width: 320, height: 320)
+        guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
+            throw CaptureError.failed("Missing sampling-signal source")
+        }
+        for y in 0..<320 { for x in 0..<320 {
+            let at = y * source.bytesPerRow + x * 4
+            for c in 0..<3 { pixels[at + c] = x % 5 < 2 ? UInt8(alpha) : 0 }
+            pixels[at + 3] = UInt8(alpha)
+        } }
+        guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make sampling-signal image") }
+        let output = try sampleCoreGraphics(image, block: 10)
+        cases.append(["fixture": "period-5-two-white", "alpha": alpha, "block": 10,
+                      "input": try describe(source), "output": try describe(output)])
+    }
+    return cases
+}
+
 func capture() throws -> [String: Any] {
     let width = 96, height = 72
     var cases = [[String: Any]]()
@@ -876,6 +896,7 @@ func capture() throws -> [String: Any] {
             "format": "sRGB premultiplied RGBA8; packed bitmap-memory rows", "quality": "high",
             "samplingLinearity": try captureSamplingLinearity(),
             "samplingCorners": try captureSamplingCorners(),
+            "samplingSignals": try captureSamplingSignals(),
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),

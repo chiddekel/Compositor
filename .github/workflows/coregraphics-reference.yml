@@ -135,6 +135,23 @@ jobs:
                                  for p in struct.iter_unpack('<4f', raw))
           print('Validated 80 corner/fractional-bound recipes and 160 native bitmap buffers')
           PY
+      - name: Validate high-quality stripe signal controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingSignals']
+          assert len(cases) == 2 and {c['alpha'] for c in cases} == {128, 255}
+          for case in cases:
+              assert case['fixture'] == 'period-5-two-white' and case['block'] == 10
+              for key, side in [('input', 320), ('output', 32)]:
+                  item = case[key]
+                  assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (side, side, side * 4, 8)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == side * side * 4 and hashlib.sha256(raw).hexdigest() == item['sha256']
+                  assert all(raw[i + c] <= raw[i + 3] for i in range(0, len(raw), 4) for c in range(3))
+          print('Validated opaque/translucent stripe signals and four native bitmap buffers')
+          PY
       - name: Validate coverage opacity and transform controls
         run: |
           python3 - <<'PY'
