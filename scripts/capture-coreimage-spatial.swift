@@ -11,8 +11,21 @@ let width = 512, height = 8
 let row = CGRect(x: 0, y: 3, width: width, height: 1)
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
 let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
-let motionRadii = [0.0, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 10, 35 / sqrt(12.0), 12, 17, 24, 35]
+let defaultMotionRadii = [0.0, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 10, 35 / sqrt(12.0), 12, 17, 24, 35]
 let gaussianRadii = [5.0, 10, 17]
+
+func requestedMotionRadii() throws -> [Double] {
+    guard CommandLine.arguments.count != 1 else { return defaultMotionRadii }
+    guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--motion-radii" else {
+        throw CaptureError.failed("Expected --motion-radii followed by a JSON number array")
+    }
+    let values = try JSONDecoder().decode([Double].self, from: Data(CommandLine.arguments[2].utf8))
+    guard values.count <= 64, Set(values).count == values.count,
+          values.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 64 }) else {
+        throw CaptureError.failed("Motion radii must be unique finite numbers in 0...64, at most 64")
+    }
+    return values.isEmpty ? defaultMotionRadii : values
+}
 
 func digest(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -53,6 +66,7 @@ func snapshot(_ image: CIImage) throws -> [String: Any] {
 }
 
 func capture() throws -> [String: Any] {
+    let motionRadii = try requestedMotionRadii()
     var inputs = [[String: Any]](), cases = [[String: Any]]()
     for fixture in ["impulse", "step", "stripes"] {
         for phase in 0..<16 {

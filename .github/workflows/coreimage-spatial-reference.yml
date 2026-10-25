@@ -2,6 +2,11 @@ name: Core Image spatial scanline diagnostics
 
 on:
   workflow_dispatch:
+    inputs:
+      motion_radii:
+        description: JSON array of unique motion radii in 0...64 (empty selects default probes)
+        type: string
+        default: '[]'
 
 permissions:
   contents: read
@@ -10,22 +15,29 @@ jobs:
   capture:
     runs-on: macos-26
     timeout-minutes: 10
+    env:
+      PROBE_MOTION_RADII: ${{ inputs.motion_radii || '[]' }}
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
       - name: Capture native spatial scanlines
-        run: swift scripts/capture-coreimage-spatial.swift > coreimage-spatial-reference.json
+        run: swift scripts/capture-coreimage-spatial.swift --motion-radii "$PROBE_MOTION_RADII" > coreimage-spatial-reference.json
       - name: Validate scanline controls and recipe matrix
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json, math, re, struct
+          import base64, hashlib, json, math, os, re, struct
           from pathlib import Path
           reference = json.loads(Path('coreimage-spatial-reference.json').read_text())
           assert reference['schema'] == 1 and reference['platform'] == 'macOS'
           assert reference['scriptSha256'] == hashlib.sha256(Path('scripts/capture-coreimage-spatial.swift').read_bytes()).hexdigest()
           assert (reference['sourceWidth'], reference['sourceHeight'], reference['scanlineY']) == (512, 8, 3)
           motion = [0, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 10, 35 / math.sqrt(12), 12, 17, 24, 35]
+          supplied = json.loads(os.environ.get('PROBE_MOTION_RADII', '[]'))
+          assert isinstance(supplied, list) and len(supplied) <= 64
+          assert all(type(r) in [int, float] and math.isfinite(r) and 0 <= r <= 64 for r in supplied)
+          assert len(set(supplied)) == len(supplied)
+          motion = supplied or motion
           gaussian = [5, 10, 17]
           assert reference['motionRadii'] == motion and reference['gaussianRadii'] == gaussian
           expected_inputs = {(fixture, phase) for fixture in ['impulse', 'step', 'stripes'] for phase in range(16)}
@@ -34,7 +46,8 @@ jobs:
           assert len(inputs) == 48 and {(c['fixture'], c['phase']) for c in inputs} == expected_inputs
           expected = {(fixture, phase, name, radius) for fixture, phase in expected_inputs
                       for name, radii in [('CIMotionBlur', motion), ('CIGaussianBlur', gaussian)] for radius in radii}
-          assert len(cases) == 912 and {(c['fixture'], c['phase'], c['filter'], c['radius']) for c in cases} == expected
+          assert len(cases) == 48 * (len(motion) + len(gaussian))
+          assert {(c['fixture'], c['phase'], c['filter'], c['radius']) for c in cases} == expected
           for case in inputs + cases:
               output = case['output']
               assert (output['width'], output['height']) == (512, 1)
@@ -56,7 +69,7 @@ jobs:
           for case in cases:
               if case['filter'] == 'CIMotionBlur' and case['radius'] == 0:
                   assert case['output']['byteSha256'] == source_hashes[case['fixture'], case['phase']]
-          print('Validated 48 source identities, 912 native spatial recipes and 1920 raw bitmap hashes')
+          print(f'Validated 48 source identities, {len(cases)} native spatial recipes and {2 * (48 + len(cases))} raw bitmap hashes')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
