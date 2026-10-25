@@ -753,9 +753,10 @@ func captureSamplingLinearity() throws -> [[String: Any]] {
     return cases
 }
 
-func captureSamplingGeometry() throws -> [[String: Any]] {
+func captureSamplingGeometry(alphaMode: String = "opaque",
+                             sizes: [(Int, Int)] = [(17, 13), (65, 49), (97, 73)]) throws -> [[String: Any]] {
     var cases = [[String: Any]]()
-    for (width, height) in [(17, 13), (65, 49), (97, 73)] {
+    for (width, height) in sizes {
         for floating in [false, true] {
             for mode in ["constant", "ramps", "checker", "corners"] {
                 let source = try bitmap(width: width, height: height, floating: floating)
@@ -770,14 +771,16 @@ func captureSamplingGeometry() throws -> [[String: Any]] {
                                        x == 0 && y == height - 1 ? 1 : 0,
                                        x == width - 1 && y == 0 ? 1 : 0, 1]
                     }
+                    let alpha = alphaMode == "half" ? 0.5
+                        : alphaMode == "ramp" ? 0.25 + 0.75 * Double(x + y) / Double(width + height - 2) : 1
                     if floating {
                         let pixels = data.assumingMemoryBound(to: Float.self)
                         let at = y * source.bytesPerRow / MemoryLayout<Float>.size + x * 4
-                        for c in 0..<4 { pixels[at + c] = Float(values[c]) }
+                        for c in 0..<4 { pixels[at + c] = Float(values[c] * alpha) }
                     } else {
                         let pixels = data.assumingMemoryBound(to: UInt8.self)
                         let at = y * source.bytesPerRow + x * 4
-                        for c in 0..<4 { pixels[at + c] = UInt8((values[c] * 255).rounded()) }
+                        for c in 0..<4 { pixels[at + c] = UInt8((values[c] * alpha * 255).rounded()) }
                     }
                 } }
                 guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make sampling-geometry image") }
@@ -802,6 +805,19 @@ func captureSamplingGeometry() throws -> [[String: Any]] {
                     }
                 }
             }
+        }
+    }
+    return cases
+}
+
+func captureSamplingAlphaGeometry() throws -> [[String: Any]] {
+    var cases = [[String: Any]]()
+    for alphaMode in ["opaque", "half", "ramp"] {
+        let sizes = alphaMode == "opaque" ? [(32, 24)] : [(17, 13), (32, 24), (65, 49), (97, 73)]
+        let controls = try captureSamplingGeometry(alphaMode: alphaMode, sizes: sizes)
+        for var control in controls {
+            control["alphaMode"] = alphaMode
+            cases.append(control)
         }
     }
     return cases
@@ -952,6 +968,7 @@ func capture() throws -> [String: Any] {
             "samplingCorners": try captureSamplingCorners(),
             "samplingSignals": try captureSamplingSignals(),
             "samplingGeometry": try captureSamplingGeometry(),
+            "samplingAlphaGeometry": try captureSamplingAlphaGeometry(),
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),

@@ -163,6 +163,41 @@ jobs:
                                  for p in struct.iter_unpack('<4f', raw))
           print('Validated 144 isolated sampling-geometry recipes and 432 native bitmap buffers')
           PY
+      - name: Validate sampling alpha and single-fractional-axis controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingAlphaGeometry']
+          assert len(cases) == 432
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['mode'], c['alphaMode'], c['block'], c['quality']) for c in cases}) == 432
+          assert {mode: sum(c['alphaMode'] == mode for c in cases) for mode in ['opaque', 'half', 'ramp']} == {
+              'opaque': 48, 'half': 192, 'ramp': 192}
+          for case in cases:
+              width, height, block = case['sourceWidth'], case['sourceHeight'], case['block']
+              assert (width, height) in ([(32, 24)] if case['alphaMode'] == 'opaque' else [(17, 13), (32, 24), (65, 49), (97, 73)])
+              assert case['mode'] in ['constant', 'ramps', 'checker', 'corners']
+              assert case['quality'] in ['none', 'high'] and block in [2, 3, 6]
+              for key in ['input', 'output', 'alignedOutput']:
+                  item = case[key]
+                  expected = (width, height) if key == 'input' else (
+                      (width + block - 1) // block, (height + block - 1) // block)
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+                  if key == 'input':
+                      alpha = [p[3] for p in struct.iter_unpack('<4f', raw)] if case['floating'] else list(raw[3::4])
+                      expected_alpha = {'opaque': (1, 1), 'half': (0.5, 0.5), 'ramp': (0.25, 1)} if case['floating'] else {
+                          'opaque': (255, 255), 'half': (128, 128), 'ramp': (64, 255)}
+                      assert (min(alpha), max(alpha)) == expected_alpha[case['alphaMode']]
+          print('Validated 432 alpha/single-fractional-axis recipes and 1296 native bitmap buffers')
+          PY
       - name: Validate high-quality stripe signal controls
         run: |
           python3 - <<'PY'
