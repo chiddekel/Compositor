@@ -392,7 +392,7 @@ static bool buildPreview(RawHandle *handle, int targetW, int targetH) {
     p.half_size = 1; p.output_bps = 16; p.output_color = 0;   // raw camera colour, linear, no white balance
     p.use_camera_wb = 0; p.use_auto_wb = 0;
     for (float &m : p.user_mul) m = 1;
-    p.gamm[0] = 1; p.gamm[1] = 1; p.no_auto_bright = 1; p.exp_correc = 0;
+    p.gamm[0] = 1; p.gamm[1] = 1; p.no_auto_bright = 1; p.exp_correc = 0; p.bright = 1;
     p.threshold = handle->defaultNoiseReduction * 1000.0f; p.highlight = handle->defaultHighlightMode;
     if (handle->raw.dcraw_process() != LIBRAW_SUCCESS) return false;
     int error = 0;
@@ -426,7 +426,7 @@ static bool buildPreview(RawHandle *handle, int targetW, int targetH) {
     return true;
 }
 
-// The develop pipeline on the cached preview: white balance, camera -> sRGB, exposure, auto-brightening and the tone
+// The develop pipeline on the cached preview: white balance, camera -> sRGB, auto-brightening, exposure and the tone
 // curve, as LibRaw's full develop applies them — milliseconds, whatever the file size.
 static int32_t developPreview(RawHandle *handle, float exposure, float temperature, float tint, float boost,
                               bool lensCorrection, int targetW, int targetH, uint8_t **pixels) {
@@ -447,7 +447,7 @@ static int32_t developPreview(RawHandle *handle, float exposure, float temperatu
     float mul[3] = {handle->asShotMul[0] * warm, handle->asShotMul[1] * magenta, handle->asShotMul[2] / warm};
     const float lowest = std::min({mul[0], mul[1], mul[2]});
     for (float &m : mul) m /= lowest > 0 ? lowest : 1;   // as LibRaw's scale_colors: no channel is scaled down
-    const float shift = std::clamp(std::pow(2.0f, exposure), 0.25f, 8.0f);
+    const float shift = std::clamp(std::pow(2.0f, exposure), 0.125f, 8.0f);
     const size_t count = size_t(targetW) * targetH;
     std::vector<float> rgb(count * 3);
     for (size_t i = 0; i < count; ++i) {
@@ -455,7 +455,7 @@ static int32_t developPreview(RawHandle *handle, float exposure, float temperatu
         const float r = std::min(1.0f, cam[0] * mul[0]), g = std::min(1.0f, cam[1] * mul[1]), b = std::min(1.0f, cam[2] * mul[2]);
         for (int c = 0; c < 3; ++c) {
             const float v = handle->sensorColor.rgb_cam[c][0] * r + handle->sensorColor.rgb_cam[c][1] * g + handle->sensorColor.rgb_cam[c][2] * b;
-            rgb[i * 3 + c] = std::clamp(v * shift, 0.0f, 1.0f);
+            rgb[i * 3 + c] = std::clamp(v, 0.0f, 1.0f);
         }
     }
     // Auto-brightening (LibRaw's rule): the level below which 99 % of each channel falls becomes white.
@@ -474,7 +474,7 @@ static int32_t developPreview(RawHandle *handle, float exposure, float temperatu
     if (!out) return -3;
     for (size_t i = 0; i < count; ++i) {
         for (int c = 0; c < 3; ++c)
-            out[i * 4 + c] = uint8_t(std::lround(255.0 * std::clamp(curve(std::min(1.0f, rgb[i * 3 + c] / white)), 0.0, 1.0)));
+            out[i * 4 + c] = uint8_t(std::lround(255.0 * std::clamp(curve(std::min(1.0f, rgb[i * 3 + c] / white * shift)), 0.0, 1.0)));
         out[i * 4 + 3] = 255;
     }
     *pixels = out;
@@ -541,10 +541,10 @@ static int32_t rawDevelop(CompositorRaw *raw, float exposure, float temperature,
     p.user_mul[1] = handle->asShotMul[1] * magenta;
     p.user_mul[2] = handle->asShotMul[2] / warm;
     p.user_mul[3] = handle->asShotMul[3] * magenta;
-    // Exposure in linear space, keeping highlights from clipping hard when pushed up.
-    p.exp_correc = exposure != 0 ? 1 : 0;
-    p.exp_shift = std::clamp(std::pow(2.0f, exposure), 0.25f, 8.0f);
-    p.exp_preser = 0.8f;
+    // LibRaw's early exposure correction feeds the histogram, so auto-brightening cancels negative EV.
+    // Its output brightness scales linear samples after histogram normalization and before the gamma curve.
+    p.exp_correc = 0;
+    p.bright = std::clamp(std::pow(2.0f, exposure), 0.125f, 8.0f);
     // Boost: 1 is the standard tone curve (LibRaw's BT.709 gamma with auto-brightening), 0 a flatter, plain power curve.
     const float b = std::clamp(boost, 0.0f, 1.0f);
     p.gamm[0] = 1.0 / (2.2 + 0.02 * b);

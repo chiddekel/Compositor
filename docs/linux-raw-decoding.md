@@ -72,3 +72,36 @@ in the artifact; no averaging or curve fitting changes the captured values.
 144 buffers before upload. These diagnostic controls help distinguish Apple's
 boost interpretation from color conversion and integer quantization. They do
 not replace the full application corpus or establish a matching Linux tone curve.
+
+Run `40148712057` at `7257c48` successfully captured and validated all controls on
+macOS 26.6.2. On the precision ramp, Apple's -1 EV / 0 EV median linear-light
+ratio is about 0.499 at zero boost and 0.519 at full boost. The original Linux
+full-boost results differed by at most six sixteen-bit sample values across all
+six inputs: auto-brightening almost entirely canceled the negative exposure.
+
+## Exposure and automatic brightness
+
+Full decoding now applies exposure through LibRaw's output brightness, after its
+histogram chooses the white level and before the gamma curve. Its earlier sensor
+exposure correction is disabled. Draft decoding likewise measures the white
+level before applying the exposure multiplier. The LibRaw preview fallback resets
+output brightness to one before caching its linear samples, so a prior full
+develop cannot bake its exposure into later previews. Both paths support the Develop
+sheet's full -3...3 EV range; the previous lower multiplier limit made -3 EV
+identical to -2 EV.
+
+The precision suite checks that each negative stop darkens the ramp at both boost
+endpoints, in full and draft decoding, and that positive exposure brightens it.
+The original decoder fails eight assertions. A separate same-handle full-to-draft
+test catches nonzero exposure leaking into a rebuilt LibRaw preview; both exposure
+directions pass after the brightness reset. The corrected decoder passes all
+eight precision/capability tests. This fixes the exposure control; matching
+Apple's complete default tone curve remains separate work.
+
+An isolated checkout with only the exposure fix passes 1,092 Swift tests in 192
+suites and 180 XCTest dispatches, plus the eight dedicated RAW tests. All 93
+tested golden images match the committed baselines exactly; the native RAW/lens
+smoke log is unchanged. In the combined renderer checkout, all 173 canonical
+images and 93 golden candidates are unchanged. Evidence is recorded in
+`raw-exposure-final-isolated-verification.json` and
+`raw-exposure-final-rendering-preservation.json` under `.build/evidence/`.
