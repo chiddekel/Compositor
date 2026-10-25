@@ -39,3 +39,31 @@ Its interior requests differ from cropping a full render by up to 0.7471 byte un
 policies. The regional regression checks native byte output within one level and tile-versus-full float
 differences within `1/1024`; it passes in both CPU and AMD Vulkan configurations and resolves the tile review.
 Existing golden baselines and application comparison thresholds are unchanged.
+
+## Motion blur pixel coverage
+
+`RasterFilters.motionBlur` now integrates the Gaussian over each tap's pixel
+footprint and retains the outer tails. Point weights previously made small
+cardinal blurs too sharp: the native regression failed 30/80 captured frames,
+with errors up to 27 byte levels. The corrected implementation matches all
+80 within the unchanged one-level tolerance. The fixture
+`Tests/Fixtures/coreimage-motion-reference.json` retains the byte buffers from
+native run `40176136505`, covering two inputs, eight radii and five cardinal
+angles. `NativeMotionReferenceTests` verifies these independently captured
+outputs; `MotionBlurRasterTests` continues to check SIMD sampling, transparent
+borders, fractional radii, regional rendering and distance calibration against
+a scalar reference using Gaussian cumulative probabilities.
+
+All 19 selected component tests pass. The full qualification passes 203 XCTest
+cases, retains the same 18 golden issues in 1,044 parallel Swift Testing cases,
+and passes 48 serialized cases. CPU and AMD application comparisons both remain
+146/173 with no passing case lost. Only their five motion-blur PNGs change; the
+default adjustment's maximum alpha error falls from one level to zero. The small
+angled adjustment improves from 69 to 57 levels but still fails, so this weight
+correction does not establish general angular resampling parity.
+
+Two of the 93 generated golden candidates change; the other 91 are byte-identical.
+All committed golden baselines remain unchanged. Logs, application reports and
+the audited checkpoint use the `motion-pixel-area-` prefix under `.build/evidence/`.
+The local monitor's stable checkpoint now records these results, including the
+203 XCTest cases as well as the 1,092 Swift Testing cases.

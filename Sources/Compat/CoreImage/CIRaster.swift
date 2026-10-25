@@ -248,7 +248,12 @@ enum RasterFilters {
         guard radius > 0, radius.isFinite else { return input.cropped(to: region) }
         var out = Raster(rect: region)
         let reach = Int(ceil(radius * 3))
-        let weights = (-reach...reach).map { exp(-Double($0 * $0) / (2 * radius * radius)) }
+        let denominator = radius * sqrt(2.0)
+        // Integrate each tap's pixel footprint, retaining the tails at the outer taps.
+        let weights = (-reach...reach).map { offset -> Double in
+            if abs(offset) == reach { return erfc((Double(reach) - 0.5) / denominator) / 2 }
+            return (erf((Double(offset) + 0.5) / denominator) - erf((Double(offset) - 0.5) / denominator)) / 2
+        }
         let total = weights.reduce(0, +)
         let dx = cos(angle), dy = sin(angle)
         let width = out.width, height = out.height, sourceWidth = input.width, sourceHeight = input.height
