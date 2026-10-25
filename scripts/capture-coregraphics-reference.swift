@@ -495,6 +495,23 @@ func describePath(_ path: CGPath) -> [[String: Any]] {
     return segments
 }
 
+func rebuildCoveragePath(_ source: CGPath) -> CGPath {
+    let result = CGMutablePath()
+    source.applyWithBlock { pointer in
+        let element = pointer.pointee
+        switch element.type {
+        case .moveToPoint: result.move(to: element.points[0])
+        case .addLineToPoint: result.addLine(to: element.points[0])
+        case .addQuadCurveToPoint: result.addQuadCurve(to: element.points[1], control: element.points[0])
+        case .addCurveToPoint:
+            result.addCurve(to: element.points[2], control1: element.points[0], control2: element.points[1])
+        case .closeSubpath: result.closeSubpath()
+        @unknown default: break
+        }
+    }
+    return result
+}
+
 // The same smooth-corner geometry as ShapeKind; keep the native path elements
 // in the artifact so path construction and pixel coverage can be tested separately.
 func smoothCoverageRectangle(_ rect: CGRect, radius: CGFloat) -> CGPath {
@@ -542,8 +559,16 @@ func captureCurveCoverage() throws -> [[String: Any]] {
         context.addPath(path)
         context.fillPath()
         let t = transform.1
+        let rebuiltPath = rebuildCoveragePath(path)
+        let rebuilt = try bitmap(width: 96, height: 72)
+        rebuilt.concatenate(transform.1)
+        rebuilt.setShouldAntialias(true)
+        if let flatness { rebuilt.setFlatness(flatness) }
+        rebuilt.setFillColor(CGColor(srgbRed: 0.8, green: 0.3, blue: 0.5, alpha: 0.7))
+        rebuilt.addPath(rebuiltPath)
+        rebuilt.fillPath()
         var flattenedCopies = [[String: Any]]()
-        for threshold in [0.1, 0.25, 0.5, 0.6, 1.0, 10.0] {
+        for threshold in [0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.6, 1.0, 10.0] {
             let copy: CGPath? = path.flattened(threshold: threshold)
             guard let copy else { throw CaptureError.failed("Cannot flatten native path") }
             let target = try bitmap(width: 96, height: 72)
@@ -555,6 +580,7 @@ func captureCurveCoverage() throws -> [[String: Any]] {
             flattenedCopies.append(["threshold": threshold, "path": describePath(copy), "output": try describe(target)])
         }
         cases.append(["name": name, "family": family, "path": describePath(path), "flattened": flattenedCopies,
+                      "rebuiltPath": describePath(rebuiltPath), "rebuiltOutput": try describe(rebuilt),
                       "transformName": transform.0, "transform": [t.a, t.b, t.c, t.d, t.tx, t.ty],
                       "flatness": flatness.map { String($0) } ?? "default", "rgba": [0.8, 0.3, 0.5, 0.7],
                       "output": try describe(context)])
