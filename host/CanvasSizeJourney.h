@@ -62,9 +62,41 @@ inline QCheckBox *toggle(QDialog *sheet, const QString &title) {
     throw std::runtime_error("canvas size toggle missing");
 }
 inline void type(QDialog *sheet, const QString &title, const QString &value) {
-    QPointer<QLineEdit> edit = field(sheet, title); edit->setFocus(); key(edit, Qt::Key_A, Qt::ControlModifier);
-    for (const auto character : value) { require(edit, "canvas size typing retired its field"); key(edit, 0, Qt::NoModifier, QString(character)); }
-    if (!edit || edit->text() != value || !edit->hasFocus() || edit->cursorPosition() != value.size())
+    QPointer<QLineEdit> edit = field(sheet, title);
+    QStringList trace;
+    QString stage = "before focus";
+    const auto record = [&](const QString &event) {
+        if (trace.size() >= 48) return;
+        trace.append(QString("%1 / %2: text=%3 selection=%4,%5 cursor=%6 focus=%7 typed=%8")
+            .arg(stage, event, edit ? edit->text() : QString())
+            .arg(edit ? edit->selectionStart() : -1).arg(edit ? edit->selectedText().size() : 0)
+            .arg(edit ? edit->cursorPosition() : -1).arg(edit && edit->hasFocus())
+            .arg(edit && edit->property("swiftuiTyped").toBool()));
+    };
+    struct TraceObserver : QObject {
+        std::function<void(QEvent *)> observe;
+        bool eventFilter(QObject *, QEvent *event) override { observe(event); return false; }
+    } observer;
+    observer.observe = [&](QEvent *event) {
+        if (event->type() == QEvent::FocusIn) record("focus in");
+        else if (event->type() == QEvent::FocusOut) record("focus out");
+        else if (event->type() == QEvent::InputMethod) record("input method");
+    };
+    edit->installEventFilter(&observer);
+    QObject::connect(edit, &QLineEdit::selectionChanged, &observer, [&] { record("selection changed"); });
+    QObject::connect(edit, &QLineEdit::textChanged, &observer, [&] { record("text changed"); });
+    record("snapshot"); edit->setFocus(); record("focused");
+    stage = "select all"; key(edit, Qt::Key_A, Qt::ControlModifier); record("after key");
+    int index = 0;
+    for (const auto character : value) {
+        require(edit, "canvas size typing retired its field");
+        stage = QString("character %1").arg(index++);
+        key(edit, 0, Qt::NoModifier, QString(character)); record("after key");
+    }
+    const bool valid = edit && edit->text() == value && edit->hasFocus() && edit->cursorPosition() == value.size();
+    if (!valid || qEnvironmentVariableIsSet("COMPOSITOR_TRACE_SIZE_FIELDS"))
+        qWarning().noquote() << "Canvas size typing trace" << title << trace.join("\n");
+    if (!valid)
         qWarning() << "Canvas size typing state" << title << "expected" << value
             << "actual" << (edit ? edit->text() : QString())
             << "focused" << (edit && edit->hasFocus()) << "cursor" << (edit ? edit->cursorPosition() : -1);

@@ -328,7 +328,12 @@ if(Qt6_FOUND)
     target_include_directories(test_fitting_layout PRIVATE ${CMAKE_SOURCE_DIR}/host)
     target_link_libraries(test_fitting_layout PRIVATE Qt6::Widgets)
     add_test(NAME CompositorCore.FittingLayout COMMAND test_fitting_layout)
-    set_tests_properties(CompositorCore.NativeFilePanels CompositorCore.FittingLayout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(test_text_field_state tests/test_text_field_state.cpp)
+    target_include_directories(test_text_field_state PRIVATE ${CMAKE_SOURCE_DIR}/host)
+    target_link_libraries(test_text_field_state PRIVATE Qt6::Widgets)
+    add_test(NAME CompositorCore.TextFieldState COMMAND test_text_field_state)
+    set_tests_properties(CompositorCore.NativeFilePanels CompositorCore.FittingLayout CompositorCore.TextFieldState
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # Exercise the actual ImageIO callbacks, including source-profile conversion and export tags.
     add_executable(test_imageio_color tests/test_imageio_color.cpp)
     target_link_libraries(test_imageio_color PRIVATE Qt6::Gui CompositorQtImageIO TIFF::TIFF)

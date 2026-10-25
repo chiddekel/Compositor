@@ -24,6 +24,7 @@ extern "C" void compositor_end_layer_drag(int32_t copied);
 
 #include "SwiftUIQtRenderer.h"
 #include "SwiftUIFittingWidget.h"
+#include "SwiftUITextFieldState.h"
 #include "LucideIcons.h"
 #include "QtTextFont.h"
 #include <QPointer>
@@ -4291,11 +4292,8 @@ static void refreshEditingControlState(QWidget *current, const QJsonObject &root
             }
         if (opacity.contains(id))
             if (auto *effect = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect())) effect->setOpacity(opacity.value(id));
-        if (fields.contains(id)) if (auto *field = qobject_cast<QLineEdit *>(widget);
-            field && (!field->hasFocus() || !field->property("swiftuiTyped").toBool()) && field->text() != fields.value(id)) {
-            const QSignalBlocker block(field);
-            field->setText(fields.value(id));
-        }
+        if (fields.contains(id)) if (auto *field = qobject_cast<QLineEdit *>(widget))
+            swiftuifields::refreshText(*field, fields.value(id));
         if (labels.contains(id)) if (auto *label = qobject_cast<QLabel *>(widget)) {
             const auto node = labels.value(id);
             const auto wire = QJsonDocument(node).toJson(QJsonDocument::Compact);
