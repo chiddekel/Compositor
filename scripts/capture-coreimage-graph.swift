@@ -47,7 +47,7 @@ func extent(_ image: CIImage) -> [String: Any] {
             "width": Double(rect.width), "height": Double(rect.height)]
 }
 
-func snapshot(_ image: CIImage, includePixels: Bool = false) throws -> [String: Any] {
+func snapshot(_ image: CIImage, includePixels: Bool = false, includeFloats: Bool = false) throws -> [String: Any] {
     let before = image.debugDescription
     var floats = [Float](repeating: 0, count: width * height * 4)
     floats.withUnsafeMutableBytes { buffer in
@@ -75,6 +75,7 @@ func snapshot(_ image: CIImage, includePixels: Bool = false) throws -> [String: 
             "descriptionAfterRender": String(after.prefix(65_536)),
             "descriptionTruncated": before.count > 65_536 || after.count > 65_536]
     if includePixels { result["rgbaBase64"] = bytes.base64EncodedString() }
+    if includeFloats { result["floatBase64"] = floatData.base64EncodedString() }
     return result
 }
 
@@ -128,12 +129,46 @@ func capture() throws -> [String: Any] {
             }
         }
     }
+    // Append variable-blur diagnostics after every preceding recipe, preserving their render order.
+    // Constant masks expose the pyramid's level selection; materialized impulses expose sampling phases.
+    var variable = [[String: Any]]()
+    for (fixture, input) in sources {
+        for radius in [1.0, 10, 35] {
+            for intensity in [0.0, 0.02, 0.05, 0.1, 0.25, 0.5, 0.75, 1] {
+                let mask = CIImage(color: CIColor(red: intensity, green: intensity, blue: intensity))
+                let output = input.applyingFilter("CIMaskedVariableBlur", parameters: [
+                    "inputMask": mask, kCIInputRadiusKey: radius])
+                variable.append(["fixture": fixture, "filter": "CIMaskedVariableBlur", "radius": radius,
+                                 "maskIntensity": intensity, "outputExtent": extent(output),
+                                 "output": try snapshot(output, includePixels: true, includeFloats: true)])
+            }
+        }
+    }
+    for phaseY in 0..<4 { for phaseX in 0..<4 {
+        let source = try bitmap()
+        guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
+            throw CaptureError.failed("Missing phase impulse pixels")
+        }
+        for y in 0..<height { for x in 0..<width {
+            let value: UInt8 = x == width / 2 + phaseX && y == height / 2 + phaseY ? 255 : 0
+            for channel in 0..<4 { pixels[y * source.bytesPerRow + x * 4 + channel] = value }
+        } }
+        guard let image = source.makeImage() else { throw CaptureError.failed("Cannot create phase impulse") }
+        for radius in [1.5, 3, 6] {
+            let output = CIImage(cgImage: image).applyingFilter("CIMaskedVariableBlur", parameters: [
+                "inputMask": CIImage(color: .white), kCIInputRadiusKey: radius])
+            variable.append(["fixture": "phase-impulse", "phaseX": phaseX, "phaseY": phaseY,
+                             "filter": "CIMaskedVariableBlur", "radius": radius, "maskIntensity": 1,
+                             "outputExtent": extent(output),
+                             "output": try snapshot(output, includePixels: true, includeFloats: true)])
+        }
+    } }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
             "contextDescription": String(context.debugDescription.prefix(65_536)),
             "recipe": "Unmanaged shared CIContext; finite RGBA8 sources; RGBAf bitmap and RGBA8 CGImage copied into an identity bitmap",
             "diagnosticDescriptions": true, "inputs": inputs, "cases": cases,
-            "probeRadii": radii, "smallRadiusProbes": probes]
+            "probeRadii": radii, "smallRadiusProbes": probes, "variableBlurProbes": variable]
 }
 
 do {

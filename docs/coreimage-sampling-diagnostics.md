@@ -1,5 +1,22 @@
 # Core Image sampling diagnostics
 
+## Variable-blur pyramid diagnostics
+
+The graph capture appends 96 `CIMaskedVariableBlur` probes after the existing
+recipes. Forty-eight constant-mask cases cover two inputs, radii 1, 10 and 35,
+and eight mask intensities. Another 48 cases materialize an impulse at each of
+16 two-dimensional sampling phases, at radii 1.5, 3 and 6. Each new case records
+native graph descriptions and complete byte/float buffers with SHA256 hashes.
+The workflow checks the exact recipe matrix, finite float values, buffer hashes
+and zero-mask identity. Existing recipes retain their render order.
+
+These probes investigate Progressive Blur's native pyramid and interpolation.
+They do not change the Linux renderer or establish rendering parity. Existing
+constant-mask captures show an identity boundary near effective radius 0.75 and
+logarithmic blending between pyramid levels, which the current variance-based
+Gaussian approximation does not reproduce. The phase captures distinguish the
+level filters and sampling geometry before a replacement is implemented.
+
 The manual `coreimage-reference.yml` workflow runs the native macOS capture with an unmanaged Core Image
 context. It validates 358 cases and 720 byte/float buffers, including SHA-256 checks, dimensions, finite float
 values and unique recipe metadata. The artifact contains synthetic pixels only.
