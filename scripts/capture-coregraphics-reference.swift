@@ -476,6 +476,137 @@ func captureStrokeCoverage() throws -> [[String: Any]] {
     return cases
 }
 
+func describePath(_ path: CGPath) -> [[String: Any]] {
+    var segments = [[String: Any]]()
+    path.applyWithBlock { pointer in
+        let element = pointer.pointee
+        let verb: String, count: Int
+        switch element.type {
+        case .moveToPoint: verb = "move"; count = 1
+        case .addLineToPoint: verb = "line"; count = 1
+        case .addQuadCurveToPoint: verb = "quad"; count = 2
+        case .addCurveToPoint: verb = "cubic"; count = 3
+        case .closeSubpath: verb = "close"; count = 0
+        @unknown default: verb = "unknown"; count = 0
+        }
+        let points = (0..<count).map { [element.points[$0].x, element.points[$0].y] }
+        segments.append(["verb": verb, "points": points])
+    }
+    return segments
+}
+
+// The same smooth-corner geometry as ShapeKind; keep the native path elements
+// in the artifact so path construction and pixel coverage can be tested separately.
+func smoothCoverageRectangle(_ rect: CGRect, radius: CGFloat) -> CGPath {
+    let smoothing = min(CGFloat(0.6), max(0, min(rect.width, rect.height) / (2 * radius) - 1))
+    guard smoothing > 0 else {
+        return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+    }
+    let reach = (1 + smoothing) * radius, angle = smoothing * .pi / 4
+    let tangent = radius * tan(angle / 2), c = tangent * cos(angle), d = tangent * sin(angle)
+    let arcLength = radius * sqrt(2) * sin((1 - smoothing) * .pi / 4)
+    let b = (reach - arcLength - c - d) / 3, a = 2 * b
+    let path = CGMutablePath()
+    let corners = [CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.maxY),
+                   CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.minY)]
+    for (index, corner) in corners.enumerated() {
+        let transform = CGAffineTransform(translationX: corner.x, y: corner.y).rotated(by: CGFloat(index) * .pi / 2)
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x, y: y).applying(transform) }
+        if index == 0 { path.move(to: point(-reach, 0)) } else { path.addLine(to: point(-reach, 0)) }
+        path.addCurve(to: point(-reach + a + b + c, d),
+                      control1: point(-reach + a, 0), control2: point(-reach + a + b, 0))
+        path.addArc(center: CGPoint(x: -radius, y: radius), radius: radius,
+                    startAngle: -.pi / 2 + angle, endAngle: -angle, clockwise: false, transform: transform)
+        path.addCurve(to: point(0, reach), control1: point(0, reach - a - b), control2: point(0, reach - a))
+    }
+    path.closeSubpath()
+    return path
+}
+
+func captureCurveCoverage() throws -> [[String: Any]] {
+    var cases = [[String: Any]]()
+    let sizes = [CGSize(width: 4, height: 4), CGSize(width: 12, height: 8),
+                 CGSize(width: 31.5, height: 23.25), CGSize(width: 64, height: 48),
+                 CGSize(width: 63.5, height: 47.25)]
+    let transforms: [(String, CGAffineTransform)] = [
+        ("identity", .identity), ("translated", CGAffineTransform(translationX: 0.375, y: -0.25)),
+        ("affine", CGAffineTransform(a: 0.8, b: 0.15, c: -0.1, d: 0.75, tx: 9, ty: 4))
+    ]
+    func append(_ name: String, family: String, path: CGPath, transform: (String, CGAffineTransform),
+                flatness: Double? = nil) throws {
+        let context = try bitmap(width: 96, height: 72)
+        context.concatenate(transform.1)
+        context.setShouldAntialias(true)
+        if let flatness { context.setFlatness(flatness) }
+        context.setFillColor(CGColor(srgbRed: 0.8, green: 0.3, blue: 0.5, alpha: 0.7))
+        context.addPath(path)
+        context.fillPath()
+        let t = transform.1
+        cases.append(["name": name, "family": family, "path": describePath(path),
+                      "transformName": transform.0, "transform": [t.a, t.b, t.c, t.d, t.tx, t.ty],
+                      "flatness": flatness.map { String($0) } ?? "default", "rgba": [0.8, 0.3, 0.5, 0.7],
+                      "output": try describe(context)])
+    }
+    for family in ["ellipse", "rounded", "smooth"] {
+        for (index, size) in sizes.enumerated() {
+            for phase in [0.0, 0.25] {
+                let rect = CGRect(x: 8 + phase, y: 8 + phase, width: size.width, height: size.height)
+                let radius = min(CGFloat(12), rect.width / 2, rect.height / 2)
+                let path = family == "ellipse" ? CGPath(ellipseIn: rect, transform: nil)
+                    : family == "rounded" ? CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+                    : smoothCoverageRectangle(rect, radius: radius)
+                for transform in transforms {
+                    try append("\(family)-size-\(index)-phase-\(phase)-\(transform.0)", family: family,
+                               path: path, transform: transform)
+                }
+                if index == 3 && phase == 0 {
+                    for flatness in [0.01, 0.1, 0.6, 1.0, 10.0] {
+                        try append("\(family)-flatness-\(flatness)", family: family,
+                                   path: path, transform: transforms[0], flatness: flatness)
+                    }
+                }
+            }
+        }
+    }
+    for family in ["quad-cap", "cubic-cap"] {
+        for phase in [0.0, 0.25] {
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 8 + phase, y: 48 + phase))
+            if family == "quad-cap" {
+                path.addQuadCurve(to: CGPoint(x: 72 + phase, y: 48 + phase), control: CGPoint(x: 40 + phase, y: -8 + phase))
+            } else {
+                path.addCurve(to: CGPoint(x: 72 + phase, y: 48 + phase),
+                              control1: CGPoint(x: 8 + phase, y: phase), control2: CGPoint(x: 72 + phase, y: phase))
+            }
+            path.closeSubpath()
+            try append("\(family)-phase-\(phase)", family: family, path: path, transform: transforms[0])
+        }
+    }
+    return cases
+}
+
+func captureStrokeOutlines(_ strokes: [[String: Any]]) throws -> [[String: Any]] {
+    try strokes.map { stroke in
+        guard let start = stroke["start"] as? [CGFloat], let end = stroke["end"] as? [CGFloat],
+              let t = stroke["transform"] as? [CGFloat], let rgba = stroke["rgba"] as? [Double],
+              let width = stroke["width"] as? Double, let capName = stroke["cap"] as? String else {
+            throw CaptureError.failed("Invalid stroke recipe for outline capture")
+        }
+        let cap: CGLineCap = capName == "round" ? .round : capName == "square" ? .square : .butt
+        let source = CGMutablePath()
+        source.move(to: CGPoint(x: start[0], y: start[1]))
+        source.addLine(to: CGPoint(x: end[0], y: end[1]))
+        let outline = source.copy(strokingWithWidth: width, lineCap: cap, lineJoin: .miter, miterLimit: 10)
+        let context = try bitmap(width: 96, height: 72)
+        context.concatenate(CGAffineTransform(a: t[0], b: t[1], c: t[2], d: t[3], tx: t[4], ty: t[5]))
+        context.setShouldAntialias(true)
+        context.setFillColor(CGColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba[3]))
+        context.addPath(outline)
+        context.fillPath()
+        return ["name": stroke["name"]!, "path": describePath(outline), "output": try describe(context)]
+    }
+}
+
 func capture() throws -> [String: Any] {
     let width = 96, height = 72
     var cases = [[String: Any]]()
@@ -551,13 +682,15 @@ func capture() throws -> [String: Any] {
                                        "input": try describe(floatSource), "output": try describe(floatSmall)]])
         }
     }
+    let strokes = try captureStrokeCoverage()
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "format": "sRGB premultiplied RGBA8; packed bitmap-memory rows", "quality": "high",
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
             "nonseparablePairs": try captureNonseparablePairs(),
-            "strokeCoverage": try captureStrokeCoverage(),
+            "strokeCoverage": strokes, "strokeOutlines": try captureStrokeOutlines(strokes),
+            "curveCoverage": try captureCurveCoverage(),
             "text": try captureText(), "textGeometry": try captureTextGeometry(),
             "textParagraphGeometry": try captureTextParagraphGeometry(), "textFallbackFonts": try captureTextFallbackFonts()]
 }

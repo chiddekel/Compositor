@@ -42,6 +42,39 @@ jobs:
               assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
           print('Validated 91 native stroke coverage recipes and bitmap buffers')
           PY
+      - name: Validate native curved paths and stroke outlines
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math
+          from pathlib import Path
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          curves = reference['curveCoverage']
+          outlines = reference['strokeOutlines']
+          assert len(curves) == len({c['name'] for c in curves}) == 109
+          assert {c['family'] for c in curves} == {'ellipse', 'rounded', 'smooth', 'quad-cap', 'cubic-cap'}
+          assert sum(c['flatness'] == 'default' for c in curves) == 94
+          assert {c['flatness'] for c in curves} == {'default', '0.01', '0.1', '0.6', '1.0', '10.0'}
+          assert sum(c['transformName'] == 'translated' for c in curves) == 30
+          assert sum(c['transformName'] == 'affine' for c in curves) == 30
+          assert len(outlines) == len({c['name'] for c in outlines}) == 91
+          assert {c['name'] for c in outlines} == {c['name'] for c in reference['strokeCoverage']}
+          point_counts = {'move': 1, 'line': 1, 'quad': 2, 'cubic': 3, 'close': 0}
+          for case in curves:
+              assert len(case['transform']) == 6 and len(case['rgba']) == 4
+              assert all(math.isfinite(v) for key in ['transform', 'rgba'] for v in case[key])
+          for case in curves + outlines:
+              assert case['path'] and case['path'][0]['verb'] == 'move'
+              for segment in case['path']:
+                  assert len(segment['points']) == point_counts[segment['verb']]
+                  assert all(len(p) == 2 and all(math.isfinite(v) for v in p) for p in segment['points'])
+              item = case['output']
+              assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (96, 72, 384, 8)
+              raw = base64.b64decode(item['rgbaBase64'], validate=True)
+              assert len(raw) == 384 * 72 and hashlib.sha256(raw).hexdigest() == item['sha256']
+              assert any(raw[3::4]), 'Native path draw is empty'
+              assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
+          print('Validated 109 curved paths, 91 stroke outlines and 200 native buffers')
+          PY
       - name: Validate paired Hue and Saturation controls
         run: |
           python3 - <<'PY'
