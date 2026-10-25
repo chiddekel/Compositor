@@ -135,6 +135,34 @@ jobs:
                                  for p in struct.iter_unpack('<4f', raw))
           print('Validated 80 corner/fractional-bound recipes and 160 native bitmap buffers')
           PY
+      - name: Validate isolated fractional sampling geometry controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingGeometry']
+          assert len(cases) == 144
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['mode'], c['block'], c['quality']) for c in cases}) == 144
+          for case in cases:
+              assert (case['sourceWidth'], case['sourceHeight']) in [(17, 13), (65, 49), (97, 73)]
+              assert case['mode'] in ['constant', 'ramps', 'checker', 'corners']
+              assert case['quality'] in ['none', 'high'] and case['block'] in [2, 3, 6]
+              width, height, block = case['sourceWidth'], case['sourceHeight'], case['block']
+              for key in ['input', 'output', 'alignedOutput']:
+                  item = case[key]
+                  expected = (width, height) if key == 'input' else (
+                      (width + block - 1) // block, (height + block - 1) // block)
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+          print('Validated 144 isolated sampling-geometry recipes and 432 native bitmap buffers')
+          PY
       - name: Validate high-quality stripe signal controls
         run: |
           python3 - <<'PY'
