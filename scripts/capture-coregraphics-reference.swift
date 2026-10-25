@@ -495,16 +495,17 @@ func describePath(_ path: CGPath) -> [[String: Any]] {
     return segments
 }
 
-func rebuildCoveragePath(_ source: CGPath) -> CGPath {
+func rebuildCoveragePath(_ source: CGPath, transform: CGAffineTransform = .identity) -> CGPath {
     let result = CGMutablePath()
     source.applyWithBlock { pointer in
         let element = pointer.pointee
+        func point(_ index: Int) -> CGPoint { element.points[index].applying(transform) }
         switch element.type {
-        case .moveToPoint: result.move(to: element.points[0])
-        case .addLineToPoint: result.addLine(to: element.points[0])
-        case .addQuadCurveToPoint: result.addQuadCurve(to: element.points[1], control: element.points[0])
+        case .moveToPoint: result.move(to: point(0))
+        case .addLineToPoint: result.addLine(to: point(0))
+        case .addQuadCurveToPoint: result.addQuadCurve(to: point(1), control: point(0))
         case .addCurveToPoint:
-            result.addCurve(to: element.points[2], control1: element.points[0], control2: element.points[1])
+            result.addCurve(to: point(2), control1: point(0), control2: point(1))
         case .closeSubpath: result.closeSubpath()
         @unknown default: break
         }
@@ -568,6 +569,7 @@ func captureCurveCoverage() throws -> [[String: Any]] {
         rebuilt.addPath(rebuiltPath)
         rebuilt.fillPath()
         var flattenedCopies = [[String: Any]]()
+        var coverageControls = [[String: Any]]()
         for threshold in [0.025, 0.05, 0.0625, 0.075, 0.1, 0.25, 0.5, 0.6, 1.0, 10.0] {
             let copy: CGPath? = path.flattened(threshold: threshold)
             guard let copy else { throw CaptureError.failed("Cannot flatten native path") }
@@ -578,8 +580,31 @@ func captureCurveCoverage() throws -> [[String: Any]] {
             target.addPath(copy)
             target.fillPath()
             flattenedCopies.append(["threshold": threshold, "path": describePath(copy), "output": try describe(target)])
+            if threshold == 0.1 {
+                for (label, alpha, pretransformed, floating) in [
+                    ("opaque", 1.0, false, false), ("alpha-0.7", 0.7, false, false),
+                    ("alpha-0.5", 0.5, false, false), ("alpha-0.25", 0.25, false, false),
+                    ("transformed-opaque", 1.0, true, false), ("transformed-color", 0.7, true, false),
+                    ("floating-opaque", 1.0, false, true)
+                ] {
+                    let sample = try bitmap(width: 96, height: 72, floating: floating)
+                    sample.setShouldAntialias(true)
+                    if pretransformed {
+                        sample.addPath(rebuildCoveragePath(copy, transform: transform.1))
+                    } else {
+                        sample.concatenate(transform.1)
+                        sample.addPath(copy)
+                    }
+                    let color = label == "transformed-color" ? [0.8, 0.3, 0.5] : [1.0, 1, 1]
+                    sample.setFillColor(CGColor(srgbRed: color[0], green: color[1], blue: color[2], alpha: alpha))
+                    sample.fillPath()
+                    coverageControls.append(["name": label, "alpha": alpha, "pretransformed": pretransformed,
+                                             "floating": floating, "output": try describe(sample)])
+                }
+            }
         }
         cases.append(["name": name, "family": family, "path": describePath(path), "flattened": flattenedCopies,
+                      "coverageControls": coverageControls,
                       "rebuiltPath": describePath(rebuiltPath), "rebuiltOutput": try describe(rebuilt),
                       "transformName": transform.0, "transform": [t.a, t.b, t.c, t.d, t.tx, t.ty],
                       "flatness": flatness.map { String($0) } ?? "default", "rgba": [0.8, 0.3, 0.5, 0.7],

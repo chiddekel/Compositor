@@ -83,6 +83,37 @@ jobs:
               assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
           print('Validated 109 curves, 91 outlines, 1090 flattened copies, 109 rebuilt paths and 1399 buffers')
           PY
+      - name: Validate coverage opacity and transform controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          curves = json.loads(Path('coregraphics-reference.json').read_text())['curveCoverage']
+          count = 0
+          for case in curves:
+              controls = case['coverageControls']
+              assert len(controls) == len({c['name'] for c in controls}) == 7
+              assert {c['name'] for c in controls} == {'opaque', 'alpha-0.7', 'alpha-0.5', 'alpha-0.25',
+                                                     'transformed-opaque', 'transformed-color', 'floating-opaque'}
+              for control in controls:
+                  item = control['output']
+                  assert (item['width'], item['height']) == (96, 72)
+                  assert item['bitsPerComponent'] == (32 if control['floating'] else 8)
+                  assert item['rowBytes'] == 96 * (16 if control['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * 72 and hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if control['floating']:
+                      pixels = list(struct.iter_unpack('<4f', raw))
+                      assert all(all(math.isfinite(v) for v in pixel) and 0 <= pixel[3] <= 1 for pixel in pixels)
+                      assert all(0 <= pixel[c] <= pixel[3] + 1e-6 for pixel in pixels for c in range(3))
+                      assert any(pixel[3] > 0 for pixel in pixels)
+                  else:
+                      assert any(raw[3::4])
+                      assert all(raw[i + c] <= raw[i + 3] for i in range(0, len(raw), 4) for c in range(3))
+                  count += 1
+          assert count == 763
+          print('Validated 763 coupled coverage, opacity and transform buffers')
+          PY
       - name: Validate paired Hue and Saturation controls
         run: |
           python3 - <<'PY'
