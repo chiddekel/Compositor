@@ -754,11 +754,12 @@ func captureSamplingLinearity() throws -> [[String: Any]] {
 }
 
 func captureSamplingGeometry(alphaMode: String = "opaque",
-                             sizes: [(Int, Int)] = [(17, 13), (65, 49), (97, 73)]) throws -> [[String: Any]] {
+                             sizes: [(Int, Int)] = [(17, 13), (65, 49), (97, 73)],
+                             modes: [String] = ["constant", "ramps", "checker", "corners"]) throws -> [[String: Any]] {
     var cases = [[String: Any]]()
     for (width, height) in sizes {
         for floating in [false, true] {
-            for mode in ["constant", "ramps", "checker", "corners"] {
+            for mode in modes {
                 let source = try bitmap(width: width, height: height, floating: floating)
                 guard let data = source.data else { throw CaptureError.failed("Missing sampling-geometry source") }
                 for y in 0..<height { for x in 0..<width {
@@ -767,6 +768,8 @@ func captureSamplingGeometry(alphaMode: String = "opaque",
                     case "constant": values = [0.25, 0.5, 0.75, 1]
                     case "ramps": values = [Double(x) / Double(width - 1), Double(y) / Double(height - 1), 0.5, 1]
                     case "checker": values = [Double(x % 2), Double(y % 2), Double((x + y) % 2), 1]
+                    case "period5": values = [Double(x) / Double(width - 1), Double(y) / Double(height - 1),
+                                              Double((x + 2 * y) % 5) / 4, 1]
                     default: values = [x == width - 1 && y == height - 1 ? 1 : 0,
                                        x == 0 && y == height - 1 ? 1 : 0,
                                        x == width - 1 && y == 0 ? 1 : 0, 1]
@@ -969,6 +972,8 @@ func capture() throws -> [String: Any] {
             "samplingSignals": try captureSamplingSignals(),
             "samplingGeometry": try captureSamplingGeometry(),
             "samplingAlphaGeometry": try captureSamplingAlphaGeometry(),
+            "samplingPeriodicGeometry": try captureSamplingGeometry(alphaMode: "ramp",
+                sizes: [(17, 13), (97, 73)], modes: ["period5"]),
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),

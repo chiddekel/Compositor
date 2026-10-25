@@ -173,10 +173,15 @@ jobs:
           assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['mode'], c['alphaMode'], c['block'], c['quality']) for c in cases}) == 432
           assert {mode: sum(c['alphaMode'] == mode for c in cases) for mode in ['opaque', 'half', 'ramp']} == {
               'opaque': 48, 'half': 192, 'ramp': 192}
+          periodic = json.loads(Path('coregraphics-reference.json').read_text())['samplingPeriodicGeometry']
+          assert len(periodic) == 24
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['block'], c['quality']) for c in periodic}) == 24
+          assert all(c['mode'] == 'period5' and (c['sourceWidth'], c['sourceHeight']) in [(17, 13), (97, 73)] for c in periodic)
+          cases += [dict(c, alphaMode='ramp') for c in periodic]
           for case in cases:
               width, height, block = case['sourceWidth'], case['sourceHeight'], case['block']
               assert (width, height) in ([(32, 24)] if case['alphaMode'] == 'opaque' else [(17, 13), (32, 24), (65, 49), (97, 73)])
-              assert case['mode'] in ['constant', 'ramps', 'checker', 'corners']
+              assert case['mode'] in ['constant', 'ramps', 'checker', 'corners', 'period5']
               assert case['quality'] in ['none', 'high'] and block in [2, 3, 6]
               for key in ['input', 'output', 'alignedOutput']:
                   item = case[key]
@@ -196,7 +201,7 @@ jobs:
                       expected_alpha = {'opaque': (1, 1), 'half': (0.5, 0.5), 'ramp': (0.25, 1)} if case['floating'] else {
                           'opaque': (255, 255), 'half': (128, 128), 'ramp': (64, 255)}
                       assert (min(alpha), max(alpha)) == expected_alpha[case['alphaMode']]
-          print('Validated 432 alpha/single-fractional-axis recipes and 1296 native bitmap buffers')
+          print('Validated 456 alpha/periodic/single-fractional-axis recipes and 1368 native bitmap buffers')
           PY
       - name: Validate high-quality stripe signal controls
         run: |
