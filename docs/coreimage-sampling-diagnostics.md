@@ -2,10 +2,12 @@
 
 ## Variable-blur pyramid diagnostics
 
-The graph capture appends 96 `CIMaskedVariableBlur` probes after the existing
+The graph capture appends 168 `CIMaskedVariableBlur` probes after the existing
 recipes. Forty-eight constant-mask cases cover two inputs, radii 1, 10 and 35,
-and eight mask intensities. Another 48 cases materialize an impulse at each of
-16 two-dimensional sampling phases, at radii 1.5, 3 and 6. Each new case records
+and eight mask intensities. Another 96 cases materialize an impulse at each of
+16 two-dimensional bitmap sampling phases, at radii 1.5, 3, 6, 12, 24 and 48.
+The final 24 cases clamp both source fixtures at radii 10 and 35 with six mask
+intensities, isolating finite-image boundary effects. Each new case records
 native graph descriptions and complete byte/float buffers with SHA256 hashes.
 The workflow checks the exact recipe matrix, finite float values, buffer hashes
 and zero-mask identity. Existing recipes retain their render order.
@@ -16,6 +18,17 @@ constant-mask captures show an identity boundary near effective radius 0.75 and
 logarithmic blending between pyramid levels, which the current variance-based
 Gaussian approximation does not reproduce. The phase captures distinguish the
 level filters and sampling geometry before a replacement is implemented.
+
+Native run `40198914398` validates the first 96 probes. Its 48 constant-mask byte
+and float outputs match the earlier capture exactly. Direct levels at radii 1.5
+and 3 agree with logarithmic interpolation predictions within 0.000213 byte levels.
+A prototype using a four-by-four cross reduction kernel and cubic B-spline
+reconstruction with 1/256 sampler fractions matches all 48 low-level phase probes
+within 0.00381 byte levels. After aligning the pyramid in Core Image coordinates,
+four larger-radius finite-gradient controls still differ by up to 13.6 levels;
+these are not resolved by the prototype. The coarser
+and clamped probes investigate that limitation. Production variable blur remains
+unchanged.
 
 The manual `coreimage-reference.yml` workflow runs the native macOS capture with an unmanaged Core Image
 context. It validates 358 cases and 720 byte/float buffers, including SHA-256 checks, dimensions, finite float

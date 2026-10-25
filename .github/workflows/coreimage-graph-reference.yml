@@ -72,8 +72,11 @@ jobs:
                                for radius in [1, 10, 35]
                                for intensity in [0, 0.02, 0.05, 0.1, 0.25, 0.5, 0.75, 1]}
           expected_variable |= {('phase-impulse', radius, 1, x, y)
-                                for x in range(4) for y in range(4) for radius in [1.5, 3, 6]}
-          assert len(variable) == len(expected_variable) == 96
+                                for x in range(4) for y in range(4) for radius in [1.5, 3, 6, 12, 24, 48]}
+          expected_variable |= {(fixture + '-clamped', radius, intensity, None, None)
+                                for fixture in ['opaque-gradient', 'impulse'] for radius in [10, 35]
+                                for intensity in [0, 0.1, 0.25, 0.5, 0.75, 1]}
+          assert len(variable) == len(expected_variable) == 168
           assert {(c['fixture'], c['radius'], c['maskIntensity'], c.get('phaseX'), c.get('phaseY'))
                   for c in variable} == expected_variable
           identities = {c['fixture']: c['output']['byteSha256'] for c in reference['inputs']}
@@ -87,7 +90,9 @@ jobs:
               values = struct.unpack('<27648f', base64.b64decode(output['floatBase64']))
               assert all(math.isfinite(v) for v in values)
               if probe['maskIntensity'] == 0:
-                  assert output['byteSha256'] == identities[probe['fixture']]
+                  assert output['byteSha256'] == identities[probe['fixture'].removesuffix('-clamped')]
+              if probe['fixture'] == 'opaque-gradient-clamped':
+                  assert all(abs(v - 1) <= 1e-6 for v in values[3::4])
           for case in reference['inputs'] + cases + probes + variable:
               output = case['output']
               assert (output['width'], output['height']) == (96, 72)
@@ -97,7 +102,7 @@ jobs:
               for key in ['descriptionBeforeRender', 'descriptionAfterRender']:
                   assert isinstance(output[key], str) and 0 < len(output[key]) <= 65536
               assert output['descriptionTruncated'] is False
-          print(f'Validated 164 graph recipes, {len(probes)} small-radius probes, 96 variable-blur probes and {262 + len(probes)} pairs of bitmap hashes')
+          print(f'Validated 164 graph recipes, {len(probes)} small-radius probes, 168 variable-blur probes and {334 + len(probes)} pairs of bitmap hashes')
           PY
       - uses: actions/upload-artifact@v4
         if: always()

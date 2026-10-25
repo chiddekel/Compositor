@@ -144,6 +144,7 @@ func capture() throws -> [String: Any] {
             }
         }
     }
+    var phaseSources = [(Int, Int, CIImage)]()
     for phaseY in 0..<4 { for phaseX in 0..<4 {
         let source = try bitmap()
         guard let pixels = source.data?.assumingMemoryBound(to: UInt8.self) else {
@@ -162,7 +163,31 @@ func capture() throws -> [String: Any] {
                              "outputExtent": extent(output),
                              "output": try snapshot(output, includePixels: true, includeFloats: true)])
         }
+        phaseSources.append((phaseX, phaseY, CIImage(cgImage: image)))
     } }
+    // Coarser levels and clamped sources separate sampling phase from finite-image edge behavior.
+    for (phaseX, phaseY, input) in phaseSources {
+        for radius in [12.0, 24, 48] {
+            let output = input.applyingFilter("CIMaskedVariableBlur", parameters: [
+                "inputMask": CIImage(color: .white), kCIInputRadiusKey: radius])
+            variable.append(["fixture": "phase-impulse", "phaseX": phaseX, "phaseY": phaseY,
+                             "filter": "CIMaskedVariableBlur", "radius": radius, "maskIntensity": 1,
+                             "outputExtent": extent(output),
+                             "output": try snapshot(output, includePixels: true, includeFloats: true)])
+        }
+    }
+    for (fixture, input) in sources {
+        for radius in [10.0, 35] {
+            for intensity in [0.0, 0.1, 0.25, 0.5, 0.75, 1] {
+                let mask = CIImage(color: CIColor(red: intensity, green: intensity, blue: intensity))
+                let output = input.clampedToExtent().applyingFilter("CIMaskedVariableBlur", parameters: [
+                    "inputMask": mask, kCIInputRadiusKey: radius])
+                variable.append(["fixture": fixture + "-clamped", "filter": "CIMaskedVariableBlur",
+                                 "radius": radius, "maskIntensity": intensity, "outputExtent": extent(output),
+                                 "output": try snapshot(output, includePixels: true, includeFloats: true)])
+            }
+        }
+    }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
             "contextDescription": String(context.debugDescription.prefix(65_536)),
