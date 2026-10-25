@@ -109,6 +109,32 @@ jobs:
                              for p in struct.iter_unpack('<4f', raw))
           print('Validated 104 sampling-linearity recipes and 208 native floating-point buffers')
           PY
+      - name: Validate sampling corner and fractional-bound controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingCorners']
+          assert len(cases) == 80
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['block'], c['quality']) for c in cases}) == 80
+          for case in cases:
+              assert case['quality'] in ['none', 'high'] and case['block'] in [1, 2, 3, 6]
+              width, height = case['sourceWidth'], case['sourceHeight']
+              for key in ['input', 'output']:
+                  item = case[key]
+                  expected = (width, height) if key == 'input' else (
+                      (width + case['block'] - 1) // case['block'], (height + case['block'] - 1) // case['block'])
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+          print('Validated 80 corner/fractional-bound recipes and 160 native bitmap buffers')
+          PY
       - name: Validate coverage opacity and transform controls
         run: |
           python3 - <<'PY'

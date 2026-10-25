@@ -753,6 +753,49 @@ func captureSamplingLinearity() throws -> [[String: Any]] {
     return cases
 }
 
+func captureSamplingCorners() throws -> [[String: Any]] {
+    var cases = [[String: Any]]()
+    for (width, height) in [(17, 13), (32, 24), (65, 49), (96, 72), (97, 73)] {
+        for floating in [false, true] {
+            let source = try bitmap(width: width, height: height, floating: floating)
+            guard let data = source.data else { throw CaptureError.failed("Missing sampling-corner source") }
+            for y in 0..<height { for x in 0..<width {
+                let alpha = 0.25 + 0.75 * Double(x + y) / Double(width + height - 2)
+                let values = [Double(x) / Double(width - 1), Double(y) / Double(height - 1),
+                              Double((x + 2 * y) % 5) / 4]
+                if floating {
+                    let pixels = data.assumingMemoryBound(to: Float.self)
+                    let at = y * source.bytesPerRow / MemoryLayout<Float>.size + x * 4
+                    for c in 0..<3 { pixels[at + c] = Float(values[c] * alpha) }
+                    pixels[at + 3] = Float(alpha)
+                } else {
+                    let pixels = data.assumingMemoryBound(to: UInt8.self)
+                    let at = y * source.bytesPerRow + x * 4
+                    for c in 0..<3 { pixels[at + c] = UInt8((values[c] * alpha * 255).rounded()) }
+                    pixels[at + 3] = UInt8((alpha * 255).rounded())
+                }
+            } }
+            guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make sampling-corner image") }
+            for block in [1, 2, 3, 6] {
+                for quality in ["none", "high"] {
+                    let output = try bitmap(width: (width + block - 1) / block,
+                                            height: (height + block - 1) / block, floating: floating)
+                    output.interpolationQuality = quality == "high" ? .high : .none
+                    output.translateBy(x: 0, y: CGFloat(height) / CGFloat(block))
+                    output.scaleBy(x: 1, y: -1)
+                    output.setBlendMode(.copy)
+                    output.draw(image, in: CGRect(x: 0, y: 0, width: Double(width) / Double(block),
+                                                  height: Double(height) / Double(block)))
+                    cases.append(["sourceWidth": width, "sourceHeight": height, "floating": floating,
+                                  "block": block, "quality": quality, "input": try describe(source),
+                                  "output": try describe(output)])
+                }
+            }
+        }
+    }
+    return cases
+}
+
 func capture() throws -> [String: Any] {
     let width = 96, height = 72
     var cases = [[String: Any]]()
@@ -832,6 +875,7 @@ func capture() throws -> [String: Any] {
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "format": "sRGB premultiplied RGBA8; packed bitmap-memory rows", "quality": "high",
             "samplingLinearity": try captureSamplingLinearity(),
+            "samplingCorners": try captureSamplingCorners(),
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
