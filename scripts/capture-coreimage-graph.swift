@@ -47,26 +47,48 @@ func extent(_ image: CIImage) -> [String: Any] {
             "width": Double(rect.width), "height": Double(rect.height)]
 }
 
-func snapshot(_ image: CIImage, includePixels: Bool = false, includeFloats: Bool = false) throws -> [String: Any] {
+func snapshot(_ image: CIImage, includePixels: Bool = false, includeFloats: Bool = false,
+              renderMargin: Int = 0, renderContext: CIContext? = nil,
+              bitmapBytes: Bool = false) throws -> [String: Any] {
     let before = image.debugDescription
-    var floats = [Float](repeating: 0, count: width * height * 4)
-    floats.withUnsafeMutableBytes { buffer in
-        context.render(image, toBitmap: buffer.baseAddress!, rowBytes: width * 16,
-                       bounds: bounds, format: .RGBAf, colorSpace: space)
+    let drawingContext = renderContext ?? context
+    let renderBounds = bounds.insetBy(dx: -CGFloat(renderMargin), dy: -CGFloat(renderMargin))
+    let renderWidth = width + renderMargin * 2, renderHeight = height + renderMargin * 2
+    var renderedFloats = [Float](repeating: 0, count: renderWidth * renderHeight * 4)
+    renderedFloats.withUnsafeMutableBytes { buffer in
+        drawingContext.render(image, toBitmap: buffer.baseAddress!, rowBytes: renderWidth * 16,
+                       bounds: renderBounds, format: .RGBAf, colorSpace: space)
     }
-    guard floats.allSatisfy(\.isFinite) else { throw CaptureError.failed("Nonfinite native components") }
+    guard renderedFloats.allSatisfy(\.isFinite) else { throw CaptureError.failed("Nonfinite native components") }
+    let floats = renderMargin == 0 ? renderedFloats : (0..<height).flatMap { row in
+        let start = ((row + renderMargin) * renderWidth + renderMargin) * 4
+        return Array(renderedFloats[start..<(start + width * 4)])
+    }
     let floatData = floats.withUnsafeBytes { Data($0) }
-    guard let rendered = context.createCGImage(image, from: bounds, format: .RGBA8, colorSpace: space),
-          rendered.width == width, rendered.height == height else {
-        throw CaptureError.failed("Cannot create a fixed-size native image")
-    }
-    let target = try bitmap()
-    target.setBlendMode(.copy)
-    target.draw(rendered, in: bounds)
-    guard let pixels = target.data else { throw CaptureError.failed("Missing rendered bitmap pixels") }
     var bytes = Data()
-    for y in 0..<height {
-        bytes.append(pixels.advanced(by: y * target.bytesPerRow).assumingMemoryBound(to: UInt8.self), count: width * 4)
+    if bitmapBytes {
+        // CGImage export clips to finite image extents. Bitmap rendering keeps the requested domain intact.
+        var expanded = [UInt8](repeating: 0, count: renderWidth * renderHeight * 4)
+        expanded.withUnsafeMutableBytes { buffer in
+            drawingContext.render(image, toBitmap: buffer.baseAddress!, rowBytes: renderWidth * 4,
+                                  bounds: renderBounds, format: .RGBA8, colorSpace: space)
+        }
+        for y in 0..<height {
+            let start = ((y + renderMargin) * renderWidth + renderMargin) * 4
+            bytes.append(contentsOf: expanded[start..<(start + width * 4)])
+        }
+    } else {
+        guard let rendered = drawingContext.createCGImage(image, from: renderBounds, format: .RGBA8, colorSpace: space),
+              rendered.width == renderWidth, rendered.height == renderHeight else {
+            throw CaptureError.failed("Cannot create a fixed-size native image")
+        }
+        let target = try bitmap()
+        target.setBlendMode(.copy)
+        target.draw(rendered, in: renderBounds)
+        guard let pixels = target.data else { throw CaptureError.failed("Missing rendered bitmap pixels") }
+        for y in 0..<height {
+            bytes.append(pixels.advanced(by: y * target.bytesPerRow).assumingMemoryBound(to: UInt8.self), count: width * 4)
+        }
     }
     let after = image.debugDescription
     var result: [String: Any] = ["width": width, "height": height, "floatBytes": floatData.count, "byteBytes": bytes.count,
@@ -76,6 +98,11 @@ func snapshot(_ image: CIImage, includePixels: Bool = false, includeFloats: Bool
             "descriptionTruncated": before.count > 65_536 || after.count > 65_536]
     if includePixels { result["rgbaBase64"] = bytes.base64EncodedString() }
     if includeFloats { result["floatBase64"] = floatData.base64EncodedString() }
+    if bitmapBytes { result["byteRender"] = "CIContext.toBitmap" }
+    if renderMargin > 0 {
+        result["renderBounds"] = [Double(renderBounds.minX), Double(renderBounds.minY),
+                                  Double(renderBounds.width), Double(renderBounds.height)]
+    }
     return result
 }
 
@@ -188,12 +215,37 @@ func capture() throws -> [String: Any] {
             }
         }
     }
+    // Request larger regions, then retain only the original view. No image crop node is inserted.
+    var requests = [[String: Any]]()
+    for (fixture, input) in sources {
+        for clamped in [false, true] {
+            if fixture == "impulse" && clamped { continue }
+            for radius in (fixture == "impulse" ? [35.0] : [10.0, 35]) {
+                for intensity in (fixture == "impulse" ? [1.0] : [0.75, 1]) {
+                    let mask = CIImage(color: CIColor(red: intensity, green: intensity, blue: intensity))
+                    let prepared = clamped ? input.clampedToExtent() : input
+                    let output = prepared.applyingFilter("CIMaskedVariableBlur", parameters: [
+                        "inputMask": mask, kCIInputRadiusKey: radius])
+                    for margin in [0, 16, 64, 256] {
+                        let freshContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+                        requests.append(["fixture": fixture + (clamped ? "-clamped" : ""),
+                                         "filter": "CIMaskedVariableBlur", "radius": radius,
+                                         "maskIntensity": intensity, "renderMargin": margin, "freshContext": true,
+                                         "output": try snapshot(output, includePixels: true, includeFloats: true,
+                                                                renderMargin: margin, renderContext: freshContext,
+                                                                bitmapBytes: true)])
+                    }
+                }
+            }
+        }
+    }
     return ["schema": 1, "platform": "macOS", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
             "contextDescription": String(context.debugDescription.prefix(65_536)),
             "recipe": "Unmanaged shared CIContext; finite RGBA8 sources; RGBAf bitmap and RGBA8 CGImage copied into an identity bitmap",
             "diagnosticDescriptions": true, "inputs": inputs, "cases": cases,
-            "probeRadii": radii, "smallRadiusProbes": probes, "variableBlurProbes": variable]
+            "probeRadii": radii, "smallRadiusProbes": probes, "variableBlurProbes": variable,
+            "variableRequestProbes": requests]
 }
 
 do {

@@ -30,6 +30,25 @@ these are not resolved by the prototype. The coarser
 and clamped probes investigate that limitation. Production variable blur remains
 unchanged.
 
+The capture also appends 36 request-region controls. Each renders the same
+original view with margins 0, 16, 64 and 256, using a fresh unmanaged context to
+avoid cache warming. Both float and RGBA8 bitmap buffers are sliced after
+rendering. Request probes label their byte route as `CIContext.toBitmap`, which
+can render beyond finite image extents; earlier CGImage exports remain unchanged.
+No crop node is added
+to the input graph. The matrix covers finite and clamped gradients at radii 10
+and 35 with two mask intensities, plus an impulse control. The workflow checks
+the exact matrix, expanded bounds, buffer hashes, finite values and agreement
+of the zero-margin float controls with the earlier captures. Byte method
+differences are measured separately from request-region differences.
+
+The 168-probe run `40200643930` preserves all 306 preceding bitmap pairs.
+The cross-reduction prototype matches all 96 phase probes, including the coarse
+levels, within 0.00381 byte levels. It matches 22/24 clamped constant-mask controls
+within one byte; two gradient cases still differ by up to 3.06 levels. The
+request-region controls test whether those edge discrepancies depend on the
+native request bounds before changing the Linux renderer.
+
 The manual `coreimage-reference.yml` workflow runs the native macOS capture with an unmanaged Core Image
 context. It validates 358 cases and 720 byte/float buffers, including SHA-256 checks, dimensions, finite float
 values and unique recipe metadata. The artifact contains synthetic pixels only.
