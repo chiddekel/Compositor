@@ -945,9 +945,12 @@ struct DragActionRefreshCoalescer {
 void dispatch(uint64_t handle, const QString &panel, const QString &nodeID, const QString &handlerKey,
               const QByteArray &payload = {}, bool deferRefresh = false) {
     const QByteArray panelUtf8 = panel.toUtf8(), nodeUtf8 = nodeID.toUtf8(), keyUtf8 = handlerKey.toUtf8();
-    compositor_session_dispatch_swiftui_action(handle, panelUtf8.constData(), nodeUtf8.constData(), keyUtf8.constData(),
+    const auto result = compositor_session_dispatch_swiftui_action(handle, panelUtf8.constData(), nodeUtf8.constData(), keyUtf8.constData(),
                                                payload.isEmpty() ? nullptr : reinterpret_cast<const uint8_t *>(payload.constData()),
                                                static_cast<size_t>(payload.size()));
+    if (qEnvironmentVariableIsSet("COMPOSITOR_TRACE_SHEET_ACTIONS")
+        && (panel == QLatin1String("ImageSizeSheet") || panel == QLatin1String("CanvasSizeSheet")))
+        qWarning() << "Sheet action" << handle << panel << nodeID << handlerKey << "result" << result;
     if (deferRefresh) QTimer::singleShot(0, [handle, panel] { notifyListeners(handle, panel); });
     else if (handlerKey == QLatin1String("dragChanged")) g_dragActionRefresh.schedule(handle, panel);
     else if (handlerKey == QLatin1String("dragEnded")) g_dragActionRefresh.flush(handle, panel);
@@ -3037,6 +3040,8 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
     } else if (kind == "Text") {
         // No color of its own: it takes its container's foregroundStyle (SwiftUI's environment), else the primary label color.
         auto *label = new QLabel(strings.value("text").toString());
+        if (node.value("handlerKeys").toArray().isEmpty())
+            label->setProperty("swiftUIConditionalSlot", strings.value("_conditionalSlot").toString());
         widget = label;
     } else if (kind == "Button") {
         auto *button = new SwiftUIButton;
@@ -3260,6 +3265,9 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
         }
         if (labelFillsWidth) button->setSizePolicy(QSizePolicy::Expanding, button->sizePolicy().verticalPolicy());
         QObject::connect(button, &QPushButton::clicked, button, [handle, panel, id, button] {
+            if (qEnvironmentVariableIsSet("COMPOSITOR_TRACE_SHEET_ACTIONS")
+                && (panel == QLatin1String("ImageSizeSheet") || panel == QLatin1String("CanvasSizeSheet")))
+                qWarning() << "Sheet button" << handle << panel << id << button->text() << "enabled" << button->isEnabled();
             const QByteArray payload = QJsonDocument(QJsonObject{{"modifiers", button->takeActivationModifiers()}})
                                            .toJson(QJsonDocument::Compact);
             dispatch(handle, panel, id, QStringLiteral("action"), payload);
@@ -4240,6 +4248,8 @@ static void refreshEditingControlState(QWidget *current, const QJsonObject &root
     QHash<QString, double> opacity;
     QHash<QString, int> sliderValues;
     QHash<QString, QJsonObject> labels;
+    QHash<QString, QJsonObject> conditionalLabels;
+    QHash<QString, int> conditionalLabelCounts;
     QHash<QString, QString> fields;
     std::function<void(const QJsonObject &, bool)> collect = [&](const QJsonObject &node, bool parentEnabled) {
         bool active = parentEnabled;
@@ -4252,7 +4262,14 @@ static void refreshEditingControlState(QWidget *current, const QJsonObject &root
                 opacity[id] = modifier.value("doubleParams").toObject().value("value").toDouble(1);
         }
         if (node.value("kind").toString() == "Button" || node.value("kind").toString() == "Toggle") enabled[id] = active;
-        if (refreshText && node.value("kind").toString() == "Text") labels[id] = node;
+        if (refreshText && node.value("kind").toString() == "Text") {
+            labels[id] = node;
+            const QString slot = node.value("stringParams").toObject().value("_conditionalSlot").toString();
+            if (!slot.isEmpty() && node.value("handlerKeys").toArray().isEmpty()) {
+                conditionalLabels[slot] = node;
+                ++conditionalLabelCounts[slot];
+            }
+        }
         if (refreshText && node.value("kind").toString() == "TextField") {
             const auto strings = node.value("stringParams").toObject(), doubles = node.value("doubleParams").toObject();
             if (strings.contains("text")) fields[id] = strings.value("text").toString();
@@ -4282,6 +4299,11 @@ static void refreshEditingControlState(QWidget *current, const QJsonObject &root
             focused->setProperty("swiftuiFieldCommandPending", false);
     }
     auto widgets = current->findChildren<QWidget *>(); widgets.prepend(current);
+    QHash<QString, int> retainedLabelCounts;
+    for (auto *widget : widgets) if (qobject_cast<QLabel *>(widget)) {
+        const QString slot = widget->property("swiftUIConditionalSlot").toString();
+        if (!slot.isEmpty()) ++retainedLabelCounts[slot];
+    }
     for (auto *widget : widgets) {
         const QString id = widget->property("swiftUINode").toString();
         if (enabled.contains(id)) widget->setEnabled(enabled.value(id));
@@ -4294,8 +4316,13 @@ static void refreshEditingControlState(QWidget *current, const QJsonObject &root
             if (auto *effect = qobject_cast<QGraphicsOpacityEffect *>(widget->graphicsEffect())) effect->setOpacity(opacity.value(id));
         if (fields.contains(id)) if (auto *field = qobject_cast<QLineEdit *>(widget))
             swiftuifields::refreshText(*field, fields.value(id));
-        if (labels.contains(id)) if (auto *label = qobject_cast<QLabel *>(widget)) {
-            const auto node = labels.value(id);
+        if (auto *label = qobject_cast<QLabel *>(widget)) {
+            QJsonObject node = labels.value(id);
+            if (node.isEmpty()) {
+                const QString slot = label->property("swiftUIConditionalSlot").toString();
+                if (slot.isEmpty() || retainedLabelCounts.value(slot) != 1 || conditionalLabelCounts.value(slot) != 1) continue;
+                node = conditionalLabels.value(slot);
+            }
             const auto wire = QJsonDocument(node).toJson(QJsonDocument::Compact);
             if (label->property("swiftuiEditingLabelWire").toByteArray() == wire) continue;
             if (!label->property("swiftuiEditingLabelBaseStyle").isValid())
@@ -4366,8 +4393,8 @@ QWidget *swiftUIRenderPanelIfChanged(uint64_t sessionHandle, const QString &pane
     if (bytes.isEmpty()) return nullptr;
     if ((amount || toolField || gridField || numericField || untypedField) && current && current->property("swiftUIHandle").toULongLong() == sessionHandle)
         refreshEditingControlState(current, QJsonDocument::fromJson(bytes).object(), gridField || numericField || untypedField);
-    // Same session, same tree: the widgets already show it. Node ids are positional, so its buttons still reach the
-    // handlers the fetch just re-registered; canvases fetch their pixels at paint time, so a repaint refreshes them.
+    // Same session, same tree: the widgets already show it. Declaration IDs keep controls connected to the
+    // handlers the fetch re-registered; canvases fetch their pixels at paint time, so a repaint refreshes them.
     if (current && current->property("swiftUIHandle").toULongLong() == sessionHandle
         && current->property("swiftUITree").toByteArray() == bytes) {
         repaintCanvases(current);

@@ -29,6 +29,12 @@ public struct TupleView: View, _ViewListProviding {
 public enum _ConditionalContent<TrueContent: View, FalseContent: View>: View, _ViewListProviding {
     case trueContent(TrueContent)
     case falseContent(FalseContent)
+    public var _viewListIdentityBranch: String? {
+        switch self {
+        case .trueContent: return "true"
+        case .falseContent: return "false"
+        }
+    }
     public var _viewList: [any View] {
         switch self {
         case .trueContent(let view): return [view]
@@ -87,9 +93,12 @@ public enum ViewBuilder {
     // real panels have bodies with more than 10 top-level statements (LevelsSheet.swift has 12), and real SwiftUI
     // itself moved to this exact mechanism for the same reason.
     public static func buildPartialBlock<Content: View>(first content: Content) -> Content { content }
+    public static func buildPartialBlock<C1: View>(accumulated: TupleView, next: C1) -> TupleView {
+        TupleView(elements: accumulated.elements + [next])
+    }
     public static func buildPartialBlock<C0: View, C1: View>(accumulated: C0, next: C1) -> TupleView {
-        let existing = (accumulated as? TupleView)?.elements ?? [accumulated]
-        return TupleView(elements: existing + [next])
+        // A dynamic cast also unwraps Optional<TupleView>, losing the conditional's declaration slot.
+        TupleView(elements: [accumulated, next])
     }
 
     public static func buildOptional<Content: View>(_ component: Content?) -> Content? { component }

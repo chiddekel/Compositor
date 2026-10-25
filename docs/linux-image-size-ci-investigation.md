@@ -77,5 +77,53 @@ recorded the inspector's DPI edit. These stacks do not establish why the dialog
 failed to close or that any request was replayed. Four owned diagnostic processes were
 stopped after saving their stacks; those runs are incomplete, not passes.
 See `image-size-selection-{original,fixed}-main-stack.log` and
-`size-selection-stress-process-cleanup.json`. This modal-completion issue
-remains open and prevents claiming that all contention tests or CI are fixed.
+`size-selection-stress-process-cleanup.json`. The action diagnostics below
+subsequently identified the missing handler behind a reproduced modal wait.
+
+## Resize action missing after a conditional layout change
+
+Conditional action diagnostics at `601a8b7` reproduced the modal wait in two of
+four workers sharing four CPUs. Qt emitted the enabled Resize button's click
+with node ID `0.11.2`, but `compositor_session_dispatch_swiftui_action` returned
+`-1`: the latest Swift registry no longer had that visible control's handler.
+The other two workers completed. The diagnostic watchdog stopped the two waits;
+it did not count them as passes. See `modal-action-rejection-before-fix.json`.
+
+The Resample conditional has different numbers of layout children in its two
+branches. IDs assigned from flattened child offsets moved the following footer
+when the branch changed. The host can retain the existing widgets while a field
+is being edited, while resolving a fresh tree and replacing the action registry.
+That combination retired the still-visible Resize button's action.
+
+The compatibility resolver now retains declaration slots as view lists flatten.
+IDs use those slots for a primitive's declared children, and separate true/false
+branch identities. Fixed wrapper children, such as a background and its base,
+retain positional identity independently of whether the wrapper's content is
+visible. Pass-through modifiers and type erasure retain the child's declaration
+identity. Rendered child order and layout remain unchanged. Declaration metadata
+stays inside `RenderNode`, except for a reserved passive-text refresh slot in the
+existing string parameters. The builder also retains a leading optional
+tuple as a declaration slot instead of dynamically unwrapping and flattening it,
+so following controls and their state paths do not move when it appears.
+
+The regression dispatches the old visible footer ID against the newly resolved
+handler registry. It fails with the original resolver. Further controls cover
+optional and collection changes, conditional branches, modified groups, type
+erasure, backgrounds, sheets and manually constructed node trees.
+
+Distinct branch IDs also require refreshing passive conditional labels while an
+edited field retains its widget tree. The Qt adapter can match a label by its
+declaration slot when exactly one old and one new label occupy that slot. Both
+must have no action handlers; interactive controls retain their branch identity.
+This preserves the Canvas Size validation warning during numeric editing.
+
+The isolated final candidate passes all 15 identity regressions, 195 XCTest
+dispatches and 1,092 Swift Testing tests. All 93 generated golden images are
+byte-identical to their committed baselines. Native Image Size, Canvas Size,
+transform-field, scrub, input and layer-search journeys pass. Evidence is in
+`swiftui-identity-passive-labels-verified.log`, `identity-reviewed-full-suite.log`
+and `identity-reviewed-native-*.log` under `.build/evidence/`. Four additional
+Image Size workers sharing four CPUs all complete, with no rejected sheet
+actions or watchdog stops (`modal-identity-reviewed-results.json`). Source
+coverage and its 11 regression tests pass. These local results do not establish
+the outcome of a subsequent CI run.

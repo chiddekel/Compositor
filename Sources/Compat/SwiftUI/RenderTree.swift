@@ -5,11 +5,17 @@
 /// A resolved node: a container/control kind, its parameters, and its already-resolved children. Leaf controls
 /// (Text, Button, Slider, ...) carry their state in `params`/`stringParams`/`handlers`; containers (VStack, HStack,
 /// ...) carry theirs the same way and additionally have `children`.
+fileprivate final class RenderSourceSlotGroup {}
+
 public struct RenderNode {
-    /// A stable dot-path ("0.2.1") identifying this node's position in the tree — empty until `assignIDs()` runs.
+    /// A stable declaration path identifying this node — empty until `assignIDs()` runs.
     /// Not needed to resolve or unit-test the tree; only needed once a tree crosses into `RenderNodeWire` for the
     /// Qt bridge, where a later phase's action dispatch (button taps, slider drags) will look nodes up by it.
     public var id: String = ""
+    /// Declaration slots retained while lists flatten into layout siblings; conditional arity must not move actions.
+    var sourceSlots: [String] = []
+    fileprivate var sourceSlotGroup: RenderSourceSlotGroup?
+    fileprivate var childrenSourceSlotGroup: RenderSourceSlotGroup?
     public var kind: String
     public var stringParams: [String: String] = [:]
     public var doubleParams: [String: Double] = [:]
@@ -26,10 +32,21 @@ public struct RenderNode {
 }
 
 extension RenderNode {
-    /// Assigns dot-path ids to this node and every descendant, in place. Call once, on the root, after resolving.
+    /// Assigns declaration-slot IDs, falling back to positions for manually assembled children. Call on the root.
     public mutating func assignIDs(prefix: String = "0") {
         id = prefix
-        for i in children.indices { children[i].assignIDs(prefix: "\(prefix).\(i)") }
+        stringParams.removeValue(forKey: "_conditionalSlot")
+        for i in children.indices {
+            let child = children[i]
+            let declared = childrenSourceSlotGroup != nil && child.sourceSlotGroup === childrenSourceSlotGroup
+            let suffix = declared && !child.sourceSlots.isEmpty ? "s" + child.sourceSlots.joined(separator: ".") : String(i)
+            children[i].assignIDs(prefix: "\(prefix).\(suffix)")
+            if declared, child.kind == "Text",
+               let branch = child.sourceSlots.firstIndex(where: { $0 == "true" || $0 == "false" }) {
+                // Passive text can refresh in a retained layout even when the branch's view identity changes.
+                children[i].stringParams["_conditionalSlot"] = prefix + ".s" + child.sourceSlots[..<branch].joined(separator: ".")
+            }
+        }
     }
 
     /// Flattens this (already `assignIDs()`-ed) node and its descendants' `handlers` into a lookup keyed by node
@@ -242,9 +259,11 @@ extension PrimitiveView {
 /// `_ViewListProviding` first) so it gets a throwaway default too.
 public protocol _ViewListProviding: PrimitiveView {
     var _viewList: [any View] { get }
+    var _viewListIdentityBranch: String? { get }
 }
 
 extension _ViewListProviding {
+    public var _viewListIdentityBranch: String? { nil }
     public func _makeNode(children: [RenderNode]) -> RenderNode { RenderNode(kind: "_ViewList") }
 }
 
@@ -299,14 +318,25 @@ public enum ViewResolver {
 
     static func resolveList(_ view: any View, path: String) -> [RenderNode] {
         if let list = view as? any _ViewListProviding {
-            return list._viewList.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
+            return list._viewList.enumerated().flatMap { index, child in
+                resolveList(child, path: "\(path).\(index)").map { child in
+                    var node = child
+                    let branch = list._viewListIdentityBranch.map { [$0] } ?? []
+                    node.sourceSlots = [String(index)] + branch + node.sourceSlots
+                    return node
+                }
+            }
         }
         if let reader = view as? any _GeometryReading {
             let scope = StateStore.currentScope ?? ""
             let key = "\(scope)|\(path)"
             let size = GeometrySizes.sizes[key] ?? .zero
             var node = RenderNode(kind: "GeometryReader")
-            node.children = resolveList(reader._content(size: size), path: path + ".0")
+            let group = RenderSourceSlotGroup()
+            node.childrenSourceSlotGroup = group
+            node.children = resolveList(reader._content(size: size), path: path + ".0").map { child in
+                var node = child; node.sourceSlots.insert("0", at: 0); node.sourceSlotGroup = group; return node
+            }
             node.stringParams["geometryKey"] = key
             node.doubleParams["width"] = Double(size.width)
             node.doubleParams["height"] = Double(size.height)
@@ -333,14 +363,34 @@ public enum ViewResolver {
                 // Lowering only runs inside the host's main-thread resolves.
                 var lowered = RenderNode(kind: "_Empty")
                 MainActor.assumeIsolated { lowered = NativeLowering.node(for: source, path: path) }
+                lowered.sourceSlots = []
+                lowered.sourceSlotGroup = nil
                 return [lowered]
             }
-            let children = primitive._childViews.enumerated().flatMap { resolveList($0.element, path: "\(path).\($0.offset)") }
+            let childViews = primitive._childViews
+            let group = childViews.isEmpty ? nil : RenderSourceSlotGroup()
+            let children = childViews.enumerated().flatMap { index, child in
+                resolveList(child, path: "\(path).\(index)").map { child in
+                    var node = child; node.sourceSlots.insert(String(index), at: 0); node.sourceSlotGroup = group; return node
+                }
+            }
             // A modifier on Group applies to every sibling, preserving the surrounding stack's layout.
             if primitive is ModifiedContent, children.count > 1 {
-                return children.map { primitive._makeNode(children: [$0]) }
+                return children.map { child in
+                    var node = primitive._makeNode(children: [child])
+                    node.sourceSlots = child.sourceSlots; node.sourceSlotGroup = nil
+                    return node
+                }
             }
-            return [primitive._makeNode(children: children)]
+            var node = primitive._makeNode(children: children)
+            // Pass-through nodes keep their own child policy. New modifier wrappers (background, sheet, overlay)
+            // retain fixed child positions; their independently resolved content never owns the base's slots.
+            if !(primitive is ModifiedContent), node.childrenSourceSlotGroup == nil { node.childrenSourceSlotGroup = group }
+            let returnsChild = group != nil && node.sourceSlotGroup === group
+            if primitive is ModifiedContent { node.sourceSlots = children.first?.sourceSlots ?? [] }
+            else if !returnsChild { node.sourceSlots = [] }
+            node.sourceSlotGroup = nil
+            return [node]
         }
         let path = path + "/" + String(describing: Swift.type(of: view))
         StateStore.link(view, path: path)
