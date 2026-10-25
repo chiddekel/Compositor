@@ -3,7 +3,7 @@
 // Built for very large files (hundreds of MB): a file is opened and unpacked once (`compositor_raw_open`) and every
 // develop re-processes that in-memory sensor data — the Develop sheet's sliders never re-read the file. Previews
 // (`draft`) use LibRaw's half-size mode: no demosaic, a quarter of the pixels and memory. Full develops demosaic with
-// LibRaw's OpenMP build across all cores. Output is premultiplied (opaque) RGBA8 sRGB, what the compat layer expects.
+// LibRaw's OpenMP build across all cores. Full imports can retain opaque RGBA16 sRGB; draft previews use RGBA8.
 //
 // White balance follows CIRAWFilter's model: `temperature` / `tint` start at the camera's as-shot values
 // (estimated from its white-balance multipliers against daylight), and moving them scales the as-shot multipliers —
@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -158,6 +159,32 @@ struct GammaCurve {
         return g[0] ? std::pow(r, g[0]) * (1 + g[4]) - g[4] : std::log(r) * g[2] + 1;
     }
 };
+
+template <typename Sample>
+bool copyOpaqueRGBA(const uint8_t *source, uint8_t *destination, int width, int height, size_t rowBytes) {
+    const int threads = std::max(1, std::min<int>(height, int(std::thread::hardware_concurrency())));
+    std::vector<std::thread> workers;
+    try {
+        workers.reserve(threads);
+        for (int t = 0; t < threads; ++t) {
+            workers.emplace_back([=] {
+                for (int y = height * t / threads; y < height * (t + 1) / threads; ++y) {
+                    const auto *in = reinterpret_cast<const Sample *>(source) + size_t(y) * width * 3;
+                    auto *out = reinterpret_cast<Sample *>(destination + size_t(y) * rowBytes);
+                    for (int x = 0; x < width; ++x) {
+                        out[x * 4] = in[x * 3]; out[x * 4 + 1] = in[x * 3 + 1]; out[x * 4 + 2] = in[x * 3 + 2];
+                        out[x * 4 + 3] = std::numeric_limits<Sample>::max();
+                    }
+                }
+            });
+        }
+    } catch (...) {
+        for (auto &worker : workers) worker.join();
+        return false;
+    }
+    for (auto &worker : workers) worker.join();
+    return true;
+}
 
 constexpr float kDaylight = 5000.0f;   // CIRAWFilter's neutral default
 
@@ -479,17 +506,19 @@ int32_t compositor_raw_capabilities(CompositorRaw *raw, uint32_t *flags, float *
     return 0;
 }
 
-int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float temperature, float tint, float boost,
+static int32_t rawDevelop(CompositorRaw *raw, float exposure, float temperature, float tint, float boost,
                                float noiseReduction, int32_t lensCorrection, int32_t highlightRecovery,
-                               float scale, int32_t draft, uint8_t **pixels, int32_t *outWidth, int32_t *outHeight) {
+                               float scale, int32_t draft, uint8_t **pixels, int32_t *outWidth, int32_t *outHeight,
+                               int bitsPerComponent) {
     auto *handle = reinterpret_cast<RawHandle *>(raw);
-    if (!handle || !pixels || !outWidth || !outHeight) return -1;
+    if (!handle || !pixels || !outWidth || !outHeight || !std::isfinite(exposure) || !std::isfinite(temperature)
+        || !std::isfinite(tint) || !std::isfinite(boost) || !std::isfinite(scale) || scale <= 0) return -1;
     uint32_t capabilities = 0; float defaultNoise = 0; int32_t defaultLens = 0, defaultHighlight = 0;
     compositor_raw_capabilities(raw, &capabilities, &defaultNoise, &defaultLens, &defaultHighlight);
     const float noise = capabilities & 1u && std::isfinite(noiseReduction) ? std::clamp(noiseReduction, 0.0f, 1.0f) : defaultNoise;
     const bool recover = capabilities & 4u ? highlightRecovery != 0 : defaultHighlight != 0;
     const bool correctLens = capabilities & 2u ? lensCorrection != 0 : defaultLens != 0;
-    if (draft && scale <= 0.5f && noise == defaultNoise && recover == (defaultHighlight != 0)) {   // preview: the cached small buffer, re-developed in milliseconds
+    if (bitsPerComponent == 8 && draft && scale <= 0.5f && noise == defaultNoise && recover == (defaultHighlight != 0)) {   // cached preview
         const int fullW = handle->nativeWidth, fullH = handle->nativeHeight;
         const int w = std::max(1, int(std::lround(fullW * scale))), h = std::max(1, int(std::lround(fullH * scale)));
         const int32_t status = developPreview(handle, exposure, temperature, tint, boost, correctLens, w, h, pixels);
@@ -499,7 +528,7 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
     libraw_output_params_t &p = handle->raw.imgdata.params;
     p.threshold = noise * 1000.0f;
     p.highlight = recover ? 3 : handle->defaultHighlightMode;
-    p.output_bps = 8;
+    p.output_bps = bitsPerComponent;
     p.output_color = 1;                 // sRGB
     p.use_camera_wb = 0;
     p.use_auto_wb = 0;
@@ -541,7 +570,7 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
         PERF_SCOPE("raw.develop: make_mem_image");
         image = handle->raw.dcraw_make_mem_image(&error);
     }
-    if (!image || error != LIBRAW_SUCCESS || image->colors != 3 || image->bits != 8) {
+    if (!image || error != LIBRAW_SUCCESS || image->colors != 3 || image->bits != bitsPerComponent) {
         qWarning("RAW output failed: error=%d colors=%d bits=%d", error, image ? image->colors : 0, image ? image->bits : 0);
         if (image) LibRaw::dcraw_clear_mem(image);
         return -2;
@@ -553,20 +582,15 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
     if (image->width == targetW && image->height == targetH) {
         // Full size (the import): RGB -> opaque RGBA straight into the caller's buffer, rows split across cores.
         const size_t pixelsTotal = size_t(targetW) * targetH;
-        auto *out = static_cast<uint8_t *>(std::malloc(pixelsTotal * 4));
-        if (!out) { LibRaw::dcraw_clear_mem(image); return -3; }
-        const uint8_t *in = image->data;
-        const int threads = std::max(1, std::min<int>(targetH, int(std::thread::hardware_concurrency())));
-        std::vector<std::thread> workers;
-        for (int t = 0; t < threads; ++t) {
-            workers.emplace_back([=] {
-                const size_t from = pixelsTotal * t / threads, to = pixelsTotal * (t + 1) / threads;
-                for (size_t i = from; i < to; ++i) {
-                    out[i * 4] = in[i * 3]; out[i * 4 + 1] = in[i * 3 + 1]; out[i * 4 + 2] = in[i * 3 + 2]; out[i * 4 + 3] = 255;
-                }
-            });
+        const size_t rowBytes = size_t(targetW) * 4 * (bitsPerComponent / 8);
+        if (pixelsTotal > std::numeric_limits<size_t>::max() / (4 * (bitsPerComponent / 8))) {
+            LibRaw::dcraw_clear_mem(image); return -1;
         }
-        for (std::thread &worker : workers) worker.join();
+        auto *out = static_cast<uint8_t *>(std::malloc(rowBytes * targetH));
+        if (!out) { LibRaw::dcraw_clear_mem(image); return -3; }
+        const bool copied = bitsPerComponent == 16 ? copyOpaqueRGBA<uint16_t>(image->data, out, targetW, targetH, rowBytes)
+                                                  : copyOpaqueRGBA<uint8_t>(image->data, out, targetW, targetH, rowBytes);
+        if (!copied) { std::free(out); LibRaw::dcraw_clear_mem(image); return -3; }
         LibRaw::dcraw_clear_mem(image);
         *pixels = out;
         *outWidth = targetW;
@@ -574,12 +598,24 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
         return 0;
     }
     // Down to the requested size (the half-size path is already most of the way there).
-    QImage developed(image->data, image->width, image->height, image->width * 3, QImage::Format_RGB888);
-    QImage rgba = (developed.width() != targetW || developed.height() != targetH)
-        ? developed.scaled(targetW, targetH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_RGBA8888)
-        : developed.convertToFormat(QImage::Format_RGBA8888);
+    QImage rgba;
+    if (bitsPerComponent == 16) {
+        rgba = QImage(image->width, image->height, QImage::Format_RGBA64);
+        if (rgba.isNull()) { LibRaw::dcraw_clear_mem(image); return -3; }
+        if (!copyOpaqueRGBA<uint16_t>(image->data, rgba.bits(), image->width, image->height, size_t(rgba.bytesPerLine()))) {
+            LibRaw::dcraw_clear_mem(image); return -3;
+        }
+        if (rgba.width() != targetW || rgba.height() != targetH)
+            rgba = rgba.scaled(targetW, targetH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_RGBA64);
+    } else {
+        QImage developed(image->data, image->width, image->height, image->width * 3, QImage::Format_RGB888);
+        rgba = (developed.width() != targetW || developed.height() != targetH)
+            ? developed.scaled(targetW, targetH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_RGBA8888)
+            : developed.convertToFormat(QImage::Format_RGBA8888);
+    }
     LibRaw::dcraw_clear_mem(image);
-    const size_t rowBytes = size_t(rgba.width()) * 4, bytes = rowBytes * rgba.height();
+    if (rgba.isNull()) return -3;
+    const size_t rowBytes = size_t(rgba.width()) * 4 * (bitsPerComponent / 8), bytes = rowBytes * rgba.height();
     auto *copy = static_cast<uint8_t *>(std::malloc(bytes));
     if (!copy) return -3;
     for (int y = 0; y < rgba.height(); ++y) std::memcpy(copy + y * rowBytes, rgba.constScanLine(y), rowBytes);
@@ -589,18 +625,44 @@ int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float tempera
     return 0;
 }
 
+int32_t compositor_raw_develop(CompositorRaw *raw, float exposure, float temperature, float tint, float boost,
+                               float noiseReduction, int32_t lensCorrection, int32_t highlightRecovery,
+                               float scale, int32_t draft, uint8_t **pixels, int32_t *width, int32_t *height) {
+    return rawDevelop(raw, exposure, temperature, tint, boost, noiseReduction, lensCorrection, highlightRecovery,
+                      scale, draft, pixels, width, height, 8);
+}
+
+int32_t compositor_raw_develop16(CompositorRaw *raw, float exposure, float temperature, float tint, float boost,
+                                 float noiseReduction, int32_t lensCorrection, int32_t highlightRecovery,
+                                 float scale, int32_t draft, uint16_t **pixels, int32_t *width, int32_t *height) {
+    if (!pixels) return -1;
+    uint8_t *bytes = nullptr;
+    const int32_t status = rawDevelop(raw, exposure, temperature, tint, boost, noiseReduction, lensCorrection, highlightRecovery,
+                                     scale, draft, &bytes, width, height, 16);
+    if (status == 0) *pixels = reinterpret_cast<uint16_t *>(bytes);
+    return status;
+}
+
 typedef CompositorRaw *(*CompositorRawOpenFn)(const char *, int32_t *, int32_t *, float *, float *);
 typedef int32_t (*CompositorRawDevelopFn)(CompositorRaw *, float, float, float, float, float, int32_t, int32_t, float, int32_t, uint8_t **, int32_t *, int32_t *);
+typedef int32_t (*CompositorRawDevelop16Fn)(CompositorRaw *, float, float, float, float, float, int32_t, int32_t, float, int32_t, uint16_t **, int32_t *, int32_t *);
 typedef int32_t (*CompositorRawCapabilitiesFn)(CompositorRaw *, uint32_t *, float *, int32_t *, int32_t *);
 typedef void (*CompositorRawCloseFn)(CompositorRaw *);
 typedef int32_t (*CompositorRawProbeFn)(const char *, int32_t *, int32_t *);
 void compositor_raw_register(CompositorRawProbeFn probe, CompositorRawOpenFn open, CompositorRawDevelopFn develop,
                              CompositorRawCloseFn close, CompositorRawCapabilitiesFn capabilities) __attribute__((weak));
+void compositor_raw_register_v2(CompositorRawProbeFn probe, CompositorRawOpenFn open, CompositorRawDevelopFn develop,
+                                CompositorRawCloseFn close, CompositorRawCapabilitiesFn capabilities,
+                                CompositorRawDevelop16Fn develop16) __attribute__((weak));
 
 // Called at startup (with the image codecs): hands the decoder to the compat layer.
 int compositor_raw_install(void) {
-    if (!compositor_raw_register) return 0;
-    compositor_raw_register(compositor_raw_probe, compositor_raw_open, compositor_raw_develop, compositor_raw_close, compositor_raw_capabilities);
+    if (compositor_raw_register_v2)
+        compositor_raw_register_v2(compositor_raw_probe, compositor_raw_open, compositor_raw_develop, compositor_raw_close,
+                                   compositor_raw_capabilities, compositor_raw_develop16);
+    else if (compositor_raw_register)
+        compositor_raw_register(compositor_raw_probe, compositor_raw_open, compositor_raw_develop, compositor_raw_close, compositor_raw_capabilities);
+    else return 0;
     return 1;
 }
 

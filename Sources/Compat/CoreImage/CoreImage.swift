@@ -1321,18 +1321,33 @@ public final class CIRAWFilter: @unchecked Sendable {
 
     public var nativeSize: CGSize { CGSize(width: raw.width, height: raw.height) }
 
-    /// Developed with the current settings: draft (half-size, no demosaic) when asked and scaled to half or less.
+    /// Full develops retain the host's sixteen-bit samples; draft previews keep the cached half-size path.
     public var outputImage: CIImage? {
         let scale = min(1, max(0.01, scaleFactor))
-        guard let developed = raw.develop(exposure: exposure, temperature: neutralTemperature, tint: neutralTint,
+        let pixels: (data: Data, width: Int, height: Int, depth: Int)
+        if !isDraftModeEnabled, raw.supportsSixteenBit {
+            guard let developed = raw.develop16(exposure: exposure, temperature: neutralTemperature, tint: neutralTint,
+                                                boost: boostAmount, scale: scale, draft: false,
+                                                noiseReduction: luminanceNoiseReductionAmount, lensCorrection: isLensCorrectionEnabled,
+                                                highlightRecovery: isHighlightRecoveryEnabled) else { return nil }
+            pixels = (developed.data, developed.width, developed.height, 16)
+        } else {
+            guard let developed = raw.develop(exposure: exposure, temperature: neutralTemperature, tint: neutralTint,
                                           boost: boostAmount, scale: scale, draft: isDraftModeEnabled,
                                           noiseReduction: luminanceNoiseReductionAmount, lensCorrection: isLensCorrectionEnabled,
                                           highlightRecovery: isHighlightRecoveryEnabled) else { return nil }
+            pixels = (Data(developed.bytes), developed.width, developed.height, 8)
+        }
         RawDecoding.releaseIfConsumed(raw)
-        guard let provider = CGDataProvider(data: Data(developed.bytes) as CFData),
-              let image = CGImage(width: developed.width, height: developed.height, bitsPerComponent: 8, bitsPerPixel: 32,
-                                  bytesPerRow: developed.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+        #if _endian(little)
+        let byteOrder = pixels.depth == 16 ? CGBitmapInfo.byteOrder16Little.rawValue : 0
+        #else
+        let byteOrder = pixels.depth == 16 ? CGBitmapInfo.byteOrder16Big.rawValue : 0
+        #endif
+        guard let provider = CGDataProvider(data: pixels.data as CFData),
+              let image = CGImage(width: pixels.width, height: pixels.height, bitsPerComponent: pixels.depth, bitsPerPixel: pixels.depth * 4,
+                                  bytesPerRow: pixels.width * 4 * (pixels.depth / 8), space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | byteOrder),
                                   provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         else { return nil }
         return CIImage(node: .bitmap(image))

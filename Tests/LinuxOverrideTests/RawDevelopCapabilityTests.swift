@@ -36,10 +36,10 @@ private enum RawFixture {
 @MainActor
 @Suite(.serialized) struct RawDevelopCapabilityTests {
     private func withBackend(_ flags: UInt32, body: (URL) throws -> Void) rethrows {
-        let old = (RawDecoding.probeFn, RawDecoding.openFn, RawDecoding.developFn, RawDecoding.closeFn, RawDecoding.capabilitiesFn)
+        let old = (RawDecoding.probeFn, RawDecoding.openFn, RawDecoding.developFn, RawDecoding.closeFn, RawDecoding.capabilitiesFn, RawDecoding.develop16Fn)
         RawFixture.flags = flags; RawFixture.received = nil
         compositor_raw_register(RawFixture.probe, RawFixture.open, RawFixture.develop, RawFixture.close, RawFixture.capabilities)
-        defer { compositor_raw_register(old.0, old.1, old.2, old.3, old.4) }
+        defer { compositor_raw_register_v2(old.0, old.1, old.2, old.3, old.4, old.5) }
         try body(URL(fileURLWithPath: "/tmp/\(UUID().uuidString).dng"))
     }
 
@@ -104,10 +104,10 @@ private enum RawFixture {
 
     @Test(arguments: ["edit", "reload", "unsaved", "generation", "location"])
     func replacementImportDoesNotOverwriteChangesDuringDevelop(change: String) async throws {
-        let old = (RawDecoding.probeFn, RawDecoding.openFn, RawDecoding.developFn, RawDecoding.closeFn, RawDecoding.capabilitiesFn)
+        let old = (RawDecoding.probeFn, RawDecoding.openFn, RawDecoding.developFn, RawDecoding.closeFn, RawDecoding.capabilitiesFn, RawDecoding.develop16Fn)
         RawFixture.flags = 5; RawFixture.received = nil
         compositor_raw_register(RawFixture.probe, RawFixture.open, RawFixture.develop, RawFixture.close, RawFixture.capabilities)
-        defer { compositor_raw_register(old.0, old.1, old.2, old.3, old.4) }
+        defer { compositor_raw_register_v2(old.0, old.1, old.2, old.3, old.4, old.5) }
         let editor = UpstreamEditor(), session = editor.session
         #expect(editor.importRGBA([UInt8](repeating: 255, count: 16 * 12 * 4), width: 16, height: 12,
                                   name: "Original", replacing: true) == 0)

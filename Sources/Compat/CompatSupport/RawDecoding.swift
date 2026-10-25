@@ -15,6 +15,9 @@ public enum RawDecoding {
     public typealias DevelopFn = @convention(c) (OpaquePointer?, Float, Float, Float, Float, Float, Int32, Int32, Float, Int32,
                                                  UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
                                                  UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
+    public typealias Develop16Fn = @convention(c) (OpaquePointer?, Float, Float, Float, Float, Float, Int32, Int32, Float, Int32,
+                                                  UnsafeMutablePointer<UnsafeMutablePointer<UInt16>?>?,
+                                                  UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
     public typealias CapabilitiesFn = @convention(c) (OpaquePointer?, UnsafeMutablePointer<UInt32>?,
         UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Int32>?, UnsafeMutablePointer<Int32>?) -> Int32
     public struct Capabilities: Sendable {
@@ -31,6 +34,7 @@ public enum RawDecoding {
     nonisolated(unsafe) static var probeFn: ProbeFn?
     nonisolated(unsafe) static var openFn: OpenFn?
     nonisolated(unsafe) static var developFn: DevelopFn?
+    nonisolated(unsafe) static var develop16Fn: Develop16Fn?
     nonisolated(unsafe) static var closeFn: CloseFn?
 
     public static var isAvailable: Bool { openFn != nil }
@@ -61,9 +65,14 @@ public enum RawDecoding {
         fileprivate var consumed = false
         private let lock = NSLock()
         private let close: CloseFn?
+        private let decode8: DevelopFn?
+        private let decode16: Develop16Fn?
+        public var supportsSixteenBit: Bool { decode16 != nil }
 
         fileprivate init(raw: OpaquePointer, path: String, width: Int, height: Int, temperature: Float, tint: Float) {
             close = RawDecoding.closeFn
+            decode8 = RawDecoding.developFn
+            decode16 = RawDecoding.develop16Fn
             self.raw = raw; self.path = path; self.width = width; self.height = height
             asShotTemperature = temperature; asShotTint = tint
             var flags: UInt32 = 0, noise: Float = 0
@@ -79,7 +88,7 @@ public enum RawDecoding {
         public func develop(exposure: Float, temperature: Float, tint: Float, boost: Float, scale: Float, draft: Bool,
                             noiseReduction: Float = 0, lensCorrection: Bool = false, highlightRecovery: Bool = false)
             -> (bytes: [UInt8], width: Int, height: Int)? {
-            guard let developFn = RawDecoding.developFn else { return nil }
+            guard let developFn = decode8 else { return nil }
             lock.lock(); defer { lock.unlock() }   // one develop at a time per handle (LibRaw keeps state)
             var pixels: UnsafeMutablePointer<UInt8>?
             var w: Int32 = 0, h: Int32 = 0
@@ -92,6 +101,27 @@ public enum RawDecoding {
             defer { free(pixels) }
             if scale >= 1, !draft { consumed = true }
             return (Array(UnsafeBufferPointer(start: pixels, count: Int(w) * Int(h) * 4)), Int(w), Int(h))
+        }
+
+        /// Opaque native-endian RGBA16. Data owns the decoder's allocation, avoiding a full-frame copy.
+        public func develop16(exposure: Float, temperature: Float, tint: Float, boost: Float, scale: Float, draft: Bool,
+                              noiseReduction: Float = 0, lensCorrection: Bool = false, highlightRecovery: Bool = false)
+            -> (data: Data, width: Int, height: Int)? {
+            guard let decode16 else { return nil }
+            lock.lock(); defer { lock.unlock() }
+            var pixels: UnsafeMutablePointer<UInt16>?
+            var w: Int32 = 0, h: Int32 = 0
+            let noise = capabilities.supportsNoiseReduction && noiseReduction.isFinite ? min(1, max(0, noiseReduction)) : capabilities.noiseReduction
+            let lens = capabilities.supportsLensCorrection ? lensCorrection : capabilities.lensCorrection
+            let highlight = capabilities.supportsHighlightRecovery ? highlightRecovery : capabilities.highlightRecovery
+            let status = decode16(raw, exposure, temperature, tint, boost, noise, lens ? 1 : 0, highlight ? 1 : 0,
+                                  scale, draft ? 1 : 0, &pixels, &w, &h)
+            guard status == 0, let pixels else { return nil }
+            let (area, areaOverflow) = Int(w).multipliedReportingOverflow(by: Int(h))
+            let (bytes, bytesOverflow) = area.multipliedReportingOverflow(by: 8)
+            guard w > 0, h > 0, !areaOverflow, !bytesOverflow else { free(pixels); return nil }
+            if scale >= 1, !draft { consumed = true }
+            return (Data(bytesNoCopy: UnsafeMutableRawPointer(pixels), count: bytes, deallocator: .free), Int(w), Int(h))
         }
     }
 
@@ -130,9 +160,17 @@ public enum RawDecoding {
 @_cdecl("compositor_raw_register")
 public func compositor_raw_register(_ probe: RawDecoding.ProbeFn?, _ open: RawDecoding.OpenFn?,
                                     _ develop: RawDecoding.DevelopFn?, _ close: RawDecoding.CloseFn?, _ capabilities: RawDecoding.CapabilitiesFn?) {
+    compositor_raw_register_v2(probe, open, develop, close, capabilities, nil)
+}
+
+@_cdecl("compositor_raw_register_v2")
+public func compositor_raw_register_v2(_ probe: RawDecoding.ProbeFn?, _ open: RawDecoding.OpenFn?,
+                                       _ develop: RawDecoding.DevelopFn?, _ close: RawDecoding.CloseFn?,
+                                       _ capabilities: RawDecoding.CapabilitiesFn?, _ develop16: RawDecoding.Develop16Fn?) {
     RawDecoding.probeFn = probe
     RawDecoding.openFn = open
     RawDecoding.developFn = develop
+    RawDecoding.develop16Fn = develop16
     RawDecoding.closeFn = close
     RawDecoding.capabilitiesFn = capabilities
 }

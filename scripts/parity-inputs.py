@@ -5,9 +5,6 @@ import argparse
 import shutil
 import struct
 
-import numpy as np
-from PIL import Image, ImageCms
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,7 +36,30 @@ def tiff(path, width, height, data, extra, bits=16, samples=1, photometric=32803
                      + b'\0' * 4 + payload + data)
 
 
+def bayer_dng(path, width, height, data):
+    """Write the shared synthetic RGGB sensor with identity calibration and neutral white balance."""
+    make, model = b'Compositor\0', b'Parity sensor\0'
+    fields = {254: (4, 1, struct.pack('<I', 0)),
+              271: (2, len(make), make), 272: (2, len(model), model),
+              33421: (3, 2, struct.pack('<HH', 2, 2)), 33422: (1, 4, bytes([0, 1, 1, 2])),
+              50706: (1, 4, bytes([1, 4, 0, 0])), 50707: (1, 4, bytes([1, 3, 0, 0])),
+              50708: (2, len(model), model), 50710: (1, 3, bytes([0, 1, 2])),
+              50711: (3, 1, struct.pack('<H', 1)), 50714: (5, 1, struct.pack('<II', 0, 1)),
+              50717: (4, 1, struct.pack('<I', 65535)),
+              50718: (5, 2, struct.pack('<IIII', 1, 1, 1, 1)),
+              50719: (4, 2, struct.pack('<II', 0, 0)),
+              50720: (4, 2, struct.pack('<II', width, height)),
+              50721: (10, 9, b''.join(struct.pack('<ii', int(i % 4 == 0), 1) for i in range(9))),
+              50728: (5, 3, struct.pack('<IIIIII', 1, 1, 1, 1, 1, 1)),
+              50778: (3, 1, struct.pack('<H', 21)),
+              50829: (4, 4, struct.pack('<IIII', 0, 0, height, width))}
+    tiff(path, width, height, data, fields)
+
+
 def generate(folder):
+    import numpy as np
+    from PIL import Image, ImageCms
+
     folder.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(ROOT / 'third_party/color/SWOP_TR005_coated_5.icc', folder / 'proof.icc')
     for face in ('Regular', 'Bold', 'Light'):
@@ -64,22 +84,7 @@ def generate(folder):
         width = height = 512
         yy, xx = np.mgrid[:height, :width]
         samples = (4000 + ((xx * (index + 1) + yy * 2) % 128) * 320).astype('<u2')
-        make, model = b'Compositor\0', b'Parity sensor\0'
-        fields = {254: (4, 1, struct.pack('<I', 0)),
-                  271: (2, len(make), make), 272: (2, len(model), model),
-                  33421: (3, 2, struct.pack('<HH', 2, 2)), 33422: (1, 4, bytes([0, 1, 1, 2])),
-                  50706: (1, 4, bytes([1, 4, 0, 0])), 50707: (1, 4, bytes([1, 3, 0, 0])),
-                  50708: (2, len(model), model), 50710: (1, 3, bytes([0, 1, 2])),
-                  50711: (3, 1, struct.pack('<H', 1)), 50714: (5, 1, struct.pack('<II', 0, 1)),
-                  50717: (4, 1, struct.pack('<I', 65535)),
-                  50718: (5, 2, struct.pack('<IIII', 1, 1, 1, 1)),
-                  50719: (4, 2, struct.pack('<II', 0, 0)),
-                  50720: (4, 2, struct.pack('<II', width, height)),
-                  50721: (10, 9, b''.join(struct.pack('<ii', int(i % 4 == 0), 1) for i in range(9))),
-                  50728: (5, 3, struct.pack('<IIIIII', 1, 1, 1, 1, 1, 1)),
-                  50778: (3, 1, struct.pack('<H', 21)),
-                  50829: (4, 4, struct.pack('<IIII', 0, 0, height, width))}
-        tiff(folder / f'sensor-{index}.dng', width, height, samples.tobytes(), fields)
+        bayer_dng(folder / f'sensor-{index}.dng', width, height, samples.tobytes())
 
 
 if __name__ == '__main__':
