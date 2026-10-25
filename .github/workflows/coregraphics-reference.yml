@@ -16,6 +16,32 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
       - name: Capture native bitmap sampling
         run: swift scripts/capture-coregraphics-reference.swift > coregraphics-reference.json
+      - name: Validate native stroke coverage controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['strokeCoverage']
+          assert len(cases) == len({c['name'] for c in cases}) == 67
+          assert sum(c['transformName'] == 'identity' and c['cap'] == 'butt' for c in cases) == 49
+          assert sum(c['transformName'] == 'translated' for c in cases) == 6
+          assert sum(c['transformName'] == 'affine' for c in cases) == 6
+          assert sum(c['cap'] == 'round' for c in cases) == 3
+          assert sum(c['cap'] == 'square' for c in cases) == 3
+          for case in cases:
+              assert case['width'] > 0
+              assert len(case['start']) == len(case['end']) == 2 and len(case['transform']) == 6
+              assert len(case['rgba']) == 4 and all(0 <= v <= 1 for v in case['rgba'])
+              assert all(math.isfinite(v) for key in ['start', 'end', 'transform', 'rgba'] for v in case[key])
+              assert math.isfinite(case['degrees']) and math.isfinite(case['phase'])
+              item = case['output']
+              assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (96, 72, 384, 8)
+              raw = base64.b64decode(item['rgbaBase64'], validate=True)
+              assert len(raw) == 384 * 72 and hashlib.sha256(raw).hexdigest() == item['sha256']
+              assert any(raw[3::4]), 'Native stroke draw is empty'
+              assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
+          print('Validated 67 native stroke coverage recipes and bitmap buffers')
+          PY
       - name: Validate paired Hue and Saturation controls
         run: |
           python3 - <<'PY'

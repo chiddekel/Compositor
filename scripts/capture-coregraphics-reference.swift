@@ -420,6 +420,62 @@ func captureNonseparablePairs() throws -> [String: Any] {
     return ["labels": pairs.map { $0.0 }, "source": try describe(source), "cases": cases]
 }
 
+// Keep stroke geometry independent of the application's shape builder and image export.
+// Fractional phases, caps and nonuniform transforms expose scan-conversion differences.
+func captureStrokeCoverage() throws -> [[String: Any]] {
+    var cases = [[String: Any]]()
+    let angles = [0.0, 35.0, -35.0, 90.0, 36.86989764584402, 53.13010235415598]
+    let transforms: [(String, CGAffineTransform)] = [
+        ("identity", .identity),
+        ("translated", CGAffineTransform(translationX: 0.375, y: -0.25)),
+        ("affine", CGAffineTransform(a: 0.8, b: 0.15, c: -0.1, d: 0.75, tx: 9, ty: 4))
+    ]
+    func append(_ name: String, degrees: Double, width: Double, phase: Double,
+                transform: (String, CGAffineTransform), cap: (String, CGLineCap), canonical: Bool = false) throws {
+        let angle = degrees * .pi / 180
+        let start = canonical ? CGPoint(x: 8, y: 8)
+            : CGPoint(x: 48 + phase - 26 * cos(angle), y: 36 + phase - 26 * sin(angle))
+        let end = canonical ? CGPoint(x: 72, y: 56)
+            : CGPoint(x: 48 + phase + 26 * cos(angle), y: 36 + phase + 26 * sin(angle))
+        let rgba = canonical ? [0.0, 0, 0, 1] : [0.2, 0.65, 0.9, 0.7]
+        let context = try bitmap(width: 96, height: 72)
+        context.concatenate(transform.1)
+        context.setShouldAntialias(true)
+        context.setLineWidth(width)
+        context.setLineCap(cap.1)
+        context.setStrokeColor(CGColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba[3]))
+        context.move(to: start)
+        context.addLine(to: end)
+        context.strokePath()
+        let t = transform.1
+        cases.append(["name": name, "degrees": degrees, "width": width, "phase": phase,
+                      "start": [start.x, start.y], "end": [end.x, end.y], "rgba": rgba,
+                      "cap": cap.0, "transformName": transform.0,
+                      "transform": [t.a, t.b, t.c, t.d, t.tx, t.ty], "output": try describe(context)])
+    }
+    for (index, angle) in angles.enumerated() {
+        for width in [0.5, 1.0, 3.0, 7.0] {
+            for phase in [0.0, 0.25] {
+                try append("angle-\(index)-width-\(width)-phase-\(phase)", degrees: angle, width: width,
+                           phase: phase, transform: transforms[0], cap: ("butt", .butt))
+            }
+        }
+        for transform in transforms.dropFirst() {
+            try append("\(transform.0)-angle-\(index)", degrees: angle, width: 3, phase: 0,
+                       transform: transform, cap: ("butt", .butt))
+        }
+    }
+    for (name, cap) in [("round", CGLineCap.round), ("square", CGLineCap.square)] {
+        for angle in [0.0, 35.0, 90.0] {
+            try append("\(name)-\(angle)", degrees: angle, width: 3, phase: 0,
+                       transform: transforms[0], cap: (name, cap))
+        }
+    }
+    try append("canonical-line", degrees: angles[4], width: 3, phase: 0,
+               transform: transforms[0], cap: ("butt", .butt), canonical: true)
+    return cases
+}
+
 func capture() throws -> [String: Any] {
     let width = 96, height = 72
     var cases = [[String: Any]]()
@@ -501,6 +557,7 @@ func capture() throws -> [String: Any] {
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),
             "nonseparablePairs": try captureNonseparablePairs(),
+            "strokeCoverage": try captureStrokeCoverage(),
             "text": try captureText(), "textGeometry": try captureTextGeometry(),
             "textParagraphGeometry": try captureTextParagraphGeometry(), "textFallbackFonts": try captureTextFallbackFonts()]
 }
