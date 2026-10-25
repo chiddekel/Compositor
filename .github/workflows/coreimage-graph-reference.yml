@@ -2,6 +2,11 @@ name: Core Image filter graph diagnostics
 
 on:
   workflow_dispatch:
+    inputs:
+      small_radii:
+        description: JSON array of unique probe radii in 0...1 (empty selects default probes)
+        type: string
+        default: '[]'
 
 permissions:
   contents: read
@@ -10,16 +15,18 @@ jobs:
   capture:
     runs-on: macos-26
     timeout-minutes: 10
+    env:
+      PROBE_RADII: ${{ inputs.small_radii || '[]' }}
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
       - name: Capture native filter descriptions and bitmap hashes
-        run: swift scripts/capture-coreimage-graph.swift > coreimage-graph-reference.json
+        run: swift scripts/capture-coreimage-graph.swift --small-radii "$PROBE_RADII" > coreimage-graph-reference.json
       - name: Validate diagnostic recipes
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json, math, re
+          import base64, hashlib, json, math, os, re
           from pathlib import Path
           reference = json.loads(Path('coreimage-graph-reference.json').read_text())
           assert reference['schema'] == 1 and reference['platform'] == 'macOS'
@@ -42,11 +49,18 @@ jobs:
               assert math.isfinite(case['radius']) and case['radius'] >= 0
               assert math.isfinite(case.get('degrees', 0))
           probes = reference['smallRadiusProbes']
+          radii = json.loads(os.environ.get('PROBE_RADII', '[]'))
+          assert isinstance(radii, list) and len(radii) <= 64
+          assert all(type(r) in [int, float] and math.isfinite(r) and 0 <= r <= 1 for r in radii)
+          assert len(set(radii)) == len(radii)
+          if not radii:
+              radii = [0, 0.1, 0.125, 1 / 6 - 0.000001, 1 / 6, 1 / 6 + 0.000001, 0.2, 0.25, 0.3, 0.4, 0.5]
+          assert reference['probeRadii'] == radii
           expected_probes = {(fixture, radius, degrees)
                              for fixture in ['opaque-gradient', 'impulse']
-                             for radius in [0, 0.1, 0.125, 1 / 6 - 0.000001, 1 / 6, 1 / 6 + 0.000001, 0.2, 0.25, 0.3, 0.4, 0.5]
+                             for radius in radii
                              for degrees in [0, -35]}
-          assert len(probes) == 44
+          assert len(probes) == len(expected_probes)
           assert {(c['fixture'], c['radius'], c['degrees']) for c in probes} == expected_probes
           for probe in probes:
               output = probe['output']
@@ -61,7 +75,7 @@ jobs:
               for key in ['descriptionBeforeRender', 'descriptionAfterRender']:
                   assert isinstance(output[key], str) and 0 < len(output[key]) <= 65536
               assert output['descriptionTruncated'] is False
-          print('Validated 164 graph recipes, 44 small-radius probes and 210 pairs of bitmap hashes')
+          print(f'Validated 164 graph recipes, {len(probes)} small-radius probes and {166 + len(probes)} pairs of bitmap hashes')
           PY
       - uses: actions/upload-artifact@v4
         if: always()

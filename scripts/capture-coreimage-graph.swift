@@ -16,6 +16,20 @@ func digest(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
+func probeRadii() throws -> [Double] {
+    let defaults = [0.0, 0.1, 0.125, 1 / 6.0 - 0.000001, 1 / 6.0, 1 / 6.0 + 0.000001, 0.2, 0.25, 0.3, 0.4, 0.5]
+    guard CommandLine.arguments.count != 1 else { return defaults }
+    guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--small-radii" else {
+        throw CaptureError.failed("Expected --small-radii followed by a JSON number array")
+    }
+    let values = try JSONDecoder().decode([Double].self, from: Data(CommandLine.arguments[2].utf8))
+    guard values.count <= 64, Set(values).count == values.count,
+          values.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else {
+        throw CaptureError.failed("Probe radii must be unique finite numbers in 0...1, at most 64")
+    }
+    return values.isEmpty ? defaults : values
+}
+
 func bitmap() throws -> CGContext {
     guard let result = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
         bytesPerRow: width * 4, space: space,
@@ -65,6 +79,7 @@ func snapshot(_ image: CIImage, includePixels: Bool = false) throws -> [String: 
 }
 
 func capture() throws -> [String: Any] {
+    let radii = try probeRadii()
     var inputs = [[String: Any]](), cases = [[String: Any]]()
     var sources = [(String, CIImage)]()
     for fixture in ["opaque-gradient", "impulse"] {
@@ -104,7 +119,7 @@ func capture() throws -> [String: Any] {
     // Keep the original recipes' render order before checking the identity-to-blur boundary.
     var probes = [[String: Any]]()
     for (fixture, input) in sources {
-        for radius in [0.0, 0.1, 0.125, 1 / 6.0 - 0.000001, 1 / 6.0, 1 / 6.0 + 0.000001, 0.2, 0.25, 0.3, 0.4, 0.5] {
+        for radius in radii {
             for degrees in [0.0, -35] {
                 let output = input.applyingFilter("CIMotionBlur", parameters: [
                     kCIInputRadiusKey: radius, kCIInputAngleKey: degrees * .pi / 180])
@@ -117,7 +132,8 @@ func capture() throws -> [String: Any] {
             "scriptSha256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
             "contextDescription": String(context.debugDescription.prefix(65_536)),
             "recipe": "Unmanaged shared CIContext; finite RGBA8 sources; RGBAf bitmap and RGBA8 CGImage copied into an identity bitmap",
-            "diagnosticDescriptions": true, "inputs": inputs, "cases": cases, "smallRadiusProbes": probes]
+            "diagnosticDescriptions": true, "inputs": inputs, "cases": cases,
+            "probeRadii": radii, "smallRadiusProbes": probes]
 }
 
 do {
