@@ -205,7 +205,8 @@ flatpak build --device=dri --filesystem="$PWD" build-test \
 ```
 
 See the [Linux test baseline](docs/upstream-test-baseline.md) for backend environment variables and
-focused test commands. On macOS, run the **CompositorTests** target in Xcode.
+focused test commands, and the [native dialog smoke guide](docs/native-dialog-smoke.md) for the
+dialog journey and its asynchronous wait behavior. On macOS, run the **CompositorTests** target in Xcode.
 
 ## Contributing
 
