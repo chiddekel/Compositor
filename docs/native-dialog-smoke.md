@@ -27,3 +27,11 @@ CI [run 40178982588](https://github.com/chiddekel/Compositor/actions/runs/401789
 The fixture also delays its interaction and requires that
 interaction to finish before the helper returns. The fixed helper passes this
 fixture and the complete native dialog journey.
+
+The grid-settings journey finds a picker's rendered owner through its parent
+chain. Retired panels remain in the sheet's child list until `DeferredDelete`,
+so a sheet-wide search can select an unrelated hidden root. The
+`CompositorCore.GridSettingsOwner` regression constructs that stale-root case
+and checks foreign and unowned controls. The contract runner builds and runs
+it before the Swift and native journeys. The popup journey still requires a
+refresh to preserve its actual owning controls and verifies settings after restart.
