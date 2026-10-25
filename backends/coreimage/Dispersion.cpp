@@ -10,7 +10,17 @@ float dispersionSine(float phase) {
     cycle-=std::round(cycle);
     if (cycle>0.25f) cycle=0.5f-cycle;
     else if (cycle<-0.25f) cycle=-0.5f-cycle;
-    return std::sin(cycle*6.283185307179586f);
+    // A reduced-angle odd polynomial models Metal's fast sine. Full-precision sin
+    // differs by a few ulps, which the following hash amplifies into sample jumps.
+    // Validated against independent native coordinates in capture 40190033692.
+    float x=cycle*4.0f, z=x*x;
+    float p=-1.27799126e-06f;
+    p=std::fma(p,z,0.000155217505f);
+    p=std::fma(p,z,-0.00467753445f);
+    p=std::fma(p,z,0.0796911645f);
+    p=std::fma(p,z,-0.645963886f);
+    p=std::fma(p,z,1.57079623f);
+    return p*x;
 }
 float smooth(float a, float b, float x) {
     x=std::clamp((x-a)/(b-a),0.0f,1.0f); return x*x*(3-2*x);

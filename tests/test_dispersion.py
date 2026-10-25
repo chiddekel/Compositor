@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Exercise the spectral compute backend independently of Swift and the application renderer."""
 import ctypes as C
+import base64
 import hashlib
 import json
 import math
 from pathlib import Path
 import sys
+import zlib
 
 
 def main(path):
@@ -40,6 +42,26 @@ def main(path):
 
     try:
         drivers = [None, gpu] if gpu else [None]
+        # Complete native application output, independent of the synthetic edge probes below.
+        # A few ulps of sine error can wrap the amplified jitter and change alpha by 17 bytes.
+        captured = json.loads((root / 'Tests/Fixtures/metal/rgb-split-default-reference.json').read_text())
+        expected = zlib.decompress(base64.b64decode(captured['rgbaZlibBase64'], validate=True))
+        assert hashlib.sha256(expected).hexdigest() == captured['rgbaSHA256']
+        assert len(expected) == captured['width'] * captured['height'] * 4
+        assert captured['corpusSHA256'] == hashlib.sha256((root / 'Tests/RenderParity/RenderParityTests.swift').read_bytes()).hexdigest()
+        native_source = []
+        w, h = captured['width'], captured['height']
+        for y in range(h):
+            for x in range(w):
+                a = 0 if x < 12 or y < 12 or x > 80 or y > 58 else 160
+                native_source.extend([v / 255 for v in [(x * 255 // (w - 1)) * a // 255,
+                    (y * 255 // (h - 1)) * a // 255, 220 * a // 255, a]])
+        native_parameters = [w / 2, h / 2, 1, 0, 10, 0, 1000, 0, 15, 10, 1, 0, 0, 0, 0, 1, w, h, 0, 0]
+        for driver in drivers:
+            output = run(native_parameters, pixels=native_source, w=w, h=h, driver=driver)
+            error = max(abs(round(max(0, min(1, value)) * 255) - target) for value, target in zip(output, expected))
+            assert error <= 2, ('native RGB Split default', 'Vulkan' if driver else 'CPU', error)
+            print(f"Native RGB Split reference ({'Vulkan' if driver else 'CPU'}): max error {error}/255")
         for driver in drivers:
             # Native Metal output, captured from the unchanged upstream shader. Fast-math
             # rounding may differ by a byte, but the outer blurred tail must survive.

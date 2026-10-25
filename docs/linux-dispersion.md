@@ -45,12 +45,12 @@ translated origins, negative row direction and edge extension. Hardware success 
 submissions; a CPU fallback cannot count as the Vulkan pass.
 
 The upstream kernel's `sin`/`fract` sampling jitter depends on the device's transcendental precision.
-The Vulkan shader protects phase arithmetic and evaluates a degree-21 sine polynomial in double
-precision after reducing the angle to −π/2…π/2. This prevents the amplified hash from turning a
-one-ulp device sine error into a nearly full-interval sample change. Float64 is already a backend
-requirement; the correction adds no device requirement. Five sharp-alpha comparisons on AMD RADV
-improve from maximum errors of 3.98–94.18 byte levels to less than 0.72. The new pixel-level regression fails against
-the original shader and passes with the correction; native Metal edge references remain unchanged.
+The preceding Vulkan correction protected phase arithmetic and evaluated a degree-21 sine
+polynomial in double precision after reducing the angle to −π/2…π/2. Five sharp-alpha comparisons
+on AMD RADV improved from maximum errors of 3.98–94.18 byte levels to less than 0.72. Its pixel-level
+regression fails against the original shader; native Metal edge references remain unchanged.
+The shared Float32 fast-sine model described below replaces that earlier polynomial to improve
+agreement with native sampling as well as preserving the CPU/Vulkan comparison limits.
 The combined candidate's automatic-backend application corpus improved from 136/173 to 137/173
 passing native comparisons at that checkpoint. This correction does not establish complete native
 pixel parity. Existing golden thresholds and baseline PNGs are unchanged.
@@ -96,3 +96,37 @@ The contract script also runs upstream `FilterTests` and `FilterLayerTests`, and
 and Split to Layers. The rebuilt local candidate passes this journey on AMD Vulkan, including exact
 commit Undo/Redo and Split to Layers hierarchy/history (`upstream-format18-dispersion-native-journey.log`
 under `.build/evidence/`). This does not close the remaining native comparison failures.
+
+## Native fast-sine compatibility
+
+The spectral jitter hash amplifies differences of a few sine ulps into jumps across
+an entire sampling interval. The CPU and Vulkan implementations use the same odd,
+degree-11 polynomial after reducing the phase to quarter cycles. Its six float
+coefficients were fitted to the native default-math observer's rows 72–143 at
+192×144; neither the application output nor the held-out coordinates set them.
+Both implementations evaluate the polynomial with explicit fused multiply-adds.
+The shader also preserves rounding at the final sine multiplication and the
+noise multiplication; allowing their reassociation breaks the existing sharp-edge
+CPU/Vulkan regression by up to 82 byte levels.
+
+The independent 513×257 capture from native run `40190033692` preserves all seven
+earlier buffers. Across 118,017 coordinates outside the fitting region, the model
+reduces jitter differences above half an interval from 418 to 60, with maximum
+sine error `1.1920928955078125e-7`. It approximates the captured fast-math behavior;
+it does not establish exact arithmetic parity across Apple GPU models.
+
+`Tests/Fixtures/metal/rgb-split-default-reference.json` retains the complete native
+96×72 default-filter output, its upstream/corpus/input provenance, and hashes of
+the source PNG and decoded premultiplied pixels. The independent dispersion test
+checks every channel on CPU and Vulkan within two byte levels. The preceding
+renderer fails this regression by 17 levels. Existing direction, radial, ROI,
+edge-extension, alpha, and CPU/Vulkan comparison checks retain their limits.
+
+In an isolated checkout, both backends improve the complete application corpus
+from 130/173 to 132/173 passing comparisons: the negative RGB Split adjustment
+and default destructive filter now pass. The other two RGB Split adjustment
+cases remain open. Only the five RGB Split PNGs change; all 173 candidate PNGs
+are byte-identical between CPU and Vulkan. The native reference regression
+measures a one-byte maximum error on both backends. All 1,288 Swift/XCTest
+checks and the native RGB Split panel/history journey pass. Verification uses
+the `dispersion-model-isolated-` evidence prefix; baseline PNGs are unchanged.

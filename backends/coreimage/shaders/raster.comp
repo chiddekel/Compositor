@@ -18,21 +18,16 @@ float dispersionSine(float phase) {
     cycle-=round(cycle);
     if (cycle>0.25) cycle=0.5-cycle;
     else if (cycle<-0.25) cycle=-0.5-cycle;
-    // A one-ulp device sin error can wrap fract's amplified hash to the opposite
-    // end of a sample interval. Evaluate the reduced angle accurately instead.
-    precise float angle=cycle*6.283185307179586;
-    precise double a=double(angle), z=a*a;
-    precise double poly=1.0lf/51090942171709440000.0lf;
-    poly=poly*z-1.0lf/121645100408832000.0lf;
-    poly=poly*z+1.0lf/355687428096000.0lf;
-    poly=poly*z-1.0lf/1307674368000.0lf;
-    poly=poly*z+1.0lf/6227020800.0lf;
-    poly=poly*z-1.0lf/39916800.0lf;
-    poly=poly*z+1.0lf/362880.0lf;
-    poly=poly*z-1.0lf/5040.0lf;
-    poly=poly*z+1.0lf/120.0lf;
-    poly=poly*z-1.0lf/6.0lf;
-    return float(a+a*z*poly);
+    // Same reduced-angle fast-sine model as the CPU fallback in Dispersion.cpp.
+    precise float x=cycle*4.0, z=x*x;
+    precise float p=-1.27799126e-06;
+    p=fma(p,z,0.000155217505);
+    p=fma(p,z,-0.00467753445);
+    p=fma(p,z,0.0796911645);
+    p=fma(p,z,-0.645963886);
+    p=fma(p,z,1.57079623);
+    precise float result=p*x;
+    return result;
 }
 vec4 dispersionTap(vec2 q) {
     vec2 size=vec2(parameter(16),parameter(17));
@@ -53,7 +48,8 @@ vec4 dispersion(uvec2 pixel) {
     vec2 spread=axis*parameter(4), streak=axis*parameter(5);
     uint n=max(uint(parameter(9)),1u), m=max(uint(parameter(10)),1u);
     precise float phase=fma(float(pixel.y),78.233,float(pixel.x)*12.9898);
-    float jitter=fract(dispersionSine(phase)*43758.5453);
+    precise float noise=dispersionSine(phase)*43758.5453;
+    float jitter=fract(noise);
     vec3 color=vec3(0), alpha=vec3(0), total=vec3(0);
     for (uint i=0;i<n;++i) {
         float t=n==1 ? 0 : (float(i)+jitter)/float(n)*2-1;
