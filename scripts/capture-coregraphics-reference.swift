@@ -755,7 +755,8 @@ func captureSamplingLinearity() throws -> [[String: Any]] {
 
 func captureSamplingGeometry(alphaMode: String = "opaque",
                              sizes: [(Int, Int)] = [(17, 13), (65, 49), (97, 73)],
-                             modes: [String] = ["constant", "ramps", "checker", "corners"]) throws -> [[String: Any]] {
+                             modes: [String] = ["constant", "ramps", "checker", "corners"],
+                             destinations: [(Int, Int)]? = nil) throws -> [[String: Any]] {
     var cases = [[String: Any]]()
     for (width, height) in sizes {
         for floating in [false, true] {
@@ -787,9 +788,11 @@ func captureSamplingGeometry(alphaMode: String = "opaque",
                     }
                 } }
                 guard let image = source.makeImage() else { throw CaptureError.failed("Cannot make sampling-geometry image") }
-                for block in [2, 3, 6] {
+                let targets = destinations ?? [2, 3, 6].map { ((width + $0 - 1) / $0, (height + $0 - 1) / $0) }
+                for (index, target) in targets.enumerated() {
+                    let (smallWidth, smallHeight) = target
+                    let block = destinations == nil ? [2, 3, 6][index] : 1
                     for quality in ["none", "high"] {
-                        let smallWidth = (width + block - 1) / block, smallHeight = (height + block - 1) / block
                         func draw(_ drawWidth: Double, _ drawHeight: Double) throws -> CGContext {
                             let output = try bitmap(width: smallWidth, height: smallHeight, floating: floating)
                             output.interpolationQuality = quality == "high" ? .high : .none
@@ -799,8 +802,15 @@ func captureSamplingGeometry(alphaMode: String = "opaque",
                             output.draw(image, in: CGRect(x: 0, y: 0, width: drawWidth, height: drawHeight))
                             return output
                         }
-                        let fractional = try draw(Double(width) / Double(block), Double(height) / Double(block))
-                        let aligned = try draw(Double(smallWidth), Double(smallHeight))
+                        let drawWidth = destinations == nil ? Double(width) / Double(block) : Double(smallWidth)
+                        let drawHeight = destinations == nil ? Double(height) / Double(block) : Double(smallHeight)
+                        let fractional = try draw(drawWidth, drawHeight)
+                        let aligned: CGContext
+                        if destinations == nil {
+                            aligned = try draw(Double(smallWidth), Double(smallHeight))
+                        } else {
+                            aligned = fractional
+                        }
                         cases.append(["sourceWidth": width, "sourceHeight": height, "floating": floating,
                                       "mode": mode, "block": block, "quality": quality,
                                       "input": try describe(source), "output": try describe(fractional),
@@ -824,6 +834,16 @@ func captureSamplingAlphaGeometry() throws -> [[String: Any]] {
         }
     }
     return cases
+}
+
+func captureSamplingScales() throws -> [[String: Any]] {
+    let modes = ["ramps", "checker", "period5", "corners"]
+    let large = try captureSamplingGeometry(alphaMode: "ramp", sizes: [(96, 72)], modes: modes,
+        destinations: [(95, 71), (80, 60), (64, 48), (96, 36), (48, 72), (80, 36),
+                       (48, 60), (96, 71), (95, 72), (192, 36), (48, 144), (96, 72)])
+    let small = try captureSamplingGeometry(alphaMode: "ramp", sizes: [(17, 13)], modes: modes,
+        destinations: [(16, 12), (17, 12), (16, 13), (2, 2)])
+    return large + small
 }
 
 func captureSamplingCorners() throws -> [[String: Any]] {
@@ -974,6 +994,7 @@ func capture() throws -> [String: Any] {
             "samplingAlphaGeometry": try captureSamplingAlphaGeometry(),
             "samplingPeriodicGeometry": try captureSamplingGeometry(alphaMode: "ramp",
                 sizes: [(17, 13), (97, 73)], modes: ["period5"]),
+            "samplingScales": try captureSamplingScales(),
             "recipe": "BrushRaster.context and the downsample stage of DitherSettings.apply", "cases": cases,
             "sourceOver": try captureBlend(.normal), "exclusion": try captureBlend(.exclusion),
             "hue": try captureBlend(.hue), "saturation": try captureBlend(.saturation),

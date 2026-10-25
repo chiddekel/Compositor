@@ -203,6 +203,38 @@ jobs:
                       assert (min(alpha), max(alpha)) == expected_alpha[case['alphaMode']]
           print('Validated 456 alpha/periodic/single-fractional-axis recipes and 1368 native bitmap buffers')
           PY
+      - name: Validate minor and mixed-axis image scaling controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingScales']
+          assert len(cases) == 256
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['mode'], c['quality'],
+                       c['output']['width'], c['output']['height']) for c in cases}) == 256
+          for case in cases:
+              source_size = case['sourceWidth'], case['sourceHeight']
+              assert source_size in [(96, 72), (17, 13)]
+              targets = [(95, 71), (80, 60), (64, 48), (96, 36), (48, 72), (80, 36),
+                         (48, 60), (96, 71), (95, 72), (192, 36), (48, 144), (96, 72)] if source_size == (96, 72) else [
+                         (16, 12), (17, 12), (16, 13), (2, 2)]
+              assert (case['output']['width'], case['output']['height']) in targets
+              assert case['block'] == 1 and case['quality'] in ['none', 'high']
+              assert case['mode'] in ['ramps', 'checker', 'period5', 'corners']
+              assert case['output'] == case['alignedOutput']
+              for key in ['input', 'output']:
+                  item = case[key]
+                  if key == 'input': assert (item['width'], item['height']) == source_size
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+          print('Validated 256 minor/mixed-axis scaling recipes and 512 unique native bitmap buffers')
+          PY
       - name: Validate high-quality stripe signal controls
         run: |
           python3 - <<'PY'
