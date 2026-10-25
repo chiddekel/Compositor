@@ -54,10 +54,12 @@ outputs; `MotionBlurRasterTests` continues to check SIMD sampling, transparent
 borders, fractional radii, regional rendering and distance calibration against
 a scalar reference using Gaussian cumulative probabilities.
 
-All 19 selected component tests pass. The full qualification passes 203 XCTest
-cases, retains the same 18 golden issues in 1,044 parallel Swift Testing cases,
-and passes 48 serialized cases. CPU and AMD application comparisons both remain
-146/173 with no passing case lost. Only their five motion-blur PNGs change; the
+In the combined development worktree, all 19 selected component tests pass. Its
+full qualification passes 203 XCTest cases, retains the same 18 golden issues in
+1,044 parallel Swift Testing cases, and passes 48 serialized cases. CPU and AMD
+application comparisons in that worktree both remain 146/173 with no passing case
+lost. These application figures include other unpublished compatibility changes.
+Only its five motion-blur PNGs change with this correction; the
 default adjustment's maximum alpha error falls from one level to zero. The small
 angled adjustment improves from 69 to 57 levels but still fails, so this weight
 correction does not establish general angular resampling parity.
@@ -67,3 +69,9 @@ All committed golden baselines remain unchanged. Logs, application reports and
 the audited checkpoint use the `motion-pixel-area-` prefix under `.build/evidence/`.
 The local monitor's stable checkpoint now records these results, including the
 203 XCTest cases as well as the 1,092 Swift Testing cases.
+
+The isolated motion-only patch, based on published commit `791defb`, separately
+passes 196 XCTest cases, 1,044 parallel Swift Testing cases and 48 serialized
+cases with no failures. Its native bridge is rebuilt from that checkout and
+passes Vulkan execution and device-loss fallback. This verifies the published
+correction independently of the other development-worktree changes.
