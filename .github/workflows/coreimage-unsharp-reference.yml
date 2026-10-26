@@ -14,6 +14,8 @@ on:
       - 'scripts/capture-dispersion-sampling.swift'
       - 'scripts/validate-dispersion-sampling-reference.py'
       - 'tests/test_dispersion_sampling_reference.py'
+      - 'scripts/capture-native-cube.py'
+      - 'tests/test_native_cube_reference.py'
       - 'scripts/validate-native-gpu-traces.py'
       - 'scripts/finalize-native-gpu-traces.py'
       - 'tests/test_native_gpu_traces.py'
@@ -35,6 +37,7 @@ jobs:
           python3 tests/test_coreimage_unsharp_reference.py
           python3 tests/test_metal_sampling_reference.py
           python3 tests/test_dispersion_sampling_reference.py
+          python3 tests/test_native_cube_reference.py
           python3 tests/test_native_gpu_traces.py
       - name: Capture independent native precision controls
         run: swift scripts/capture-coreimage-unsharp.swift > coreimage-unsharp-reference.json
@@ -48,6 +51,10 @@ jobs:
         run: swift scripts/capture-dispersion-sampling.swift > dispersion-sampling-reference.json
       - name: Validate complete RGB Split matrix and native buffers
         run: python3 scripts/validate-dispersion-sampling-reference.py dispersion-sampling-reference.json
+      - name: Capture native CPU color-cube arithmetic
+        run: python3 scripts/capture-native-cube.py > native-cube-reference.json
+      - name: Validate native CPU color-cube recipes and hashes
+        run: python3 scripts/capture-native-cube.py --validate native-cube-reference.json
       - name: Capture native Gaussian GPU execution
         env:
           MTL_CAPTURE_ENABLED: '1'
@@ -64,6 +71,7 @@ jobs:
             coreimage-unsharp-reference.json
             metal-sampling-reference.json
             dispersion-sampling-reference.json
+            native-cube-reference.json
             gpu-trace-report.json
             gpu-trace-inventory.json
             gpu-traces
