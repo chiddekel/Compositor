@@ -1,0 +1,40 @@
+name: Native PNG byte precision reference
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['verify/macos-unsharp-*']
+    paths:
+      - 'scripts/capture-native-png.swift'
+      - 'scripts/validate-native-png.py'
+      - 'tests/test_native_png_reference.py'
+      - '.github/workflows/native-png-reference.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record native environment
+        run: |
+          sw_vers
+          uname -m
+          swift --version
+      - name: Test reference validation and PNG filters
+        run: python3 tests/test_native_png_reference.py
+      - name: Capture native PNG unpremultiplication
+        run: swift scripts/capture-native-png.swift native-png-reference.png > native-png-reference.json
+      - name: Validate every native pixel and provenance
+        run: python3 scripts/validate-native-png.py native-png-reference.json native-png-reference.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-png-reference
+          path: |
+            native-png-reference.json
+            native-png-reference.png
+          if-no-files-found: error
