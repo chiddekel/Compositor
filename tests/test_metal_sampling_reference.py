@@ -30,7 +30,8 @@ class MetalSamplingValidationTests(unittest.TestCase):
             for name in fixtures]}))
         offsets = [(0, 0), (1 / 256, 1 / 256), (3 / 256, 3 / 256), (24 / 256, 24 / 256),
                    (54 / 256, 54 / 256), (-54 / 256, -54 / 256), (0.409254816, 0),
-                   (1.409254816, 0), (0, 1.409254816), (3.29831846, 0)]
+                   (1.409254816, 0), (0, 1.409254816), (3.29831846, 0),
+                   (0.09558051079511642, 0.09558051079511642)]
         offsets = [list(struct.unpack('<2f', struct.pack('<2f', *o))) for o in offsets]
         inputs = []
         for name, storage in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf', 'RGBAhGPU']):
@@ -45,7 +46,7 @@ class MetalSamplingValidationTests(unittest.TestCase):
                            'operation': operation, 'offset': offset, 'output': packed(floats)}
                           for name, storage, result_type, clamp, operation
                           in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf', 'RGBAhGPU'], ['float', 'half'], [False, True], ['sample', 'compact'])
-                          for offset in (offsets if operation == 'sample' else offsets[1:5])]}
+                          for offset in (offsets if operation == 'sample' else offsets[1:5] + [offsets[10]])]}
 
     def test_complete_matrix(self):
         with tempfile.TemporaryDirectory() as directory:

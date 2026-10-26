@@ -6,9 +6,11 @@ import CryptoKit
 
 enum SamplingError: Error { case failed(String) }
 let width = 24, height = 16
+// The final offset replays the radius-0.3 uniform captured in native GPU run 40308984282.
 let offsets: [[Float]] = [[0, 0], [1 / 256, 1 / 256], [3 / 256, 3 / 256],
     [24 / 256, 24 / 256], [54 / 256, 54 / 256], [-54 / 256, -54 / 256],
-    [0.409254816, 0], [1.409254816, 0], [0, 1.409254816], [3.29831846, 0]]
+    [0.409254816, 0], [1.409254816, 0], [0, 1.409254816], [3.29831846, 0],
+    [Float(bitPattern: 0x3dc3bfb7), Float(bitPattern: 0x3dc3bfb7)]]
 func digest(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
@@ -121,7 +123,7 @@ func capture() throws -> [String: Any] {
             for resultType in ["float", "half"] {
                 let pipeline = pipelines[resultType == "float" ? "sampleFloat" : "sampleHalf"]!
                 for operation in ["sample", "compact"] {
-                    let chosenOffsets = operation == "sample" ? offsets : Array(offsets[1...4])
+                    let chosenOffsets = operation == "sample" ? offsets : Array(offsets[1...4]) + [offsets[10]]
                     for clamped in [false, true] { for offset in chosenOffsets {
                     try dispatch(source, output, pipeline, offset: offset, clamped: clamped, averaged: operation == "compact")
                     var values = [Float](repeating: 0, count: width * height * 4)
