@@ -11,6 +11,8 @@ on:
       - 'scripts/capture-metal-sampling.swift'
       - 'scripts/validate-metal-sampling-reference.py'
       - 'tests/test_metal_sampling_reference.py'
+      - 'scripts/validate-native-gpu-traces.py'
+      - 'tests/test_native_gpu_traces.py'
       - '.github/workflows/coreimage-unsharp-reference.yml'
 
 permissions:
@@ -28,6 +30,7 @@ jobs:
         run: |
           python3 tests/test_coreimage_unsharp_reference.py
           python3 tests/test_metal_sampling_reference.py
+          python3 tests/test_native_gpu_traces.py
       - name: Capture independent native precision controls
         run: swift scripts/capture-coreimage-unsharp.swift > coreimage-unsharp-reference.json
       - name: Validate complete native matrix and bitmap hashes
@@ -36,6 +39,12 @@ jobs:
         run: swift scripts/capture-metal-sampling.swift coreimage-unsharp-reference.json > metal-sampling-reference.json
       - name: Validate direct Metal texture matrix and source storage
         run: python3 scripts/validate-metal-sampling-reference.py metal-sampling-reference.json coreimage-unsharp-reference.json
+      - name: Capture native Gaussian GPU execution
+        env:
+          MTL_CAPTURE_ENABLED: '1'
+        run: swift scripts/capture-coreimage-unsharp.swift --gpu-traces gpu-traces > gpu-trace-report.json
+      - name: Validate GPU trace inventory and native output identity
+        run: python3 scripts/validate-native-gpu-traces.py gpu-trace-report.json coreimage-unsharp-reference.json gpu-traces
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -43,4 +52,6 @@ jobs:
           path: |
             coreimage-unsharp-reference.json
             metal-sampling-reference.json
+            gpu-trace-report.json
+            gpu-traces
           if-no-files-found: error

@@ -121,8 +121,79 @@ func capture() throws -> [String: Any] {
         "inputs": inputs, "cases": cases]
 }
 
+func captureGPUTraces(_ directory: URL) throws -> [String: Any] {
+    guard let device = MTLCreateSystemDefaultDevice() else { throw CaptureError.failed("Native Metal device required") }
+    let manager = MTLCaptureManager.shared()
+    let supported = manager.supportsDestination(.gpuTraceDocument)
+    var report: [String: Any] = ["schema": 1, "platform": "macOS", "device": device.name,
+        "os": ProcessInfo.processInfo.operatingSystemVersionString,
+        "scriptSHA256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
+        "supported": supported, "traces": [[String: Any]]()]
+    guard supported else {
+        report["status"] = "unsupported"
+        report["reason"] = "MTLCaptureManager does not support gpuTraceDocument on this device"
+        return report
+    }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let recipes: [(String, String, String, CIFormat, Double, Bool)] = [
+        ("compact-half-hdr", "float-hdr", "RGBAh", .RGBAh, 0.3, true),
+        ("blur2-float", "opaque-gradient", "RGBAf", .RGBAf, 2, false),
+        ("blur5-half", "opaque-gradient", "RGBAh", .RGBAh, 5, false)]
+    var traces = [[String: Any]]()
+    for (name, fixture, formatName, format, radius, clamped) in recipes {
+        let (image, _, _) = try source(fixture)
+        let url = directory.appendingPathComponent(name + ".gputrace")
+        let descriptor = MTLCaptureDescriptor()
+        descriptor.captureObject = device
+        descriptor.destination = .gpuTraceDocument
+        descriptor.outputURL = url
+        try manager.startCapture(with: descriptor)
+        let output: [String: Any]
+        do {
+            // A fresh context has no cached graph result; capture both output formats used by the reference.
+            let context = CIContext(mtlDevice: device, options: [.workingColorSpace: NSNull(),
+                .outputColorSpace: NSNull(), .workingFormat: format])
+            let input = clamped ? image.clampedToExtent() : image
+            output = try snapshot(input.applyingGaussianBlur(sigma: radius), context: context)
+            manager.stopCapture()
+        } catch {
+            manager.stopCapture()
+            throw error
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { throw CaptureError.failed("Missing GPU trace") }
+        var files = [[String: Any]]()
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+        let members: [URL]
+        if values.isRegularFile == true { members = [url] }
+        else {
+            guard let iterator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey]) else {
+                throw CaptureError.failed("Cannot enumerate GPU trace")
+            }
+            members = iterator.compactMap { $0 as? URL }
+        }
+        for member in members {
+            guard try member.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            let data = try Data(contentsOf: member)
+            let path = String(member.path.dropFirst(directory.path.count + 1))
+            files.append(["path": path, "bytes": data.count, "sha256": digest(data)])
+        }
+        guard !files.isEmpty else { throw CaptureError.failed("Empty GPU trace") }
+        traces.append(["name": name, "fixture": fixture, "workingFormat": formatName,
+            "radius": radius, "clamped": clamped, "output": output, "files": files])
+    }
+    report["status"] = "captured"
+    report["traces"] = traces
+    return report
+}
+
 do {
-    let result = try capture()
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    let result: [String: Any]
+    if arguments.count == 2 && arguments[0] == "--gpu-traces" {
+        result = try captureGPUTraces(URL(fileURLWithPath: arguments[1], isDirectory: true))
+    } else if arguments.isEmpty {
+        result = try capture()
+    } else { throw CaptureError.failed("Unknown capture arguments") }
     let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data([10]))
