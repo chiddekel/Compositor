@@ -8,6 +8,9 @@ on:
       - 'scripts/capture-coreimage-unsharp.swift'
       - 'scripts/validate-coreimage-unsharp-reference.py'
       - 'tests/test_coreimage_unsharp_reference.py'
+      - 'scripts/capture-metal-sampling.swift'
+      - 'scripts/validate-metal-sampling-reference.py'
+      - 'tests/test_metal_sampling_reference.py'
       - '.github/workflows/coreimage-unsharp-reference.yml'
 
 permissions:
@@ -22,14 +25,22 @@ jobs:
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
       - name: Test capture validation and rejection controls
-        run: python3 tests/test_coreimage_unsharp_reference.py
+        run: |
+          python3 tests/test_coreimage_unsharp_reference.py
+          python3 tests/test_metal_sampling_reference.py
       - name: Capture independent native precision controls
         run: swift scripts/capture-coreimage-unsharp.swift > coreimage-unsharp-reference.json
       - name: Validate complete native matrix and bitmap hashes
         run: python3 scripts/validate-coreimage-unsharp-reference.py coreimage-unsharp-reference.json
+      - name: Capture direct Metal texture sampling
+        run: swift scripts/capture-metal-sampling.swift coreimage-unsharp-reference.json > metal-sampling-reference.json
+      - name: Validate direct Metal texture matrix and source storage
+        run: python3 scripts/validate-metal-sampling-reference.py metal-sampling-reference.json coreimage-unsharp-reference.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coreimage-unsharp-reference
-          path: coreimage-unsharp-reference.json
+          path: |
+            coreimage-unsharp-reference.json
+            metal-sampling-reference.json
           if-no-files-found: error
