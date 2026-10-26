@@ -14,22 +14,26 @@ class NativeCubeReferenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.report = dict(schema=1, platform="Darwin", machine="arm64", os="test", width=96, height=72,
-            compilerVersion="test", compileFlags={"native": ["-O3"], "unfused": ["-O3", "-ffp-contract=off"]},
+            compilerVersion="test", compileFlags=MODULE.FLAGS,
             scriptSHA256=MODULE.digest(Path(MODULE.__file__).read_bytes()),
             kernelSHA256=MODULE.digest((ROOT / "Compositor/Rendering/LevelsPixels.c").read_bytes()),
             headerSHA256=MODULE.digest((ROOT / "Compositor/Rendering/LevelsPixels.h").read_bytes()),
+            hueSourceSHA256=MODULE.digest((ROOT / "Compositor/Document/HueSaturation.swift").read_bytes()),
+            hueTables={kind: MODULE.packed(MODULE.cube(33, "identity")) for kind in MODULE.HUE_KINDS},
+            assembly={name: MODULE.packed(b"fmul\n" if name == "unfused" else b"fmadd\n") for name in MODULE.FLAGS},
+            fusedInstructionCounts={"native": 1, "unfused": 0, "fused": 1},
             nativeUnfusedDifferentComponents=1, cases=[])
         for dimension, kind, fixture in MODULE.RECIPES:
             raw = MODULE.source(fixture)
             cls.report["cases"].append(dict(dimension=dimension, kind=kind, fixture=fixture,
-                inputSHA256=MODULE.digest(raw), cubeSHA256=MODULE.digest(MODULE.cube(dimension, kind)),
-                native=MODULE.packed(raw), unfused=MODULE.packed(raw)))
+                inputSHA256=MODULE.digest(raw), cubeSHA256=MODULE.digest(MODULE.table(cls.report, dimension, kind)),
+                native=MODULE.packed(raw), unfused=MODULE.packed(raw), fused=MODULE.packed(raw)))
         changed = bytearray(MODULE.source("opaque"))
         changed[0] = 1
         cls.report["cases"][0]["unfused"] = MODULE.packed(changed)
 
     def test_complete_matrix(self):
-        self.assertEqual(MODULE.validate(self.report)["cases"], 16)
+        self.assertEqual(MODULE.validate(self.report)["cases"], 22)
 
     def test_missing_duplicate_or_corrupt_buffer(self):
         for mutation in ("missing", "duplicate", "hash"):
@@ -50,7 +54,7 @@ class NativeCubeReferenceTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 MODULE.validate(d)
 
-    def test_alpha_and_vacuous_control(self):
+    def test_alpha_and_instruction_control(self):
         d = copy.deepcopy(self.report)
         raw = bytearray(MODULE.source("opaque"))
         raw[3] = 0
@@ -58,9 +62,9 @@ class NativeCubeReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "Alpha preservation"):
             MODULE.validate(d)
         d = copy.deepcopy(self.report)
-        d["cases"][0]["unfused"] = d["cases"][0]["native"]
-        d["nativeUnfusedDifferentComponents"] = 0
-        with self.assertRaisesRegex(AssertionError, "Nonvacuous"):
+        d["assembly"]["fused"] = MODULE.packed(b"fmul\n")
+        d["fusedInstructionCounts"]["fused"] = 0
+        with self.assertRaisesRegex(AssertionError, "Fused instruction"):
             MODULE.validate(d)
 
 
