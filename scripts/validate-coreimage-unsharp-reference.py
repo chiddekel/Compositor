@@ -39,21 +39,26 @@ def validate(reference, script):
     radii = [0.1, 1 / 6 - 0.000001, 1 / 6, 1 / 6 + 0.000001,
              0.17, 0.18, 0.2, 0.3, 0.4, 0.5, 1, 1.1, 1.2, 2, 5]
     require(reference['radii'] == radii and reference['intensities'] == [0, 0.5, 1, 2], 'Recipes')
-    fixtures = ['opaque-gradient', 'overlay-gradient', 'float-hdr', 'impulse']
+    fixtures = ['opaque-gradient', 'overlay-gradient', 'float-hdr', 'impulse',
+                'vertical-stripe', 'horizontal-stripe', 'float-impulse']
     formats = ['RGBAh', 'RGBAf']
     inputs = reference['inputs']
-    require(len(inputs) == 8 and {(s['fixture'], s['workingFormat']) for s in inputs}
+    require(len(inputs) == 14 and {(s['fixture'], s['workingFormat']) for s in inputs}
             == set(itertools.product(fixtures, formats)), 'Complete input matrix')
     controls = {}
     for sample in inputs:
         name = sample['fixture']
-        require(sample['sourceFormat'] == ('RGBAf' if name == 'float-hdr' else 'RGBA8'), 'Input format')
-        data = raw(sample, 'source', 24 * 16 * (16 if name == 'float-hdr' else 4))
+        require(sample['sourceFormat'] == ('RGBAf' if name.startswith('float-') else 'RGBA8'), 'Input format')
+        data = raw(sample, 'source', 24 * 16 * (16 if name.startswith('float-') else 4))
         expected = bytearray()
         for y in range(16):
             for x in range(24):
-                if name == 'impulse':
-                    expected.extend([255 if x == 12 and y == 8 else 0] * 4)
+                if name in ['impulse', 'vertical-stripe', 'horizontal-stripe', 'float-impulse']:
+                    active = x == 12 if name == 'vertical-stripe' else y == 8 if name == 'horizontal-stripe' else x == 12 and y == 8
+                    if name == 'float-impulse':
+                        expected.extend(struct.pack('<4f', *([1 if active else 0] * 4)))
+                    else:
+                        expected.extend([255 if active else 0] * 4)
                 elif name == 'float-hdr':
                     alpha = [0, 0.25, 0.5, 1][(x // 6 + y // 4) % 4]
                     expected.extend(struct.pack('<4f', f32(f32(f32(x / 23) * 3) - 0.5) * alpha,
@@ -72,7 +77,7 @@ def validate(reference, script):
                  itertools.product(fixtures, formats, [False, True], radii, [0, 0.5, 1, 2])}
     cases = reference['cases']
     keys = [(s['fixture'], s['workingFormat'], s['clamped'], s['filter'], s['radius'], s.get('intensity')) for s in cases]
-    require(len(cases) == 1200 and len(set(keys)) == 1200 and set(keys) == expected, 'Complete unique filter matrix')
+    require(len(cases) == 2100 and len(set(keys)) == 2100 and set(keys) == expected, 'Complete unique filter matrix')
     for sample in cases:
         require(type(sample['clamped']) is bool, 'Clamp flag')
         output(sample['output'])
@@ -87,7 +92,7 @@ def main():
     parser.add_argument('capture', type=Path)
     args = parser.parse_args()
     validate(json.loads(args.capture.read_text()), Path(__file__).with_name('capture-coreimage-unsharp.swift'))
-    print('Validated 8 source controls and 1200 native filter/format/coverage recipes, including every identity')
+    print('Validated 14 source controls and 2100 native filter/format/coverage recipes, including every identity')
 
 
 if __name__ == '__main__':

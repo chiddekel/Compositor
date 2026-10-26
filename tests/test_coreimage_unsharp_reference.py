@@ -28,12 +28,17 @@ def fixture():
               'radii': [0.1, 1 / 6 - 0.000001, 1 / 6, 1 / 6 + 0.000001,
                         0.17, 0.18, 0.2, 0.3, 0.4, 0.5, 1, 1.1, 1.2, 2, 5],
               'intensities': [0, 0.5, 1, 2], 'inputs': [], 'cases': []}
-    for name in ['opaque-gradient', 'overlay-gradient', 'float-hdr', 'impulse']:
+    for name in ['opaque-gradient', 'overlay-gradient', 'float-hdr', 'impulse',
+                 'vertical-stripe', 'horizontal-stripe', 'float-impulse']:
         source = bytearray()
         for y in range(16):
             for x in range(24):
-                if name == 'impulse':
-                    source.extend([255 if x == 12 and y == 8 else 0] * 4)
+                if name in ['impulse', 'vertical-stripe', 'horizontal-stripe', 'float-impulse']:
+                    active = x == 12 if name == 'vertical-stripe' else y == 8 if name == 'horizontal-stripe' else x == 12 and y == 8
+                    if name == 'float-impulse':
+                        source.extend(struct.pack('<4f', *([1 if active else 0] * 4)))
+                    else:
+                        source.extend([255 if active else 0] * 4)
                 elif name == 'float-hdr':
                     alpha = [0, 0.25, 0.5, 1][(x // 6 + y // 4) % 4]
                     source.extend(struct.pack('<4f', f32(f32(f32(x / 23) * 3) - 0.5) * alpha,
@@ -44,7 +49,7 @@ def fixture():
                                    (220 if name == 'overlay-gradient' else 100) * alpha // 255, alpha])
         for format_ in ['RGBAh', 'RGBAf']:
             result['inputs'].append(dict(fixture=name, workingFormat=format_, output=copy.deepcopy(output),
-                                         sourceFormat='RGBAf' if name == 'float-hdr' else 'RGBA8', **packed('source', source)))
+                                         sourceFormat='RGBAf' if name.startswith('float-') else 'RGBA8', **packed('source', source)))
             for clamped in [False, True]:
                 for radius in result['radii']:
                     for intensity in [None, 0, 0.5, 1, 2]:

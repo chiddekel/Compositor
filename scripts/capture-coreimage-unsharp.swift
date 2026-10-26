@@ -19,9 +19,14 @@ func digest(_ data: Data) -> String {
 }
 
 func source(_ name: String) throws -> (CIImage, Data, String) {
-    if name == "float-hdr" {
+    if name == "float-hdr" || name == "float-impulse" {
         var values = [Float](repeating: 0, count: width * height * 4)
         for y in 0..<height { for x in 0..<width {
+            if name == "float-impulse" {
+                let value: Float = x == width / 2 && y == height / 2 ? 1 : 0
+                for channel in 0..<4 { values[(y * width + x) * 4 + channel] = value }
+                continue
+            }
             let alpha: Float = [0, 0.25, 0.5, 1][(x / 6 + y / 4) % 4]
             let i = (y * width + x) * 4
             values[i] = (Float(x) / Float(width - 1) * 3 - 0.5) * alpha
@@ -40,8 +45,10 @@ func source(_ name: String) throws -> (CIImage, Data, String) {
         throw CaptureError.failed("Cannot allocate byte source")
     }
     for y in 0..<height { for x in 0..<width {
-        if name == "impulse" {
-            let value: UInt8 = x == width / 2 && y == height / 2 ? 255 : 0
+        if ["impulse", "vertical-stripe", "horizontal-stripe"].contains(name) {
+            let active = name == "vertical-stripe" ? x == width / 2
+                : name == "horizontal-stripe" ? y == height / 2 : x == width / 2 && y == height / 2
+            let value: UInt8 = active ? 255 : 0
             let i = y * bitmap.bytesPerRow + x * 4
             for channel in 0..<4 { pixels[i + channel] = value }
             continue
@@ -81,7 +88,8 @@ func snapshot(_ image: CIImage, context: CIContext) throws -> [String: Any] {
 func capture() throws -> [String: Any] {
     guard let device = MTLCreateSystemDefaultDevice() else { throw CaptureError.failed("Native Metal device required") }
     var inputs = [[String: Any]](), cases = [[String: Any]]()
-    for fixture in ["opaque-gradient", "overlay-gradient", "float-hdr", "impulse"] {
+    for fixture in ["opaque-gradient", "overlay-gradient", "float-hdr", "impulse",
+                    "vertical-stripe", "horizontal-stripe", "float-impulse"] {
         let (image, data, sourceFormat) = try source(fixture)
         for (formatName, format) in [("RGBAh", CIFormat.RGBAh), ("RGBAf", CIFormat.RGBAf)] {
             let context = CIContext(mtlDevice: device, options: [.workingColorSpace: NSNull(),
