@@ -1,0 +1,35 @@
+name: Native unsharp and Gaussian precision reference
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['verify/macos-unsharp-*']
+    paths:
+      - 'scripts/capture-coreimage-unsharp.swift'
+      - 'scripts/validate-coreimage-unsharp-reference.py'
+      - 'tests/test_coreimage_unsharp_reference.py'
+      - '.github/workflows/coreimage-unsharp-reference.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Test capture validation and rejection controls
+        run: python3 tests/test_coreimage_unsharp_reference.py
+      - name: Capture independent native precision controls
+        run: swift scripts/capture-coreimage-unsharp.swift > coreimage-unsharp-reference.json
+      - name: Validate complete native matrix and bitmap hashes
+        run: python3 scripts/validate-coreimage-unsharp-reference.py coreimage-unsharp-reference.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coreimage-unsharp-reference
+          path: coreimage-unsharp-reference.json
+          if-no-files-found: error
