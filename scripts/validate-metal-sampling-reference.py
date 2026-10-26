@@ -35,10 +35,10 @@ def validate(capture, reference, script):
     offsets = [tuple(map(f32, offset)) for offset in offsets]
     require([tuple(o) for o in capture['offsets']] == offsets, 'Sampling offsets')
     fixtures = ['opaque-gradient', 'float-hdr', 'impulse']
-    storage = ['RGBA8', 'RGBAh', 'RGBAf']
+    storage = ['RGBA8', 'RGBAh', 'RGBAf', 'RGBAhGPU']
     controls = {(c['fixture'], c['workingFormat']): c for c in json.loads(reference.read_text())['inputs']}
     inputs = capture['inputs']
-    require(len(inputs) == 9 and {(i['fixture'], i['storage']) for i in inputs}
+    require(len(inputs) == 12 and {(i['fixture'], i['storage']) for i in inputs}
             == set(itertools.product(fixtures, storage)), 'Complete unique source matrix')
     float_sources = {}
     for item in inputs:
@@ -46,6 +46,14 @@ def validate(capture, reference, script):
         values = [v[0] for v in struct.iter_unpack('<f', source)]
         if item['storage'] == 'RGBA8':
             expected = bytes(max(0, min(255, math.floor(f32(v * 255) + 0.5))) for v in values)
+        elif item['storage'] == 'RGBAhGPU':
+            gpu_data = raw(item['pixels'], 24 * 16 * 8)
+            for value, (bits,) in zip(values, struct.iter_unpack('<H', gpu_data)):
+                nearest = struct.unpack('<H', struct.pack('<e', value))[0]
+                rounded = struct.unpack('<e', struct.pack('<H', nearest))[0]
+                zero = nearest - 1 if abs(rounded) > abs(value) else nearest
+                require(bits in [nearest, zero], 'GPU half-store conversion bounds')
+            expected = gpu_data
         elif item['storage'] == 'RGBAh':
             expected = struct.pack('<' + 'e' * len(values), *values)
         else:
@@ -54,7 +62,7 @@ def validate(capture, reference, script):
         require(raw(item['pixels'], len(expected)) == expected, 'Source storage conversion')
     keys = [(c['fixture'], c['storage'], c['resultType'], c['clamped'], tuple(c['offset'])) for c in capture['cases']]
     expected = set(itertools.product(fixtures, storage, ['float', 'half'], [False, True], offsets))
-    require(len(keys) == 360 and len(set(keys)) == 360 and set(keys) == expected, 'Complete unique sampler matrix')
+    require(len(keys) == 480 and len(set(keys)) == 480 and set(keys) == expected, 'Complete unique sampler matrix')
     for case in capture['cases']:
         require(type(case['clamped']) is bool, 'Clamp flag')
         data = raw(case['output'], 24 * 16 * 16)
@@ -67,4 +75,4 @@ if __name__ == '__main__':
     capture_path, reference_path = map(Path, sys.argv[1:])
     validate(json.loads(capture_path.read_text()), reference_path,
              Path(__file__).with_name('capture-metal-sampling.swift'))
-    print('Validated 9 texture sources and 360 direct Metal sampler recipes, including point identities')
+    print('Validated 12 texture sources and 480 direct Metal sampler recipes, including GPU half-store bounds and point identities')

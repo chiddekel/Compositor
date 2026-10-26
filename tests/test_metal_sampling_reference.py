@@ -33,9 +33,9 @@ class MetalSamplingValidationTests(unittest.TestCase):
                    (1.409254816, 0), (0, 1.409254816), (3.29831846, 0)]
         offsets = [list(struct.unpack('<2f', struct.pack('<2f', *o))) for o in offsets]
         inputs = []
-        for name, storage in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf']):
+        for name, storage in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf', 'RGBAhGPU']):
             data = bytes([64, 128, 191, 255]) * (24 * 16) if storage == 'RGBA8' else (
-                struct.pack('<1536e', *values) if storage == 'RGBAh' else floats)
+                struct.pack('<1536e', *values) if storage.startswith('RGBAh') else floats)
             inputs.append({'fixture': name, 'storage': storage, 'pixels': packed(data)})
         return {'schema': 1, 'platform': 'macOS', 'device': 'Synthetic validator device', 'os': 'Synthetic validator OS',
                 'scriptSHA256': hashlib.sha256(SCRIPT.read_bytes()).hexdigest(),
@@ -43,7 +43,7 @@ class MetalSamplingValidationTests(unittest.TestCase):
                 'width': 24, 'height': 16, 'offsets': offsets, 'inputs': inputs,
                 'cases': [{'fixture': name, 'storage': storage, 'resultType': result_type, 'clamped': clamp,
                            'offset': offset, 'output': packed(floats)} for name, storage, result_type, clamp, offset
-                          in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf'], ['float', 'half'], [False, True], offsets)]}
+                          in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf', 'RGBAhGPU'], ['float', 'half'], [False, True], offsets)]}
 
     def test_complete_matrix(self):
         with tempfile.TemporaryDirectory() as directory:

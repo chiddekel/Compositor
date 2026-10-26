@@ -52,6 +52,20 @@ func capture() throws -> [String: Any] {
         var clamped: UInt32
         var padding: UInt32 = 0
     }
+    func dispatch(_ source: MTLTexture, _ output: MTLTexture, _ pipeline: MTLComputePipelineState,
+                  offset: [Float], clamped: Bool) throws {
+        guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
+            throw SamplingError.failed("Cannot encode sampling")
+        }
+        var parameters = Parameters(offset: SIMD2(offset[0], offset[1]), clamped: clamped ? 1 : 0)
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(source, index: 0); encoder.setTexture(output, index: 1)
+        encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 0)
+        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+        encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
+        guard command.status == .completed else { throw SamplingError.failed("Sampling command failed: \(String(describing: command.error))") }
+    }
     func texture(_ format: MTLPixelFormat) throws -> MTLTexture {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format,
             width: width, height: height, mipmapped: false)
@@ -71,31 +85,32 @@ func capture() throws -> [String: Any] {
         let floats = Data(base64Encoded: snapshot["floatBase64"] as! String)!
             .withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
         for (storage, format, bytesPerPixel) in [("RGBA8", MTLPixelFormat.rgba8Unorm, 4),
-            ("RGBAh", .rgba16Float, 8), ("RGBAf", .rgba32Float, 16)] {
+            ("RGBAh", .rgba16Float, 8), ("RGBAf", .rgba32Float, 16), ("RGBAhGPU", .rgba16Float, 8)] {
+            let source = try texture(format)
             let data: Data
             switch storage {
             case "RGBA8": data = Data(floats.map { UInt8(max(0, min(255, ($0 * 255).rounded()))) })
             case "RGBAh": data = floats.map(Float16.init).withUnsafeBytes { Data($0) }
+            case "RGBAhGPU":
+                let original = try texture(.rgba32Float)
+                floats.withUnsafeBytes { original.replace(region: region, mipmapLevel: 0,
+                    withBytes: $0.baseAddress!, bytesPerRow: width * 16) }
+                try dispatch(original, source, pipelines["sampleFloat"]!, offset: [0, 0], clamped: false)
+                var stored = [UInt16](repeating: 0, count: width * height * 4)
+                stored.withUnsafeMutableBytes { source.getBytes($0.baseAddress!, bytesPerRow: width * 8,
+                    from: region, mipmapLevel: 0) }
+                data = stored.withUnsafeBytes { Data($0) }
             default: data = floats.withUnsafeBytes { Data($0) }
             }
-            let source = try texture(format)
-            data.withUnsafeBytes { source.replace(region: region, mipmapLevel: 0,
-                withBytes: $0.baseAddress!, bytesPerRow: width * bytesPerPixel) }
+            if storage != "RGBAhGPU" {
+                data.withUnsafeBytes { source.replace(region: region, mipmapLevel: 0,
+                    withBytes: $0.baseAddress!, bytesPerRow: width * bytesPerPixel) }
+            }
             inputs.append(["fixture": fixture, "storage": storage, "pixels": packed(data)])
             for resultType in ["float", "half"] {
                 let pipeline = pipelines[resultType == "float" ? "sampleFloat" : "sampleHalf"]!
                 for clamped in [false, true] { for offset in offsets {
-                    guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
-                        throw SamplingError.failed("Cannot encode sampling")
-                    }
-                    var parameters = Parameters(offset: SIMD2(offset[0], offset[1]), clamped: clamped ? 1 : 0)
-                    encoder.setComputePipelineState(pipeline)
-                    encoder.setTexture(source, index: 0); encoder.setTexture(output, index: 1)
-                    encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 0)
-                    encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
-                        threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
-                    encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
-                    guard command.status == .completed else { throw SamplingError.failed("Sampling command failed: \(String(describing: command.error))") }
+                    try dispatch(source, output, pipeline, offset: offset, clamped: clamped)
                     var values = [Float](repeating: 0, count: width * height * 4)
                     values.withUnsafeMutableBytes { output.getBytes($0.baseAddress!, bytesPerRow: width * 16,
                         from: region, mipmapLevel: 0) }
