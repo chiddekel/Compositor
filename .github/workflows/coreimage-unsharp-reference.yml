@@ -12,6 +12,7 @@ on:
       - 'scripts/validate-metal-sampling-reference.py'
       - 'tests/test_metal_sampling_reference.py'
       - 'scripts/validate-native-gpu-traces.py'
+      - 'scripts/finalize-native-gpu-traces.py'
       - 'tests/test_native_gpu_traces.py'
       - '.github/workflows/coreimage-unsharp-reference.yml'
 
@@ -44,7 +45,9 @@ jobs:
           MTL_CAPTURE_ENABLED: '1'
         run: swift scripts/capture-coreimage-unsharp.swift --gpu-traces gpu-traces > gpu-trace-report.json
       - name: Validate GPU trace inventory and native output identity
-        run: python3 scripts/validate-native-gpu-traces.py gpu-trace-report.json coreimage-unsharp-reference.json gpu-traces
+        run: |
+          python3 scripts/finalize-native-gpu-traces.py gpu-trace-report.json gpu-traces gpu-trace-inventory.json
+          python3 scripts/validate-native-gpu-traces.py gpu-trace-report.json coreimage-unsharp-reference.json gpu-traces gpu-trace-inventory.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -53,5 +56,6 @@ jobs:
             coreimage-unsharp-reference.json
             metal-sampling-reference.json
             gpu-trace-report.json
+            gpu-trace-inventory.json
             gpu-traces
           if-no-files-found: error

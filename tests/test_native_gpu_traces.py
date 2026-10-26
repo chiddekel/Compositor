@@ -68,6 +68,24 @@ class NativeGPUTraceValidationTests(unittest.TestCase):
                 else: (root / 'extra.bin').write_bytes(b'Unlisted')
                 with self.assertRaises(ValueError): validator.validate(report, reference, root, SCRIPT)
 
+    def test_post_exit_inventory_binds_late_members_and_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, reference = fixture(root)
+            report['inventoryStage'] = 'before-process-exit'
+            late = root / 'compact-half-hdr.gputrace' / 'late-surface.bin'
+            late.write_bytes(b'Synthetic late serialization')
+            with self.assertRaises(ValueError): validator.validate(report, reference, root, SCRIPT)
+            receipt = validator._finalizer.finalize(report, root)
+            self.assertTrue(validator.validate(report, reference, root, SCRIPT, receipt))
+            for change in ['binding', 'missing', 'tampered']:
+                with self.subTest(change=change):
+                    changed = copy.deepcopy(receipt)
+                    if change == 'binding': changed['reportSHA256'] = '0' * 64
+                    elif change == 'missing': changed['files'] = [i for i in changed['files'] if i['path'] != str(late.relative_to(root))]
+                    else: late.write_bytes(b'Changed late serialization')
+                    with self.assertRaises(ValueError): validator.validate(report, reference, root, SCRIPT, changed)
+
 
 if __name__ == '__main__':
     unittest.main()

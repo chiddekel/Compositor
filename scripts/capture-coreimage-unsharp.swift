@@ -173,34 +173,23 @@ func captureGPUTraces(_ directory: URL) throws -> [String: Any] {
             try $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
         }.sorted { $0.path < $1.path }
     }
-    // Metal can finish IOSurface serialization after stopCapture returns. Observe the whole set
-    // after every capture/context has finished, rather than hashing an early per-trace listing.
-    var previous: [String] = [], stable = 0
-    for _ in 0..<50 {
-        let state = try members().map { url -> String in
-            let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-            return "\(url.path):\(values.fileSize ?? -1):\(values.contentModificationDate?.timeIntervalSince1970 ?? -1)"
-        }
-        stable = !state.isEmpty && state == previous ? stable + 1 : 0
-        previous = state
-        if stable >= 4 { break }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    guard stable >= 4 else { throw CaptureError.failed("GPU trace files did not settle") }
-    let finalized = try members()
+    // Metal adds some IOSurface files at process teardown. This is a preliminary listing;
+    // the separate finalizer inventories the artifacts after this process exits.
+    let preliminary = try members()
     for index in traces.indices {
         let name = traces[index]["name"] as! String
         let prefix = directory.appendingPathComponent(name + ".gputrace").path
         var files = [[String: Any]]()
-        for member in finalized where member.path == prefix || member.path.hasPrefix(prefix + "/") {
+        for member in preliminary where member.path == prefix || member.path.hasPrefix(prefix + "/") {
             let data = try Data(contentsOf: member)
             files.append(["path": String(member.path.dropFirst(directory.path.count + 1)),
                 "bytes": data.count, "sha256": digest(data)])
         }
-        guard !files.isEmpty else { throw CaptureError.failed("Empty finalized GPU trace") }
+        guard !files.isEmpty else { throw CaptureError.failed("Empty GPU trace") }
         traces[index]["files"] = files
     }
     report["status"] = "captured"
+    report["inventoryStage"] = "before-process-exit"
     report["traces"] = traces
     return report
 }
