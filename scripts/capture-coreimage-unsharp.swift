@@ -161,25 +161,44 @@ func captureGPUTraces(_ directory: URL) throws -> [String: Any] {
             throw error
         }
         guard FileManager.default.fileExists(atPath: url.path) else { throw CaptureError.failed("Missing GPU trace") }
-        var files = [[String: Any]]()
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey])
-        let members: [URL]
-        if values.isRegularFile == true { members = [url] }
-        else {
-            guard let iterator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey]) else {
-                throw CaptureError.failed("Cannot enumerate GPU trace")
-            }
-            members = iterator.compactMap { $0 as? URL }
-        }
-        for member in members {
-            guard try member.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
-            let data = try Data(contentsOf: member)
-            let path = String(member.path.dropFirst(directory.path.count + 1))
-            files.append(["path": path, "bytes": data.count, "sha256": digest(data)])
-        }
-        guard !files.isEmpty else { throw CaptureError.failed("Empty GPU trace") }
         traces.append(["name": name, "fixture": fixture, "workingFormat": formatName,
-            "radius": radius, "clamped": clamped, "output": output, "files": files])
+            "radius": radius, "clamped": clamped, "output": output])
+    }
+    func members() throws -> [URL] {
+        guard let iterator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys:
+            [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]) else {
+            throw CaptureError.failed("Cannot enumerate GPU traces")
+        }
+        return try iterator.compactMap { $0 as? URL }.filter {
+            try $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+        }.sorted { $0.path < $1.path }
+    }
+    // Metal can finish IOSurface serialization after stopCapture returns. Observe the whole set
+    // after every capture/context has finished, rather than hashing an early per-trace listing.
+    var previous: [String] = [], stable = 0
+    for _ in 0..<50 {
+        let state = try members().map { url -> String in
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            return "\(url.path):\(values.fileSize ?? -1):\(values.contentModificationDate?.timeIntervalSince1970 ?? -1)"
+        }
+        stable = !state.isEmpty && state == previous ? stable + 1 : 0
+        previous = state
+        if stable >= 4 { break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    guard stable >= 4 else { throw CaptureError.failed("GPU trace files did not settle") }
+    let finalized = try members()
+    for index in traces.indices {
+        let name = traces[index]["name"] as! String
+        let prefix = directory.appendingPathComponent(name + ".gputrace").path
+        var files = [[String: Any]]()
+        for member in finalized where member.path == prefix || member.path.hasPrefix(prefix + "/") {
+            let data = try Data(contentsOf: member)
+            files.append(["path": String(member.path.dropFirst(directory.path.count + 1)),
+                "bytes": data.count, "sha256": digest(data)])
+        }
+        guard !files.isEmpty else { throw CaptureError.failed("Empty finalized GPU trace") }
+        traces[index]["files"] = files
     }
     report["status"] = "captured"
     report["traces"] = traces
