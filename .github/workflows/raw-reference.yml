@@ -2,6 +2,11 @@ name: Native RAW tone reference
 
 on:
   workflow_dispatch:
+    inputs:
+      white_balance:
+        description: Include temperature and tint controls at zero and full boost
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,8 +28,12 @@ jobs:
           python3 scripts/parity-inputs.py .build/raw-reference-inputs
           python3 scripts/raw-precision-input.py .build/raw-reference-inputs/precision-ramp.dng
       - name: Capture native boost and exposure controls
+        env:
+          CAPTURE_WHITE_BALANCE: ${{ inputs.white_balance }}
         run: |
-          swift scripts/capture-raw-reference.swift .build/raw-reference-inputs/sensor-*.dng \
+          options=()
+          if [[ "$CAPTURE_WHITE_BALANCE" == "true" ]]; then options+=(--white-balance); fi
+          swift scripts/capture-raw-reference.swift "${options[@]}" .build/raw-reference-inputs/sensor-*.dng \
             .build/raw-reference-inputs/precision-ramp.dng > .build/raw-reference.json
           python3 scripts/validate-raw-reference.py .build/raw-reference.json .build/raw-reference-inputs
       - uses: actions/upload-artifact@v4

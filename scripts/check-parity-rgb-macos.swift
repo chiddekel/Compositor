@@ -136,6 +136,8 @@ func capture() throws -> [String: Any] {
     let strictJitter = try observe(strictHashPipeline)
     let wideJitter = try observe(hashPipeline, width: 192, height: 144)
     let wideStrictJitter = try observe(strictHashPipeline, width: 192, height: 144)
+    // Independent coordinates beyond the application corpus and the earlier 192x144 arithmetic probe.
+    let extendedJitter = try observe(hashPipeline, width: 513, height: 257)
     func describeFloats(_ values: [SIMD4<Float>], width: Int, height: Int) -> [String: Any] {
         values.withUnsafeBytes { describe(Data($0), width: width, height: height, bits: 32) }
     }
@@ -146,7 +148,8 @@ func capture() throws -> [String: Any] {
         "jitter": describeFloats(jitter, width: size, height: size),
         "strictJitter": describeFloats(strictJitter, width: size, height: size),
         "wideJitter": describeFloats(wideJitter, width: 192, height: 144),
-        "wideStrictJitter": describeFloats(wideStrictJitter, width: 192, height: 144)]
+        "wideStrictJitter": describeFloats(wideStrictJitter, width: 192, height: 144),
+        "extendedJitter": describeFloats(extendedJitter, width: 513, height: 257)]
     let flatAlpha = (44...48).map { Int(flat[(30 * size + $0) * 4 + 3]) }
     let streakedAlpha = (44...48).map { Int(streaked[(30 * size + $0) * 4 + 3]) }
     let edgePixels: [[String: Any]] = (40...48).map { x in

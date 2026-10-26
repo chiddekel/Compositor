@@ -43,6 +43,37 @@ typedef struct CompositorVulkanRasterStep {
 int compositor_vulkan_raster_render_graph(CompositorVulkanRaster *context, uint32_t width, uint32_t height,
     const float *const *inputs, uint32_t input_count, const CompositorVulkanRasterStep *steps,
     uint32_t step_count, const uint8_t *upload_inputs, uint64_t *generation, float *output);
+/* Immutable GPU results. Each handle retains its device, including after context_destroy.
+ * Operations never read image pixels on the CPU; only image_read copies them back.
+ * Input handles must belong to context. Allocations share a 512 MiB resident budget.
+ * Bokeh, half-storage and bottom-up processor dispersion results use packed RGBA16 floats
+ * (8 bytes per pixel). Value-preserving crops, alpha replacement and nearest/integer
+ * affine placement retain half storage; other results use RGBA32 floats. image_read expands either format
+ * to float32 output. Resident/readback counters count stored pixel bytes, not expanded output.
+ * In addition to operations 1-9: 10 dispersion, 11 Bokeh, 13 affine sampler, 14 half-float storage,
+ * 15 transfer conversion, 16 tone-curve lookup (background holds RGB table texels),
+ * 17 alpha replacement, 18 linear-dodge blend. Parameters are 20 floats;
+ * Bokeh/affine source dimensions are supplied internally in slots 16/17.
+ * Bokeh: radius, shape, ring, region origin x/y, size x/y, output top x/y,
+ * input top x/y; parameter 18 selects bottom-up storage (1) versus top-down (0).
+ * Affine: inverse a/b/c/d/tx/ty, output origin x/y, input origin x/y, nearest, clamp.
+ * Dispersion: existing 20-float ABI; parameter 19 selects bottom-up half-float processor storage.
+ * Transfer: parameter 0 selects linear (1) or encoded sRGB (0). */
+typedef struct CompositorVulkanImage CompositorVulkanImage;
+CompositorVulkanImage *compositor_vulkan_image_upload(CompositorVulkanRaster *context,
+    uint32_t width, uint32_t height, const float *pixels);
+/* Contiguous RGBA8 pixels, with the same row order and premultiplication as image_upload.
+ * GPU reads recover exactly the float32 value of each byte divided by 255. */
+CompositorVulkanImage *compositor_vulkan_image_upload_rgba8(CompositorVulkanRaster *context,
+    uint32_t width, uint32_t height, const uint8_t *pixels);
+CompositorVulkanImage *compositor_vulkan_image_apply(CompositorVulkanRaster *context,
+    uint32_t width, uint32_t height, uint32_t operation, uint32_t channel,
+    const CompositorVulkanImage *source, const CompositorVulkanImage *background,
+    const CompositorVulkanImage *mask, const float *parameters);
+int compositor_vulkan_image_read(const CompositorVulkanImage *image, float *output);
+void compositor_vulkan_image_destroy(CompositorVulkanImage *image);
+uint64_t compositor_vulkan_raster_resident_bytes(CompositorVulkanRaster *context);
+uint64_t compositor_vulkan_raster_bokeh_submissions(CompositorVulkanRaster *context);
 #ifdef __cplusplus
 }
 #endif

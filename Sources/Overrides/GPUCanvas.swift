@@ -81,6 +81,20 @@ final class CAMetalLayer {
         texture(image, level: level, mask: mask, transient: transient, drawing: true)
     }
 
+    /// Materialize the graph in working-space half floats, preserving HDR and the original CI coordinates.
+    func keep(_ image: CIImage) -> CIImage? {
+        if let resident = context.keepOnGPU(image) { return resident }
+        let extent = image.extent
+        guard !extent.isInfinite, !extent.isEmpty else { return nil }
+        let bounds = extent.integral
+        guard bounds.width <= 16384, bounds.height <= 16384,
+              bounds.width * bounds.height <= 16_000_000,
+              let pixels = context.createCGImage(image, from: bounds, format: .RGBAh, colorSpace: DeepLayer.hdrSpace)
+        else { return nil }
+        return CIImage(cgImage: pixels)
+            .transformed(by: CGAffineTransform(translationX: bounds.minX, y: bounds.minY)).cropped(to: extent)
+    }
+
     private func texture(_ image: CGImage, level: Int, mask: Bool, transient: Bool, drawing: Bool) -> CIImage? {
         let key = Key(id: ObjectIdentifier(image), level: transient ? 0 : level)
         let keep = transient ? 1 : drawing || level > 0 ? keepFrames : 0
@@ -456,12 +470,28 @@ nonisolated enum GPUAdjustment {
         case .vignette:
             let canvas = document.map { CGRect(origin: .zero, size: $0).applying(mapping) } ?? image.extent
             return MetalFinishing.vignette(image, canvas: canvas, adjustment.filterLayer.resolvedVignette)
+        case .sharpen:
+            let sharpen = adjustment.filterLayer.resolvedSharpen
+            guard sharpen.amount > 0 else { return image }
+            return image.clampedToExtent().applyingFilter("CIUnsharpMask", parameters: [
+                kCIInputRadiusKey: sharpen.radius * scale, kCIInputIntensityKey: sharpen.amount / 100,
+            ]).cropped(to: image.extent)
         case .tonalContrast:
             let tonal = adjustment.filterLayer.resolvedTonal
             return MetalFinishing.tonalContrast(image, radius: tonal.radius * scale, tonal)
         case .lensEffects:
             let side = document.map { max($0.width, $0.height) * scale } ?? max(image.extent.width, image.extent.height)
-            return try? (adjustment.filterLayer.lens ?? LensEffectSettings()).apply(to: image, side: side)
+            // The frame's y points down, the filter's up: angles counterclockwise there turn the other way here.
+            var lens = adjustment.filterLayer.lens ?? LensEffectSettings()
+            lens.starAngle = -lens.starAngle
+            lens.prismAngle = -lens.prismAngle
+            // Only what's in the document, as the export sees it: a layer reaching past the canvas would otherwise add
+            // lights the export never has.
+            let page = document.map { CGRect(origin: .zero, size: $0).applying(mapping) }
+            // Sampled smoothly, as the export's pixels are: the canvas copies a layer pixel for pixel with nearest
+            // sampling, and the spikes' rotations would carry that on, keeping hard bright pixels the export smooths.
+            let smooth = image.samplingLinear()
+            return try? lens.apply(to: page.map { smooth.cropped(to: $0) } ?? smooth, side: side)
         case .rgbSplit:
             let settings = adjustment.filterLayer
             let distance = settings.rgbSplitDistance * scale, blur = settings.rgbSplitBlur * scale

@@ -184,6 +184,18 @@
     "category": "adjustment"
   },
   {
+    "file": "adjustment/Sharpen--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Sharpen-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Sharpen-35.png",
+    "category": "adjustment"
+  },
+  {
     "file": "adjustment/Tonal Contrast--35.png",
     "category": "adjustment"
   },
@@ -583,6 +595,14 @@
   },
   {
     "file": "filter/Scanlines-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Sharpen-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Sharpen-extreme.png",
     "category": "filter"
   },
   {

@@ -78,6 +78,10 @@ enum LinuxProjectValidation {
                     || filterLayer?.vignette != nil || filterLayer?.tonal != nil || filterLayer?.lens != nil {
                     guard manifest.version >= 18 else { throw ProjectError.invalid }
                 }
+                // Sharpen layers arrived in version 19.
+                if adjustment.kind == .sharpen || filterLayer?.sharpen != nil {
+                    guard manifest.version >= 19 else { throw ProjectError.invalid }
+                }
             }
             // Layer masks arrived in version 4, folder masks in version 6.
             guard layer.maskFile == nil || (manifest.version >= (layer.isGroup == true ? 6 : 4)

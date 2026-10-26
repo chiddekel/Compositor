@@ -37,8 +37,9 @@ struct Raster {
     /// Copy of `region` (which may extend beyond this raster; outside is transparent).
     func cropped(to region: CGRect) -> Raster {
         if rect == region { return self }
-        var out = Raster(rect: region)
         let inter = region.intersection(rect)
+        // A contained crop overwrites every output pixel; padding still needs transparent initialization.
+        var out = Raster(rect: region, uninitialized: inter == region)
         guard !inter.isNull, inter.width > 0, inter.height > 0 else { return out }
         let x0 = Int(inter.minX - rect.minX), y0 = Int(inter.minY - rect.minY)
         let ox = Int(inter.minX - region.minX), oy = Int(inter.minY - region.minY)
@@ -141,37 +142,27 @@ enum Gamma {
 // MARK: - Filters over rasters
 
 enum RasterFilters {
-    /// Spatially varying Gaussian blur, interpolated in variance between logarithmically spaced radii.
-    /// Only two blurred rasters are retained; premultiplied float channels keep alpha and HDR precision.
+    enum GaussianSampling { case point, pixelArea }
+    /// Spatially varying blur uses the native reduction pyramid and its request-boundary sampling.
     static func variableBlur(_ input: Raster, mask: Raster, radius: Double, output region: CGRect) -> Raster {
-        var lower = input.cropped(to: region)
-        guard radius > 0 && radius.isFinite else { return lower }
-        let mask = mask.cropped(to: region)
-        var output = lower
-        let radii = stride(from: 0, to: mask.data.count, by: 4).map { i -> Double in
-            let luminance = Double(mask.data[i] * 0.2126 + mask.data[i + 1] * 0.7152 + mask.data[i + 2] * 0.0722)
-            return luminance.isFinite ? min(1, max(0, luminance)) * radius : 0
-        }
-        var from = 0.0
-        while from < radius {
-            let to = min(radius, max(0.5, from * sqrt(2)))
-            let upper = gaussian(input, sigma: to, output: region)
-            for pixel in 0..<radii.count where radii[pixel] > from && radii[pixel] <= to {
-                let amount = Float((radii[pixel] * radii[pixel] - from * from) / (to * to - from * from))
-                let i = pixel * 4
-                for channel in 0..<4 { output.data[i + channel] = lower.data[i + channel] * (1 - amount) + upper.data[i + channel] * amount }
-            }
-            lower = upper
-            from = to
-        }
-        return output
+        VariableBlurRaster.render(input, mask: mask, radius: radius, output: region)
     }
 
     /// Separable Gaussian. The input raster already includes the margin the kernel needs.
-    static func gaussian(_ input: Raster, sigma: Double, output region: CGRect) -> Raster {
+    static func gaussian(_ input: Raster, sigma: Double, output region: CGRect, sampling: GaussianSampling = .point) -> Raster {
         let radius = Int(ceil(sigma * 3))
         guard radius > 0, sigma > 0 else { return input.cropped(to: region) }
-        var kernel = (-radius...radius).map { Float(exp(-Double($0 * $0) / (2 * sigma * sigma))) }
+        let denominator = sigma * sqrt(2.0)
+        var kernel = (-radius...radius).map { offset -> Float in
+            switch sampling {
+            case .point: return Float(exp(-Double(offset * offset) / (2 * sigma * sigma)))
+            case .pixelArea:
+                // Core Image integrates the Gaussian over each pixel. The end
+                // taps include the remaining tails instead of discarding them.
+                if abs(offset) == radius { return Float(erfc((Double(radius) - 0.5) / denominator) / 2) }
+                return Float((erf((Double(offset) + 0.5) / denominator) - erf((Double(offset) - 0.5) / denominator)) / 2)
+            }
+        }
         let total = kernel.reduce(0, +); kernel = kernel.map { $0 / total }
         let w = input.width, h = input.height
         let visible = region.intersection(input.rect)
@@ -244,11 +235,17 @@ enum RasterFilters {
     }
 
     /// Gaussian-weighted line at `angle` radians; radius is its standard deviation, as upstream calibrates Distance.
-    static func motionBlur(_ input: Raster, radius: Double, angle: Double, output region: CGRect) -> Raster {
+    static func motionBlur(_ input: Raster, radius: Double, angle: Double, output region: CGRect,
+                           nativeSampling: Bool = false, byteSamples: Bool = false) -> Raster {
         guard radius > 0, radius.isFinite else { return input.cropped(to: region) }
         var out = Raster(rect: region)
         let reach = Int(ceil(radius * 3))
-        let weights = (-reach...reach).map { exp(-Double($0 * $0) / (2 * radius * radius)) }
+        let denominator = radius * sqrt(2.0)
+        // Integrate each tap's pixel footprint, retaining the tails at the outer taps.
+        let weights = (-reach...reach).map { offset -> Double in
+            if abs(offset) == reach { return erfc((Double(reach) - 0.5) / denominator) / 2 }
+            return (erf((Double(offset) + 0.5) / denominator) - erf((Double(offset) - 0.5) / denominator)) / 2
+        }
         let total = weights.reduce(0, +)
         let dx = cos(angle), dy = sin(angle)
         let width = out.width, height = out.height, sourceWidth = input.width, sourceHeight = input.height
@@ -256,7 +253,8 @@ enum RasterFilters {
         let firstX = Int(region.minX - input.rect.minX), firstY = Int(region.minY - input.rect.minY)
         // Every output pixel uses the same offsets and fractions. Computing these in
         // the inner loop made even the default adjustment stall the desktop for seconds.
-        let kernel = (-reach...reach).map { t -> CompositorMotionTap in
+        let native = nativeSampling ? MotionKernel.taps(radius: radius, angle: angle) : nil
+        let kernel = native ?? (-reach...reach).map { t -> CompositorMotionTap in
             let s = Double(t)
             let x = s * dx, y = s * dy, ix = floor(x), iy = floor(y)
             return CompositorMotionTap(x: Int(ix), y: Int(iy), tx: Float(x - ix), ty: Float(y - iy),
@@ -269,8 +267,13 @@ enum RasterFilters {
                     let workers = min(height, min(16, ProcessInfo.processInfo.activeProcessorCount))
                     DispatchQueue.concurrentPerform(iterations: workers) { worker in
                         for y in (worker * height / workers)..<((worker + 1) * height / workers) {
-                            compositor_motion_row(src, sourceWidth, sourceHeight, firstX, firstY + y,
-                                                  width, weights, kernel.count, dst + y * width * 4)
+                            if byteSamples {
+                                compositor_motion_row_byte_samples(src, sourceWidth, sourceHeight, firstX, firstY + y,
+                                                                   width, weights, kernel.count, dst + y * width * 4)
+                            } else {
+                                compositor_motion_row(src, sourceWidth, sourceHeight, firstX, firstY + y,
+                                                      width, weights, kernel.count, dst + y * width * 4)
+                            }
                         }
                     }
                 }
@@ -523,7 +526,8 @@ enum RasterFilters {
     }
 
     /// Inverse-maps `output` through a projective transform given by the 3x3 matrix `inverse` (device -> source).
-    static func projective(_ input: Raster, inverse m: [Double], output region: CGRect, nearest: Bool = false) -> Raster {
+    static func projective(_ input: Raster, inverse m: [Double], output region: CGRect,
+                           nearest: Bool = false, clampToInput: Bool = false) -> Raster {
         if let copied = alignedAffine(input, inverse: m, output: region) { return copied }
         var out = Raster(rect: region)
         for y in 0..<out.height {
@@ -531,8 +535,12 @@ enum RasterFilters {
                 let px = Double(out.rect.minX) + Double(x) + 0.5, py = Double(out.rect.minY) + Double(y) + 0.5
                 let w = m[6] * px + m[7] * py + m[8]
                 guard abs(w) > 1e-12 else { continue }
-                let sx = (m[0] * px + m[1] * py + m[2]) / w - Double(input.rect.minX)
-                let sy = (m[3] * px + m[4] * py + m[5]) / w - Double(input.rect.minY)
+                var sx = (m[0] * px + m[1] * py + m[2]) / w - Double(input.rect.minX)
+                var sy = (m[3] * px + m[4] * py + m[5]) / w - Double(input.rect.minY)
+                if clampToInput && input.width > 0 && input.height > 0 {
+                    sx = min(Double(input.width) - 0.5, max(0.5, sx))
+                    sy = min(Double(input.height) - 0.5, max(0.5, sy))
+                }
                 let p = nearest ? input.nearest(sx, sy) : input.bilinear(sx, sy)
                 let o = out.index(x, y)
                 out.data[o] = p.0; out.data[o + 1] = p.1; out.data[o + 2] = p.2; out.data[o + 3] = p.3

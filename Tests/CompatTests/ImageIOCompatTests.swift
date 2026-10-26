@@ -122,8 +122,9 @@ final class ImageIOCompatTests: XCTestCase {
             }
         }
         let fake = Fake()
+        let previousHost = ImageCodecRegistry.host
         ImageCodecRegistry.host = fake
-        defer { ImageCodecRegistry.host = nil }
+        defer { ImageCodecRegistry.host = previousHost }
         let jpeg = try XCTUnwrap(CGImageSourceCreateWithData(Data([0xFF, 0xD8, 0xFF, 0xE0]) as CFData, nil))
         XCTAssertEqual(CGImageSourceGetType(jpeg) as String?, "public.jpeg")
         let out = NSMutableData()

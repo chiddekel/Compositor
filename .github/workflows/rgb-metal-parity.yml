@@ -32,7 +32,8 @@ jobs:
           assert data['parameterStride'] == 72 and data['passesUpstreamTailAssertion']
           expected = {'source': (61, 61, 8), 'flat': (61, 61, 8), 'streaked': (61, 61, 8),
                       'jitter': (61, 61, 32), 'strictJitter': (61, 61, 32),
-                      'wideJitter': (192, 144, 32), 'wideStrictJitter': (192, 144, 32)}
+                      'wideJitter': (192, 144, 32), 'wideStrictJitter': (192, 144, 32),
+                      'extendedJitter': (513, 257, 32)}
           assert set(data['buffers']) == set(expected)
           buffers = {}
           for name, (width, height, bits) in expected.items():
@@ -52,7 +53,11 @@ jobs:
               assert list(buffers['streaked'][offset:offset + 4]) == point['streakedRGBA']
               for name, field in [('jitter', 'diagnosticArithmetic'), ('strictJitter', 'strictDiagnosticArithmetic')]:
                   assert list(struct.unpack_from('<4f', buffers[name], offset * 4)) == point[field]
-          print('Validated seven native source/output/jitter buffers and all edge samples')
+          # The larger dispatch must preserve the same arithmetic at overlapping coordinates.
+          for y in range(144):
+              assert buffers['wideJitter'][y * 192 * 16:(y + 1) * 192 * 16] == \
+                  buffers['extendedJitter'][y * 513 * 16:(y * 513 + 192) * 16]
+          print('Validated eight native source/output/jitter buffers, overlap and all edge samples')
           PY
       - name: Retain the reference output
         uses: actions/upload-artifact@v4

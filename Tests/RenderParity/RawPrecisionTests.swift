@@ -10,6 +10,16 @@ import Testing
 @MainActor
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["COMPOSITOR_RAW_PRECISION_INPUT"] != nil))
 struct RawPrecisionTests {
+    @Test func asShotWhitePointMatchesNativeDNGCalibration() throws {
+        try #require(compositor_parity_install() != 0)
+        let path = try #require(ProcessInfo.processInfo.environment["COMPOSITOR_RAW_PRECISION_INPUT"])
+        let settings = try #require(RawImporter.asShot(URL(fileURLWithPath: path)))
+        // Independent native decoder defaults for this identity-calibrated sensor, not an inferred daylight gain ratio.
+        #expect(abs(settings.temperature - 5454.008789) < 0.1)
+        #expect(abs(settings.tint + 12.993514) < 0.001)
+        #expect(settings.isAsShot)
+    }
+
     @Test func sixteenBitRawImportRetainsSensorPrecision() throws {
         try #require(compositor_parity_install() != 0)
         let path = try #require(ProcessInfo.processInfo.environment["COMPOSITOR_RAW_PRECISION_INPUT"])

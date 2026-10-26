@@ -4,6 +4,8 @@
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -69,6 +71,7 @@ struct Buffer {
 }
 
 struct CompositorVulkanRaster {
+    std::atomic<uint32_t> references{1};
     std::mutex lock;
     VkInstance instance=VK_NULL_HANDLE;
     VkDevice device=VK_NULL_HANDLE;
@@ -90,6 +93,8 @@ struct CompositorVulkanRaster {
     uint64_t uploadBytes=0;
     uint64_t generation=0;
     uint64_t readbackBytes=0;
+    uint64_t residentBytes=0;
+    uint64_t bokehSubmissions=0;
     std::array<size_t,3> inputBytes{};
     VkDescriptorPool graphPool=VK_NULL_HANDLE;
     uint32_t graphPoolCapacity=0;
@@ -445,9 +450,9 @@ struct CompositorVulkanRaster {
         check(vkResetFences(device,1,&fence)); check(vkResetCommandBuffer(command,0));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(command,&begin));
-        VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; upload.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;
+        VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; upload.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT|VK_ACCESS_SHADER_WRITE_BIT;
         upload.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&upload,0,nullptr,0,nullptr);
+        vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_HOST_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&upload,0,nullptr,0,nullptr);
         vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,selected);
         vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,pipelineLayout,0,1,&descriptorSet,0,nullptr);
         vkCmdPushConstants(command,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,bytes,parameters);
@@ -464,7 +469,9 @@ extern "C" CompositorVulkanRaster *compositor_vulkan_raster_create(int allowSoft
     try { auto c=std::make_unique<CompositorVulkanRaster>(); c->initialize(allowSoftware!=0); return c.release(); }
     catch (...) { return nullptr; }
 }
-extern "C" void compositor_vulkan_raster_destroy(CompositorVulkanRaster *c) { delete c; }
+extern "C" void compositor_vulkan_raster_destroy(CompositorVulkanRaster *c) {
+    if (c && c->references.fetch_sub(1)==1) delete c;
+}
 extern "C" const char *compositor_vulkan_raster_device(CompositorVulkanRaster *c) { return c?c->properties.deviceName:"unavailable"; }
 extern "C" uint32_t compositor_vulkan_raster_device_type(CompositorVulkanRaster *c) { return c?c->properties.deviceType:0; }
 extern "C" int compositor_vulkan_raster_available(CompositorVulkanRaster *c) {
@@ -542,4 +549,172 @@ extern "C" int compositor_vulkan_raster_render_cached(CompositorVulkanRaster *c,
     }
     catch (const TooLarge &) { return -3; }
     catch (...) { c->usable=false; return -2; }
+}
+
+// Resident handles own immutable storage independently of the scratch buffers used by graph/render_cached.
+namespace { enum class ImageStorage { Float32, Half, RGBA8 }; }
+struct CompositorVulkanImage {
+    CompositorVulkanRaster *owner;
+    uint32_t width, height;
+    ImageStorage storage;
+    std::unique_ptr<Buffer> pixels;
+};
+namespace {
+constexpr uint64_t residentLimit=512ull*1024*1024;
+std::unique_ptr<Buffer> residentBuffer(CompositorVulkanRaster *c,uint64_t bytes) {
+    if (bytes>c->properties.limits.maxStorageBufferRange || bytes>residentLimit-c->residentBytes)
+        throw TooLarge("Resident image budget exceeded");
+    auto buffer=std::make_unique<Buffer>(); buffer->create(c->device,c->physical,bytes);
+    return buffer;
+}
+CompositorVulkanImage *retainImage(CompositorVulkanRaster *c,uint32_t width,uint32_t height,std::unique_ptr<Buffer> pixels,
+                                 ImageStorage storage=ImageStorage::Float32) {
+    auto image=std::make_unique<CompositorVulkanImage>();
+    image->owner=c; image->width=width; image->height=height; image->storage=storage; image->pixels=std::move(pixels);
+    c->residentBytes+=image->pixels->capacity;
+    c->references.fetch_add(1);
+    return image.release();
+}
+void residentBindings(CompositorVulkanRaster *c,Buffer *source,Buffer *output,Buffer *mask,Buffer *background,Buffer *parameters) {
+    Buffer *bound[5]{source,output,mask,background,parameters};
+    VkDescriptorBufferInfo info[5]{}; VkWriteDescriptorSet writes[5]{};
+    for (uint32_t j=0;j<5;++j) {
+        info[j]={bound[j]->buffer,0,bound[j]->capacity};
+        writes[j].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[j].dstSet=c->descriptorSet;
+        writes[j].dstBinding=j; writes[j].descriptorCount=1;
+        writes[j].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[j].pBufferInfo=&info[j];
+    }
+    vkUpdateDescriptorSets(c->device,5,writes,0,nullptr);
+}
+bool dimensions(uint32_t width,uint32_t height) { return width && height && width<=65536 && height<=65536; }
+bool copiesHalf(uint32_t operation,const float *p) {
+    if (operation==7 || operation==17) return true;
+    if (operation!=13) return false;
+    if (p[10]!=0) return true;
+    const double x=double(p[4])+p[6]-p[8], y=double(p[5])+p[7]-p[9];
+    return p[0]==1 && p[1]==0 && p[2]==0 && p[3]==1 && x==std::floor(x) && y==std::floor(y);
+}
+CompositorVulkanImage *uploadImage(CompositorVulkanRaster *c,uint32_t width,uint32_t height,
+                                  const void *pixels,ImageStorage storage) {
+    if (!c || !dimensions(width,height) || !pixels) return nullptr;
+    std::lock_guard<std::mutex> guard(c->lock);
+    if (!c->usable) return nullptr;
+    try {
+        const uint64_t bytes=uint64_t(width)*height*(storage==ImageStorage::RGBA8?4:16);
+        auto buffer=residentBuffer(c,bytes);
+        std::memcpy(buffer->mapped,pixels,bytes); buffer->flush(); c->uploadBytes+=bytes;
+        return retainImage(c,width,height,std::move(buffer),storage);
+    } catch (const TooLarge &) { return nullptr; }
+    catch (...) { c->usable=false; return nullptr; }
+}
+}
+extern "C" uint64_t compositor_vulkan_raster_resident_bytes(CompositorVulkanRaster *c) {
+    if (!c) return 0;
+    std::lock_guard<std::mutex> guard(c->lock); return c->residentBytes;
+}
+extern "C" uint64_t compositor_vulkan_raster_bokeh_submissions(CompositorVulkanRaster *c) {
+    if (!c) return 0;
+    std::lock_guard<std::mutex> guard(c->lock); return c->bokehSubmissions;
+}
+extern "C" CompositorVulkanImage *compositor_vulkan_image_upload(CompositorVulkanRaster *c,
+    uint32_t width,uint32_t height,const float *pixels) {
+    return uploadImage(c,width,height,pixels,ImageStorage::Float32);
+}
+extern "C" CompositorVulkanImage *compositor_vulkan_image_upload_rgba8(CompositorVulkanRaster *c,
+    uint32_t width,uint32_t height,const uint8_t *pixels) {
+    return uploadImage(c,width,height,pixels,ImageStorage::RGBA8);
+}
+extern "C" CompositorVulkanImage *compositor_vulkan_image_apply(CompositorVulkanRaster *c,
+    uint32_t width,uint32_t height,uint32_t operation,uint32_t channel,
+    const CompositorVulkanImage *source,const CompositorVulkanImage *background,
+    const CompositorVulkanImage *mask,const float *parameters) {
+    if (!c || !dimensions(width,height) || !source || source->owner!=c ||
+        (background && background->owner!=c) || (mask && mask->owner!=c) ||
+        !((operation>=1 && operation<=11) || (operation>=13 && operation<=18)) ||
+        (operation<=2 && !background) || (operation==2 && (!mask || (channel!=0 && channel!=3 && channel!=4))) ||
+        ((operation==16 || operation==18) && !background) ||
+        ((operation>=3 && operation!=5 && operation!=6) && !parameters)) return nullptr;
+    if (operation!=10 && operation!=11 && operation!=13 && (source->width!=width || source->height!=height)) return nullptr;
+    if ((operation<=2 && (background->width!=width || background->height!=height)) ||
+        (operation==18 && (background->width!=width || background->height!=height)) ||
+        (operation==2 && (mask->width!=width || mask->height!=height))) return nullptr;
+    if (parameters) for (int i=0;i<20;++i) {
+        // Noise/grain carry bit-pattern integer seeds and signed coordinates, which may spell float NaNs.
+        if (operation!=8 && operation!=9 && !std::isfinite(parameters[i])) return nullptr;
+    }
+    if (operation==11 && (!(parameters[0]>=0.5f && parameters[0]<=20) || parameters[1]<0 || parameters[1]>3 ||
+        parameters[1]!=std::floor(parameters[1]) || parameters[5]<=0 || parameters[6]<=0)) return nullptr;
+    if (operation==16 && (background->height!=1 || background->width<2)) return nullptr;
+    if (operation==10 && (parameters[9]<1 || parameters[9]>4096 || parameters[10]<1 || parameters[10]>4096 ||
+        parameters[8]<0 || parameters[8]>15 || std::abs(parameters[15])!=1 || parameters[18]<0 || parameters[18]>2)) return nullptr;
+    std::lock_guard<std::mutex> guard(c->lock);
+    if (!c->usable || (width+15)/16>c->properties.limits.maxComputeWorkGroupCount[0] ||
+        (height+15)/16>c->properties.limits.maxComputeWorkGroupCount[1]) return nullptr;
+    try {
+        const bool half=operation==11 || operation==14 || (operation==10 && parameters[19]!=0) ||
+            (source->storage==ImageStorage::Half && copiesHalf(operation,parameters));
+        const uint64_t outputBytes=uint64_t(width)*height*(half?8:16);
+        const uint64_t tableBytes=operation==11 && parameters[1]!=3
+            ? (uint64_t(std::ceil(parameters[0]))*2+1)*(uint64_t(std::ceil(parameters[0]*(parameters[1]==2?1.62f:1)))*2+1)*16 : 0;
+        if (outputBytes+tableBytes+80>residentLimit-c->residentBytes) throw TooLarge("Resident operation budget exceeded");
+        auto output=residentBuffer(c,outputBytes);
+        Buffer values; values.create(c->device,c->physical,80);
+        float p[20]{}; if (parameters) std::memcpy(p,parameters,80);
+        if (operation==10 || operation==11 || operation==13) { p[16]=float(source->width); p[17]=float(source->height); }
+        if (operation==16) p[0]=float(background->width);
+        std::memcpy(values.mapped,p,80); values.flush();
+        std::unique_ptr<Buffer> table;
+        if (operation==11 && p[1]!=3) {
+            const uint32_t columns=uint32_t(std::ceil(p[0]))*2+1;
+            const uint32_t rows=uint32_t(std::ceil(p[0]*(p[1]==2?1.62f:1)))*2+1;
+            table=residentBuffer(c,uint64_t(columns)*rows*16);
+            residentBindings(c,source->pixels.get(),table.get(),source->pixels.get(),source->pixels.get(),&values);
+            const uint32_t u[4]{columns*rows,1,12,0};
+            c->dispatch(u[0],1,c->pipeline,u,sizeof(u)); ++c->submissions;
+        }
+        residentBindings(c,source->pixels.get(),output.get(),table?table.get():mask?mask->pixels.get():source->pixels.get(),
+                         background?background->pixels.get():source->pixels.get(),&values);
+        // Format bits are private to this dispatch. Public operation values remain unchanged.
+        const uint32_t formats=(source->storage==ImageStorage::Half?256u:0u)|(half?512u:0u)|
+            (operation==2 && mask && mask->storage==ImageStorage::Half?1024u:0u)|
+            (background && background->storage==ImageStorage::Half?2048u:0u)|
+            (source->storage==ImageStorage::RGBA8?4096u:0u)|
+            (operation==2 && mask && mask->storage==ImageStorage::RGBA8?8192u:0u)|
+            (background && background->storage==ImageStorage::RGBA8?16384u:0u);
+        const uint32_t u[4]{width,height,operation|formats,channel};
+        c->dispatch(width,height,c->pipeline,u,sizeof(u)); ++c->submissions; ++c->generation;
+        if (operation==11) ++c->bokehSubmissions;
+        return retainImage(c,width,height,std::move(output),half?ImageStorage::Half:ImageStorage::Float32);
+    } catch (const TooLarge &) { return nullptr; }
+    catch (...) { c->usable=false; return nullptr; }
+}
+extern "C" int compositor_vulkan_image_read(const CompositorVulkanImage *image,float *output) {
+    if (!image || !output) return -1;
+    auto c=image->owner; std::lock_guard<std::mutex> guard(c->lock);
+    if (!c->usable) return -2;
+    try {
+        image->pixels->invalidate();
+        const size_t bytes=image->pixels->capacity;
+        if (image->storage==ImageStorage::Half) {
+            const auto *pixels=static_cast<const uint16_t *>(image->pixels->mapped);
+            for (size_t i=0;i<size_t(image->width)*image->height*4;++i) {
+                _Float16 value; std::memcpy(&value,pixels+i,sizeof(value)); output[i]=float(value);
+            }
+        } else if (image->storage==ImageStorage::RGBA8) {
+            const auto *pixels=static_cast<const uint8_t *>(image->pixels->mapped);
+            for (size_t i=0;i<size_t(image->width)*image->height*4;++i) output[i]=float(pixels[i])/255.0f;
+        } else { std::memcpy(output,image->pixels->mapped,bytes); }
+        c->readbackBytes+=bytes;
+        return 0;
+    } catch (...) { c->usable=false; return -2; }
+}
+extern "C" void compositor_vulkan_image_destroy(CompositorVulkanImage *image) {
+    if (!image) return;
+    auto c=image->owner;
+    {
+        std::lock_guard<std::mutex> guard(c->lock);
+        c->residentBytes-=image->pixels->capacity;
+        delete image;
+    }
+    compositor_vulkan_raster_destroy(c);
 }

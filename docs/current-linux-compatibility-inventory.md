@@ -1,6 +1,55 @@
 # Current Linux compatibility inventory
 
-Current source inventory: **2026-10-16**, `GNU_Linux` HEAD `94cf71e`, merging
+Incoming upstream **`2d75d91` (1.5.10, format 19)** is now applied to the protected
+app and test trees. Local compatibility and regression qualification pass:
+237 XCTest cases (one skip), 1,072 parallel and 48 serialized Swift tests,
+native transform/Align and ten adjustment journeys, and all 178 CPU/Vulkan
+exports with identical decoded pixels, ICC profiles and numeric samples.
+See [the 1.5.10 tracker](upstream-1.5.10-integration.md) for scope, reviewed
+fixtures and evidence. Native macOS application equivalence remains unverified;
+the independent rounded-rectangle control still retains its three-pixel,
+two-level discrepancy. The historical qualification below belongs to 1.5.9.
+Fresh source accounting covers 176 app files (145 unchanged, 24 generated,
+five replacements and two platform substitutions), 99 unchanged upstream test
+files and four generated mirrors. All 13 coverage checks pass.
+
+Preceding checkpoint's source audit: **2026-10-25**, protected upstream **`8cdc2b6` (1.5.9)**;
+public upstream rechecked unchanged on **2026-10-26**.
+Fresh SwiftPM evaluation accounts for all 175 application Swift files (144
+unchanged, 24 generated adapters, five replacements and two platform
+substitutions), 98 unchanged upstream test files and four generated test mirrors.
+All 13 coverage-audit tests pass. Source inclusion is separate from behavioral
+parity. The [current integration audit](upstream-7651033-integration.md#completion-audit)
+records current hardware tests, remaining rendering differences and the measured
+performance costs. Source-audit evidence is under
+`.build/evidence/upstream-8cdc2b6-*`; earlier behavioral evidence uses
+`upstream-7651033-*`. The latest changes build and pass focused canvas, sampling,
+morphology and timer lifecycle checks. The latest Release qualification passes
+232 XCTest cases (one opt-in timing skip) and 48 serialized tests. The 1,063-test
+parallel Swift run retains one unchanged text golden assertion (136 channel
+values, maximum twelve); reviewed blend, effect, tone and Dither baselines are
+documented in the integration report. Native motion controls now pass within
+their recorded bounds. Current CPU/Vulkan exports match decoded pixels, numeric
+samples and ICC data for all 173 images; the CPU Core Image setting still uses
+the separate hardware dispersion driver. Latest-upstream native application
+equivalence remains unqualified. Current source/result provenance is recorded in
+`.build/evidence/rgb-parameter-candidate.json`.
+The morphology change also preserves 173/173 pre/post-optimization exports and
+480 randomized comparisons of float bit patterns. Its synthetic 301-pixel release
+kernel
+drops from about 539 ms to 4–4.5 ms; full native-equivalent performance is pending.
+The timer adapter also passes five lifecycle tests after six ownership
+assertions reproduced its self-retention and cancellation leaks. A separate
+current-source 4000 × 2600 adjustment benchmark completed successfully; the obsolete
+earlier-planner benchmark was intentionally terminated before its launch.
+The final medians expose unresolved performance costs: 6,013.8 ms without
+adjustments and 614,547.6 ms for uncached Starburst (6,048.9 ms cached).
+All twelve adjustment rows and their cached/uncached timings are recorded in
+`.build/evidence/upstream-8cdc2b6-rgb-parameter-benchmark-result.json`; original
+source/executable/library hashes still match at completion. This is Linux-host
+evidence, not native macOS comparison or acceptable interactive performance.
+
+Historical source inventory: **2026-10-16**, `GNU_Linux` HEAD `94cf71e`, merging
 protected `upstream/main` **`365b574`** (1.5.3). Linux adaptations remain
 uncommitted, including untracked files. The latest complete canonical checkpoint
 passes **147 XCTest + 956 Swift Testing tests (1,103 total)**, all 34 host-native

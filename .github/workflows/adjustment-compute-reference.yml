@@ -1,0 +1,35 @@
+name: Native adjustment compute reference
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      UPSTREAM_COMMIT: 7651033e0abab135db40e9375a639fae55c313ff
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Read the pinned upstream shaders
+        run: |
+          git remote add upstream https://github.com/robbietilton/Compositor.git
+          git fetch --no-tags upstream "$UPSTREAM_COMMIT"
+          mkdir -p .build/native-compute-source/Compositor/Rendering
+          for name in MetalBokeh MetalDispersion; do
+            git show "$UPSTREAM_COMMIT:Compositor/Rendering/$name.swift" > ".build/native-compute-source/Compositor/Rendering/$name.swift"
+          done
+      - name: Capture unchanged shader outputs on native Metal
+        run: swift scripts/capture-adjustment-compute.swift .build/native-compute-source "$UPSTREAM_COMMIT" > adjustment-compute-reference.json
+      - name: Validate all native buffers, global coordinates and provenance
+        run: python3 scripts/validate-adjustment-compute-reference.py adjustment-compute-reference.json --source .build/native-compute-source --commit "$UPSTREAM_COMMIT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adjustment-compute-reference
+          path: adjustment-compute-reference.json
+          if-no-files-found: error

@@ -48,8 +48,9 @@ done
 cmake -S . -B "$NATIVE_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER="$(command -v clang)" -DCMAKE_CXX_COMPILER="$(command -v clang++)" \
     -DCOMPOSITOR_SKIA_ROOT="$SKIA_ROOT" -DCOMPOSITOR_SKIA_LIB="$SKIA_LIB"
-cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_dispersion_backend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_native_file_panels test_keyboard_layout test_fitting_layout test_text_field_state
+cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBridge CompositorQtImageIO CompositorPDFBackend test_dispersion_backend test_pressure_brush test_skia_bridge test_imageio_color test_font_traits test_kernels test_scanlines_initialization test_patch_pixels test_raw_lens test_thumbnailer test_group_rotation test_grid_settings test_grid_settings_owner test_native_file_panels test_keyboard_layout test_fitting_layout test_text_field_state
 python3 tests/test_dispersion.py "$NATIVE_BUILD/libtest_dispersion_backend.so"
+python3 tests/test_vulkan_resident.py "$NATIVE_BUILD/libtest_dispersion_backend.so"
 python3 tests/make_artboard_fixture.py --check
 "$NATIVE_BUILD/test_pressure_brush"
 python3 tests/test_pdf_backend.py "$NATIVE_BUILD/libCompositorPDFBackend.so"
@@ -59,6 +60,9 @@ python3 tests/test_pdf_backend.py "$NATIVE_BUILD/libCompositorPDFBackend.so"
 "$NATIVE_BUILD/test_kernels"
 "$NATIVE_BUILD/test_scanlines_initialization"
 "$NATIVE_BUILD/test_skia_bridge"
+python3 tests/test_stroke_coverage.py "$NATIVE_BUILD/libCompositorSkiaBridge.so"
+python3 tests/test_image_sampling.py "$NATIVE_BUILD/libCompositorSkiaBridge.so"
+python3 tests/test_nonseparable_blends.py "$NATIVE_BUILD/libCompositorSkiaBridge.so"
 
 export COMPOSITOR_SKIA_BRIDGE="$NATIVE_BUILD/libCompositorSkiaBridge.so"
 export COMPOSITOR_IMAGEIO_BACKEND="$NATIVE_BUILD/libCompositorQtImageIO.so"
@@ -78,6 +82,7 @@ python3 tests/test_gif_backend.py "$NATIVE_BUILD/libCompositorQtImageIO.so"
 "$NATIVE_BUILD/test_native_file_panels"
 "$NATIVE_BUILD/test_fitting_layout"
 "$NATIVE_BUILD/test_text_field_state"
+"$NATIVE_BUILD/test_grid_settings_owner"
 "$NATIVE_BUILD/test_thumbnailer" "$NATIVE_BUILD/compositor-thumbnailer"
 export PATH="/usr/lib/sdk/swift6/bin:$PATH"
 swift package --manifest-cache none describe --type json > "$NATIVE_BUILD/package-description.json"

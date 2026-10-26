@@ -87,3 +87,17 @@ pause.fill custom/pause
 camera.aperture custom/aperture
 circle.dashed.inset.filled circle-dashed
 circle.lefthalf.striped.horizontal contrast
+# Alignment, flip controls and Sharpen added in 1.5.10.
+align.horizontal.left custom/align-horizontal-left
+align.horizontal.center custom/align-horizontal-center
+align.horizontal.right custom/align-horizontal-right
+align.vertical.top custom/align-vertical-top
+align.vertical.center custom/align-vertical-center
+align.vertical.bottom custom/align-vertical-bottom
+distribute.horizontal.center custom/distribute-horizontal-center
+distribute.horizontal.fill custom/distribute-horizontal-spacing
+distribute.vertical.center custom/distribute-vertical-center
+distribute.vertical.fill custom/distribute-vertical-spacing
+arrow.left.and.right.righttriangle.left.righttriangle.right custom/flip-horizontal
+arrow.up.and.down.righttriangle.up.righttriangle.down custom/flip-vertical
+triangle.lefthalf.filled custom/sharpen-half-triangle

@@ -4,35 +4,95 @@
 #include "../../brush/shaders/warp_precision.glsl"
 #include "raster_ops.glsl"
 layout(local_size_x=16,local_size_y=16) in;
-layout(push_constant) uniform Parameters { uint width; uint height; uint operation; uint channel; } u;
-layout(std430,binding=0) readonly buffer Source { vec4 source[]; };
-layout(std430,binding=1) writeonly buffer Destination { vec4 destination[]; };
-layout(std430,binding=2) readonly buffer Mask { vec4 mask[]; };
-layout(std430,binding=3) readonly buffer Background { vec4 background[]; };
+layout(push_constant) uniform Parameters { uint width; uint height; uint operationAndFormats; uint channel; } u;
+layout(std430,binding=0) readonly buffer Source { uint sourceWords[]; };
+layout(std430,binding=1) writeonly buffer Destination { uint destinationWords[]; };
+layout(std430,binding=2) readonly buffer Mask { uint maskWords[]; };
+layout(std430,binding=3) readonly buffer Background { uint backgroundWords[]; };
 layout(std430,binding=4) readonly buffer Values { vec4 values[]; };
 
+uint operation() { return u.operationAndFormats&255u; }
+uint halfBits(float value) {
+    uint bits=floatBitsToUint(value), sign=(bits>>16)&32768u;
+    uint fraction=bits&8388607u, exponent=(bits>>23)&255u;
+    if (exponent==255u) return sign|31744u|(fraction==0?0u:512u|(fraction>>13));
+    int e=int(exponent)-112;
+    if (e>=31) return sign|31744u;
+    if (e< -10) return sign;
+    uint result, remainder, halfway;
+    if (e<=0) {
+        fraction|=8388608u;
+        uint shift=uint(14-e);
+        result=fraction>>shift; remainder=fraction&((1u<<shift)-1u); halfway=1u<<(shift-1u);
+    } else {
+        result=(uint(e)<<10)|(fraction>>13); remainder=fraction&8191u; halfway=4096u;
+    }
+    if (remainder>halfway || (remainder==halfway && (result&1u)!=0)) ++result;
+    return sign|result;
+}
+uint halfPair(vec2 value) { return halfBits(value.x)|(halfBits(value.y)<<16); }
+vec4 normalizedBytes(uint word) {
+    uvec4 bytes=uvec4(word,word>>8,word>>16,word>>24)&255u;
+    // Decode to the same binary32 values as the CPU byte table, without reciprocal-rounding drift.
+    return vec4(dvec4(bytes)/255.0);
+}
+// Packed half pairs use ordinary 32-bit storage words, requiring no optional 16-bit storage feature.
+vec4 readSource(uint index) {
+    if ((u.operationAndFormats&4096u)!=0) return normalizedBytes(sourceWords[index]);
+    if ((u.operationAndFormats&256u)!=0) {
+        uint at=index*2;
+        return vec4(unpackHalf2x16(sourceWords[at]),unpackHalf2x16(sourceWords[at+1]));
+    }
+    uint at=index*4;
+    return uintBitsToFloat(uvec4(sourceWords[at],sourceWords[at+1],sourceWords[at+2],sourceWords[at+3]));
+}
+vec4 readMask(uint index) {
+    if ((u.operationAndFormats&8192u)!=0) return normalizedBytes(maskWords[index]);
+    if ((u.operationAndFormats&1024u)!=0) {
+        uint at=index*2;
+        return vec4(unpackHalf2x16(maskWords[at]),unpackHalf2x16(maskWords[at+1]));
+    }
+    uint at=index*4;
+    return uintBitsToFloat(uvec4(maskWords[at],maskWords[at+1],maskWords[at+2],maskWords[at+3]));
+}
+vec4 readBackground(uint index) {
+    if ((u.operationAndFormats&16384u)!=0) return normalizedBytes(backgroundWords[index]);
+    if ((u.operationAndFormats&2048u)!=0) {
+        uint at=index*2;
+        return vec4(unpackHalf2x16(backgroundWords[at]),unpackHalf2x16(backgroundWords[at+1]));
+    }
+    uint at=index*4;
+    return uintBitsToFloat(uvec4(backgroundWords[at],backgroundWords[at+1],backgroundWords[at+2],backgroundWords[at+3]));
+}
+void writeDestination(uint index,vec4 value) {
+    if ((u.operationAndFormats&512u)!=0) {
+        uint at=index*2;
+        destinationWords[at]=halfPair(value.xy); destinationWords[at+1]=halfPair(value.zw);
+    } else {
+        uint at=index*4; uvec4 words=floatBitsToUint(value);
+        destinationWords[at]=words.x; destinationWords[at+1]=words.y;
+        destinationWords[at+2]=words.z; destinationWords[at+3]=words.w;
+    }
+}
+
 float parameter(uint i) { return values[i/4][i%4]; }
+vec4 halfStorage(vec4 value);
 float dispersionSine(float phase) {
     // Match Metal's float-cycle reduction before the sine hash amplifies its rounding.
     precise float cycle=phase*0.15915494309189535;
     cycle-=round(cycle);
     if (cycle>0.25) cycle=0.5-cycle;
     else if (cycle<-0.25) cycle=-0.5-cycle;
-    // A one-ulp device sin error can wrap fract's amplified hash to the opposite
-    // end of a sample interval. Evaluate the reduced angle accurately instead.
-    precise float angle=cycle*6.283185307179586;
-    precise double a=double(angle), z=a*a;
-    precise double poly=1.0lf/51090942171709440000.0lf;
-    poly=poly*z-1.0lf/121645100408832000.0lf;
-    poly=poly*z+1.0lf/355687428096000.0lf;
-    poly=poly*z-1.0lf/1307674368000.0lf;
-    poly=poly*z+1.0lf/6227020800.0lf;
-    poly=poly*z-1.0lf/39916800.0lf;
-    poly=poly*z+1.0lf/362880.0lf;
-    poly=poly*z-1.0lf/5040.0lf;
-    poly=poly*z+1.0lf/120.0lf;
-    poly=poly*z-1.0lf/6.0lf;
-    return float(a+a*z*poly);
+    // Same reduced-angle fast-sine model as the CPU fallback in Dispersion.cpp.
+    precise float x=cycle*4.0, z=x*x;
+    precise float p=-1.27799126e-06;
+    p=fma(p,z,0.000155217505);
+    p=fma(p,z,-0.00467753445);
+    p=fma(p,z,0.0796911645);
+    p=fma(p,z,-0.645963886);
+    p=fma(p,z,1.57079623);
+    precise float result=p*x;
+    return result;
 }
 vec4 dispersionTap(vec2 q) {
     vec2 size=vec2(parameter(16),parameter(17));
@@ -40,11 +100,13 @@ vec4 dispersionTap(vec2 q) {
     uint sides=uint(parameter(8));
     if ((texel.x<0 && (sides&1u)==0) || (texel.x>size.x && (sides&2u)==0) ||
         (texel.y<0 && (sides&4u)==0) || (texel.y>size.y && (sides&8u)==0)) return vec4(0);
+    if (parameter(19)!=0) texel.y=size.y-texel.y;
     vec2 at=clamp(texel-0.5,vec2(0),size-1);
     uvec2 lo=uvec2(floor(at)), hi=min(lo+1u,uvec2(size)-1u);
     vec2 t=fract(at); uint w=uint(size.x);
-    return mix(mix(source[lo.y*w+lo.x],source[lo.y*w+hi.x],t.x),
-               mix(source[hi.y*w+lo.x],source[hi.y*w+hi.x],t.x),t.y);
+    vec4 a=readSource(lo.y*w+lo.x), b=readSource(lo.y*w+hi.x), c=readSource(hi.y*w+lo.x), d=readSource(hi.y*w+hi.x);
+    if (parameter(19)!=0) { a=halfStorage(a); b=halfStorage(b); c=halfStorage(c); d=halfStorage(d); }
+    return mix(mix(a,b,t.x),mix(c,d,t.x),t.y);
 }
 vec4 dispersion(uvec2 pixel) {
     vec2 at=vec2(parameter(11),parameter(12))+vec2(float(pixel.x)+0.5,parameter(15)*(float(pixel.y)+0.5));
@@ -53,13 +115,24 @@ vec4 dispersion(uvec2 pixel) {
     vec2 spread=axis*parameter(4), streak=axis*parameter(5);
     uint n=max(uint(parameter(9)),1u), m=max(uint(parameter(10)),1u);
     precise float phase=fma(float(pixel.y),78.233,float(pixel.x)*12.9898);
-    float jitter=fract(dispersionSine(phase)*43758.5453);
+    precise float noise=dispersionSine(phase)*43758.5453;
+    float jitter=fract(noise);
+    uint pass=uint(parameter(18));
+    if (pass==1u) {
+        vec4 sum=vec4(0);
+        for (uint j=0;j<m;++j) {
+            float v=(float(j)+jitter)/float(m)-0.5;
+            sum+=dispersionTap(at-streak*v);
+        }
+        return sum/float(m);
+    }
     vec3 color=vec3(0), alpha=vec3(0), total=vec3(0);
     for (uint i=0;i<n;++i) {
         float t=n==1 ? 0 : (float(i)+jitter)/float(n)*2-1;
         vec3 weight=vec3(smoothstep(-0.3,1.0,t),1-smoothstep(0.0,1.0,abs(t))+0.05,smoothstep(-0.3,1.0,-t));
-        for (uint j=0;j<m;++j) {
-            float v=m==1 ? 0 : (float(j)+jitter)/float(m)-0.5;
+        uint taps=pass==2u ? 1u : m;
+        for (uint j=0;j<taps;++j) {
+            float v=taps==1u ? 0 : (float(j)+jitter)/float(m)-0.5;
             vec4 c=dispersionTap(at-spread*t-streak*v);
             color+=weight*c.rgb; alpha+=weight*c.a; total+=weight;
         }
@@ -69,16 +142,116 @@ vec4 dispersion(uvec2 pixel) {
     return vec4(min(color,vec3(a)),a);
 }
 
+vec4 halfStorage(vec4 value) {
+    return vec4(unpackHalf2x16(halfPair(value.xy)),unpackHalf2x16(halfPair(value.zw)));
+}
+float apertureWeight(ivec2 offset,vec2 outward) {
+    float radius=parameter(0), ring=parameter(2);
+    uint shape=uint(parameter(1));
+    vec2 o=vec2(offset)/radius;
+    float d=length(o);
+    if (shape==1u) { vec2 q=abs(o); d=max(q.x*0.866025+q.y*0.5,q.y)/0.866025*0.93; }
+    else if (shape==2u) d=length(o*vec2(1,0.62));
+    else if (shape==3u) d=max(d,length(o+outward*1.25));
+    float inside=1-smoothstep(1-1/radius,1,d);
+    return inside<=0?0:inside*(1+ring*2.5*smoothstep(0.6,0.97,d));
+}
+vec4 apertureGather(uvec2 pixel) {
+    bool bottomUp=parameter(18)!=0;
+    vec2 native=vec2(pixel.x,bottomUp?u.height-1u-pixel.y:pixel.y);
+    vec2 regionSize=vec2(parameter(5),parameter(6));
+    vec2 regionTop=vec2(parameter(3),parameter(4)+regionSize.y);
+    vec2 outputTop=vec2(parameter(7),parameter(8)), inputTop=vec2(parameter(9),parameter(10));
+    vec2 here=vec2(outputTop.x-regionTop.x,regionTop.y-outputTop.y)+native+0.5;
+    vec2 fromMiddle=(here-regionSize*0.5)/(max(regionSize.x,regionSize.y)*0.5);
+    vec2 outward=fromMiddle*min(1,length(fromMiddle));
+    vec2 at=vec2(outputTop.x-inputTop.x,inputTop.y-outputTop.y)+native;
+    int rx=int(ceil(parameter(0))), ry=int(ceil(parameter(0)*(parameter(1)==2?1.62:1)));
+    ivec2 size=ivec2(parameter(16),parameter(17));
+    precise vec4 sum=vec4(0); precise float total=0;
+    for (int dy=-ry;dy<=ry;++dy) for (int dx=-rx;dx<=rx;++dx) {
+        float weight=parameter(1)==3?apertureWeight(ivec2(dx,dy),outward):readMask(uint((dy+ry)*(rx*2+1)+dx+rx)).x;
+        if (weight<=0) continue;
+        ivec2 q=clamp(ivec2(at)+ivec2(dx,dy),ivec2(0),size-1);
+        if (bottomUp) q.y=size.y-1-q.y;
+        sum+=halfStorage(readSource(uint(q.y*size.x+q.x)))*weight; total+=weight;
+    }
+    return halfStorage(sum/max(total,1e-5));
+}
+vec4 residentPixel(ivec2 at,ivec2 size,bool clampEdge) {
+    if (clampEdge) at=clamp(at,ivec2(0),size-1);
+    else if (any(lessThan(at,ivec2(0))) || any(greaterThanEqual(at,size))) return vec4(0);
+    return readSource(uint(at.y*size.x+at.x));
+}
+vec4 affineSample(uvec2 pixel) {
+    // Double coordinates preserve the CPU sampler's pixel-center arithmetic through large translations.
+    dvec2 world=dvec2(parameter(6),parameter(7))+dvec2(pixel)+0.5;
+    dvec2 q=dvec2(double(parameter(0))*world.x+double(parameter(2))*world.y+double(parameter(4)),
+                 double(parameter(1))*world.x+double(parameter(3))*world.y+double(parameter(5)))
+              -dvec2(parameter(8),parameter(9));
+    ivec2 size=ivec2(parameter(16),parameter(17)); bool clampEdge=parameter(11)!=0;
+    if (parameter(10)!=0) return residentPixel(ivec2(floor(q)),size,clampEdge);
+    q-=0.5; ivec2 lo=ivec2(floor(q)); vec2 t=vec2(q-dvec2(lo));
+    precise vec4 a=residentPixel(lo,size,clampEdge), b=residentPixel(lo+ivec2(1,0),size,clampEdge);
+    precise vec4 c=residentPixel(lo+ivec2(0,1),size,clampEdge), d=residentPixel(lo+1,size,clampEdge);
+    precise vec4 result=(a*(1-t.x)+b*t.x)*(1-t.y)+(c*(1-t.x)+d*t.x)*t.y;
+    return result;
+}
+vec4 transferSample(vec4 s) {
+    if (s.a<=0) return s;
+    vec3 c=s.rgb/s.a;
+    for (int i=0;i<3;++i) {
+        float v=abs(c[i]);
+        float converted=parameter(0)!=0 ? (v<=0.04045?v/12.92:pow((v+0.055)/1.055,2.4))
+                                      : (v<=0.0031308?v*12.92:1.055*pow(v,1/2.4)-0.055);
+        c[i]=(floatBitsToUint(c[i])&0x80000000u)!=0?-converted:converted;
+    }
+    return vec4(c*s.a,s.a);
+}
+vec4 toneSample(vec4 s) {
+    if (s.a<=0) return s;
+    float scale=parameter(0)-1;
+    for (int c=0;c<3;++c) {
+        float v=s[c]/s.a;
+        float encoded=v<=0.0031308?v*12.92:1.055*pow(v,1/2.4)-0.055;
+        float position=clamp(encoded*scale,0,scale);
+        int index=min(int(scale)-1,int(position)); float fraction=position-float(index);
+        precise float curved=readBackground(uint(index))[c]*(1-fraction)+readBackground(uint(index+1))[c]*fraction;
+        s[c]=(curved<=0.04045?curved/12.92:pow((curved+0.055)/1.055,2.4))*s.a;
+    }
+    return s;
+}
+
 void main() {
     uvec2 p=gl_GlobalInvocationID.xy;
     if (p.x>=u.width || p.y>=u.height) return;
     uint i=p.y*u.width+p.x;
-    if (u.operation==10) { destination[i]=dispersion(p); return; }
+    if (operation()==11) { writeDestination(i,apertureGather(p)); return; }
+    if (operation()==12) {
+        int rx=int(ceil(parameter(0))), ry=int(ceil(parameter(0)*(parameter(1)==2?1.62:1)));
+        writeDestination(i,vec4(apertureWeight(ivec2(int(i)% (rx*2+1)-rx,int(i)/(rx*2+1)-ry),vec2(0)),0,0,0)); return;
+    }
+    if (operation()==13) { writeDestination(i,affineSample(p)); return; }
+    if (operation()==14) { writeDestination(i,halfStorage(readSource(i))); return; }
+    if (operation()==15) { writeDestination(i,transferSample(readSource(i))); return; }
+    if (operation()==16) { writeDestination(i,toneSample(readSource(i))); return; }
+    if (operation()==17) { writeDestination(i,vec4(readSource(i).rgb,1)); return; }
+    if (operation()==18) {
+        precise vec4 s=readSource(i), b=readBackground(i);
+        precise vec3 cs=s.a>0?s.rgb/s.a:vec3(0), cb=b.a>0?b.rgb/b.a:vec3(0);
+        precise vec3 result=(1-b.a)*s.rgb+(1-s.a)*b.rgb+s.a*b.a*min(vec3(1),cb+cs);
+        writeDestination(i,vec4(result,s.a+b.a-s.a*b.a)); return;
+    }
+    if (operation()==10) {
+        bool bottomUp=parameter(19)!=0;
+        vec4 value=dispersion(bottomUp?uvec2(p.x,u.height-1u-p.y):p);
+        writeDestination(i,bottomUp?halfStorage(value):value); return;
+    }
     // Absent inputs are bound to small placeholder buffers: read only what the operation uses.
-    const vec4 bg=u.operation<=2?background[i]:vec4(0);
-    const vec4 m=u.operation==2?mask[i]:vec4(0);
-    const uint parameterCount=u.operation==3?5:(u.operation==4||u.operation==8)?2:u.operation==9?3:u.operation==7?1:0;
+    const vec4 bg=operation()<=2?readBackground(i):vec4(0);
+    const vec4 m=operation()==2?readMask(i):vec4(0);
+    const uint parameterCount=operation()==3?5:(operation()==4||operation()==8)?2:operation()==9?3:operation()==7?1:0;
     vec4 v[5]=vec4[5](vec4(0),vec4(0),vec4(0),vec4(0),vec4(0));
     for (uint k=0;k<parameterCount;++k) v[k]=values[k];
-    destination[i]=rasterOperation(u.operation,u.channel,source[i],bg,m,v[0],v[1],v[2],v[3],v[4],p);
+    writeDestination(i,rasterOperation(operation(),u.channel,readSource(i),bg,m,v[0],v[1],v[2],v[3],v[4],p));
 }

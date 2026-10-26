@@ -1905,7 +1905,7 @@ final class UpstreamEditor {
 
     func renderRegionRGBA(_ region: CGRect, scale: CGFloat = 1) throws -> (bytes: [UInt8], rect: CGRect, width: Int, height: Int) {
         let prepared = try regionSnapshot(region, scale: scale)
-        let raster = try exportRGBA(prepared.snapshot, scale: prepared.scale)
+        let raster = try exportRGBA(prepared.snapshot, scale: prepared.scale, samplingOrigin: prepared.samplingOrigin)
         let crop = prepared.crop
         let width = Int(crop.width), height = Int(crop.height)
         if crop == CGRect(x: 0, y: 0, width: raster.width, height: raster.height) {
@@ -1929,7 +1929,7 @@ final class UpstreamEditor {
     }
 
     /// The snapshot `renderRegionRGBA` renders: taken on the main actor (it reads the session), rendered anywhere.
-    func regionSnapshot(_ region: CGRect, scale: CGFloat = 1) throws -> (snapshot: ProjectSnapshot, rect: CGRect, scale: CGFloat, crop: CGRect) {
+    func regionSnapshot(_ region: CGRect, scale: CGFloat = 1) throws -> (snapshot: ProjectSnapshot, rect: CGRect, scale: CGFloat, crop: CGRect, samplingOrigin: CGPoint) {
         settle()
         guard scale.isFinite, let document = session.document else { throw ExportError.render }
         let canvas = CGRect(origin: .zero, size: document.size)
@@ -1969,12 +1969,13 @@ final class UpstreamEditor {
         let outputDocument = CGRect(x: output.minX / k, y: output.minY / k,
                                     width: output.width / k, height: output.height / k).intersection(canvas)
         return (ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks, animations: snapshot.animations), outputDocument, k,
-                output.offsetBy(dx: -sampled.minX, dy: -sampled.minY))
+                output.offsetBy(dx: -sampled.minX, dy: -sampled.minY),
+                CGPoint(x: sampled.minX, y: outputCanvas.maxY - sampled.maxY))
     }
 
     /// Renders a snapshot off the main thread (upstream's exporter actor), as premultiplied RGBA8.
-    nonisolated static func renderInBackground(_ snapshot: ProjectSnapshot, scale: CGFloat = 1) async throws -> (bytes: [UInt8], width: Int, height: Int) {
-        let image = try ImageExporter.shared.renderPreview(snapshot, scale: scale).image
+    nonisolated static func renderInBackground(_ snapshot: ProjectSnapshot, scale: CGFloat = 1, samplingOrigin: CGPoint = .zero) async throws -> (bytes: [UInt8], width: Int, height: Int) {
+        let image = try ImageExporter.shared.renderPreview(snapshot, scale: scale, samplingOrigin: samplingOrigin).image
         return try rgbaBytes(of: image)
     }
 
@@ -2076,11 +2077,11 @@ final class UpstreamEditor {
         return try exportRGBA(snapshot)
     }
 
-    private func exportRGBA(_ snapshot: ProjectSnapshot, scale: CGFloat = 1) throws -> (bytes: [UInt8], width: Int, height: Int) {
+    private func exportRGBA(_ snapshot: ProjectSnapshot, scale: CGFloat = 1, samplingOrigin: CGPoint = .zero) throws -> (bytes: [UInt8], width: Int, height: Int) {
         // Rendered here, on the calling thread (the preview renderer is nonisolated). Handing it to a task and waiting
         // on a semaphore needed a free thread of the concurrency pool while this one held the main queue: with the pool
         // busy waiting for the main queue (other sessions' C-ABI calls), neither ever moved (GAP-TEST-01).
-        try Self.rgbaBytes(of: ImageExporter.shared.renderPreview(snapshot, scale: scale).image)
+        try Self.rgbaBytes(of: ImageExporter.shared.renderPreview(snapshot, scale: scale, samplingOrigin: samplingOrigin).image)
     }
 
     /// Tip `canPaint` / `canEditPixels` refuse Cut and Clear when the Layers panel has several selected.

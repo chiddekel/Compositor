@@ -7,8 +7,9 @@ enum FinishingCompute {
         guard encoder.ended, let image = encoder.textures[0], let output = encoder.textures[tonal ? 2 : 1],
               let data = encoder.bytes[0], data.count >= 84,
               image.width > 0, image.height > 0, image.width == output.width, image.height == output.height,
-              image.pixelFormat == .rgba32Float, output.pixelFormat == .rgba32Float,
-              image.rgbaBytes.count == image.width * image.height * 16 else {
+              [.rgba16Float, .rgba32Float].contains(image.pixelFormat),
+              [.rgba16Float, .rgba32Float].contains(output.pixelFormat),
+              image.rgbaBytes.count == image.width * image.height * image.bytesPerPixel else {
             throw NSError(domain: "Compositor.FinishingCompute", code: 1)
         }
         func parameter(_ offset: Int) -> Float {
@@ -17,7 +18,9 @@ enum FinishingCompute {
         func pixels(_ texture: MTLTexture) -> [Float] {
             texture.rgbaBytes.withUnsafeBytes { bytes in
                 (0..<(texture.width * texture.height * 4)).map {
-                    bytes.loadUnaligned(fromByteOffset: $0 * 4, as: Float.self)
+                    texture.pixelFormat == .rgba16Float
+                        ? Float(Float16(bitPattern: bytes.loadUnaligned(fromByteOffset: $0 * 2, as: UInt16.self)))
+                        : bytes.loadUnaligned(fromByteOffset: $0 * 4, as: Float.self)
                 }
             }
         }
@@ -33,7 +36,8 @@ enum FinishingCompute {
         let blurred: [Float]
         if tonal {
             guard let base = encoder.textures[1], base.width == image.width, base.height == image.height,
-                  base.pixelFormat == .rgba32Float, base.rgbaBytes.count == source.count * 4 else {
+                  [.rgba16Float, .rgba32Float].contains(base.pixelFormat),
+                  base.rgbaBytes.count == base.width * base.height * base.bytesPerPixel else {
                 throw NSError(domain: "Compositor.FinishingCompute", code: 2)
             }
             blurred = pixels(base)
@@ -73,6 +77,8 @@ enum FinishingCompute {
             }
             result[i] = changed.x * alpha; result[i + 1] = changed.y * alpha; result[i + 2] = changed.z * alpha
         } }
-        output.rgbaBytes = result.withUnsafeBytes { Array($0) }
+        output.rgbaBytes = output.pixelFormat == .rgba16Float
+            ? result.map { Float16($0) }.withUnsafeBytes { Array($0) }
+            : result.withUnsafeBytes { Array($0) }
     }
 }

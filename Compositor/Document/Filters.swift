@@ -8,6 +8,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     case gaussianBlur = "Gaussian Blur"
     case motionBlur = "Motion Blur"
     case progressiveBlur = "Progressive Blur"
+    case sharpen = "Sharpen"
     case addNoise = "Add Noise"
     case vignette = "Vignette"
     case bloomGlow = "Bloom / Glow"
@@ -33,6 +34,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     /// 16-bit pixels, rather than three times through `DeepLayer.run`.
     var runsAtSixteenBits: Bool {
         self == .gaussianBlur || self == .motionBlur || self == .progressiveBlur || self == .bloomGlow || self == .lensEffects
+            || self == .sharpen
     }
     /// Filters whose output channels each depend on all three input channels (Camera Raw's color, and the ones that work
     /// from brightness), which a 16-bit layer runs the slower, channel-by-channel way (`DeepLayer.run`).
@@ -102,6 +104,9 @@ nonisolated struct FilterSettings: Equatable, Sendable {
     /// Bloom / Glow: strength and blur radius in layer pixels.
     var bloomAmount: Double = 40
     var bloomRadius: Double = 24
+    /// Sharpen: how much of the detail to add back, 0–300%, and how fine it is, 0.1–20 layer pixels.
+    var sharpenAmount: Double = 100
+    var sharpenRadius: Double = 1
     /// Tonal Contrast: one local-detail radius and separate tonal strengths.
     var tonalAmount: Double = 50
     var tonalRadius: Double = 16
@@ -159,6 +164,8 @@ nonisolated struct FilterSettings: Equatable, Sendable {
         result.vignetteFeather = clamp(vignetteFeather, 0...100, 60)
         result.vignetteHighlights = clamp(vignetteHighlights, 0...100, 25)
         result.bloomAmount = clamp(bloomAmount, 0...100, 40)
+        result.sharpenAmount = clamp(sharpenAmount, 0...300, 100)
+        result.sharpenRadius = clamp(sharpenRadius, 0.1...20, 1)
         result.bloomRadius = clamp(bloomRadius, 1...150, 24)
         result.tonalAmount = clamp(tonalAmount, 0...100, 50)
         result.tonalRadius = clamp(tonalRadius, 1...100, 16)
@@ -200,6 +207,9 @@ nonisolated struct FilterJob: @unchecked Sendable {
     let mapping: CGAffineTransform
     /// Add Noise's random pattern: the same seed gives the same grain.
     var seed: UInt32 = 0
+    /// Lens Effects' measure, in this image's pixels: the whole document's longer side, when the image is only part of
+    /// it. Nil: the image's own.
+    var lensSide: CGFloat?
     /// Vignette on an empty layer: the canvas, in the document, which it frames and fills. Otherwise the vignette
     /// frames the layer's own pixels and recolors only those.
     var canvas: CGRect? = nil
@@ -346,7 +356,9 @@ nonisolated enum PixelFilter {
         case .progressiveBlur:
             image = try render(progressivelyBlurred(edges, job: job, settings: settings, extent: extent).cropped(to: extent), job: job)
         case .rgbSplit: image = try rgbSplit(job, settings: settings)
-        case .lensEffects: image = try render(settings.lens.apply(to: job.image), job: job)
+        case .lensEffects:
+            let side = job.lensSide ?? CGFloat(max(job.image.width, job.image.height))
+            image = try render(settings.lens.apply(to: CIImage(cgImage: job.image), side: side), job: job)
         case .motionBlur:
             // Core Image's y axis points up, so its counterclockwise angle matches Photoshop's.
             let streaked = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMotionBlur", parameters: [
@@ -377,6 +389,14 @@ nonisolated enum PixelFilter {
                                     settings.vignetteColor.red, settings.vignetteColor.green, settings.vignetteColor.blue)
             guard let result = context.makeImage() else { throw ExportError.render }
             image = result
+        case .sharpen:
+            // An unsharp mask: the difference from a blur of `sharpenRadius` added back, `sharpenAmount` percent of it.
+            // Edge pixels carry on past the canvas's sides, so the picture's border doesn't darken.
+            let sharpened = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIUnsharpMask", parameters: [
+                kCIInputRadiusKey: settings.sharpenRadius * job.scale,
+                kCIInputIntensityKey: settings.sharpenAmount / 100,
+            ])
+            image = try render(sharpened.cropped(to: extent), job: job)
         case .bloomGlow:
             let bloomed = edges.applyingFilter("CIBloom", parameters: [
                 kCIInputRadiusKey: settings.bloomRadius * job.scale,
@@ -950,6 +970,7 @@ extension EditorSession {
         if (edit.kind == .lensCorrection && edit.settings.distortion == 0)
             || (edit.kind == .vignette && edit.settings.vignetteAmount == 0)
             || (edit.kind == .bloomGlow && edit.settings.bloomAmount == 0)
+            || (edit.kind == .sharpen && edit.settings.sharpenAmount == 0)
             || (edit.kind == .lensEffects && edit.settings.lens.isIdentity)
             || (edit.kind == .tonalContrast && (edit.settings.tonalAmount == 0 ||
                 (edit.settings.tonalShadows == 0 && edit.settings.tonalMidtones == 0 && edit.settings.tonalHighlights == 0)))

@@ -110,7 +110,7 @@ def render(args):
                         print(f'Could not extract XCTest summary: {error}', flush=True)
     elif platform.system() == 'Linux':
         run('swift', 'test', '-c', 'release', '--scratch-path', str(args.scratch), '--jobs', str(args.jobs),
-            *(['--skip-build'] if args.skip_build else []), '--filter', 'RenderParityTests', env=env, cwd=ROOT)
+            *(['--skip-build'] if args.skip_build else []), '--filter', r'^RenderParityTests\.RenderParityTests/', env=env, cwd=ROOT)
     else:
         raise ValueError('unsupported rendering platform')
     if tree_digest(inputs) != original_inputs:

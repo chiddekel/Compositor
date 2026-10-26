@@ -811,9 +811,12 @@ final class EditorSession {
             && transformEdit?.persistent != true && cropRect == nil && gradientEdit == nil
             && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
     }
-    var canEditLayers: Bool {
+    var canEditLayers: Bool { transformEdit == nil && canEditLayersOnceTransformCommitted }
+    /// As `canEditLayers`, but for a command that commits a pending transform first, so a move in progress doesn't
+    /// stop it.
+    var canEditLayersOnceTransformCommitted: Bool {
         _ = showsBusy
-        return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && document != nil && brushStroke == nil && warpStroke == nil && !isProjectBusy && !isImporting && !showsNewDocument && !showsImporter && renamingLayerID == nil && transformEdit == nil && cropRect == nil && gradientEdit == nil && pixelMove == nil && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
+        return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && document != nil && brushStroke == nil && warpStroke == nil && !isProjectBusy && !isImporting && !showsNewDocument && !showsImporter && renamingLayerID == nil && cropRect == nil && gradientEdit == nil && pixelMove == nil && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
     }
 
     func addBlankLayer() {

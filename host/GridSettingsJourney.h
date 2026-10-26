@@ -103,6 +103,14 @@ inline void type(QDialog *sheet, const QString &name, const QString &text) {
         "grid typing lost text, focus or cursor");
 }
 
+inline QWidget *renderedOwner(QWidget *control, QWidget *sheet) {
+    if (!control || !sheet || !sheet->isAncestorOf(control)) return nullptr;
+    // Retired roots stay in the sheet's child list until DeferredDelete; follow the control's real owner.
+    for (auto *widget = control; widget && widget != sheet; widget = widget->parentWidget())
+        if (widget->property("swiftUITree").isValid()) return widget;
+    return nullptr;
+}
+
 inline void choose(QDialog *sheet, const QString &member, const QString &value) {
     QPointer<QComboBox> combo = picker(sheet, member); const int index = combo->findText(value);
     require(index >= 0, "grid picker value missing");
@@ -112,9 +120,7 @@ inline void choose(QDialog *sheet, const QString &member, const QString &value) 
     // Keyboard popup navigation must survive a panel tick without a platform mouse grab.
     if (auto *grabber = QWidget::mouseGrabber()) grabber->releaseMouse();
     require(list && list->isVisible(), "grid keyboard popup fixture closed without its mouse grab");
-    QWidget *root = nullptr;
-    for (auto *widget : sheet->findChildren<QWidget *>())
-        if (widget->property("swiftUITree").isValid()) { root = widget; break; }
+    QWidget *root = renderedOwner(combo, sheet);
     require(root, "grid popup rendered owner missing");
     QWidget *next = swiftUIRenderPanelIfChanged(root->property("swiftUIHandle").toULongLong(), "GridSettingsSheet", root);
     if (next != root) {

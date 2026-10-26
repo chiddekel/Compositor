@@ -6,6 +6,9 @@ import Foundation
 import AppKit
 
 public struct Edge: Hashable, Sendable {
+    let name: String
+    public static let top = Edge(name: "top"), leading = Edge(name: "leading")
+    public static let bottom = Edge(name: "bottom"), trailing = Edge(name: "trailing")
     public struct Set: OptionSet, Sendable {
         public let rawValue: Int
         public init(rawValue: Int) { self.rawValue = rawValue }

@@ -308,10 +308,10 @@ static int test_canvas_c_abi() {
     return 0;
 }
 
-// Core Graphics' high interpolation averages covered source pixels when minifying. Period-5 stripes
-// (2 of 5 white) reduced 10x must give their 40% area mean (102), not a 4x4-kernel sample (128),
-// directly, through a scaling CTM, under rotation and with straight 50% alpha.
-static int test_high_quality_minification_area() {
+// Native high-quality minification extends image edges; its border pixels are not a box mean.
+// These full rows come from macOS run 40161789782 (complete buffers in the sampling fixture).
+// Exercise direct/scaled draws and translucent input; the rotated legacy path stays unchanged.
+static int test_high_quality_minification_native() {
     const int S = 320, D = 32;
     std::vector<uint8_t> src(size_t(S) * S * 4);
     for (int y = 0; y < S; y++)
@@ -322,8 +322,11 @@ static int test_high_quality_minification_area() {
         }
     std::vector<uint8_t> half = src;
     for (size_t i = 0; i < half.size(); i++) half[i] = (i % 4 == 3) ? 128 : uint8_t(half[i] * 128 / 255);
+    const uint8_t nativeOpaque[D] = {186, 95, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 107, 41};
+    const uint8_t nativeHalf[D] = {93, 47, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 54, 21};
+    const std::vector<uint8_t> legacyRotated(D, 102);
     int failures = 0;
-    auto run = [&](const char *name, const std::vector<uint8_t> &image, int mode, int expect, int alpha, int tolerance) {
+    auto run = [&](const char *name, const std::vector<uint8_t> &image, int mode, const uint8_t *expected, int alpha, int tolerance) {
         std::vector<uint8_t> dst(size_t(D) * D * 4, 0);
         CompCanvas *canvas = compositor_canvas_create(dst.data(), D, D, D * 4);
         if (!canvas) { std::fprintf(stderr, "%s: canvas_create NULL\n", name); failures++; return; }
@@ -343,18 +346,54 @@ static int test_high_quality_minification_area() {
         for (int y = lo; y < hi; y++)
             for (int x = lo; x < hi; x++) {
                 const uint8_t *p = &dst[(size_t(y) * D + x) * 4];
-                if (std::abs(p[0] - expect) > tolerance || std::abs(p[3] - alpha) > 1) {
-                    std::fprintf(stderr, "%s: pixel %d,%d = %d,%d expected %d,%d\n", name, x, y, p[0], p[3], expect, alpha);
+                if (std::abs(p[0] - expected[x]) > tolerance || std::abs(p[1] - expected[x]) > tolerance
+                    || std::abs(p[2] - expected[x]) > tolerance || std::abs(p[3] - alpha) > 1) {
+                    std::fprintf(stderr, "%s: pixel %d,%d = %d,%d expected %d,%d\n", name, x, y, p[0], p[3], expected[x], alpha);
                     failures++;
                     return;
                 }
             }
     };
-    run("high-minify direct", src, 0, 102, 255, 1);
-    run("high-minify scaled CTM", src, 1, 102, 255, 1);
-    run("high-minify rotated", src, 2, 102, 255, 2);
-    run("high-minify half alpha", half, 0, 51, 128, 1);
+    run("high-minify direct", src, 0, nativeOpaque, 255, 1);
+    run("high-minify scaled CTM", src, 1, nativeOpaque, 255, 1);
+    run("high-minify rotated", src, 2, legacyRotated.data(), 255, 2);
+    run("high-minify half alpha", half, 0, nativeHalf, 128, 1);
     return failures;
+}
+
+static int test_canvas_byte_blend_rounding() {
+    // Native Core Graphics rounds the opacity-adjusted premultiplied source to bytes,
+    // then rounds src + dst * (255 - srcAlpha) / 255. Exercise
+    // every source alpha/background byte; the fast 8-bit Skia blend can differ by one.
+    constexpr size_t side = 256;
+    for (int mode : {0, 11}) for (unsigned divisor : {1u, 2u, 4u}) for (bool opaque : {true, false}) {
+        std::vector<uint8_t> src(side * side * 4), dst(src.size()), expected(src.size());
+        for (unsigned a = 0; a < side; ++a) for (unsigned v = 0; v < side; ++v) {
+            size_t at = (a * side + v) * 4;
+            unsigned da = opaque ? 255 : v;
+            const unsigned foreground[4] = {32 * a / 255, 43 * a / 255, 220 * a / 255, a};
+            const unsigned background[4] = {v * da / 255, (255 - v) * da / 255, 100 * da / 255, da};
+            for (unsigned c = 0; c < 4; ++c) {
+                src[at + c] = foreground[c]; dst[at + c] = background[c];
+                unsigned scaled = (foreground[c] + divisor / 2) / divisor;
+                unsigned scaledAlpha = (a + divisor / 2) / divisor;
+                expected[at + c] = mode == 11 && c < 3
+                    ? scaled + background[c] - (2 * scaled * background[c] + 127) / 255
+                    : scaled + (background[c] * (255 - scaledAlpha) + 127) / 255;
+            }
+        }
+        CompCanvas *canvas = compositor_canvas_create(dst.data(), side, side, side * 4);
+        if (!canvas) return 1;
+        compositor_canvas_draw_image_rect(canvas, src.data(), side, side, side * 4,
+                                         0, 0, side, side, 1.0f / divisor, mode, 1);
+        compositor_canvas_destroy(canvas);
+        for (size_t i = 0; i < dst.size(); ++i) if (dst[i] != expected[i]) {
+            std::fprintf(stderr, "byte blend mode=%d divisor=%u opaque=%d pixel=%zu channel=%zu got=%u expected=%u\n",
+                         mode, divisor, opaque, i / 4, i % 4, dst[i], expected[i]);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int main() {
@@ -371,7 +410,8 @@ int main() {
     failures += test_render_rgba_partial_alpha_over_nonempty_dst();
     failures += test_vulkan_device_creation_and_device_lost_fallback();
     failures += test_canvas_c_abi();
-    failures += test_high_quality_minification_area();
+    failures += test_canvas_byte_blend_rounding();
+    failures += test_high_quality_minification_native();
     if (failures) {
         std::fprintf(stderr, "SkiaBridge smoke: %d FAILURE(S)\n", failures);
         return 1;

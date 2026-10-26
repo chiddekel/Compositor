@@ -83,6 +83,7 @@
 #include <QFile>
 #include <QDir>
 #include <QTimer>
+#include <QPointer>
 #include <QWindow>
 #include <QTabBar>
 #include <QEventLoop>
@@ -704,7 +705,8 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                 {"Color Balance", "Yellow / Blue", "colorBalanceSettings.midYellowBlue", 60, 1},
                 {"Vignette", "Amount", "filterLayerSettings.vignette.amount", 80},
                 {"Lens Effects", "Amount", "filterLayerSettings.lens.flareAmount", 80},
-                {"Tonal Contrast", "Amount", "filterLayerSettings.tonal.amount", 100}, {"Invert", "", "", 0}};
+                {"Tonal Contrast", "Amount", "filterLayerSettings.tonal.amount", 100},
+                {"Sharpen", "Amount", "filterLayerSettings.sharpen.amount", 200}, {"Invert", "", "", 0}};
             QImage image(64, 64, QImage::Format_RGBA8888); image.fill(Qt::transparent);
             for (int y = 12; y < 48; ++y) for (int x = 12; x < 48; ++x)
                 image.setPixelColor(x, y, QColor(40 + (x * 7) % 180, 30 + (y * 5) % 180, 20 + ((x + y) * 3) % 180));
@@ -868,7 +870,7 @@ extern "C" int compositor_host_combo_smoke(int argc, char **argv) {
                 check(writeProjectPackage(project), "modern adjustment package write failed");
                 QFile manifest(project + "/manifest.json"); check(manifest.open(QIODevice::ReadOnly), "modern adjustment manifest missing");
                 const auto savedManifest = QJsonDocument::fromJson(manifest.readAll()).object();
-                check(savedManifest.value("version").toInt() == 18, "modern adjustment package did not use format 18");
+                check(savedManifest.value("version").toInt() == 19, "modern adjustment package did not use format 19");
                 const auto records = savedManifest.value("layers").toArray();
                 check(records.size() == 2, "modern adjustment package lost its source or adjustment");
                 const auto saved = records.last().toObject().value("adjustment").toObject();
@@ -7469,44 +7471,61 @@ QImage exported(SessionWindow &window, const QString &path) {
 }
 void modal(SessionWindow &window, const QString &actionName, const std::function<void(QDialog *)> &body) {
     auto *action = window.findChild<QAction *>(actionName);
-    require(action != nullptr, "menu action missing");
+    require(action != nullptr, qPrintable(actionName + ": menu action missing"));
+    require(action->isEnabled(), qPrintable(actionName + ": menu action disabled"));
     QString error;
-    bool visited = false;
+    bool visited = false, completed = false;
+    QPointer<QDialog> observed;
+    QEventLoop loop;
     QTimer dispatch;
-    dispatch.setSingleShot(true);
-    QObject::connect(&dispatch, &QTimer::timeout, &window, [&] {
-        visited = true;
+    const auto finish = [&] { completed = true; loop.quit(); };
+    QObject::connect(&dispatch, &QTimer::timeout, &loop, [&] {
+        // Never wait inside a callback: presentation may be queued only after action->trigger() returns.
+        if (dispatch.interval() == 0) dispatch.setInterval(10);
+        if (visited) {
+            if (!observed || !observed->isVisible()) finish();
+            return;
+        }
         QDialog *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
         if (!dialog) {
-            // Upstream floating sheets (non-modal Qt::Tool): wait briefly for SessionWindow to host them.
-            for (int i = 0; i < 40 && !dialog; ++i) {
-                QApplication::processEvents();
-                for (auto *candidate : window.findChildren<QDialog *>()) {
-                    if (!candidate->isVisible()) continue;
-                    const QString name = candidate->objectName();
-                    if (name.startsWith(QLatin1String("floatingPanel."))
-                            || name.startsWith(QLatin1String("swiftUISheet."))) {
-                        dialog = candidate;
-                        break;
-                    }
+            for (auto *candidate : window.findChildren<QDialog *>()) {
+                if (!candidate->isVisible()) continue;
+                const QString name = candidate->objectName();
+                if (name.startsWith(QLatin1String("floatingPanel."))
+                        || name.startsWith(QLatin1String("swiftUISheet."))) {
+                    dialog = candidate;
+                    break;
                 }
-                if (!dialog) QThread::msleep(25);
             }
         }
-        if (!dialog) { error = "dialog missing"; return; }
+        if (!dialog) return;
+        observed = dialog;
+        visited = true;
         try { body(dialog); }
-        catch (const std::exception &e) { error = e.what(); dialog->reject(); }
+        catch (const std::exception &e) {
+            error = actionName + ": " + e.what();
+            if (observed) observed->reject();
+        }
+        if (!observed || !observed->isVisible()) finish();
+    });
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline, &QTimer::timeout, &loop, [&] {
+        error = actionName + (visited ? ": dialog interaction did not finish" : ": dialog was not presented");
+        if (observed) observed->reject();
+        // Also unwind an exec() that began before its dialog could be observed.
+        if (auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget())) dialog->reject();
+        finish();
     });
     dispatch.start(0);
+    deadline.start(10000);
     action->trigger();
-    // Non-modal floating panels return from trigger without nesting an event loop; pump until the
-    // zero-delay timer has run (modal SizeDialog/sheet.exec paths already pump inside trigger).
-    for (int i = 0; i < 80 && !visited; ++i) {
-        QApplication::processEvents();
-        if (!visited) QThread::msleep(25);
-    }
-    require(visited, "action did not open a dialog");
+    // Floating-panel bodies can schedule asynchronous interactions. Finish those before the next action.
+    if (!completed) loop.exec();
+    dispatch.stop();
+    deadline.stop();
     require(error.isEmpty(), qPrintable(error));
+    require(visited, qPrintable(actionName + ": action did not open a dialog"));
 }
 void click(QDialog *dialog, QDialogButtonBox::StandardButton which) {
     auto *buttons = dialog->findChild<QDialogButtonBox *>();
@@ -7563,6 +7582,31 @@ extern "C" int compositor_host_dialog_smoke(int argc, char **argv) {
         SessionWindow window; window.show(); QApplication::processEvents();
         const QString path = temporary.filePath("view.png");
         const QImage original = exported(window, path);
+        // A presentation can be queued only after its action returns. The helper must also wait for an
+        // asynchronous dialog interaction to finish before the next action closes or replaces its panel.
+        {
+            QAction deferred(&window);
+            deferred.setObjectName(QStringLiteral("journey.deferredDialog"));
+            bool actionFinished = false, interactionFinished = false;
+            QObject::connect(&deferred, &QAction::triggered, &window, [&] {
+                QApplication::processEvents();
+                QTimer::singleShot(0, &window, [&] {
+                    auto *dialog = new QDialog(&window, Qt::Tool);
+                    dialog->setAttribute(Qt::WA_DeleteOnClose);
+                    dialog->setObjectName(QStringLiteral("floatingPanel.journeyDeferred"));
+                    dialog->show();
+                });
+                actionFinished = true;
+            });
+            modal(window, deferred.objectName(), [&](QDialog *dialog) {
+                require(actionFinished, "dialog wait blocked the action that schedules presentation");
+                QTimer::singleShot(25, dialog, [&, dialog] {
+                    interactionFinished = true;
+                    dialog->reject();
+                });
+            });
+            require(interactionFinished, "dialog helper returned before the asynchronous interaction finished");
+        }
         // Upstream Canvas Size / Image Size sheets (modal SwiftUI via presentSwiftUISheet). Opening them mid-journey
         // races the smoke timer with awaitOnMain; exercise Cancel by finishing the sheet command with no options, and
         // verify resize through the same session commands the sheets apply.
@@ -10125,8 +10169,8 @@ extern "C" int compositor_host_preview_smoke(int argc, char **argv) {
         require(textFile.open(QIODevice::ReadOnly), "format-11 native manifest missing");
         textManifest = QJsonDocument::fromJson(textFile.readAll()).object(); textFile.close();
         const auto savedText = textManifest.value("layers").toArray().last().toObject().value("text").toObject();
-        // New saves use version 18 (finishing adjustment layers); font runs arrived in version 11.
-        require(textManifest.value("version").toInt() == 18, "native save did not write current format 18");
+        // New saves use version 19 (Sharpen adjustment layers); font runs arrived in version 11.
+        require(textManifest.value("version").toInt() == 19, "native save did not write current format 19");
         require(savedText.value("fontRuns").toArray() == chosenRuns, "format-11 save lost chosen font runs");
         require(savedText.value("colorRuns").toArray().first().toObject().value("length").toInt() == 5,
                 "format-11 save lost overlapping color runs");
@@ -11562,7 +11606,7 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
             auto *header = window.findChild<QWidget *>("swiftUIOptionsContainer");
             require(header && header->isVisible(), "transform header missing for toolbar action");
             for (auto *button : header->findChildren<QPushButton *>()) {
-                if (button->isVisible() && button->text() == title) {
+                if (button->isVisible() && (button->text() == title || button->accessibleName() == title)) {
                     require(button->isEnabled(), "transform toolbar action is disabled");
                     return button;
                 }
@@ -11585,9 +11629,56 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
             throw std::runtime_error("transform Sampling picker missing");
         };
 
+        // Align remains available during a move, commits it, and presents the original icon commands.
+        {
+            const QJsonObject original = transformValue();
+            const auto originX = [&](const QJsonObject &transform) {
+                const auto origin = transform.value("origin");
+                require((origin.isArray() && origin.toArray().size() == 2)
+                            || (origin.isObject() && origin.toObject().contains("x")), "Align transform origin is malformed");
+                return origin.isArray() ? origin.toArray().at(0).toDouble() : origin.toObject().value("x").toDouble();
+            };
+            const double movedX = originX(original) + 17;
+            window.enterFreeTransform();
+            require(window.sendCommand({{"action", "transform"}, {"parameters", QJsonObject{{"x", movedX}}}}),
+                    "Align fixture could not start a pending move");
+            require(window.sessionState().value("transforming").toBool(), "Align fixture has no pending move");
+            auto *align = headerButton(QStringLiteral("Align"));
+            const QPoint anchorBottom = align->mapToGlobal(QPoint(0, align->height()));
+            align->click();
+            QApplication::processEvents();
+            QApplication::processEvents();
+            auto *popup = window.findChild<QFrame *>(QStringLiteral("swiftuiPopover"));
+            require(popup && popup->isVisible(), "Align did not present its native popover");
+            require(popup->mapToGlobal(QPoint()).y() >= anchorBottom.y(), "Align popover ignored its bottom attachment edge");
+            QPushButton *left = nullptr;
+            int distributions = 0;
+            for (auto *button : popup->findChildren<QPushButton *>()) {
+                if (button->accessibleName() == QLatin1String("Align Left Edges")) left = button;
+                if (button->accessibleName().startsWith(QLatin1String("Distribute "))) {
+                    ++distributions;
+                    require(!button->isEnabled(), "Distribute was enabled with only one selected layer");
+                }
+            }
+            require(left && left->isEnabled() && distributions == 4, "Align popover commands are missing or unavailable");
+            left->click();
+            QApplication::processEvents();
+            require(!window.sessionState().value("transforming").toBool(), "Align did not commit the pending move");
+            require(originX(transformValue()) == 0,
+                    "visible Align Left did not align the layer to the canvas");
+            if (auto *activePopup = QApplication::activePopupWidget()) activePopup->close();
+            QApplication::processEvents();
+            require(window.sendCommand({{"action", "undo"}}), "Align Undo failed");
+            require(originX(transformValue()) == movedX,
+                    "Align was not one separate Undo step after committing the move");
+            require(window.sendCommand({{"action", "undo"}}) && transformValue() == original,
+                    "pending move Undo did not restore the original transform");
+            qInfo("Qt Align popover OK (bottom placement, accessible icons, pending move, one-layer distribution refusal, Undo)");
+        }
+
         // Buttons and pop-up choices are complete actions: starting from idle, they must finish their own edit.
         const QJsonObject beforeToolbarActions = transformValue();
-        headerButton(QStringLiteral("Flip H"))->click();
+        headerButton(QStringLiteral("Flip Horizontal"))->click();
         QApplication::processEvents();
         require(!window.sessionState().value("transforming").toBool(), "toolbar Flip H left an idle transform open");
         QJsonObject flipped = beforeToolbarActions;
@@ -11612,7 +11703,7 @@ extern "C" int compositor_host_transform_smoke(int argc, char **argv) {
             window.enterFreeTransform();
             QApplication::processEvents();
             checkTransformControls(true);
-            headerButton(QStringLiteral("Flip H"))->click();
+            headerButton(QStringLiteral("Flip Horizontal"))->click();
             QApplication::processEvents();
             require(window.sessionState().value("transforming").toBool(), "toolbar Flip H ended explicit Free Transform");
             QJsonObject pending = flipped;

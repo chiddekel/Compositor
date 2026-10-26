@@ -10,7 +10,7 @@ import struct
 
 
 def validate(reference, folder):
-    assert reference['schema'] == 1 and reference['platform'] == 'macOS'
+    assert reference['schema'] in (1, 2) and reference['platform'] == 'macOS'
     assert reference['workingFormat'] == 'RGBAh'
     assert reference['workingColorSpace'] == 'extendedLinearSRGB'
     expected_inputs = {f'sensor-{i}.dng' for i in range(5)} | {'precision-ramp.dng'}
@@ -19,6 +19,15 @@ def validate(reference, folder):
     controls = {'decoder-default': None, 'boost-0': (0, 0), 'boost-0.5': (0, 0.5), 'boost-1': (0, 1),
                 'exposure-minus-1-boost-0': (-1, 0), 'exposure-plus-1-boost-0': (1, 0),
                 'exposure-minus-1-boost-1': (-1, 1), 'exposure-plus-1-boost-1': (1, 1)}
+    white_balance = {}
+    if reference['schema'] == 2:
+        for boost in (0, 1):
+            for name, field, value in [('temperature-3000', 'temperature', 3000),
+                                       ('temperature-8000', 'temperature', 8000),
+                                       ('tint-minus-50', 'tint', -50), ('tint-plus-50', 'tint', 50)]:
+                key = f'{name}-boost-{boost}'
+                controls[key] = (0, boost)
+                white_balance[key] = (field, value)
     buffer_count = 0
     for item in reference['inputs']:
         assert hashlib.sha256((folder / item['file']).read_bytes()).hexdigest() == item['sha256']
@@ -34,7 +43,11 @@ def validate(reference, folder):
             for values in [defaults, settings]:
                 assert all(math.isfinite(values[k]) for k in ['exposure', 'boost', 'temperature', 'tint', 'scale'])
                 assert values['scale'] == 1 and values['draft'] is False
-            assert settings['temperature'] == defaults['temperature'] and settings['tint'] == defaults['tint']
+            expected_white = {field: defaults[field] for field in ('temperature', 'tint')}
+            if case['name'] in white_balance:
+                field, value = white_balance[case['name']]
+                expected_white[field] = value
+            assert all(settings[field] == value for field, value in expected_white.items())
             recipe = controls[case['name']]
             if recipe is None:
                 assert settings == defaults
@@ -64,4 +77,4 @@ if __name__ == '__main__':
     parser.add_argument('inputs', type=Path)
     args = parser.parse_args()
     count = validate(json.loads(args.reference.read_text()), args.inputs)
-    print(f'Validated six RAW inputs, 48 recipes and {count} diagnostic buffers')
+    print(f'Validated six RAW inputs, {count // 3} recipes and {count} diagnostic buffers')

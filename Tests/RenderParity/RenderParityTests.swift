@@ -83,6 +83,11 @@ struct RenderParityTests {
                 if amount != 0 {
                     switch kind {
                     case .hsv: adjustment.hue = amount; adjustment.saturation = amount
+                    case .sharpen:
+                        var settings = FilterSettings()
+                        settings.sharpenAmount = amount > 0 ? 200 : 50
+                        settings.sharpenRadius = 2
+                        adjustment.filterLayer.sharpen = SharpenLayerSettings(settings)
                     case .levels: adjustment.levels.current.gamma = amount > 0 ? 2 : 0.5
                     case .curves: adjustment.curves.channels[0] = [CurvePoint(x: 0, y: 0), CurvePoint(x: 128, y: 128 + amount * 2), CurvePoint(x: 255, y: 255)]
                     case .exposure: adjustment.exposure.exposure = amount / 17.5

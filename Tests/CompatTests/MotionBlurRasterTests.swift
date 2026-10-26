@@ -56,7 +56,12 @@ final class MotionBlurRasterTests: XCTestCase {
         guard radius > 0 else { return input.cropped(to: region) }
         var output = Raster(rect: region)
         let reach = Int(ceil(radius * 3))
-        let weights = (-reach...reach).map { exp(-Double($0 * $0) / (2 * radius * radius)) }
+        func cumulative(_ distance: Double) -> Double { (1 + erf(distance / (radius * sqrt(2)))) / 2 }
+        let weights = (-reach...reach).map { tap -> Double in
+            let lower = tap == -reach ? 0 : cumulative(Double(tap) - 0.5)
+            let upper = tap == reach ? 1 : cumulative(Double(tap) + 0.5)
+            return upper - lower
+        }
         let total = weights.reduce(0, +)
         for y in 0..<output.height {
             for x in 0..<output.width {

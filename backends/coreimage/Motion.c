@@ -1,4 +1,5 @@
 #include "include/CoreImageKernels.h"
+#include <math.h>
 #include <string.h>
 
 typedef float Pixel __attribute__((vector_size(16)));
@@ -10,12 +11,9 @@ static inline Pixel sample(const float *source, size_t width, size_t height,
     return value;
 }
 
-#if defined(__x86_64__) && defined(__ELF__)
-__attribute__((target_clones("avx2", "default")))
-#endif
-void compositor_motion_row(const float *restrict source, size_t width, size_t height,
+static inline __attribute__((always_inline)) void motion_row(const float *restrict source, size_t width, size_t height,
     ptrdiff_t first_x, ptrdiff_t y, size_t output_width,
-    const CompositorMotionTap *restrict kernel, size_t taps, float *restrict output) {
+    const CompositorMotionTap *restrict kernel, size_t taps, float *restrict output, int byte_samples) {
     // All taps use the same offsets. Check the footprint once, then process
     // eight interior pixels together without bounds checks in the sampling loop.
     ptrdiff_t min_x = 0, max_x = 0, min_y = 0, max_y = 0;
@@ -39,11 +37,28 @@ void compositor_motion_row(const float *restrict source, size_t width, size_t he
                     Pair a, b, c, d;
                     memcpy(&a, top + j * 8, sizeof a);
                     memcpy(&b, top + j * 8 + 4, sizeof b);
+                    if (byte_samples) {
+                        for (size_t lane = 0; lane < 8; ++lane) {
+                            a[lane] = floorf(a[lane] * 255 + 0.5f);
+                            b[lane] = floorf(b[lane] * 255 + 0.5f);
+                        }
+                    }
                     Pair value = a * (1 - tx) + b * tx;
                     if (ty != 0) {
                         memcpy(&c, top + width * 4 + j * 8, sizeof c);
                         memcpy(&d, top + width * 4 + j * 8 + 4, sizeof d);
+                        if (byte_samples) {
+                            for (size_t lane = 0; lane < 8; ++lane) {
+                                c[lane] = floorf(c[lane] * 255 + 0.5f);
+                                d[lane] = floorf(d[lane] * 255 + 0.5f);
+                            }
+                        }
                         value = value * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+                    }
+                    if (byte_samples) {
+                        for (size_t lane = 0; lane < 8; ++lane) {
+                            value[lane] = floorf(value[lane] * 16 + 0.5f) / 4080;
+                        }
                     }
                     sums[j] += value * kernel[k].weight;
                 }
@@ -58,14 +73,46 @@ void compositor_motion_row(const float *restrict source, size_t width, size_t he
         for (size_t k = 0; k < taps; ++k) {
             const ptrdiff_t sx = first_x + (ptrdiff_t)x + kernel[k].x, sy = y + kernel[k].y;
             const float tx = kernel[k].tx, ty = kernel[k].ty;
-            const Pixel a = sample(source, width, height, sx, sy);
-            const Pixel b = sample(source, width, height, sx + 1, sy);
-            const Pixel c = sample(source, width, height, sx, sy + 1);
-            const Pixel d = sample(source, width, height, sx + 1, sy + 1);
+            Pixel a = sample(source, width, height, sx, sy);
+            Pixel b = sample(source, width, height, sx + 1, sy);
+            Pixel c = sample(source, width, height, sx, sy + 1);
+            Pixel d = sample(source, width, height, sx + 1, sy + 1);
+            if (byte_samples) {
+                for (size_t lane = 0; lane < 4; ++lane) {
+                    a[lane] = floorf(a[lane] * 255 + 0.5f);
+                    b[lane] = floorf(b[lane] * 255 + 0.5f);
+                    c[lane] = floorf(c[lane] * 255 + 0.5f);
+                    d[lane] = floorf(d[lane] * 255 + 0.5f);
+                }
+            }
             // Keep the original bilinear grouping and tap accumulation order.
-            sum += ((a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty) * kernel[k].weight;
+            Pixel value = (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+            if (byte_samples) {
+                for (size_t lane = 0; lane < 4; ++lane) {
+                    value[lane] = floorf(value[lane] * 16 + 0.5f) / 4080;
+                }
+            }
+            sum += value * kernel[k].weight;
         }
         memcpy(output + x * 4, &sum, sizeof sum);
         ++x;
     }
+}
+
+#if defined(__x86_64__) && defined(__ELF__)
+__attribute__((target_clones("avx2", "default")))
+#endif
+void compositor_motion_row(const float *restrict source, size_t width, size_t height,
+    ptrdiff_t first_x, ptrdiff_t y, size_t output_width,
+    const CompositorMotionTap *restrict kernel, size_t taps, float *restrict output) {
+    motion_row(source, width, height, first_x, y, output_width, kernel, taps, output, 0);
+}
+
+#if defined(__x86_64__) && defined(__ELF__)
+__attribute__((target_clones("avx2", "default")))
+#endif
+void compositor_motion_row_byte_samples(const float *restrict source, size_t width, size_t height,
+    ptrdiff_t first_x, ptrdiff_t y, size_t output_width,
+    const CompositorMotionTap *restrict kernel, size_t taps, float *restrict output) {
+    motion_row(source, width, height, first_x, y, output_width, kernel, taps, output, 1);
 }

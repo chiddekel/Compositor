@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import CoreImageKernels
 
 struct VulkanRasterStep {
@@ -179,5 +180,66 @@ final class VulkanRaster: @unchecked Sendable {
         if code == -2 { failed = true }
         inputs = [nil, nil, nil]
         return nil
+    }
+}
+
+/// An immutable device allocation in CI's bottom-up coordinates. Reads occur only at CPU consumers.
+final class VulkanImage: @unchecked Sendable {
+    let owner: VulkanRaster
+    let handle: OpaquePointer
+    let rect: CGRect
+    init(owner: VulkanRaster, handle: OpaquePointer, rect: CGRect) {
+        self.owner = owner; self.handle = handle; self.rect = rect
+    }
+    deinit { compositor_vulkan_image_destroy(handle) }
+    func read() -> Raster? {
+        var result = Raster(rect: rect, uninitialized: true)
+        let code = result.data.withUnsafeMutableBufferPointer { compositor_vulkan_image_read(handle, $0.baseAddress) }
+        return code == 0 ? result : nil
+    }
+}
+
+extension VulkanRaster {
+    var residentBytes: UInt64 { compositor_vulkan_raster_resident_bytes(handle) }
+    var bokehSubmissions: UInt64 { compositor_vulkan_raster_bokeh_submissions(handle) }
+
+    func uploadResident(_ raster: Raster) -> VulkanImage? {
+        guard raster.width > 0, raster.height > 0, raster.width <= 65_536, raster.height <= 65_536,
+              raster.data.count == raster.width * raster.height * 4 else { return nil }
+        let image: OpaquePointer?
+        if let bytes = NormalizedByteStorage.encode(raster.data) {
+            image = bytes.withUnsafeBufferPointer {
+                compositor_vulkan_image_upload_rgba8(handle, UInt32(raster.width), UInt32(raster.height), $0.baseAddress)
+            }
+        } else {
+            image = raster.data.withUnsafeBufferPointer {
+                compositor_vulkan_image_upload(handle, UInt32(raster.width), UInt32(raster.height), $0.baseAddress)
+            }
+        }
+        return image.map { VulkanImage(owner: self, handle: $0, rect: raster.rect) }
+    }
+
+    func applyResident(_ operation: UInt32, source: VulkanImage, region: CGRect,
+                       background: VulkanImage? = nil, mask: VulkanImage? = nil, channel: UInt32 = 0,
+                       parameters: [Float] = []) -> VulkanImage? {
+        guard source.owner === self, background == nil || background?.owner === self,
+              mask == nil || mask?.owner === self, parameters.count <= 20,
+              !region.isNull, region.width > 0, region.height > 0,
+              region.width <= 65_536, region.height <= 65_536 else { return nil }
+        let values = parameters + [Float](repeating: 0, count: 20 - parameters.count)
+        let image = values.withUnsafeBufferPointer {
+            compositor_vulkan_image_apply(handle, UInt32(region.width), UInt32(region.height), operation, channel,
+                source.handle, background?.handle, mask?.handle, $0.baseAddress)
+        }
+        return image.map { VulkanImage(owner: self, handle: $0, rect: region) }
+    }
+
+    func placeResident(_ image: VulkanImage, region: CGRect, inverse: CGAffineTransform = .identity,
+                       nearest: Bool = false, clamp: Bool = false) -> VulkanImage? {
+        if region == image.rect && inverse == .identity && !clamp { return image }
+        return applyResident(13, source: image, region: region, parameters: [
+            Float(inverse.a), Float(inverse.b), Float(inverse.c), Float(inverse.d), Float(inverse.tx), Float(inverse.ty),
+            Float(region.minX), Float(region.minY), Float(image.rect.minX), Float(image.rect.minY),
+            nearest ? 1 : 0, clamp ? 1 : 0])
     }
 }

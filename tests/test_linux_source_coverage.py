@@ -79,6 +79,20 @@ class SourceCoverageTests(unittest.TestCase):
         self.parity['platform_substitutions']['Compositor/Rendering/EditorCanvas.swift'] = 'Qt replacement'
         self.assertIn('Compositor/Rendering/EditorCanvas.swift: expected one implementation, found 2', self.findings())
 
+    def test_missing_hardware_test_mirrors_fail(self):
+        for name in ['CameraRawGPUTests', 'GPUCanvasTests']:
+            with self.subTest(name=name):
+                self.description = copy.deepcopy(DESCRIPTION)
+                self.remove_source('LinuxOverrideTests', f'Tests/LinuxOverrideTests/{name}.swift')
+                self.assertIn(f'CompositorTests/{name}.swift: expected one test implementation, found 0', self.findings())
+
+    def test_duplicate_hardware_test_mirrors_fail(self):
+        for name in ['CameraRawGPUTests', 'GPUCanvasTests']:
+            with self.subTest(name=name):
+                self.description = copy.deepcopy(DESCRIPTION)
+                self.target('CompositorUpstreamTests')['sources'].append(f'{name}.swift')
+                self.assertIn(f'CompositorTests/{name}.swift: expected one test implementation, found 2', self.findings())
+
 
 if __name__ == '__main__':
     unittest.main()

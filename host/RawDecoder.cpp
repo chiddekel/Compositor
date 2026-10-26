@@ -6,13 +6,14 @@
 // LibRaw's OpenMP build across all cores. Full imports can retain opaque RGBA16 sRGB; draft previews use RGBA8.
 //
 // White balance follows CIRAWFilter's model: `temperature` / `tint` start at the camera's as-shot values
-// (estimated from its white-balance multipliers against daylight), and moving them scales the as-shot multipliers —
+// (from single-illuminant DNG calibration, otherwise estimated against daylight), and moving them scales the as-shot multipliers —
 // warmer lifts red and lowers blue, positive tint lowers green (towards magenta), as in Photoshop / Lightroom.
 
 #if __has_include(<libraw/libraw.h>)
 #include <libraw/libraw.h>
 #include "PerfTrace.h"
 #include "RawLensProfile.h"
+#include "RawWhitePoint.h"
 #include "RawLensfun.h"
 #include <QImage>
 #include <algorithm>
@@ -274,6 +275,30 @@ CompositorRaw *compositor_raw_open(const char *path, int32_t *width, int32_t *he
         handle->asShotTemperature = float(std::clamp(kDaylight * std::pow(ratio, 0.8), 2000.0, 12000.0));
         const double greenRatio = (cam[1] / std::sqrt(cam[0] * cam[2])) / (day[1] / std::sqrt(day[0] * day[2]));
         handle->asShotTint = float(std::clamp(-300.0 * std::log(greenRatio), -150.0, 150.0));
+    }
+    // Single-illuminant DNGs define their neutral in calibrated camera coordinates, not gain-ratio Kelvin.
+    // Dual-illuminant profiles need temperature-dependent matrix interpolation and keep the fallback above.
+    const auto &profile = d.color.dng_color[0];
+    bool secondMatrix = false, hasCalibration = profile.parsedfields & LIBRAW_DNGFM_CALIBRATION;
+    for (int row = 0; row < 3; ++row) for (int col = 0; col < 3; ++col) {
+        secondMatrix |= d.color.dng_color[1].colormatrix[row][col] != 0;
+        hasCalibration |= profile.calibration[row][col] != 0;
+    }
+    // LibRaw can retain these DNG arrays with parsedfields == 0. Validate the values themselves.
+    if (d.idata.dng_version && d.idata.colors == 3 && !secondMatrix) {
+        double matrix[3][3] = {}, neutral[3];
+        for (int row = 0; row < 3; ++row) {
+            neutral[row] = d.color.dng_levels.asshotneutral[row];
+            const double analog = d.color.dng_levels.analogbalance[row];
+            for (int col = 0; col < 3; ++col) for (int k = 0; k < 3; ++k) {
+                const double calibration = hasCalibration ? profile.calibration[row][k] : double(row == k);
+                matrix[row][col] += analog * calibration * profile.colormatrix[k][col];
+            }
+        }
+        if (const auto white = rawwhite::fromCamera(matrix, neutral)) {
+            handle->asShotTemperature = float(white->temperature);
+            handle->asShotTint = float(white->tint);
+        }
     }
     if (temperature) *temperature = handle->asShotTemperature;
     if (tint) *tint = handle->asShotTint;

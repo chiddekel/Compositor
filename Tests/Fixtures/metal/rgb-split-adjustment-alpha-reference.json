@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "upstream": "7b5ba975694b1462d6c13007c6aea1d01bbc69ff",
+  "corpusSHA256": "68cff0009e43a245749dfe0bcd78c551a88284da75d5a3165a483a1e23baa962",
+  "inputsSHA256": "88718c97464554d3fd290f1d550600390327b7d592687436b90d7e4729b7c88a",
+  "referenceFile": "adjustment/RGB Split-0.png",
+  "referencePNGSHA256": "13ec9d97f9884b5826f2232cd7356d504267c5532b2c32099ce5a92368462cbd",
+  "legacyShaderSHA256": "49ee52cd68f3139052f5119826c2cb4009a590a202fa03d8885766c938b222cb",
+  "sourceFormat": "Opaque premultiplied RGBA8; procedural corpus gradient, top-down",
+  "sourceRGBA_SHA256": "b7ef92c8d03422095928d125a9f3a346b47872796512a2d7c166c10f0cf252c8",
+  "width": 96,
+  "height": 72,
+  "alphaSHA256": "7069f31c9bff718fb65be136bd39617ffb390115747653a910a5f480f4fc22af",
+  "alphaZlibBase64": "eNrV2MEBwCAIA8D9N1aB2C5xDzsAIgkxaebCb85uWv92ZP1bRet3xva/Y+tTdH98e+gJmY0vcHB93T/m59j2b+H597qWn/dtfp6Db2AnNCm9X5ifuD7nJ9afnLfxndL+zdKz8H5t/D4Gwxurn2k9/8ffr8L7q/k/sQ79YHuI48utRQ9Ihiekt/fLtp+18PitwAX7z3+/qMC19s+NBQjP58+PWEB1vtD5HcOLDco0DmDR5S3A3Qfje3D/GwOg46/W58L94/c92KBs+37Nxv4Z/97T9uHmA/2T5Hs="
+}

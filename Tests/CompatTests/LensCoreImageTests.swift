@@ -84,10 +84,12 @@ final class LensCoreImageTests: XCTestCase {
         XCTAssertEqual(result[(3 * 7 + 5) * 4], 255)
     }
 
-    func testToneCurveHonorsInteriorControlPoint() throws {
-        let source = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+    func testToneCurveHonorsPerceptualInteriorControlPoint() throws {
+        // A perceptual input of 0.5 is 0.214041 in the working space. The output point 0.25 becomes 0.050876.
+        let source = CIImage(color: CIColor(red: 0.21404114048223255, green: 0.21404114048223255, blue: 0.21404114048223255))
+            .cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
         let curve = source.applyingFilter("CIToneCurve", parameters: ["inputPoint2": CIVector(x: 0.5, y: 0.25)])
         let result = try XCTUnwrap(context.createCGImage(curve, from: source.extent))
-        XCTAssertEqual(Int(result.portableImage.bytes[0]), 64, accuracy: 1)
+        XCTAssertEqual(Int(result.portableImage.bytes[0]), 13, accuracy: 1)
     }
 }

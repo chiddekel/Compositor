@@ -120,6 +120,26 @@ struct ScaledAdjustmentPreviewTests {
         }
     }
 
+    @Test(arguments: [CGFloat(1), 0.5, 0.25])
+    func croppedMotionBackgroundMatchesForeground(scale: CGFloat) async throws {
+        let e = try fixture(.motionBlur, layout: 1)
+        let requested = CGRect(x: 151, y: 41, width: 50, height: 57)
+        let prepared = try e.regionSnapshot(requested, scale: scale)
+        #expect(prepared.samplingOrigin != .zero)
+        #expect(CGFloat(prepared.snapshot.manifest.width) < CGFloat(width) * scale)
+        #expect(CGFloat(prepared.snapshot.manifest.height) < CGFloat(height) * scale)
+        let foreground = try e.renderRegionRGBA(requested, scale: scale)
+        let background = try await UpstreamEditor.renderInBackground(prepared.snapshot, scale: prepared.scale,
+                                                                      samplingOrigin: prepared.samplingOrigin)
+        let crop = prepared.crop
+        var bytes = [UInt8]()
+        for y in 0..<foreground.height {
+            let start = ((Int(crop.minY) + y) * background.width + Int(crop.minX)) * 4
+            bytes.append(contentsOf: background.bytes[start..<start + foreground.width * 4])
+        }
+        #expect(bytes == foreground.bytes)
+    }
+
     @Test func fractionalRadiusAndSettingsSurviveRendering() async throws {
         let e = try fixture(.gaussianBlur)
         let s = e.session

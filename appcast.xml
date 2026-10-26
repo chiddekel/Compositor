@@ -3,16 +3,17 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.5.8</title>
-      <pubDate>Sat, 24 Oct 2026 04:48:14 +0000</pubDate>
-      <sparkle:version>54</sparkle:version>
-      <sparkle:shortVersionString>1.5.8</sparkle:shortVersionString>
+      <title>Version 1.5.10</title>
+      <pubDate>Mon, 26 Oct 2026 05:12:56 +0000</pubDate>
+      <sparkle:version>56</sparkle:version>
+      <sparkle:shortVersionString>1.5.10</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.8</link>
-      <changes><![CDATA[Projects saved by 1.5.4 and 1.5.5 open again.
-Filter › Lens Effects: Prism copies stay crisp and echo into the shadows, one way or both, with Blur in place of Reach.
-Lens Effects' Threshold goes to 100%, down to just the brightest one or two lights.]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.8/Compositor.dmg" sparkle:edSignature="1ooGzsFahg2XNc19yBDci4ICIRb5qTFq6w2Jy5P5O2Tql1oy5Tc6hdlCJD2/+zIefkiq4uzzrLT7li916iAoDQ==" length="8539058" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.10</link>
+      <changes><![CDATA[Filter › Sharpen: an unsharp mask with Amount and Radius, also as an adjustment layer.
+Align and Distribute layers, from the Align button in the Move tool's bar or the Layer menu.
+Crop to any ratio with Custom…, plus a 2.39:1 widescreen preset; the ratios are grouped by shape, and Original is now Canvas.
+Tidier tool bars: flip buttons as icons, and number fields sized to fit.]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.10/Compositor.dmg" sparkle:edSignature="1QqBLIcqC4rS2QuGoecWk4tEHtLUFQ/lBFgV1DcyulGxWDOapL/4CW+ulWGgndZTHzd2wX/MP8lsaKh2CHNsAQ==" length="8612555" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

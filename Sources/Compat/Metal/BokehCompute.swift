@@ -4,10 +4,11 @@ import Foundation
 enum BokehCompute {
     static func execute(_ encoder: MTLComputeCommandEncoder) throws {
         guard encoder.ended, let input = encoder.textures[0], let output = encoder.textures[1],
-              let data = encoder.bytes[0], data.count >= 20,
-              input.pixelFormat == .rgba16Float, output.pixelFormat == .rgba16Float,
-              input.width > 0, input.height > 0, input.width == output.width, input.height == output.height,
-              input.rgbaBytes.count == input.width * input.height * 8 else {
+              let data = encoder.bytes[0], data.count >= 48,
+              [.rgba16Float, .rgba32Float].contains(input.pixelFormat),
+              [.rgba16Float, .rgba32Float].contains(output.pixelFormat),
+              input.width > 0, input.height > 0, output.width > 0, output.height > 0,
+              input.rgbaBytes.count == input.width * input.height * input.bytesPerPixel else {
             throw NSError(domain: "Compositor.BokehCompute", code: 1)
         }
         func value(_ offset: Int) -> Float {
@@ -21,7 +22,9 @@ enum BokehCompute {
         let width = input.width, height = input.height
         let pixels: [Float] = input.rgbaBytes.withUnsafeBytes { bytes in
             (0..<(width * height * 4)).map {
-                Float(Float16(bitPattern: bytes.loadUnaligned(fromByteOffset: $0 * 2, as: UInt16.self)))
+                input.pixelFormat == .rgba16Float
+                    ? Float(Float16(bitPattern: bytes.loadUnaligned(fromByteOffset: $0 * 2, as: UInt16.self)))
+                    : bytes.loadUnaligned(fromByteOffset: $0 * 4, as: Float.self)
             }
         }
         func smooth(_ a: Float, _ b: Float, _ x: Float) -> Float {
@@ -29,37 +32,57 @@ enum BokehCompute {
             return t * t * (3 - 2 * t)
         }
         let reachX = Int(ceil(radius)), reachY = Int(ceil(radius * (shape == 2 ? 1.62 : 1)))
-        var result = [UInt16](repeating: 0, count: pixels.count)
-        for y in 0..<height {
-            for x in 0..<width {
-                let mx = (Float(x) + 0.5 - Float(width) * 0.5) / (Float(max(width, height)) * 0.5)
-                let my = (Float(y) + 0.5 - Float(height) * 0.5) / (Float(max(width, height)) * 0.5)
+        let rw = value(24), rh = value(28)
+        let outX = value(32), outY = value(36), inX = value(40), inY = value(44)
+        guard rw > 0, rh > 0, stride(from: 16, through: 44, by: 4).allSatisfy({ value($0).isFinite }) else {
+            throw NSError(domain: "Compositor.BokehCompute", code: 3)
+        }
+        func weight(_ dx: Int, _ dy: Int, _ mx: Float, _ my: Float) -> Float {
+            let ox = Float(dx) / radius, oy = Float(dy) / radius
+            let d: Float
+            switch shape {
+            case 1: d = max(abs(ox) * 0.866025 + abs(oy) * 0.5, abs(oy)) / 0.866025 * 0.93
+            case 2: d = sqrt(ox * ox + oy * oy * 0.62 * 0.62)
+            case 3:
                 let outward = min(1, sqrt(mx * mx + my * my))
+                let cx = ox + mx * outward * 1.25, cy = oy + my * outward * 1.25
+                d = max(sqrt(ox * ox + oy * oy), sqrt(cx * cx + cy * cy))
+            default: d = sqrt(ox * ox + oy * oy)
+            }
+            let inside = 1 - smooth(1 - 1 / radius, 1, d)
+            return inside <= 0 ? 0 : inside * (1 + ring * 2.5 * smooth(0.6, 0.97, d))
+        }
+        // The upstream encoder dispatches discWeights before bokeh; the CPU adapter shares the same table.
+        let columns = reachX * 2 + 1
+        var table = [Float](repeating: 0, count: columns * (reachY * 2 + 1))
+        if shape != 3 {
+            for dy in -reachY...reachY { for dx in -reachX...reachX {
+                table[(dy + reachY) * columns + dx + reachX] = weight(dx, dy, 0, 0)
+            } }
+            encoder.buffers[1]?.data = table.withUnsafeBytes { Data($0) }
+        }
+        var result = [Float](repeating: 0, count: output.width * output.height * 4)
+        for y in 0..<output.height {
+            for x in 0..<output.width {
+                let mx = (outX - value(16) + Float(x) + 0.5 - rw * 0.5) / (max(rw, rh) * 0.5)
+                let my = (value(20) + rh - outY + Float(y) + 0.5 - rh * 0.5) / (max(rw, rh) * 0.5)
                 var sum = SIMD4<Float>.zero
                 var total: Float = 0
                 for dy in -reachY...reachY {
                     for dx in -reachX...reachX {
-                        let ox = Float(dx) / radius, oy = Float(dy) / radius
-                        let d: Float
-                        switch shape {
-                        case 1: d = max(abs(ox) * 0.866025 + abs(oy) * 0.5, abs(oy)) / 0.866025 * 0.93
-                        case 2: d = sqrt(ox * ox + oy * oy * 0.62 * 0.62)
-                        case 3:
-                            let cx = ox + mx * outward * 1.25, cy = oy + my * outward * 1.25
-                            d = max(sqrt(ox * ox + oy * oy), sqrt(cx * cx + cy * cy))
-                        default: d = sqrt(ox * ox + oy * oy)
-                        }
-                        let inside = 1 - smooth(1 - 1 / radius, 1, d)
-                        if inside <= 0 { continue }
-                        let weight = inside * (1 + ring * 2.5 * smooth(0.6, 0.97, d))
-                        let index = (min(height - 1, max(0, y + dy)) * width + min(width - 1, max(0, x + dx))) * 4
+                        let weight = shape == 3 ? weight(dx, dy, mx, my)
+                            : table[(dy + reachY) * columns + dx + reachX]
+                        if weight <= 0 { continue }
+                        let index = (min(height - 1, max(0, Int(inY - outY) + y + dy)) * width + min(width - 1, max(0, Int(outX - inX) + x + dx))) * 4
                         sum += SIMD4(pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3]) * weight
                         total += weight
                     }
                 }
-                for c in 0..<4 { result[(y * width + x) * 4 + c] = Float16(sum[c] / max(total, 1e-5)).bitPattern }
+                for c in 0..<4 { result[(y * output.width + x) * 4 + c] = sum[c] / max(total, 1e-5) }
             }
         }
-        output.rgbaBytes = result.withUnsafeBytes { Array($0) }
+        output.rgbaBytes = output.pixelFormat == .rgba16Float
+            ? result.map { Float16($0) }.withUnsafeBytes { Array($0) }
+            : result.withUnsafeBytes { Array($0) }
     }
 }

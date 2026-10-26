@@ -53,6 +53,10 @@ extension View {
     public func frame(width: Double? = nil, height: Double? = nil, alignment: Alignment = .center) -> some View {
         modified { $0.modifiers.append(.frame(width: width, height: height, minWidth: nil, minHeight: nil, maxWidth: nil, maxHeight: nil, alignment: alignment.name)) }
     }
+    @_disfavoredOverload
+    public func frame(width: CGFloat? = nil, height: CGFloat? = nil, alignment: Alignment = .center) -> some View {
+        frame(width: width.map(Double.init), height: height.map(Double.init), alignment: alignment)
+    }
     public func frame(minWidth: Double? = nil, idealWidth: Double? = nil, maxWidth: Double? = nil,
                        minHeight: Double? = nil, idealHeight: Double? = nil, maxHeight: Double? = nil,
                        alignment: Alignment = .center) -> some View {
@@ -511,12 +515,13 @@ extension View {
     public func aspectRatio(contentMode: ContentMode) -> some View {
         aspectRatio(nil, contentMode: contentMode)
     }
-    public func popover<V: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> V) -> some View {
+    public func popover<V: View>(isPresented: Binding<Bool>, arrowEdge: Edge? = nil, @ViewBuilder content: () -> V) -> some View {
         let popoverNode = ViewResolver.resolveList(content(), path: ViewResolver.nestedPath("popover")).first
             ?? RenderNode(kind: "_Empty")
         return modified { base in
             var wrapper = RenderNode(kind: "Popover")
             wrapper.boolParams["isPresented"] = isPresented.wrappedValue
+            if let arrowEdge { wrapper.stringParams["arrowEdge"] = arrowEdge.name }
             wrapper.children = [base, popoverNode]
             wrapper.handlers["dismiss"] = { _ in isPresented.wrappedValue = false }
             base = wrapper

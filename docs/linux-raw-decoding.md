@@ -105,3 +105,77 @@ smoke log is unchanged. In the combined renderer checkout, all 173 canonical
 images and 93 golden candidates are unchanged. Evidence is recorded in
 `raw-exposure-final-isolated-verification.json` and
 `raw-exposure-final-rendering-preservation.json` under `.build/evidence/`.
+
+## Calibrated as-shot temperature and tint
+
+Single-illuminant, three-channel DNGs now derive their displayed as-shot white
+point from `AnalogBalance * CameraCalibration * ColorMatrix` and
+`AsShotNeutral`. `host/RawWhitePoint.h` solves for XYZ, converts to CIE 1960 uv,
+and interpolates Robertson's isotemperature lines to obtain temperature and
+tint. Matrix solving and white-point conversion are separate from the LibRaw
+adapter and pixel processing. The numerical table is from Wyszecki & Stiles,
+*Color Science*, second edition, page 228, cross-checked against the
+[published Robertson table](https://github.com/colour-science/colour/blob/e82dd140c02d66a174072281e667d595ac5b6951/colour/temperature/robertson1968.py); the conversion convention is also
+described by the [published DNG SDK implementation](https://github.com/gopro/gpr/blob/446c736a38fb14f51343605c0780d347dc602f89/source/lib/dng_sdk/dng_temperature.cpp).
+
+The real decoder previously reported 4484.90 K / +5.1457 for the canonical
+identity-calibrated DNG. The independently captured native defaults are
+5454.0088 K / -12.993514. The corrected calculation reports 5454.0278 K /
+-12.993524, within 0.02 K and 0.00001 tint. The original decoder fails the same
+regression; the corrected decoder and the actual Swift importer pass it.
+The six captured inputs share this calibration, so this is not six independent
+camera-profile validations.
+
+LibRaw 0.22.2 retains the relevant DNG arrays with `parsedfields == 0` for these
+files. Detection therefore validates the arrays rather than requiring those
+presence bits. Its absent calibration array is zero-filled and is treated as
+identity; analog balance defaults to one. Singular/nonfinite matrices and
+nonphysical neutral values retain the gain-based fallback. Dual-illuminant
+profiles also retain that fallback until matrix interpolation is implemented.
+Non-DNG and four-channel cameras keep their existing metadata calculation.
+
+As-shot multipliers and the full/draft processing rules are unchanged. Actual
+before/after decoder comparisons preserve every full-resolution RGBA16 and
+half-size draft RGBA8 byte for the five canonical DNGs and the precision ramp.
+This corrects the displayed controls' starting point; it does not resolve the
+five native RAW tone/color comparisons or establish native temperature-slider
+response away from as-shot values.
+
+C++ checks cover the native equal-energy white point, D65, calibration and
+scale invariance, pivoting, and invalid profiles. The focused Swift run passes
+all nine RAW precision/capability tests. Evidence uses the `raw-neutral-`
+prefix under `.build/evidence/`.
+
+Full qualification passes 232 XCTest cases (one opt-in timing skip) and all
+48 serialized Swift tests. The 1,063-test parallel Swift run retains exactly
+the preceding 12 golden assertions, with unchanged affected-channel counts
+and maximum differences. All 173 exports preserve decoded pixels, numeric
+samples and ICC buffers against the preceding CPU checkpoint; current CPU and
+Vulkan exports also match on every one of those buffers. Separate real-decoder
+checks confirm identical old/new fallback metadata for dual-illuminant and
+singular DNGs. The upstream guard, strict C++ compilation and diff checks pass.
+
+## Pending native white-balance controls
+
+The existing native RAW artifact keeps temperature and tint at as-shot defaults
+in every recipe. It cannot validate the Linux temperature/tint response, which
+still uses relative channel-gain approximations. No change to those production
+formulas is justified by the as-shot metadata correction alone.
+
+`scripts/capture-raw-reference.swift --white-balance` now optionally adds four
+independent controls at both zero and full boost: 3000 K, 8000 K, tint -50 and
+tint +50. Exposure is zero; the other white-balance control retains its native
+as-shot value. Every recipe uses a fresh decoder, with the same working context,
+interior scanline and three output buffers as the original tone capture. This
+produces schema 2 with 96 recipes and 288 buffers across the six inputs.
+The original invocation still produces schema 1 with 48 recipes and 144 buffers.
+
+The manual `raw-reference.yml` workflow exposes an optional `white_balance`
+input, disabled by default. The validator checks the exact changed and unchanged
+controls, complete recipe coverage, input hashes and output hashes for either
+schema. Five local regression tests pass, including refusal of mislabeled or
+missing controls and corrupt input/output hashes. The existing native artifact
+still validates unchanged. Swift's macOS-target parser, YAML loading, all three
+workflow shell syntax checks and Python compilation pass. macOS SDK type checking
+and native execution of the new recipes have not run. This preparation does not
+establish white-balance parity or alter the five unresolved RAW comparisons.

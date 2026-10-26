@@ -29,6 +29,11 @@ typedef struct {
 void compositor_motion_row(const float *source, size_t width, size_t height,
     ptrdiff_t first_x, ptrdiff_t y, size_t output_width,
     const CompositorMotionTap *kernel, size_t taps, float *output);
+// Original UNORM8 texels, supplied as normalized floats. Sampling retains four
+// fractional bits of a byte; the weighted result remains full float.
+void compositor_motion_row_byte_samples(const float *source, size_t width, size_t height,
+    ptrdiff_t first_x, ptrdiff_t y, size_t output_width,
+    const CompositorMotionTap *kernel, size_t taps, float *output);
 #ifdef __cplusplus
 }
 #endif

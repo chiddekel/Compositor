@@ -49,7 +49,9 @@
 #include "include/core/SkRRect.h"
 #include "include/core/SkRegion.h"
 #include "include/core/SkColorFilter.h"
+#include "include/core/SkBlender.h"
 #include "include/effects/SkImageFilters.h"
+#include "include/effects/SkRuntimeEffect.h"
 #include "include/effects/SkColorMatrix.h"
 #include "include/pathops/SkPathOps.h"
 #include "include/effects/SkGradient.h"
@@ -73,7 +75,9 @@
 #include <skia/core/SkRRect.h>
 #include <skia/core/SkRegion.h>
 #include <skia/core/SkColorFilter.h>
+#include <skia/core/SkBlender.h>
 #include <skia/effects/SkImageFilters.h>
+#include <skia/effects/SkRuntimeEffect.h>
 #include <skia/effects/SkColorMatrix.h>
 #include <skia/pathops/SkPathOps.h>
 #include <skia/effects/SkGradient.h>
@@ -103,6 +107,12 @@
 
 #if defined(COMPOSITOR_HAS_VULKAN)
 #include "shaders/composite_over_spv.h"
+#endif
+
+#if defined(COMPOSITOR_HAS_SKIA)
+#include "StraightStrokeCoverage.h"
+#include "CurveCoverage.h"
+#include "ImageSampling.h"
 #endif
 
 // ── CompRenderer ────────────────────────────────────────────────────────
@@ -881,6 +891,95 @@ static SkBlendMode map_cg_blend_mode(int cg_mode) {
     }
 }
 
+static sk_sp<SkBlender> comp_byte_nonseparable_blender(SkBlendMode mode) {
+    // Core Graphics rounds the alpha products and saturation-normalized channels
+    // to bytes. Near-gray colors lose that precision before the division, rather
+    // than after the complete floating-point nonseparable blend.
+    static const auto blenders = [] {
+        std::array<sk_sp<SkBlender>, 2> result;
+        const char *program = R"(
+            uniform int hue;
+            float luminance(float3 c) { return dot(c, float3(77.0, 151.0, 28.0)) / 256.0; }
+            float saturation(float3 c) { return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b)); }
+            float3 setSaturation(float3 c, float value) {
+                float low = min(c.r, min(c.g, c.b));
+                float range = saturation(c);
+                return range > 0.0 ? floor((c - low) * value / range + 0.5) : float3(0.0);
+            }
+            float3 setLuminance(float3 c, float value, float limit) {
+                c += value - luminance(c);
+                // The byte clipper quantizes its bounds, retaining fractional color and luminance.
+                float low = floor(min(c.r, min(c.g, c.b)) + 0.5);
+                float high = floor(max(c.r, max(c.g, c.b)) + 0.5);
+                if (low < 0.0 && value != low) c = value + (c - value) * value / (value - low);
+                if (high > limit && high != value) c = value + (c - value) * (limit - value) / (high - value);
+                return c;
+            }
+            half4 main(half4 src, half4 dst) {
+                float4 s = floor(float4(src) * 255.0 + 0.5);
+                float4 d = floor(float4(dst) * 255.0 + 0.5);
+                float3 cs = floor(s.rgb * d.a / 255.0 + 0.5);
+                float3 cd = floor(d.rgb * s.a / 255.0 + 0.5);
+                float overlap = floor(s.a * d.a / 255.0 + 0.5);
+                float3 c = hue != 0 ? setSaturation(cs, saturation(cd)) : setSaturation(cd, saturation(cs));
+                c = setLuminance(c, luminance(cd), overlap);
+                float3 outside = floor((s.rgb * (255.0 - d.a) + d.rgb * (255.0 - s.a)) / 255.0 + 0.5);
+                float3 rgb = floor(c + 0.5) + outside;
+                float alpha = s.a + floor(d.a * (255.0 - s.a) / 255.0 + 0.5);
+                return half4(float4(clamp(rgb, float3(0.0), float3(alpha)), alpha) / 255.0);
+            }
+        )";
+        auto effect = SkRuntimeEffect::MakeForBlender(SkString(program));
+        if (effect.effect) {
+            for (int index = 0; index < 2; ++index) {
+                const int32_t hue = index == 0 ? 1 : 0;
+                result[index] = effect.effect->makeBlender(SkData::MakeWithCopy(&hue, sizeof(hue)));
+            }
+        }
+        return result;
+    }();
+    return blenders[mode == SkBlendMode::kHue ? 0 : 1];
+}
+
+static void comp_set_canvas_blend(SkPaint &paint, SkBlendMode mode, bool byteOutput) {
+    if (byteOutput && (mode == SkBlendMode::kHue || mode == SkBlendMode::kSaturation)) {
+        if (auto blender = comp_byte_nonseparable_blender(mode)) {
+            paint.setBlender(std::move(blender));
+            return;
+        }
+    }
+    if (mode == SkBlendMode::kSrcOver || (byteOutput && mode == SkBlendMode::kExclusion)) {
+        // Core Graphics uses the full 255 denominator. Keep this blend in the float
+        // pipeline instead of Skia's approximate low-precision source-over stages.
+        // RGBA8 quantizes the opacity-adjusted source before blending; deep surfaces
+        // retain their fractional values and HDR range.
+        static auto canvasBlenders = [] {
+            std::array<sk_sp<SkBlender>, 3> blenders;
+            const char *programs[] = {
+                "half4 main(half4 src, half4 dst) { return src + dst * (1.0 - src.a); }",
+                "half4 main(half4 src, half4 dst) { "
+                "float4 s = floor(float4(src) * 255.0 + 0.5); "
+                "float4 d = floor(float4(dst) * 255.0 + 0.5); "
+                "return half4((s + floor((d * (255.0 - s.a) + 127.0) / 255.0)) / 255.0); }",
+                "half4 main(half4 src, half4 dst) { "
+                "float4 s = floor(float4(src) * 255.0 + 0.5); "
+                "float4 d = floor(float4(dst) * 255.0 + 0.5); "
+                "float3 rgb = s.rgb + d.rgb - floor((2.0 * s.rgb * d.rgb + 127.0) / 255.0); "
+                "float a = s.a + floor((d.a * (255.0 - s.a) + 127.0) / 255.0); "
+                "return half4(float4(rgb, a) / 255.0); }"
+            };
+            for (size_t i = 0; i < blenders.size(); ++i) {
+                auto result = SkRuntimeEffect::MakeForBlender(SkString(programs[i]));
+                if (result.effect) blenders[i] = result.effect->makeBlender(nullptr);
+            }
+            return blenders;
+        }();
+        const auto &blender = canvasBlenders[mode == SkBlendMode::kExclusion ? 2 : byteOutput ? 1 : 0];
+        if (blender) { paint.setBlender(blender); return; }
+    }
+    paint.setBlendMode(mode);
+}
+
 static SkSamplingOptions map_cg_sampling(int quality) {
     switch (quality) {
         case 1:  // none / nearest
@@ -938,10 +1037,10 @@ static sk_sp<SkImage> comp_area_resample(const sk_sp<SkImage> &img, int w, int h
     return SkImages::RasterFromData(outInfo, std::move(data), size_t(w) * 16);
 }
 
-// Core Graphics' high quality averages every covered source pixel when minifying; a cubic kernel alone
-// reads only a 4x4 neighbourhood, so large reductions alias and shift tone. Axes reduced 2x or more are
-// area-averaged to their device-space length first (rotation included); the cubic pass then runs at about 1:1.
-static sk_sp<SkImage> comp_prefilter_minified(sk_sp<SkImage> img, const SkMatrix &ctm, float dw, float dh) {
+// Whole-pixel axis-aligned reductions use the native sampling component. Other
+// geometry retains the existing area prefilter before the final cubic pass.
+static sk_sp<SkImage> comp_prefilter_minified(sk_sp<SkImage> img, const SkMatrix &ctm, float dw, float dh,
+                                           bool nativeGrid, SkColorType destinationType) {
     if (ctm.hasPerspective()) return img;
     const float sx = std::hypot(ctm.getScaleX(), ctm.getSkewY()), sy = std::hypot(ctm.getSkewX(), ctm.getScaleY());
     const float tw = std::fabs(dw) * sx, th = std::fabs(dh) * sy;
@@ -950,7 +1049,8 @@ static sk_sp<SkImage> comp_prefilter_minified(sk_sp<SkImage> img, const SkMatrix
     if (w < 2 * tw && h < 2 * th) return img;
     const int nw = w >= 2 * tw ? std::max(1, int(std::lround(tw))) : w;
     const int nh = h >= 2 * th ? std::max(1, int(std::lround(th))) : h;
-    sk_sp<SkImage> averaged = comp_area_resample(img, nw, nh);
+    sk_sp<SkImage> averaged = nativeGrid ? image_sampling::minify(img, nw, nh, destinationType) : nullptr;
+    if (!averaged) averaged = comp_area_resample(img, nw, nh);
     return averaged ? averaged : img;
 }
 
@@ -1276,7 +1376,7 @@ void compositor_canvas_fill_rect(CompCanvas *canvas, float x, float y, float w, 
     SkPaint paint;
     float finalAlpha = a * canvas->current_state().alpha;
     paint.setColor4f(SkColor4f{r, g, b, finalAlpha});
-    paint.setBlendMode(canvas->current_state().blendMode);
+    comp_set_canvas_blend(paint, canvas->current_state().blendMode, canvas->surface->imageInfo().colorType() == kRGBA_8888_SkColorType);
     paint.setAntiAlias(canvas->current_state().antialias);
     canvas->canvas->drawRect(SkRect::MakeXYWH(x, y, w, h), paint);
 #else
@@ -1312,11 +1412,33 @@ void compositor_canvas_draw_image_rect_ex(CompCanvas *canvas, const uint8_t *src
     SkPaint paint;
     float finalAlpha = opacity * canvas->current_state().alpha;
     paint.setAlphaf(finalAlpha);
-    paint.setBlendMode(cg_blend_mode >= 0 ? map_cg_blend_mode(cg_blend_mode) : canvas->current_state().blendMode);
+    comp_set_canvas_blend(paint, cg_blend_mode >= 0 ? map_cg_blend_mode(cg_blend_mode) : canvas->current_state().blendMode,
+                          canvas->surface->imageInfo().colorType() == kRGBA_8888_SkColorType);
     paint.setAntiAlias(canvas->current_state().antialias);
 
     SkSamplingOptions sampling = (cg_sampling_quality >= 0) ? map_cg_sampling(cg_sampling_quality) : canvas->current_state().sampling;
-    if (sampling.useCubic) img = comp_prefilter_minified(img, canvas->canvas->getTotalMatrix(), dw, dh);
+    if (sampling.useCubic) {
+        const auto matrix = canvas->canvas->getTotalMatrix();
+        auto aligned = [](double value) { return std::isfinite(value) && std::abs(value - std::round(value)) <= 1e-4; };
+        auto supportedAxis = [](int source, double target) {
+            return std::abs(source - target) <= 1e-4 || source >= 2 * target;
+        };
+        const double left = double(matrix.getScaleX()) * dx + matrix.getTranslateX();
+        const double top = double(matrix.getScaleY()) * dy + matrix.getTranslateY();
+        const bool nativeGrid = !matrix.hasPerspective() && matrix.getSkewX() == 0 && matrix.getSkewY() == 0
+            && dw > 0 && dh > 0 && aligned(left) && aligned(top)
+            && aligned(left + double(matrix.getScaleX()) * dw)
+            && aligned(top + double(matrix.getScaleY()) * dh)
+            && supportedAxis(img->width(), std::abs(double(matrix.getScaleX()) * dw))
+            && supportedAxis(img->height(), std::abs(double(matrix.getScaleY()) * dh));
+        const int beforeWidth = img->width(), beforeHeight = img->height();
+        img = comp_prefilter_minified(img, matrix, dw, dh, nativeGrid,
+            canvas->surface->imageInfo().colorType());
+        // These pixels are already filtered onto the destination grid. Another
+        // cubic pass can clamp negative float color and filter the image twice.
+        if (img && nativeGrid && (img->width() != beforeWidth || img->height() != beforeHeight))
+            sampling = SkSamplingOptions(SkFilterMode::kNearest, SkMipmapMode::kNone);
+    }
     if (!img) return;
     canvas->canvas->drawImageRect(img, SkRect::MakeXYWH(dx, dy, dw, dh), sampling, &paint);
 #else
@@ -1562,8 +1684,11 @@ void compositor_canvas_fill_path(CompCanvas *canvas, const CompPath *path, int e
     if (!canvas || !canvas->canvas || !path) return;
     SkPaint paint;
     paint.setColor4f(SkColor4f{r, g, b, a * canvas->current_state().alpha});
-    paint.setBlendMode(canvas->current_state().blendMode);
+    comp_set_canvas_blend(paint, canvas->current_state().blendMode, canvas->surface->imageInfo().colorType() == kRGBA_8888_SkColorType);
     paint.setAntiAlias(canvas->current_state().antialias);
+    if (canvas->surface->imageInfo().colorType() == kRGBA_8888_SkColorType
+        && curve_coverage::draw(*canvas->canvas, path->get_path(even_odd != 0), paint,
+                                canvas->current_state().blendMode)) return;
     canvas->canvas->drawPath(path->get_path(even_odd != 0), paint);
 #else
     (void)canvas; (void)path; (void)even_odd; (void)r; (void)g; (void)b; (void)a;
@@ -1581,8 +1706,10 @@ void compositor_canvas_stroke_path(CompCanvas *canvas, const CompPath *path, flo
     paint.setStrokeCap(cap == 1 ? SkPaint::kRound_Cap : cap == 2 ? SkPaint::kSquare_Cap : SkPaint::kButt_Cap);
     paint.setStrokeJoin(join == 1 ? SkPaint::kRound_Join : join == 2 ? SkPaint::kBevel_Join : SkPaint::kMiter_Join);
     paint.setColor4f(SkColor4f{r, g, b, a * canvas->current_state().alpha});
-    paint.setBlendMode(canvas->current_state().blendMode);
+    comp_set_canvas_blend(paint, canvas->current_state().blendMode, canvas->surface->imageInfo().colorType() == kRGBA_8888_SkColorType);
     paint.setAntiAlias(canvas->current_state().antialias);
+    if (canvas->surface->imageInfo().colorType() == kRGBA_8888_SkColorType
+        && straight_stroke_coverage::draw(*canvas->canvas, path->get_path(false), paint, canvas->current_state().blendMode)) return;
     canvas->canvas->drawPath(path->get_path(false), paint);
 #else
     (void)canvas; (void)path; (void)width; (void)cap; (void)join; (void)miter_limit; (void)r; (void)g; (void)b; (void)a;
@@ -1597,7 +1724,7 @@ static void draw_gradient_shader(CompCanvas *canvas, sk_sp<SkShader> shader, con
     SkPaint paint;
     paint.setShader(shader);
     paint.setAlphaf(canvas->current_state().alpha);
-    paint.setBlendMode(canvas->current_state().blendMode);
+    comp_set_canvas_blend(paint, canvas->current_state().blendMode, canvas->surface->imageInfo().colorType() == kRGBA_8888_SkColorType);
     paint.setAntiAlias(canvas->current_state().antialias);
     canvas->canvas->drawRect(clipBounds, paint);
 }

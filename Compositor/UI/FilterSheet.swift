@@ -172,6 +172,11 @@ struct FilterSheet: View {
                 control("Feather", \.vignetteFeather, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 control("Highlights", \.vignetteHighlights, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                     .help("Protect bright areas near the edge")
+            case .sharpen:
+                control("Amount", \.sharpenAmount, range: 0...300, unit: "%", decimals: 0, logarithmic: false)
+                    .help("How strongly edges and fine detail are brought out")
+                control("Radius", \.sharpenRadius, range: 0.1...20, unit: "px", decimals: 1, logarithmic: true)
+                    .help("How fine the detail it sharpens: small for crisp texture, larger for a punchier look")
             case .bloomGlow:
                 control("Amount", \.bloomAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 control("Radius", \.bloomRadius, range: 1...150, unit: "px", decimals: 0, logarithmic: true)

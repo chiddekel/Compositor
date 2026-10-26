@@ -45,12 +45,12 @@ translated origins, negative row direction and edge extension. Hardware success 
 submissions; a CPU fallback cannot count as the Vulkan pass.
 
 The upstream kernel's `sin`/`fract` sampling jitter depends on the device's transcendental precision.
-The Vulkan shader protects phase arithmetic and evaluates a degree-21 sine polynomial in double
-precision after reducing the angle to −π/2…π/2. This prevents the amplified hash from turning a
-one-ulp device sine error into a nearly full-interval sample change. Float64 is already a backend
-requirement; the correction adds no device requirement. Five sharp-alpha comparisons on AMD RADV
-improve from maximum errors of 3.98–94.18 byte levels to less than 0.72. The new pixel-level regression fails against
-the original shader and passes with the correction; native Metal edge references remain unchanged.
+The preceding Vulkan correction protected phase arithmetic and evaluated a degree-21 sine
+polynomial in double precision after reducing the angle to −π/2…π/2. Five sharp-alpha comparisons
+on AMD RADV improved from maximum errors of 3.98–94.18 byte levels to less than 0.72. Its pixel-level
+regression fails against the original shader; native Metal edge references remain unchanged.
+The shared Float32 fast-sine model described below replaces that earlier polynomial to improve
+agreement with native sampling as well as preserving the CPU/Vulkan comparison limits.
 The combined candidate's automatic-backend application corpus improved from 136/173 to 137/173
 passing native comparisons at that checkpoint. This correction does not establish complete native
 pixel parity. Existing golden thresholds and baseline PNGs are unchanged.
@@ -76,7 +76,10 @@ retains seven complete buffers: the 61×61 source and two RGBA8 outputs, default
 observers, and default/strict 192×144 observers. Observer float4 channels are phase, sine, noise and
 jitter. SHA-256, packed sizes, finite float values and consistency with every edge sample are validated
 before artifact upload. These diagnostics separate arithmetic from sampling and output quantization;
-they do not by themselves establish a replacement algorithm.
+they do not by themselves establish a replacement algorithm. An additional default-math
+513×257 observer extends the coordinate range beyond those earlier captures. The workflow
+validates all eight buffers and requires the larger observer's overlapping rows to match
+the 192×144 observer byte for byte.
 
 Native run `40134093484` passes all seven buffer validations. The shader hash, source fixture, nine
 edge samples, tail assertions and default/strict edge arithmetic are identical to the earlier capture.
@@ -93,3 +96,101 @@ The contract script also runs upstream `FilterTests` and `FilterLayerTests`, and
 and Split to Layers. The rebuilt local candidate passes this journey on AMD Vulkan, including exact
 commit Undo/Redo and Split to Layers hierarchy/history (`upstream-format18-dispersion-native-journey.log`
 under `.build/evidence/`). This does not close the remaining native comparison failures.
+
+## Native fast-sine compatibility
+
+The spectral jitter hash amplifies differences of a few sine ulps into jumps across
+an entire sampling interval. The CPU and Vulkan implementations use the same odd,
+degree-11 polynomial after reducing the phase to quarter cycles. Its six float
+coefficients were fitted to the native default-math observer's rows 72–143 at
+192×144; neither the application output nor the held-out coordinates set them.
+Both implementations evaluate the polynomial with explicit fused multiply-adds.
+The shader also preserves rounding at the final sine multiplication and the
+noise multiplication; allowing their reassociation breaks the existing sharp-edge
+CPU/Vulkan regression by up to 82 byte levels.
+
+The independent 513×257 capture from native run `40190033692` preserves all seven
+earlier buffers. Across 118,017 coordinates outside the fitting region, the model
+reduces jitter differences above half an interval from 418 to 60, with maximum
+sine error `1.1920928955078125e-7`. It approximates the captured fast-math behavior;
+it does not establish exact arithmetic parity across Apple GPU models.
+
+`Tests/Fixtures/metal/rgb-split-default-reference.json` retains the complete native
+96×72 default-filter output, its upstream/corpus/input provenance, and hashes of
+the source PNG and decoded premultiplied pixels. The independent dispersion test
+checks every channel on CPU and Vulkan within two byte levels. The preceding
+renderer fails this regression by 17 levels. Existing direction, radial, ROI,
+edge-extension, alpha, and CPU/Vulkan comparison checks retain their limits.
+
+In an isolated checkout, both backends improve the complete application corpus
+from 130/173 to 132/173 passing comparisons: the negative RGB Split adjustment
+and default destructive filter now pass. The other two RGB Split adjustment
+cases remain open. Only the five RGB Split PNGs change; all 173 candidate PNGs
+are byte-identical between CPU and Vulkan. The native reference regression
+measures a one-byte maximum error on both backends. All 1,288 Swift/XCTest
+checks and the native RGB Split panel/history journey pass. Verification uses
+the `dispersion-model-isolated-` evidence prefix; baseline PNGs are unchanged.
+
+
+`COMPOSITOR_COREIMAGE_BACKEND=cpu` selects the Core Image graph backend. The separate
+Metal-compatible dispersion driver can still use an available Vulkan device. The
+CPU/Vulkan corpus equality above used matching hardware access for that driver.
+For a wholly software profile, remove hardware device access as well, and record
+both settings: a controlled variable-blur qualification observed a repeatable
+one-pixel difference in RGB Split when device access alone changed.
+
+## One-pass CPU edge coverage
+
+The CPU fallback now constructs the spectral parameter with a rounded
+reciprocal and `std::fma`, instead of rounding a division before multiplying
+and subtracting. At a finite canvas edge, that intermediate rounding can move
+a sample across the kernel's outside-image test and change alpha. The
+reciprocal/FMA form matches the independent native adjustment alpha plane;
+this is evidence for the form, not a disassembly claim about every Metal
+compiler or device.
+
+`rgb-split-adjustment-alpha-reference.json` retains the complete 96-by-72
+native alpha plane, source-gradient hash, legacy shader hash and application
+capture provenance. The new CPU regression fails before the correction with
+a three-byte error and passes afterward with exact alpha bytes. Vulkan also
+matches the alpha plane exactly on AMD RADV RENOIR. Existing default-filter,
+four two-pass, direction, radial, HDR, ROI, edge and CPU/Vulkan comparison
+checks pass without changing their limits. Captured jitter is not used by
+the renderer. The original Metal shader and Vulkan shader are unchanged.
+
+This corrects the CPU fallback's edge coverage; the remaining native
+sine/jitter color differences are separate. Evidence uses the
+`rgb-parameter-` prefix under `.build/evidence/`.
+
+Full qualification passes 232 XCTest cases (one opt-in timing skip), 39 focused
+canvas/filter/compute tests and all 48 serialized Swift tests. The 1,063-test
+parallel run retains only the unchanged text golden assertion. All 173 exports
+preserve decoded pixels, numeric samples and ICC data against the preceding
+CPU-setting checkpoint; current CPU/Vulkan exports also match all buffers.
+These application runs retain hardware access for the separate dispersion
+driver. The direct `driver=None` regression is the proof of the CPU fallback
+correction; those exports do not establish wholly software rendering parity.
+Strict C++ compilation, Python compilation, the upstream guard and diff checks
+pass. `.build/evidence/rgb-parameter-candidate.json` records source hashes and
+the complete result scope.
+
+## Scope of the older RGB Split application reference
+
+The native application capture at `7b5ba97` predates the upstream two-pass
+blur change now integrated through `8cdc2b6`. The original one-pass shader
+prefix is byte-identical between those revisions. The blurred negative
+adjustment and extreme filter now use different upstream orchestration and
+fine-grain placement, so their older application PNGs cannot qualify the new
+algorithm. They remain unqualified until a matching native capture is
+available; this classification does not mark them as passing. The default
+and positive-angle adjustments use the unchanged one-pass algorithm and
+remain useful diagnostics. Source hashes and per-case classification are in
+`.build/evidence/rgb-upstream-comparison-scope.json`.
+
+A separate reduction audit checks 131,841 captured phase/sine pairs: repeated
+arguments give consistent sine outputs for both full-cycle and quarter-folded
+arguments. That supports investigating the numerical sine model separately
+from image sampling, but does not establish a replacement model. The capture
+reports `Apple Paravirtual device`; it does not identify physical Apple GPU
+instructions. No production sine coefficients changed in this work. Results
+are in `.build/evidence/rgb-sine-reduction-audit.json`.

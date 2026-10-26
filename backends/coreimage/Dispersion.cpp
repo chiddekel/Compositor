@@ -10,7 +10,17 @@ float dispersionSine(float phase) {
     cycle-=std::round(cycle);
     if (cycle>0.25f) cycle=0.5f-cycle;
     else if (cycle<-0.25f) cycle=-0.5f-cycle;
-    return std::sin(cycle*6.283185307179586f);
+    // A reduced-angle odd polynomial models Metal's fast sine. Full-precision sin
+    // differs by a few ulps, which the following hash amplifies into sample jumps.
+    // Validated against independent native coordinates in capture 40190033692.
+    float x=cycle*4.0f, z=x*x;
+    float p=-1.27799126e-06f;
+    p=std::fma(p,z,0.000155217505f);
+    p=std::fma(p,z,-0.00467753445f);
+    p=std::fma(p,z,0.0796911645f);
+    p=std::fma(p,z,-0.645963886f);
+    p=std::fma(p,z,1.57079623f);
+    return p*x;
 }
 float smooth(float a, float b, float x) {
     x=std::clamp((x-a)/(b-a),0.0f,1.0f); return x*x*(3-2*x);
@@ -22,7 +32,8 @@ extern "C" int compositor_dispersion_render(CompositorVulkanRaster *gpu, unsigne
     for (int i=0;i<20;++i) if (!std::isfinite(p[i])) return -1;
     if (p[16]<1 || p[17]<1 || p[16]>65536 || p[17]>65536 ||
         p[16]!=std::floor(p[16]) || p[17]!=std::floor(p[17]) || std::abs(p[15])!=1 ||
-        p[9]<1 || p[9]>4096 || p[10]<1 || p[10]>4096 || p[8]<0 || p[8]>15) return -1;
+        p[9]<1 || p[9]>4096 || p[10]<1 || p[10]>4096 || p[8]<0 || p[8]>15 ||
+        p[18]<0 || p[18]>2 || p[18]!=std::floor(p[18])) return -1;
     if (gpu && compositor_vulkan_raster_render(gpu,width,height,10,0,source,nullptr,nullptr,p,output)==0) return 1;
     const int sw=int(p[16]), sh=int(p[17]), sides=int(p[8]);
     const unsigned n=unsigned(p[9]), m=unsigned(p[10]);
@@ -45,11 +56,26 @@ extern "C" int compositor_dispersion_render(CompositorVulkanRaster *gpu, unsigne
         float phase=std::fma(float(y),78.233f,float(x)*12.9898f);
         float noise=dispersionSine(phase)*43758.5453f;
         float jitter=noise-std::floor(noise), color[3]{}, alpha[3]{}, total[3]{};
+        if (p[18]==1) {
+            size_t at=(size_t(y)*width+x)*4;
+            for (int c=0;c<4;++c) {
+                float sum=0;
+                for (unsigned j=0;j<m;++j) {
+                    float u=(float(j)+jitter)/float(m)-0.5f;
+                    sum+=tap(ax-dx*p[5]*u,ay-dy*p[5]*u,c);
+                }
+                output[at+c]=sum/float(m);
+            }
+            continue;
+        }
         for (unsigned i=0;i<n;++i) {
-            float t=n==1 ? 0 : (float(i)+jitter)/float(n)*2-1;
+            // The reciprocal/FMA form matches captured native Metal edge coverage.
+            // Rounding the division first can drop an edge sample on the CPU fallback.
+            float t=n==1 ? 0 : std::fma(float(i)+jitter,2.0f/float(n),-1.0f);
             float weight[3]{smooth(-0.3f,1,t),1-smooth(0,1,std::abs(t))+0.05f,smooth(-0.3f,1,-t)};
-            for (unsigned j=0;j<m;++j) {
-                float u=m==1 ? 0 : (float(j)+jitter)/float(m)-0.5f;
+            const unsigned taps=p[18]==2 ? 1 : m;
+            for (unsigned j=0;j<taps;++j) {
+                float u=taps==1 ? 0 : (float(j)+jitter)/float(m)-0.5f;
                 float qx=ax-dx*(p[4]*t+p[5]*u), qy=ay-dy*(p[4]*t+p[5]*u);
                 float a=tap(qx,qy,3);
                 for (int c=0;c<3;++c) {

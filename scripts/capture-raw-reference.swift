@@ -13,7 +13,10 @@ func digest(_ data: Data) -> String {
 }
 
 func capture() throws -> [String: Any] {
-    guard #available(macOS 26.0, *), CommandLine.arguments.count == 7 else {
+    var paths = Array(CommandLine.arguments.dropFirst())
+    let whiteBalance = paths.first == "--white-balance"
+    if whiteBalance { paths.removeFirst() }
+    guard #available(macOS 26.0, *), paths.count == 6 else {
         throw CaptureError.failed("Requires macOS 26 and the five canonical DNGs plus precision-ramp.dng")
     }
     let linear = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
@@ -22,17 +25,26 @@ func capture() throws -> [String: Any] {
     // Apple's tone interpretation from the final integer quantization and upstream dither.
     let context = CIContext(options: [.useSoftwareRenderer: false, .workingFormat: CIFormat.RGBAh,
                                      .workingColorSpace: linear])
-    let controls: [(String, Float?, Float?)] = [
-        ("decoder-default", nil, nil),
-        ("boost-0", 0, 0), ("boost-0.5", 0, 0.5), ("boost-1", 0, 1),
-        ("exposure-minus-1-boost-0", -1, 0), ("exposure-plus-1-boost-0", 1, 0),
-        ("exposure-minus-1-boost-1", -1, 1), ("exposure-plus-1-boost-1", 1, 1),
+    var controls: [(String, Float?, Float?, Float?, Float?)] = [
+        ("decoder-default", nil, nil, nil, nil),
+        ("boost-0", 0, 0, nil, nil), ("boost-0.5", 0, 0.5, nil, nil), ("boost-1", 0, 1, nil, nil),
+        ("exposure-minus-1-boost-0", -1, 0, nil, nil), ("exposure-plus-1-boost-0", 1, 0, nil, nil),
+        ("exposure-minus-1-boost-1", -1, 1, nil, nil), ("exposure-plus-1-boost-1", 1, 1, nil, nil),
     ]
+    if whiteBalance {
+        for boost in [Float(0), Float(1)] {
+            let suffix = Int(boost)
+            controls += [("temperature-3000-boost-\(suffix)", 0, boost, 3000, nil),
+                         ("temperature-8000-boost-\(suffix)", 0, boost, 8000, nil),
+                         ("tint-minus-50-boost-\(suffix)", 0, boost, nil, -50),
+                         ("tint-plus-50-boost-\(suffix)", 0, boost, nil, 50)]
+        }
+    }
     var inputs = [[String: Any]]()
-    for path in CommandLine.arguments.dropFirst() {
+    for path in paths {
         let url = URL(fileURLWithPath: path)
         var cases = [[String: Any]]()
-        for (name, exposure, boost) in controls {
+        for (name, exposure, boost, temperature, tint) in controls {
             // A fresh decoder makes every recipe independent of preceding slider changes.
             guard let filter = CIRAWFilter(imageURL: url) else {
                 throw CaptureError.failed("Cannot open \(url.lastPathComponent)")
@@ -42,6 +54,8 @@ func capture() throws -> [String: Any] {
                 "scale": filter.scaleFactor, "draft": filter.isDraftModeEnabled]
             if let exposure { filter.exposure = exposure }
             if let boost { filter.boostAmount = boost }
+            if let temperature { filter.neutralTemperature = temperature }
+            if let tint { filter.neutralTint = tint }
             guard let output = filter.outputImage else {
                 throw CaptureError.failed("Cannot develop \(url.lastPathComponent) / \(name)")
             }
@@ -77,7 +91,7 @@ func capture() throws -> [String: Any] {
         }
         inputs.append(["file": url.lastPathComponent, "sha256": digest(try Data(contentsOf: url)), "cases": cases])
     }
-    return ["schema": 1, "platform": "macOS", "osVersion": ProcessInfo.processInfo.operatingSystemVersionString,
+    return ["schema": whiteBalance ? 2 : 1, "platform": "macOS", "osVersion": ProcessInfo.processInfo.operatingSystemVersionString,
         "device": MTLCreateSystemDefaultDevice()?.name ?? "none",
         "workingFormat": "RGBAh", "workingColorSpace": "extendedLinearSRGB", "inputs": inputs]
 }

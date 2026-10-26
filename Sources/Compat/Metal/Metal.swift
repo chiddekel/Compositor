@@ -129,15 +129,31 @@ public final class MTLComputePipelineState: @unchecked Sendable {
     public init(name: String) { self.name = name }
 }
 
+public struct MTLResourceOptions: OptionSet, Sendable {
+    public let rawValue: UInt
+    public init(rawValue: UInt) { self.rawValue = rawValue }
+    public static let storageModePrivate = MTLResourceOptions(rawValue: 1)
+}
+
+public final class MTLBuffer {
+    public var data: Data
+    public init(length: Int) { data = Data(count: length) }
+}
+
 public final class MTLComputeCommandEncoder {
     public private(set) var pipeline: MTLComputePipelineState?
     public private(set) var textures: [Int: MTLTexture] = [:]
     public private(set) var bytes: [Int: Data] = [:]
+    public private(set) var buffers: [Int: MTLBuffer] = [:]
     public private(set) var threadgroupsPerGrid: MTLSize?
     public private(set) var threadsPerThreadgroup: MTLSize?
     public private(set) var ended = false
 
     public init() {}
+    public func setBuffer(_ buffer: MTLBuffer?, offset: Int, index: Int) {
+        precondition(offset == 0, "Only whole compute buffers are supported")
+        buffers[index] = buffer
+    }
     public func setComputePipelineState(_ state: MTLComputePipelineState) { pipeline = state }
     public func setTexture(_ texture: MTLTexture?, index: Int) { textures[index] = texture }
     public func setBytes(_ pointer: UnsafeRawPointer, length: Int, index: Int) {
@@ -188,6 +204,10 @@ public final class MTLCommandQueue {
 
 public final class MTLDevice: @unchecked Sendable {
     public init() {}
+    public func makeBuffer(length: Int, options: MTLResourceOptions) -> MTLBuffer? {
+        guard length > 0 else { return nil }
+        return MTLBuffer(length: length)
+    }
     public func makeTexture(descriptor: MTLTextureDescriptor) -> MTLTexture? { MTLTexture(descriptor: descriptor) }
     public func makeCommandQueue() -> MTLCommandQueue? { MTLCommandQueue() }
     public func makeLibrary(source: String, options: MTLCompileOptions?) throws -> MTLLibrary {

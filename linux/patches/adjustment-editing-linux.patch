@@ -2,7 +2,7 @@
 +++ b/Compositor/Document/AdjustmentEditing.swift
 @@ -43,18 +43,21 @@
              case .curves, .exposure, .gradientMap, .grain, .blackWhite, .colorBalance, .gaussianBlur, .motionBlur, .addNoise,
-                  .progressiveBlur, .bloomGlow, .rgbSplit, .vignette, .lensEffects, .tonalContrast:
+                  .progressiveBlur, .bloomGlow, .rgbSplit, .vignette, .lensEffects, .tonalContrast, .sharpen:
                  var settings = original.filterLayer.applied(to: FilterSettings())
 -                settings.curves = original.curves
 -                settings.exposure = original.exposure
@@ -17,7 +17,7 @@
 -                settings.gaussian = original.resolvedNoiseGaussian
 -                settings.monochromatic = original.resolvedNoiseMonochromatic
 +                // These later layers carry their settings in independent objects.
-+                if ![.vignette, .lensEffects, .tonalContrast].contains(original.kind) {
++                if ![.vignette, .lensEffects, .tonalContrast, .sharpen].contains(original.kind) {
 +                    settings.curves = original.curves
 +                    settings.exposure = original.exposure
 +                    settings.gradientMap = original.gradientMap

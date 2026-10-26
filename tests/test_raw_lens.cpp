@@ -1,9 +1,11 @@
 // RAW lens correction from the file's own profile (host/RawLensProfile.h): DNG OpcodeList3 parsing and its sensor-
-// space geometry, the maker-note models (Sony, Fujifilm, OM System / Olympus, Panasonic) and their validation.
+// space geometry, the maker-note models (Sony, Fujifilm, OM System / Olympus, Panasonic), plus DNG white points.
 #include "../host/RawLensProfile.h"
+#include "../host/RawWhitePoint.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -213,6 +215,37 @@ void dngOutranksMaker() {
     check(rawlens::buildProfile(tags, 60, 40).source == rawlens::Profile::Dng, "a DNG's opcodes win over maker notes");
 }
 
+void dngNeutralWhitePoint() {
+    const double identity[3][3] = {{1,0,0}, {0,1,0}, {0,0,1}}, equalEnergy[3] = {1,1,1};
+    const auto white = rawwhite::fromCamera(identity, equalEnergy);
+    // Independent native CIRAWFilter defaults from all six identity-calibrated DNG controls.
+    check(white && std::abs(white->temperature - 5454.008789) < 0.1, "DNG equal-energy native temperature");
+    check(white && std::abs(white->tint + 12.993514) < 0.001, "DNG equal-energy native tint");
+    const double daylight[3] = {0.95047,1,1.08883};
+    const auto d65 = rawwhite::fromCamera(identity, daylight);
+    check(d65 && d65->temperature > 6400 && d65->temperature < 6600, "D65 is approximately 6504 K");
+    const double mixed[3][3] = {{1,0.1,0}, {0.2,1,0.1}, {0,0.1,0.7}}, cameraNeutral[3] = {1.1,1.3,0.8};
+    const auto calibrated = rawwhite::fromCamera(mixed, cameraNeutral);
+    check(white && calibrated && std::abs(white->temperature - calibrated->temperature) < 1e-8
+        && std::abs(white->tint - calibrated->tint) < 1e-8, "camera calibration preserves the solved white point");
+    const double swapped[3][3] = {{0,1,0}, {1,0,0}, {0,0,1}};
+    const auto pivoted = rawwhite::fromCamera(swapped, equalEnergy);
+    check(white && pivoted && std::abs(white->temperature - pivoted->temperature) < 1e-8, "white point solver pivots rows");
+    for (double scale : {1e-8, 1e8}) {
+        double scaled[3][3] = {{scale,0,0}, {0,scale,0}, {0,0,scale}};
+        const auto result = rawwhite::fromCamera(scaled, equalEnergy);
+        check(white && result && std::abs(white->temperature - result->temperature) < 1e-8, "profile normalization does not change chromaticity");
+    }
+    const double singular[3][3] = {{1,0,0}, {1,0,0}, {0,0,1}};
+    check(!rawwhite::fromCamera(singular, equalEnergy), "singular profile retains fallback");
+    const double negativeZ[3][3] = {{1,0,0}, {0,1,0}, {0,0,-1}};
+    check(!rawwhite::fromCamera(negativeZ, equalEnergy), "nonphysical white point retains fallback");
+    const double invalid[3] = {1,std::numeric_limits<double>::quiet_NaN(),1};
+    check(!rawwhite::fromCamera(identity, invalid), "nonfinite neutral retains fallback");
+    const double zero[3] = {1,0,1};
+    check(!rawwhite::fromCamera(identity, zero), "zero neutral retains fallback");
+}
+
 }  // namespace
 
 int main() {
@@ -224,7 +257,8 @@ int main() {
     fuji();
     olympusAndPanasonic();
     dngOutranksMaker();
-    if (failures) { std::fprintf(stderr, "%d RAW lens check(s) failed\n", failures); return 1; }
-    std::puts("RAW lens profiles OK (DNG opcodes, Sony, Fujifilm, OM System, Panasonic)");
+    dngNeutralWhitePoint();
+    if (failures) { std::fprintf(stderr, "%d RAW lens/white-point check(s) failed\n", failures); return 1; }
+    std::puts("RAW lens profiles and calibrated white points OK (DNG opcodes, Sony, Fujifilm, OM System, Panasonic)");
     return 0;
 }

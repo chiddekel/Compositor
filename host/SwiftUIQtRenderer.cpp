@@ -2872,10 +2872,27 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
                 new PopoverDismissFilter(popover, handle, panel, id);
                 QPointer<QWidget> anchor = base;
                 QPointer<QFrame> popup = popover;
-                QTimer::singleShot(0, popover, [anchor, popup] {
+                const QString arrowEdge = strings.value("arrowEdge").toString();
+                QTimer::singleShot(0, popover, [anchor, popup, arrowEdge] {
                     if (!anchor || !popup) return;
                     popup->adjustSize();
-                    popup->move(anchor->mapToGlobal(QPoint(anchor->width() / 2, anchor->height())));
+                    QPoint position((anchor->width() - popup->width()) / 2, anchor->height());
+                    if (arrowEdge == QLatin1String("top")) position.setY(-popup->height());
+                    else if (arrowEdge == QLatin1String("leading"))
+                        position = QPoint(-popup->width(), (anchor->height() - popup->height()) / 2);
+                    else if (arrowEdge == QLatin1String("trailing"))
+                        position = QPoint(anchor->width(), (anchor->height() - popup->height()) / 2);
+                    position = anchor->mapToGlobal(position);
+                    if (const auto *screen = anchor->screen()) {
+                        const QRect available = screen->availableGeometry();
+                        if (arrowEdge.isEmpty() && position.y() + popup->height() > available.bottom() + 1) {
+                            const int above = anchor->mapToGlobal(QPoint(0, -popup->height())).y();
+                            if (above >= available.top()) position.setY(above);
+                        }
+                        position.setX(std::clamp(position.x(), available.left(), std::max(available.left(), available.right() - popup->width() + 1)));
+                        position.setY(std::clamp(position.y(), available.top(), std::max(available.top(), available.bottom() - popup->height() + 1)));
+                    }
+                    popup->move(position);
                     popup->show();
                 });
             }

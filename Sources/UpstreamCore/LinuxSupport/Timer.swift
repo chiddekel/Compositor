@@ -5,7 +5,7 @@
 // (Rendering/EditorCanvas.swift) cannot satisfy under Xcode's default main-actor isolation. Declaring `Timer` in the
 // module that uses it shadows Foundation's type for upstream code; this wrapper keeps Apple's block semantics and
 // forwards to a real Foundation timer. Only the members upstream uses exist (`init(timeInterval:repeats:block:)`,
-// `invalidate()`, and `RunLoop.add`).
+// `scheduledTimer`, `invalidate()`, and `RunLoop.add`).
 
 import Foundation
 import Combine
@@ -13,22 +13,78 @@ import Combine
 typealias Timer = MainActorTimer
 
 final class MainActorTimer {
-    let inner: Foundation.Timer
-    init(timeInterval interval: TimeInterval, repeats: Bool, block: @escaping (MainActorTimer) -> Void) {
-        // The wrapper is created before the timer, so the block gets the wrapper back like Apple's passes the timer.
-        var wrapper: MainActorTimer?
-        nonisolated(unsafe) let unchecked = block
-        let sendable: @Sendable (Foundation.Timer) -> Void = { _ in if let w = wrapper { unchecked(w) } }
-        inner = Foundation.Timer(fire: Date().addingTimeInterval(interval), interval: repeats ? interval : 0,
-                                 repeats: repeats, block: sendable)
-        wrapper = self
+    private final class Delivery: @unchecked Sendable {
+        private let lock = NSLock()
+        private weak var owner: MainActorTimer?
+        private var scheduledOwner: MainActorTimer?
+        private var block: ((MainActorTimer) -> Void)?
+
+        init(_ block: @escaping (MainActorTimer) -> Void) { self.block = block }
+
+        func connect(_ timer: MainActorTimer) {
+            lock.lock(); owner = timer; lock.unlock()
+        }
+
+        func keepScheduled(_ timer: MainActorTimer) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard block != nil else { return false }
+            scheduledOwner = timer
+            return true
+        }
+
+        func deliver(_ native: Foundation.Timer) {
+            lock.lock()
+            let timer = owner, action = block
+            lock.unlock()
+            guard let timer, let action else { return }
+            defer { if native.timeInterval <= 0 || !native.isValid { cancel() } }
+            action(timer)
+        }
+
+        func cancel() {
+            lock.lock()
+            let retained = (scheduledOwner, block)
+            scheduledOwner = nil; block = nil
+            lock.unlock()
+            // Releasing a callback capture may run user code, including another invalidation.
+            withExtendedLifetime(retained) {}
+        }
     }
-    func invalidate() { inner.invalidate() }
+
+    let inner: Foundation.Timer
+    private let delivery: Delivery
+
+    init(timeInterval interval: TimeInterval, repeats: Bool, block: @escaping (MainActorTimer) -> Void) {
+        let delivery = Delivery(block)
+        self.delivery = delivery
+        inner = Foundation.Timer(fire: Date().addingTimeInterval(interval), interval: repeats ? interval : 0,
+                                 repeats: repeats, block: { delivery.deliver($0) })
+        delivery.connect(self)
+    }
+    func invalidate() {
+        inner.invalidate()
+        delivery.cancel()
+    }
     var isValid: Bool { inner.isValid }
+
+    fileprivate func prepareForScheduling() -> Bool {
+        inner.isValid && delivery.keepScheduled(self)
+    }
+
+    @discardableResult
+    static func scheduledTimer(withTimeInterval interval: TimeInterval, repeats: Bool,
+                               block: @escaping (MainActorTimer) -> Void) -> MainActorTimer {
+        let timer = MainActorTimer(timeInterval: interval, repeats: repeats, block: block)
+        RunLoop.current.add(timer, forMode: .default)
+        return timer
+    }
 }
 
 extension RunLoop {
-    func add(_ timer: MainActorTimer, forMode mode: RunLoop.Mode) { add(timer.inner, forMode: mode) }
+    func add(_ timer: MainActorTimer, forMode mode: RunLoop.Mode) {
+        guard timer.prepareForScheduling() else { return }
+        add(timer.inner, forMode: mode)
+    }
 }
 
 // `Timer` (unqualified, in this module) resolves to `MainActorTimer` per the shadowing `typealias` above, so

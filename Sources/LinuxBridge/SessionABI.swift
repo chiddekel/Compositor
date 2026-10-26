@@ -641,7 +641,7 @@ nonisolated public func compositorSessionRenderScaledAsync(_ handle: UInt64, _ s
         else { return -5 }
         nonisolated(unsafe) let snapshot = prepared.snapshot
         let task = Task.detached(priority: .userInitiated) {
-            guard let made = try? await UpstreamEditor.renderInBackground(snapshot, scale: prepared.scale), !Task.isCancelled else { return }
+            guard let made = try? await UpstreamEditor.renderInBackground(snapshot, scale: prepared.scale, samplingOrigin: prepared.samplingOrigin), !Task.isCancelled else { return }
             await MainActor.run {
                 guard let job = entry.scaledJob, job.key == key, job.scale == scale else { return }
                 entry.scaled = (key, scale, made.bytes, made.width, made.height)

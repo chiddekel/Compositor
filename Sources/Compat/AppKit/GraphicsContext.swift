@@ -8,8 +8,22 @@ public final class NSGraphicsContext: @unchecked Sendable {
     /// Always true for the Qt-backed canvas (never printing / PDF).
     public var isDrawingToScreen: Bool { true }
 
-    nonisolated(unsafe) private static var stack: [NSGraphicsContext?] = []
-    nonisolated(unsafe) public static var current: NSGraphicsContext?
+    private final class ThreadState {
+        var current: NSGraphicsContext?
+        var stack: [NSGraphicsContext?] = []
+    }
+    private static let stateKey = "org.compositor.NSGraphicsContext.threadState"
+    private static var state: ThreadState {
+        let dictionary = Thread.current.threadDictionary
+        if let existing = dictionary[stateKey] as? ThreadState { return existing }
+        let created = ThreadState()
+        dictionary[stateKey] = created
+        return created
+    }
+    public static var current: NSGraphicsContext? {
+        get { state.current }
+        set { state.current = newValue }
+    }
 
     public init(cgContext: CGContext, flipped: Bool) {
         self.cgContext = cgContext
@@ -17,12 +31,12 @@ public final class NSGraphicsContext: @unchecked Sendable {
     }
 
     public static func saveGraphicsState() {
-        stack.append(current)
+        state.stack.append(current)
         current?.cgContext.saveGState()
     }
 
     public static func restoreGraphicsState() {
-        guard let saved = stack.popLast() else { return }
+        guard let saved = state.stack.popLast() else { return }
         // Restore the context whose state was saved, even if drawing assigned a different current context.
         saved?.cgContext.restoreGState()
         current = saved
