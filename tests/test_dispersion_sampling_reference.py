@@ -22,7 +22,7 @@ class NativeDispersionSamplingTests(unittest.TestCase):
     def setUpClass(cls):
         shader = (ROOT / "Compositor/Rendering/MetalDispersion.swift").read_text().split('private static let source = """\n', 1)[1].split('\n"""', 1)[0]
         cls.fixture = dict(schema=1, platform="macOS", device="test", os="test", width=96, height=72,
-                           parameterStride=72, shaderSHA256=hashlib.sha256(shader.encode()).hexdigest(),
+                           parameterStride=72, parameterSize=68, shaderSHA256=hashlib.sha256(shader.encode()).hexdigest(),
                            scriptSHA256=hashlib.sha256((ROOT / "scripts/capture-dispersion-sampling.swift").read_bytes()).hexdigest(),
                            arithmetic=packed(bytes(96 * 72 * 16)), inputs=[], cases=[])
         import math
@@ -30,7 +30,7 @@ class NativeDispersionSamplingTests(unittest.TestCase):
             for storage in MODULE.STORAGES:
                 cls.fixture["inputs"].append(dict(fixture=fixture, storage=storage, data=packed(MODULE.source(fixture, storage))))
                 for angle in (0, 35):
-                    p = bytearray(72)
+                    p = bytearray(68)
                     struct.pack_into("<8f3I", p, 0, 48, 36, math.cos(math.radians(angle)), math.sin(math.radians(angle)),
                                      10 if angle == 0 else 35, 0, 1000, 0, 0, 10 if angle == 0 else 32, 1)
                     struct.pack_into("<5f", p, 48, 0, 72, 0, 72, -1)
@@ -56,7 +56,7 @@ class NativeDispersionSamplingTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "Source conversion"):
             MODULE.validate(d, ROOT)
         d = copy.deepcopy(self.fixture)
-        d["cases"][0]["parameters"] = packed(bytes(72))
+        d["cases"][0]["parameters"] = packed(bytes(68))
         with self.assertRaises(AssertionError):
             MODULE.validate(d, ROOT)
 

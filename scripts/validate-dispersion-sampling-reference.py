@@ -45,7 +45,7 @@ def source(fixture, storage):
 def validate(data, root):
     assert data["schema"] == 1 and data["platform"] == "macOS"
     assert data["device"] and data["os"]
-    assert (data["width"], data["height"], data["parameterStride"]) == (96, 72, 72)
+    assert (data["width"], data["height"], data["parameterStride"], data["parameterSize"]) == (96, 72, 72, 68)
     shader = (root / "Compositor/Rendering/MetalDispersion.swift").read_text()
     shader = shader.split('private static let source = """\n', 1)[1].split('\n"""', 1)[0]
     assert data["shaderSHA256"] == hashlib.sha256(shader.encode()).hexdigest(), "Shader provenance"
@@ -72,7 +72,7 @@ def validate(data, root):
         key = item["fixture"], item["storage"], item["angle"]
         assert key in expected_cases and key not in seen, "Case matrix"
         seen.add(key)
-        p = unpack(item["parameters"], 72)
+        p = unpack(item["parameters"], 68)
         angle = key[2]
         head = struct.unpack_from("<8f3I", p)
         assert head[:2] == (48, 36) and head[4:] == (10 if angle == 0 else 35, 0, 1000, 0, 0, 10 if angle == 0 else 32, 1)

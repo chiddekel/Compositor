@@ -129,6 +129,7 @@ func capture() throws -> [String: Any] {
     return ["schema": 1, "platform": "macOS", "device": device.name,
         "os": ProcessInfo.processInfo.operatingSystemVersionString,
         "width": width, "height": height, "parameterStride": MemoryLayout<Parameters>.stride,
+        "parameterSize": MemoryLayout<Parameters>.size,
         "scriptSHA256": digest(try Data(contentsOf: URL(fileURLWithPath: #filePath))),
         "shaderSHA256": digest(Data(source.utf8)), "inputs": inputs, "cases": cases,
         "arithmetic": packed(Data(bytes: buffer.contents(), count: width * height * 16))]
