@@ -25,7 +25,9 @@ def fixture():
                   **packed('rgba', bytes([64, 128, 191, 255]) * (24 * 16)), description='Synthetic validator control')
     result = {'schema': 1, 'platform': 'macOS', 'device': 'Synthetic test device', 'os': 'Synthetic test OS',
               'scriptSHA256': hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), 'width': 24, 'height': 16,
-              'radii': [1, 2, 5], 'intensities': [0, 0.5, 1, 2], 'inputs': [], 'cases': []}
+              'radii': [0.1, 1 / 6 - 0.000001, 1 / 6, 1 / 6 + 0.000001,
+                        0.17, 0.18, 0.2, 0.3, 0.4, 0.5, 1, 1.1, 1.2, 2, 5],
+              'intensities': [0, 0.5, 1, 2], 'inputs': [], 'cases': []}
     for name in ['opaque-gradient', 'overlay-gradient', 'float-hdr', 'impulse']:
         source = bytearray()
         for y in range(16):
@@ -44,7 +46,7 @@ def fixture():
             result['inputs'].append(dict(fixture=name, workingFormat=format_, output=copy.deepcopy(output),
                                          sourceFormat='RGBAf' if name == 'float-hdr' else 'RGBA8', **packed('source', source)))
             for clamped in [False, True]:
-                for radius in [1, 2, 5]:
+                for radius in result['radii']:
                     for intensity in [None, 0, 0.5, 1, 2]:
                         case = dict(fixture=name, workingFormat=format_, clamped=clamped, radius=radius,
                                     filter='CIGaussianBlur' if intensity is None else 'CIUnsharpMask',

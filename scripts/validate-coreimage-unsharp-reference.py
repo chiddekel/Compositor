@@ -36,7 +36,9 @@ def validate(reference, script):
     require(reference['scriptSHA256'] == hashlib.sha256(script.read_bytes()).hexdigest(), 'Capture script SHA256')
     require(bool(reference['device']) and bool(reference['os']), 'Native device/OS')
     require((reference['width'], reference['height']) == (24, 16), 'Geometry')
-    require(reference['radii'] == [1, 2, 5] and reference['intensities'] == [0, 0.5, 1, 2], 'Recipes')
+    radii = [0.1, 1 / 6 - 0.000001, 1 / 6, 1 / 6 + 0.000001,
+             0.17, 0.18, 0.2, 0.3, 0.4, 0.5, 1, 1.1, 1.2, 2, 5]
+    require(reference['radii'] == radii and reference['intensities'] == [0, 0.5, 1, 2], 'Recipes')
     fixtures = ['opaque-gradient', 'overlay-gradient', 'float-hdr', 'impulse']
     formats = ['RGBAh', 'RGBAf']
     inputs = reference['inputs']
@@ -64,13 +66,13 @@ def validate(reference, script):
         output(sample['output'])
         controls[name, sample['workingFormat']] = sample['output']
     expected = {(fixture, format_, clamped, 'CIGaussianBlur', radius, None)
-                for fixture, format_, clamped, radius in itertools.product(fixtures, formats, [False, True], [1, 2, 5])}
+                for fixture, format_, clamped, radius in itertools.product(fixtures, formats, [False, True], radii)}
     expected |= {(fixture, format_, clamped, 'CIUnsharpMask', radius, intensity)
                  for fixture, format_, clamped, radius, intensity in
-                 itertools.product(fixtures, formats, [False, True], [1, 2, 5], [0, 0.5, 1, 2])}
+                 itertools.product(fixtures, formats, [False, True], radii, [0, 0.5, 1, 2])}
     cases = reference['cases']
     keys = [(s['fixture'], s['workingFormat'], s['clamped'], s['filter'], s['radius'], s.get('intensity')) for s in cases]
-    require(len(cases) == 240 and len(set(keys)) == 240 and set(keys) == expected, 'Complete unique filter matrix')
+    require(len(cases) == 1200 and len(set(keys)) == 1200 and set(keys) == expected, 'Complete unique filter matrix')
     for sample in cases:
         require(type(sample['clamped']) is bool, 'Clamp flag')
         output(sample['output'])
@@ -85,7 +87,7 @@ def main():
     parser.add_argument('capture', type=Path)
     args = parser.parse_args()
     validate(json.loads(args.capture.read_text()), Path(__file__).with_name('capture-coreimage-unsharp.swift'))
-    print('Validated 8 source controls and 240 native filter/format/coverage recipes, including every identity')
+    print('Validated 8 source controls and 1200 native filter/format/coverage recipes, including every identity')
 
 
 if __name__ == '__main__':

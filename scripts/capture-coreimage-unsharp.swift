@@ -10,7 +10,8 @@ enum CaptureError: Error { case failed(String) }
 let width = 24, height = 16
 let bounds = CGRect(x: 0, y: 0, width: width, height: height)
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
-let radii = [1.0, 2, 5]
+let radii = [0.1, 1 / 6.0 - 0.000001, 1 / 6.0, 1 / 6.0 + 0.000001,
+             0.17, 0.18, 0.2, 0.3, 0.4, 0.5, 1, 1.1, 1.2, 2, 5]
 let intensities = [0.0, 0.5, 1, 2]
 
 func digest(_ data: Data) -> String {
