@@ -26,11 +26,13 @@ def fixture():
     result = {'schema': 1, 'platform': 'macOS', 'device': 'Synthetic test device', 'os': 'Synthetic test OS',
               'scriptSHA256': hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), 'width': 24, 'height': 16,
               'radii': [1, 2, 5], 'intensities': [0, 0.5, 1, 2], 'inputs': [], 'cases': []}
-    for name in ['opaque-gradient', 'overlay-gradient', 'float-hdr']:
+    for name in ['opaque-gradient', 'overlay-gradient', 'float-hdr', 'impulse']:
         source = bytearray()
         for y in range(16):
             for x in range(24):
-                if name == 'float-hdr':
+                if name == 'impulse':
+                    source.extend([255 if x == 12 and y == 8 else 0] * 4)
+                elif name == 'float-hdr':
                     alpha = [0, 0.25, 0.5, 1][(x // 6 + y // 4) % 4]
                     source.extend(struct.pack('<4f', f32(f32(f32(x / 23) * 3) - 0.5) * alpha,
                                               f32(y / 15) * alpha, 1.25 * alpha, alpha))

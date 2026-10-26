@@ -39,6 +39,12 @@ func source(_ name: String) throws -> (CIImage, Data, String) {
         throw CaptureError.failed("Cannot allocate byte source")
     }
     for y in 0..<height { for x in 0..<width {
+        if name == "impulse" {
+            let value: UInt8 = x == width / 2 && y == height / 2 ? 255 : 0
+            let i = y * bitmap.bytesPerRow + x * 4
+            for channel in 0..<4 { pixels[i + channel] = value }
+            continue
+        }
         let alpha = name == "overlay-gradient" ? (x < 3 || y < 3 || x > 20 || y > 12 ? 0 : 160) : 255
         let i = y * bitmap.bytesPerRow + x * 4
         pixels[i] = UInt8((x * 255 / (width - 1)) * alpha / 255)
@@ -74,7 +80,7 @@ func snapshot(_ image: CIImage, context: CIContext) throws -> [String: Any] {
 func capture() throws -> [String: Any] {
     guard let device = MTLCreateSystemDefaultDevice() else { throw CaptureError.failed("Native Metal device required") }
     var inputs = [[String: Any]](), cases = [[String: Any]]()
-    for fixture in ["opaque-gradient", "overlay-gradient", "float-hdr"] {
+    for fixture in ["opaque-gradient", "overlay-gradient", "float-hdr", "impulse"] {
         let (image, data, sourceFormat) = try source(fixture)
         for (formatName, format) in [("RGBAh", CIFormat.RGBAh), ("RGBAf", CIFormat.RGBAf)] {
             let context = CIContext(mtlDevice: device, options: [.workingColorSpace: NSNull(),
