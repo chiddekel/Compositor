@@ -42,8 +42,10 @@ class MetalSamplingValidationTests(unittest.TestCase):
                 'sourceReferenceSHA256': hashlib.sha256(reference.read_bytes()).hexdigest(),
                 'width': 24, 'height': 16, 'offsets': offsets, 'inputs': inputs,
                 'cases': [{'fixture': name, 'storage': storage, 'resultType': result_type, 'clamped': clamp,
-                           'offset': offset, 'output': packed(floats)} for name, storage, result_type, clamp, offset
-                          in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf', 'RGBAhGPU'], ['float', 'half'], [False, True], offsets)]}
+                           'operation': operation, 'offset': offset, 'output': packed(floats)}
+                          for name, storage, result_type, clamp, operation
+                          in itertools.product(fixtures, ['RGBA8', 'RGBAh', 'RGBAf', 'RGBAhGPU'], ['float', 'half'], [False, True], ['sample', 'compact'])
+                          for offset in (offsets if operation == 'sample' else offsets[1:5])]}
 
     def test_complete_matrix(self):
         with tempfile.TemporaryDirectory() as directory:

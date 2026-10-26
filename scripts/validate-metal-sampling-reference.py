@@ -60,14 +60,15 @@ def validate(capture, reference, script):
             expected = source
             float_sources[item['fixture']] = source
         require(raw(item['pixels'], len(expected)) == expected, 'Source storage conversion')
-    keys = [(c['fixture'], c['storage'], c['resultType'], c['clamped'], tuple(c['offset'])) for c in capture['cases']]
-    expected = set(itertools.product(fixtures, storage, ['float', 'half'], [False, True], offsets))
-    require(len(keys) == 480 and len(set(keys)) == 480 and set(keys) == expected, 'Complete unique sampler matrix')
+    keys = [(c['fixture'], c['storage'], c['resultType'], c['clamped'], c['operation'], tuple(c['offset'])) for c in capture['cases']]
+    expected = set(itertools.product(fixtures, storage, ['float', 'half'], [False, True], ['sample'], offsets))
+    expected |= set(itertools.product(fixtures, storage, ['float', 'half'], [False, True], ['compact'], offsets[1:5]))
+    require(len(keys) == 672 and len(set(keys)) == 672 and set(keys) == expected, 'Complete unique sampler matrix')
     for case in capture['cases']:
         require(type(case['clamped']) is bool, 'Clamp flag')
         data = raw(case['output'], 24 * 16 * 16)
         require(any(data) and all(math.isfinite(v[0]) for v in struct.iter_unpack('<f', data)), 'Empty/nonfinite sample')
-        if case['storage'] == 'RGBAf' and case['resultType'] == 'float' and case['offset'] == [0, 0]:
+        if case['operation'] == 'sample' and case['storage'] == 'RGBAf' and case['resultType'] == 'float' and case['offset'] == [0, 0]:
             require(data == float_sources[case['fixture']], 'Float point-sampling identity')
 
 
@@ -75,4 +76,4 @@ if __name__ == '__main__':
     capture_path, reference_path = map(Path, sys.argv[1:])
     validate(json.loads(capture_path.read_text()), reference_path,
              Path(__file__).with_name('capture-metal-sampling.swift'))
-    print('Validated 12 texture sources and 480 direct Metal sampler recipes, including GPU half-store bounds and point identities')
+    print('Validated 12 texture sources and 672 direct Metal sampler/compact recipes, including GPU half-store bounds and point identities')

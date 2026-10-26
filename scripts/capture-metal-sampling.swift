@@ -27,7 +27,7 @@ func capture() throws -> [String: Any] {
     let shader = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Parameters { float2 offset; uint clamped; uint padding; };
+    struct Parameters { float2 offset; uint clamped; uint averaged; };
     #define SAMPLER_KERNEL(NAME, TYPE) \
     kernel void NAME(texture2d<TYPE, access::sample> source [[texture(0)]], \
         texture2d<float, access::write> output [[texture(1)]], \
@@ -35,8 +35,18 @@ func capture() throws -> [String: Any] {
         if (gid.x >= output.get_width() || gid.y >= output.get_height()) return; \
         constexpr sampler zero(coord::pixel, address::clamp_to_zero, filter::linear); \
         constexpr sampler edge(coord::pixel, address::clamp_to_edge, filter::linear); \
-        float2 location = float2(gid) + 0.5f + p.offset; \
-        output.write(float4(p.clamped ? source.sample(edge, location) : source.sample(zero, location)), gid); \
+        float2 center = float2(gid) + 0.5f; \
+        float4 value = 0; \
+        if (p.averaged) { \
+            for (int y = -1; y <= 1; y += 2) for (int x = -1; x <= 1; x += 2) { \
+                float2 location = center + p.offset * float2(x, y); \
+                value += float4(p.clamped ? source.sample(edge, location) : source.sample(zero, location)) * 0.25f; \
+            } \
+        } else { \
+            float2 location = center + p.offset; \
+            value = float4(p.clamped ? source.sample(edge, location) : source.sample(zero, location)); \
+        } \
+        output.write(value, gid); \
     }
     SAMPLER_KERNEL(sampleFloat, float)
     SAMPLER_KERNEL(sampleHalf, half)
@@ -50,14 +60,15 @@ func capture() throws -> [String: Any] {
     struct Parameters {
         var offset: SIMD2<Float>
         var clamped: UInt32
-        var padding: UInt32 = 0
+        var averaged: UInt32
     }
     func dispatch(_ source: MTLTexture, _ output: MTLTexture, _ pipeline: MTLComputePipelineState,
-                  offset: [Float], clamped: Bool) throws {
+                  offset: [Float], clamped: Bool, averaged: Bool = false) throws {
         guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else {
             throw SamplingError.failed("Cannot encode sampling")
         }
-        var parameters = Parameters(offset: SIMD2(offset[0], offset[1]), clamped: clamped ? 1 : 0)
+        var parameters = Parameters(offset: SIMD2(offset[0], offset[1]), clamped: clamped ? 1 : 0,
+            averaged: averaged ? 1 : 0)
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(source, index: 0); encoder.setTexture(output, index: 1)
         encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 0)
@@ -109,16 +120,18 @@ func capture() throws -> [String: Any] {
             inputs.append(["fixture": fixture, "storage": storage, "pixels": packed(data)])
             for resultType in ["float", "half"] {
                 let pipeline = pipelines[resultType == "float" ? "sampleFloat" : "sampleHalf"]!
-                for clamped in [false, true] { for offset in offsets {
-                    try dispatch(source, output, pipeline, offset: offset, clamped: clamped)
+                for operation in ["sample", "compact"] {
+                    let chosenOffsets = operation == "sample" ? offsets : Array(offsets[1...4])
+                    for clamped in [false, true] { for offset in chosenOffsets {
+                    try dispatch(source, output, pipeline, offset: offset, clamped: clamped, averaged: operation == "compact")
                     var values = [Float](repeating: 0, count: width * height * 4)
                     values.withUnsafeMutableBytes { output.getBytes($0.baseAddress!, bytesPerRow: width * 16,
                         from: region, mipmapLevel: 0) }
                     guard values.allSatisfy(\.isFinite) else { throw SamplingError.failed("Nonfinite sample") }
-                    cases.append(["fixture": fixture, "storage": storage, "resultType": resultType,
+                    cases.append(["fixture": fixture, "storage": storage, "resultType": resultType, "operation": operation,
                         "clamped": clamped, "offset": offset,
                         "output": packed(values.withUnsafeBytes { Data($0) })])
-                } }
+                } } }
             }
         }
     }
