@@ -9,8 +9,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: verify-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Share the GNU_Linux queue with linux-swift-tests / upstream-sync guard / render-parity.
+  group: gnu-linux-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

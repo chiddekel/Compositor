@@ -53,4 +53,5 @@ jobs:
       - name: Full compiled test suite and native Qt tool combinations
         run: |
           flatpak-builder --run --filesystem="$PWD" build-ci-sdk com.compositor.Client.yaml \
+            env COMPOSITOR_CONTRACT_NATIVE_JOBS=1 \
             bash "$PWD/scripts/linux-contract-tests.sh"

@@ -11,6 +11,10 @@ on:
   pull_request:
     branches: [main, GNU_Linux]
 
+concurrency:
+  group: gnu-linux-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   check-upstream-clean:
     runs-on: ubuntu-latest

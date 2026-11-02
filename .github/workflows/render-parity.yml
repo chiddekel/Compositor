@@ -20,8 +20,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: render-parity-${{ github.ref }}
-  cancel-in-progress: true
+  group: gnu-linux-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   inputs:
