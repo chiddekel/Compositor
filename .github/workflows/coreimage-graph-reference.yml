@@ -1,0 +1,150 @@
+name: Core Image filter graph diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      small_radii:
+        description: JSON array of unique probe radii in 0...1 (empty selects default probes)
+        type: string
+        default: '[]'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      PROBE_RADII: ${{ inputs.small_radii || '[]' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Capture native filter descriptions and bitmap hashes
+        run: swift scripts/capture-coreimage-graph.swift --small-radii "$PROBE_RADII" > coreimage-graph-reference.json
+      - name: Validate diagnostic recipes
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, os, re, struct
+          from pathlib import Path
+          reference = json.loads(Path('coreimage-graph-reference.json').read_text())
+          assert reference['schema'] == 1 and reference['platform'] == 'macOS'
+          assert reference['diagnosticDescriptions'] is True
+          assert reference['scriptSha256'] == hashlib.sha256(Path('scripts/capture-coreimage-graph.swift').read_bytes()).hexdigest()
+          cases = reference['cases']
+          assert len(reference['inputs']) == 2 and len(cases) == 164
+          keys = {(c['fixture'], c['filter'], c['radius'], c.get('degrees')) for c in cases}
+          expected = {(fixture, 'CIGaussianBlur', radius, None)
+                      for fixture in ['opaque-gradient', 'impulse']
+                      for radius in [0, 0.1, 0.5, 1 / math.sqrt(3), 1, 2, 5, 10, 17, 35]}
+          expected |= {(fixture, 'CIMotionBlur', radius, degrees)
+                       for fixture in ['opaque-gradient', 'impulse']
+                       for radius in [0, 0.1, 0.5, 1 / math.sqrt(3), 1, 2, 10 / math.sqrt(12), 35 / math.sqrt(12)]
+                       for degrees in [0, -35, 35, 37, 90, -90, 180, 360, 0.125]}
+          assert len(keys) == 164 and keys == expected
+          for case in cases:
+              assert case['fixture'] in ['opaque-gradient', 'impulse']
+              assert case['filter'] in ['CIGaussianBlur', 'CIMotionBlur']
+              assert math.isfinite(case['radius']) and case['radius'] >= 0
+              assert math.isfinite(case.get('degrees', 0))
+          probes = reference['smallRadiusProbes']
+          radii = json.loads(os.environ.get('PROBE_RADII', '[]'))
+          assert isinstance(radii, list) and len(radii) <= 64
+          assert all(type(r) in [int, float] and math.isfinite(r) and 0 <= r <= 1 for r in radii)
+          assert len(set(radii)) == len(radii)
+          if not radii:
+              radii = [0, 0.1, 0.125, 1 / 6 - 0.000001, 1 / 6, 1 / 6 + 0.000001, 0.2, 0.25, 0.3, 0.4, 0.5]
+          assert reference['probeRadii'] == radii
+          expected_probes = {(fixture, radius, degrees)
+                             for fixture in ['opaque-gradient', 'impulse']
+                             for radius in radii
+                             for degrees in [0, -35]}
+          assert len(probes) == len(expected_probes)
+          assert {(c['fixture'], c['radius'], c['degrees']) for c in probes} == expected_probes
+          for probe in probes:
+              output = probe['output']
+              raw = base64.b64decode(output['rgbaBase64'], validate=True)
+              assert len(raw) == 96 * 72 * 4 and hashlib.sha256(raw).hexdigest() == output['byteSha256']
+          variable = reference['variableBlurProbes']
+          expected_variable = {(fixture, radius, intensity, None, None)
+                               for fixture in ['opaque-gradient', 'impulse']
+                               for radius in [1, 10, 35]
+                               for intensity in [0, 0.02, 0.05, 0.1, 0.25, 0.5, 0.75, 1]}
+          expected_variable |= {('phase-impulse', radius, 1, x, y)
+                                for x in range(4) for y in range(4) for radius in [1.5, 3, 6, 12, 24, 48]}
+          expected_variable |= {(fixture + '-clamped', radius, intensity, None, None)
+                                for fixture in ['opaque-gradient', 'impulse'] for radius in [10, 35]
+                                for intensity in [0, 0.1, 0.25, 0.5, 0.75, 1]}
+          assert len(variable) == len(expected_variable) == 168
+          assert {(c['fixture'], c['radius'], c['maskIntensity'], c.get('phaseX'), c.get('phaseY'))
+                  for c in variable} == expected_variable
+          requests = reference['variableRequestProbes']
+          expected_requests = {(fixture, radius, intensity, margin)
+                               for fixture in ['opaque-gradient', 'opaque-gradient-clamped']
+                               for radius in [10, 35] for intensity in [0.75, 1] for margin in [0, 16, 64, 256]}
+          expected_requests |= {('impulse', 35, 1, margin) for margin in [0, 16, 64, 256]}
+          assert len(requests) == len(expected_requests) == 36
+          assert {(c['fixture'], c['radius'], c['maskIntensity'], c['renderMargin'])
+                  for c in requests} == expected_requests
+          variable_outputs = {(c['fixture'], c['radius'], c['maskIntensity']): c['output']
+                              for c in variable if c['fixture'] != 'phase-impulse'}
+          for probe in requests:
+              assert probe['freshContext'] is True
+              assert probe['output']['byteRender'] == 'CIContext.toBitmap'
+              margin = probe['renderMargin']
+              if margin:
+                  assert probe['output']['renderBounds'] == [-margin, -margin, 96 + 2 * margin, 72 + 2 * margin]
+              else:
+                  original = variable_outputs[probe['fixture'], probe['radius'], probe['maskIntensity']]
+                  assert probe['output']['floatSha256'] == original['floatSha256']
+          identities = {c['fixture']: c['output']['byteSha256'] for c in reference['inputs']}
+          mask_inputs = reference['variableMaskInputs']
+          varying = reference['variableMaskProbes']
+          colored = reference['variableColorMaskProbes']
+          geometry = reference['variableGeometryProbes']
+          assert len(mask_inputs) == 6 and {c['maskKind'] for c in mask_inputs} == {'linear', 'radial', 'red', 'green', 'blue', 'gray'}
+          assert len(varying) == 32
+          assert {(c['fixture'], c['radius'], c['maskKind']) for c in varying} == {
+              (fixture, radius, kind) for fixture in ['opaque-gradient', 'opaque-gradient-clamped', 'impulse', 'impulse-clamped']
+              for radius in [10, 35, 55, 250] for kind in ['linear', 'radial']}
+          assert len(colored) == 8 and {(c['fixture'], c['radius'], c['maskKind']) for c in colored} == {
+              (fixture, 10, kind) for fixture in ['opaque-gradient', 'impulse'] for kind in ['red', 'green', 'blue', 'gray']}
+          assert len(geometry) == 8 and {(c['geometryKind'], c['radius']) for c in geometry} == {
+              (kind, radius) for kind in ['identity', 'translated-positive', 'translated-negative', 'cropped'] for radius in [1, 35]}
+          for probe in geometry:
+              for key in ['inputExtent', 'outputExtent']:
+                  extent = probe[key]
+                  assert set(extent) == {'x', 'y', 'width', 'height'}
+                  assert all(math.isfinite(v) for v in extent.values()) and extent['width'] > 0 and extent['height'] > 0
+          for probe in variable + requests:
+              assert probe['filter'] == 'CIMaskedVariableBlur'
+          for probe in variable + requests + mask_inputs + varying + colored + geometry:
+              output = probe['output']
+              for key, digest_key, count in [('rgbaBase64', 'byteSha256', 96 * 72 * 4),
+                                             ('floatBase64', 'floatSha256', 96 * 72 * 16)]:
+                  raw = base64.b64decode(output[key], validate=True)
+                  assert len(raw) == count and hashlib.sha256(raw).hexdigest() == output[digest_key]
+              values = struct.unpack('<27648f', base64.b64decode(output['floatBase64']))
+              assert all(math.isfinite(v) for v in values)
+              if probe.get('maskIntensity') == 0:
+                  assert output['byteSha256'] == identities[probe['fixture'].removesuffix('-clamped')]
+              if probe.get('fixture') == 'opaque-gradient-clamped':
+                  assert all(abs(v - 1) <= 1e-6 for v in values[3::4])
+          for case in reference['inputs'] + cases + probes + variable + requests + mask_inputs + varying + colored + geometry:
+              output = case['output']
+              assert (output['width'], output['height']) == (96, 72)
+              assert (output['byteBytes'], output['floatBytes']) == (96 * 72 * 4, 96 * 72 * 16)
+              assert output['floatFinite'] is True
+              assert all(re.fullmatch('[0-9a-f]{64}', output[key]) for key in ['byteSha256', 'floatSha256'])
+              for key in ['descriptionBeforeRender', 'descriptionAfterRender']:
+                  assert isinstance(output[key], str) and 0 < len(output[key]) <= 65536
+              assert output['descriptionTruncated'] is False
+          print(f'Validated 164 graph recipes, {len(probes)} small-radius probes, 168 variable-blur probes, 36 request probes, 54 mask/geometry controls and {424 + len(probes)} pairs of bitmap hashes')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coreimage-graph-reference
+          path: coreimage-graph-reference.json
+          if-no-files-found: error

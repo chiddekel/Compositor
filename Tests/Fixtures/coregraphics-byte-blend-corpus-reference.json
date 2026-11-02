@@ -1,0 +1,80 @@
+{
+  "blendModes": {
+    "Color Burn": 7,
+    "Color Dodge": 6,
+    "Hard Light": 9
+  },
+  "case": "render parity layer blend modes Color Dodge and Color Burn",
+  "cases": [
+    {
+      "blendModeRawValue": 6,
+      "bytes": 27648,
+      "macPNG": "blend/Color Dodge-100.png",
+      "macPNG_SHA256": "f60d94cc4a5622d5237781532844646eba0905df41cab619389cb8f71a085023",
+      "opacityPercent": 100,
+      "rawRGBA": "coregraphics-color-dodge-100.rgba",
+      "rawRGBA_SHA256": "2caff05e8cede97f4b334324d1e5a5b8e68d48ce3a902b4c22c407c5e635821d"
+    },
+    {
+      "blendModeRawValue": 6,
+      "bytes": 27648,
+      "macPNG": "blend/Color Dodge-50.png",
+      "macPNG_SHA256": "ee1e178148c95dcba6f6850a7123e0a1d4d1d53ad04f23a103ae9e83acb06ae8",
+      "opacityPercent": 50,
+      "rawRGBA": "coregraphics-color-dodge-50.rgba",
+      "rawRGBA_SHA256": "35900f098256223fc3a691bd393ffc4057732b0e5e0ca062b2d257e57eb8dfed"
+    },
+    {
+      "blendModeRawValue": 7,
+      "bytes": 27648,
+      "macPNG": "blend/Color Burn-100.png",
+      "macPNG_SHA256": "b2ab0b804b302855dbaf2776675baf35d516cc1e314c7ece55a9abfae2e9b4e2",
+      "opacityPercent": 100,
+      "rawRGBA": "coregraphics-color-burn-100.rgba",
+      "rawRGBA_SHA256": "a53011d4f90bac793198ae93cdf1fe54829d1144c0228154838cd470ea5d18d8"
+    },
+    {
+      "blendModeRawValue": 7,
+      "bytes": 27648,
+      "macPNG": "blend/Color Burn-50.png",
+      "macPNG_SHA256": "405a57712578792fd8420a774b8d8d243eb4361e278bbbfc1c800f21cf4ae1dd",
+      "opacityPercent": 50,
+      "rawRGBA": "coregraphics-color-burn-50.rgba",
+      "rawRGBA_SHA256": "791a5d0d562560e9043e1b8ce38b299b98debf4d2054bc387ea37b16f8560223"
+    },
+    {
+      "blendModeRawValue": 9,
+      "bytes": 27648,
+      "macPNG": "blend/Hard Light-100.png",
+      "macPNG_SHA256": "97f6066f25e73a3f7cb69eb62a54b91beae7a7d42cc660121b8ee62a4c39c679",
+      "opacityPercent": 100,
+      "rawRGBA": "coregraphics-hard-light-100.rgba",
+      "rawRGBA_SHA256": "6123affe2198b00f8aa558b302990b966336a5d66b945767231a85091b2abab7"
+    },
+    {
+      "blendModeRawValue": 9,
+      "bytes": 27648,
+      "macPNG": "blend/Hard Light-50.png",
+      "macPNG_SHA256": "2bef26801f50509af6f1af23a4982a690be549d91f8d8345b934b246f1445ee5",
+      "opacityPercent": 50,
+      "rawRGBA": "coregraphics-hard-light-50.rgba",
+      "rawRGBA_SHA256": "2a98214a06d12ce9e22e671dcff641e58aad59781a5cada15e9b8b574aa6f945"
+    }
+  ],
+  "corpusSHA256": "ee5004f45175d4bd63a204405a2064b2a1308bc7c063b5e1613ce52f51260088",
+  "height": 72,
+  "inputsSHA256": "fefba214b8b3c35fdb819f573b86bf1b4de3cc32ec60dd7c712c2bc5f8fc5b38",
+  "nativeEnvironment": {
+    "backend": "Apple Core Image",
+    "machine": "arm64",
+    "os": "macOS-26.6.2-arm64-arm-64bit",
+    "toolchain": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0"
+  },
+  "nativeManifestSHA256": "94fb9a1dd045ed507188a98e92c5bdfb0225f1f4faba3401ea096d5db650ce53",
+  "pixelLayout": "RGBA8 sRGB decoded PNG bytes",
+  "platform": "macOS",
+  "referencePNGEncodingNotCompared": true,
+  "schema": 1,
+  "upstream": "2d75d9172835e1dd6111cb2b659958ec33fa5abf",
+  "width": 96
+}

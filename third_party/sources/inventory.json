@@ -1,0 +1,876 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "name": "skia",
+      "path": "third_party/sources/skia-canvaskit-0.42.0.tar.gz",
+      "url": "https://github.com/google/skia/archive/refs/tags/canvaskit%2F0.42.0.tar.gz",
+      "sha256": "3b574f9b0315d00b54c611ff6d827c29a1b65121ceed7278b451c20f0f8516a1",
+      "licenses": [
+        "skia-canvaskit-0.42.0/LICENSE",
+        "skia-canvaskit-0.42.0/bazel/rbe/gce_linux/LICENSE",
+        "skia-canvaskit-0.42.0/include/third_party/vulkan/LICENSE",
+        "skia-canvaskit-0.42.0/modules/canvaskit/npm_build/LICENSE",
+        "skia-canvaskit-0.42.0/modules/skcms/LICENSE",
+        "skia-canvaskit-0.42.0/third_party/etc1/LICENSE",
+        "skia-canvaskit-0.42.0/third_party/expat/LICENSE",
+        "skia-canvaskit-0.42.0/third_party/harfbuzz/LICENSE",
+        "skia-canvaskit-0.42.0/third_party/wuffs/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "skia-canvaskit-0.42.0/LICENSE",
+          "path": "third_party/licenses/vendored/skia/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/bazel/rbe/gce_linux/LICENSE",
+          "path": "third_party/licenses/vendored/skia/bazel/rbe/gce_linux/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/include/third_party/vulkan/LICENSE",
+          "path": "third_party/licenses/vendored/skia/include/third_party/vulkan/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/modules/canvaskit/npm_build/LICENSE",
+          "path": "third_party/licenses/vendored/skia/modules/canvaskit/npm_build/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/modules/skcms/LICENSE",
+          "path": "third_party/licenses/vendored/skia/modules/skcms/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/third_party/etc1/LICENSE",
+          "path": "third_party/licenses/vendored/skia/third_party/etc1/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/third_party/expat/LICENSE",
+          "path": "third_party/licenses/vendored/skia/third_party/expat/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/third_party/harfbuzz/LICENSE",
+          "path": "third_party/licenses/vendored/skia/third_party/harfbuzz/LICENSE"
+        },
+        {
+          "member": "skia-canvaskit-0.42.0/third_party/wuffs/LICENSE",
+          "path": "third_party/licenses/vendored/skia/third_party/wuffs/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "pugixml",
+      "path": "third_party/sources/pugixml-1.14.tar.gz",
+      "url": "https://github.com/zeux/pugixml/releases/download/v1.14/pugixml-1.14.tar.gz",
+      "sha256": "2f10e276870c64b1db6809050a75e11a897a8d7456c4be5c6b2e35a11168a015",
+      "licenses": [
+        "pugixml-1.14/LICENSE.md"
+      ],
+      "license_copies": [
+        {
+          "member": "pugixml-1.14/LICENSE.md",
+          "path": "third_party/licenses/vendored/pugixml/LICENSE.md"
+        }
+      ]
+    },
+    {
+      "name": "rawspeed",
+      "path": "third_party/sources/de70ef5fbc62cde91009c8cff7a206272abe631e.tar.gz",
+      "url": "https://github.com/darktable-org/rawspeed/archive/de70ef5fbc62cde91009c8cff7a206272abe631e.tar.gz",
+      "sha256": "993d5e6498d838c10d49aafa193a8ec46307be2b7554a81d31cfc21f3c2726e8",
+      "licenses": [
+        "rawspeed-de70ef5fbc62cde91009c8cff7a206272abe631e/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "rawspeed-de70ef5fbc62cde91009c8cff7a206272abe631e/LICENSE",
+          "path": "third_party/licenses/vendored/rawspeed/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "libraw",
+      "path": "third_party/sources/LibRaw-0.22.2.tar.gz",
+      "url": "https://www.libraw.org/data/LibRaw-0.22.2.tar.gz",
+      "sha256": "de86b035655accff8d4010f1a221fdf50d353cb7b1422ba26f14a0db92612cfa",
+      "licenses": [
+        "LibRaw-0.22.2/COPYRIGHT",
+        "LibRaw-0.22.2/LICENSE.CDDL",
+        "LibRaw-0.22.2/LICENSE.LGPL"
+      ],
+      "license_copies": [
+        {
+          "member": "LibRaw-0.22.2/COPYRIGHT",
+          "path": "third_party/licenses/vendored/libraw/COPYRIGHT"
+        },
+        {
+          "member": "LibRaw-0.22.2/LICENSE.CDDL",
+          "path": "third_party/licenses/vendored/libraw/LICENSE.CDDL"
+        },
+        {
+          "member": "LibRaw-0.22.2/LICENSE.LGPL",
+          "path": "third_party/licenses/vendored/libraw/LICENSE.LGPL"
+        }
+      ]
+    },
+    {
+      "name": "lensfun",
+      "path": "third_party/sources/lensfun-0.3.4.tar.gz",
+      "url": "https://github.com/lensfun/lensfun/archive/refs/tags/v0.3.4.tar.gz",
+      "sha256": "dafb39c08ef24a0e2abd00d05d7341b1bf1f0c38bfcd5a4c69cf5f0ecb6db112",
+      "licenses": [
+        "lensfun-0.3.4/libs/getopt/LICENSE",
+        "lensfun-0.3.4/docs/cc-by-sa-3.0.txt",
+        "lensfun-0.3.4/docs/gpl-3.0.txt",
+        "lensfun-0.3.4/docs/lgpl-3.0.txt"
+      ],
+      "license_copies": [
+        {
+          "member": "lensfun-0.3.4/libs/getopt/LICENSE",
+          "path": "third_party/licenses/vendored/lensfun/libs/getopt/LICENSE"
+        },
+        {
+          "member": "lensfun-0.3.4/docs/cc-by-sa-3.0.txt",
+          "path": "third_party/licenses/vendored/lensfun/docs/cc-by-sa-3.0.txt"
+        },
+        {
+          "member": "lensfun-0.3.4/docs/gpl-3.0.txt",
+          "path": "third_party/licenses/vendored/lensfun/docs/gpl-3.0.txt"
+        },
+        {
+          "member": "lensfun-0.3.4/docs/lgpl-3.0.txt",
+          "path": "third_party/licenses/vendored/lensfun/docs/lgpl-3.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "libdeflate",
+      "path": "third_party/sources/libdeflate-1.26.tar.gz",
+      "url": "https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz",
+      "sha256": "bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85",
+      "licenses": [
+        "libdeflate-1.26/COPYING"
+      ],
+      "license_copies": [
+        {
+          "member": "libdeflate-1.26/COPYING",
+          "path": "third_party/licenses/vendored/libdeflate/COPYING"
+        }
+      ]
+    },
+    {
+      "name": "imath",
+      "path": "third_party/sources/Imath-3.2.3.tar.gz",
+      "url": "https://github.com/AcademySoftwareFoundation/Imath/archive/refs/tags/v3.2.3.tar.gz",
+      "sha256": "e10c12b3f21f45bf08e09d4215d9c7691368d747beebd840de0b6fefed2df9f8",
+      "licenses": [
+        "Imath-3.2.3/LICENSE.md",
+        "Imath-3.2.3/website/license.rst"
+      ],
+      "license_copies": [
+        {
+          "member": "Imath-3.2.3/LICENSE.md",
+          "path": "third_party/licenses/vendored/imath/LICENSE.md"
+        },
+        {
+          "member": "Imath-3.2.3/website/license.rst",
+          "path": "third_party/licenses/vendored/imath/website/license.rst"
+        }
+      ]
+    },
+    {
+      "name": "openexr",
+      "path": "third_party/sources/openexr-3.5.1.tar.gz",
+      "url": "https://github.com/AcademySoftwareFoundation/openexr/archive/refs/tags/v3.5.1.tar.gz",
+      "sha256": "61559d6d0657f228f8dd5e3165ed6b74437b95e81849ad41c6d3493c0c144c1d",
+      "licenses": [
+        "openexr-3.5.1/LICENSE.md",
+        "openexr-3.5.1/external/OpenJPH/LICENSE",
+        "openexr-3.5.1/external/deflate/COPYING",
+        "openexr-3.5.1/external/zstd/LICENSE",
+        "openexr-3.5.1/website/license.rst"
+      ],
+      "license_copies": [
+        {
+          "member": "openexr-3.5.1/LICENSE.md",
+          "path": "third_party/licenses/vendored/openexr/LICENSE.md"
+        },
+        {
+          "member": "openexr-3.5.1/external/OpenJPH/LICENSE",
+          "path": "third_party/licenses/vendored/openexr/external/OpenJPH/LICENSE"
+        },
+        {
+          "member": "openexr-3.5.1/external/deflate/COPYING",
+          "path": "third_party/licenses/vendored/openexr/external/deflate/COPYING"
+        },
+        {
+          "member": "openexr-3.5.1/external/zstd/LICENSE",
+          "path": "third_party/licenses/vendored/openexr/external/zstd/LICENSE"
+        },
+        {
+          "member": "openexr-3.5.1/website/license.rst",
+          "path": "third_party/licenses/vendored/openexr/website/license.rst"
+        }
+      ]
+    },
+    {
+      "name": "opencv",
+      "path": "third_party/sources/opencv-4.14.0.tar.gz",
+      "url": "https://github.com/opencv/opencv/archive/refs/tags/4.14.0.tar.gz",
+      "sha256": "ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e",
+      "licenses": [
+        "opencv-4.14.0/3rdparty/cpufeatures/LICENSE",
+        "opencv-4.14.0/3rdparty/dlpack/LICENSE",
+        "opencv-4.14.0/3rdparty/ffmpeg/license.txt",
+        "opencv-4.14.0/3rdparty/flatbuffers/LICENSE.txt",
+        "opencv-4.14.0/3rdparty/include/opencl/LICENSE.txt",
+        "opencv-4.14.0/3rdparty/libjasper/LICENSE",
+        "opencv-4.14.0/3rdparty/libjasper/copyright",
+        "opencv-4.14.0/3rdparty/libjpeg-turbo/LICENSE.md",
+        "opencv-4.14.0/3rdparty/libjpeg-turbo/README.ijg",
+        "opencv-4.14.0/3rdparty/libpng/LICENSE",
+        "opencv-4.14.0/3rdparty/libspng/LICENSE",
+        "opencv-4.14.0/3rdparty/libtiff/LICENSE.md",
+        "opencv-4.14.0/3rdparty/libwebp/COPYING",
+        "opencv-4.14.0/3rdparty/openexr/LICENSE",
+        "opencv-4.14.0/3rdparty/openjpeg/LICENSE",
+        "opencv-4.14.0/3rdparty/protobuf/LICENSE",
+        "opencv-4.14.0/3rdparty/quirc/LICENSE",
+        "opencv-4.14.0/3rdparty/zlib-ng/LICENSE.md",
+        "opencv-4.14.0/3rdparty/zlib/LICENSE",
+        "opencv-4.14.0/COPYRIGHT",
+        "opencv-4.14.0/LICENSE",
+        "opencv-4.14.0/doc/LICENSE_BSD.txt",
+        "opencv-4.14.0/doc/LICENSE_CHANGE_NOTICE.txt",
+        "opencv-4.14.0/modules/core/3rdparty/SoftFloat/COPYING.txt",
+        "opencv-4.14.0/modules/dnn/src/torch/COPYRIGHT.txt",
+        "opencv-4.14.0/modules/features2d/src/kaze/LICENSE",
+        "opencv-4.14.0/modules/features2d/src/kaze/LICENSE.AKAZE",
+        "opencv-4.14.0/modules/features2d/src/kaze/LICENSE.KAZE",
+        "opencv-4.14.0/modules/gapi/src/3rdparty/vasot/LICENSE.txt",
+        "opencv-4.14.0/modules/highgui/src/files_Qt/Material/LICENSE",
+        "opencv-4.14.0/3rdparty/ittnotify/src/ittnotify/GPL-2.0-only.txt"
+      ],
+      "license_copies": [
+        {
+          "member": "opencv-4.14.0/3rdparty/cpufeatures/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/cpufeatures/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/dlpack/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/dlpack/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/ffmpeg/license.txt",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/ffmpeg/license.txt"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/flatbuffers/LICENSE.txt",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/flatbuffers/LICENSE.txt"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/include/opencl/LICENSE.txt",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/include/opencl/LICENSE.txt"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libjasper/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libjasper/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libjasper/copyright",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libjasper/copyright"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libjpeg-turbo/LICENSE.md",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libjpeg-turbo/LICENSE.md"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libjpeg-turbo/README.ijg",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libjpeg-turbo/README.ijg"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libpng/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libpng/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libspng/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libspng/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libtiff/LICENSE.md",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libtiff/LICENSE.md"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/libwebp/COPYING",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/libwebp/COPYING"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/openexr/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/openexr/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/openjpeg/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/openjpeg/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/protobuf/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/protobuf/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/quirc/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/quirc/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/zlib-ng/LICENSE.md",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/zlib-ng/LICENSE.md"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/zlib/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/zlib/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/COPYRIGHT",
+          "path": "third_party/licenses/vendored/opencv/COPYRIGHT"
+        },
+        {
+          "member": "opencv-4.14.0/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/doc/LICENSE_BSD.txt",
+          "path": "third_party/licenses/vendored/opencv/doc/LICENSE_BSD.txt"
+        },
+        {
+          "member": "opencv-4.14.0/doc/LICENSE_CHANGE_NOTICE.txt",
+          "path": "third_party/licenses/vendored/opencv/doc/LICENSE_CHANGE_NOTICE.txt"
+        },
+        {
+          "member": "opencv-4.14.0/modules/core/3rdparty/SoftFloat/COPYING.txt",
+          "path": "third_party/licenses/vendored/opencv/modules/core/3rdparty/SoftFloat/COPYING.txt"
+        },
+        {
+          "member": "opencv-4.14.0/modules/dnn/src/torch/COPYRIGHT.txt",
+          "path": "third_party/licenses/vendored/opencv/modules/dnn/src/torch/COPYRIGHT.txt"
+        },
+        {
+          "member": "opencv-4.14.0/modules/features2d/src/kaze/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/modules/features2d/src/kaze/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/modules/features2d/src/kaze/LICENSE.AKAZE",
+          "path": "third_party/licenses/vendored/opencv/modules/features2d/src/kaze/LICENSE.AKAZE"
+        },
+        {
+          "member": "opencv-4.14.0/modules/features2d/src/kaze/LICENSE.KAZE",
+          "path": "third_party/licenses/vendored/opencv/modules/features2d/src/kaze/LICENSE.KAZE"
+        },
+        {
+          "member": "opencv-4.14.0/modules/gapi/src/3rdparty/vasot/LICENSE.txt",
+          "path": "third_party/licenses/vendored/opencv/modules/gapi/src/3rdparty/vasot/LICENSE.txt"
+        },
+        {
+          "member": "opencv-4.14.0/modules/highgui/src/files_Qt/Material/LICENSE",
+          "path": "third_party/licenses/vendored/opencv/modules/highgui/src/files_Qt/Material/LICENSE"
+        },
+        {
+          "member": "opencv-4.14.0/3rdparty/ittnotify/src/ittnotify/GPL-2.0-only.txt",
+          "path": "third_party/licenses/vendored/opencv/3rdparty/ittnotify/src/ittnotify/GPL-2.0-only.txt"
+        }
+      ]
+    },
+    {
+      "name": "poppler-data",
+      "path": "third_party/sources/poppler-data-0.4.12.tar.gz",
+      "url": "https://poppler.freedesktop.org/poppler-data-0.4.12.tar.gz",
+      "sha256": "c835b640a40ce357e1b83666aabd95edffa24ddddd49b8daff63adb851cdab74",
+      "licenses": [
+        "poppler-data-0.4.12/COPYING",
+        "poppler-data-0.4.12/COPYING.adobe",
+        "poppler-data-0.4.12/COPYING.gpl2"
+      ],
+      "license_copies": [
+        {
+          "member": "poppler-data-0.4.12/COPYING",
+          "path": "third_party/licenses/vendored/poppler-data/COPYING"
+        },
+        {
+          "member": "poppler-data-0.4.12/COPYING.adobe",
+          "path": "third_party/licenses/vendored/poppler-data/COPYING.adobe"
+        },
+        {
+          "member": "poppler-data-0.4.12/COPYING.gpl2",
+          "path": "third_party/licenses/vendored/poppler-data/COPYING.gpl2"
+        }
+      ]
+    },
+    {
+      "name": "poppler",
+      "path": "third_party/sources/poppler-26.10.0.tar.xz",
+      "url": "https://poppler.freedesktop.org/poppler-26.10.0.tar.xz",
+      "sha256": "6792cb7c69205007ad87d2e936cecc5b3a31fac29ab54ffc3175fdb6b2a6ce35",
+      "licenses": [
+        "poppler-26.10.0/COPYING",
+        "poppler-26.10.0/cmake/modules/COPYING-CMAKE-SCRIPTS"
+      ],
+      "license_copies": [
+        {
+          "member": "poppler-26.10.0/COPYING",
+          "path": "third_party/licenses/vendored/poppler/COPYING"
+        },
+        {
+          "member": "poppler-26.10.0/cmake/modules/COPYING-CMAKE-SCRIPTS",
+          "path": "third_party/licenses/vendored/poppler/cmake/modules/COPYING-CMAKE-SCRIPTS"
+        }
+      ]
+    },
+    {
+      "name": "skia-brotli",
+      "path": "third_party/sources/skia-brotli-6d03dfbedda1615c4cba1211f8d81735575209c8.tar.gz",
+      "url": "https://skia.googlesource.com/external/github.com/google/brotli.git",
+      "revision": "6d03dfbedda1615c4cba1211f8d81735575209c8",
+      "dest": "third_party/externals/brotli",
+      "sha256": "c7b1cfa87e574924a8977dd8735cdf45b0b5fa8e38b65b70dfd4640dc38fe573",
+      "licenses": [
+        "source/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-brotli/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "skia-dng_sdk",
+      "path": "third_party/sources/skia-dng_sdk-dbe0a676450d9b8c71bf00688bb306409b779e90.tar.gz",
+      "url": "https://android.googlesource.com/platform/external/dng_sdk.git",
+      "revision": "dbe0a676450d9b8c71bf00688bb306409b779e90",
+      "dest": "third_party/externals/dng_sdk",
+      "sha256": "272d19747a4f81b8e72592741a4206531b5b840bfc8574a79e34992ae9bd207b",
+      "licenses": [
+        "source/LICENSE",
+        "source/LICENSE.source_code",
+        "source/LICENSE.technology",
+        "source/NOTICE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-dng_sdk/LICENSE"
+        },
+        {
+          "member": "source/LICENSE.source_code",
+          "path": "third_party/licenses/vendored/skia-dng_sdk/LICENSE.source_code"
+        },
+        {
+          "member": "source/LICENSE.technology",
+          "path": "third_party/licenses/vendored/skia-dng_sdk/LICENSE.technology"
+        },
+        {
+          "member": "source/NOTICE",
+          "path": "third_party/licenses/vendored/skia-dng_sdk/NOTICE"
+        }
+      ]
+    },
+    {
+      "name": "skia-expat",
+      "path": "third_party/sources/skia-expat-6154446fccefbf3ca644894f598969113b0c7bcd.tar.gz",
+      "url": "https://chromium.googlesource.com/external/github.com/libexpat/libexpat.git",
+      "revision": "6154446fccefbf3ca644894f598969113b0c7bcd",
+      "dest": "third_party/externals/expat",
+      "sha256": "46f4d84d7e8c3f17299c617c2d59cb79952ebb95f49551193bfe712aa10158b0",
+      "licenses": [
+        "source/COPYING",
+        "source/expat/COPYING"
+      ],
+      "license_copies": [
+        {
+          "member": "source/COPYING",
+          "path": "third_party/licenses/vendored/skia-expat/COPYING"
+        },
+        {
+          "member": "source/expat/COPYING",
+          "path": "third_party/licenses/vendored/skia-expat/expat/COPYING"
+        }
+      ]
+    },
+    {
+      "name": "skia-freetype",
+      "path": "third_party/sources/skia-freetype-264b5fbf5b912b39f98d038bf75d39be0a73f21b.tar.gz",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/freetype2.git",
+      "revision": "264b5fbf5b912b39f98d038bf75d39be0a73f21b",
+      "dest": "third_party/externals/freetype",
+      "sha256": "77c7d2bfd187ee9157e3ec2c90af044df4d522de440af864a8f7465b2b5492d5",
+      "licenses": [
+        "source/LICENSE.TXT",
+        "source/docs/FTL.TXT",
+        "source/docs/GPLv2.TXT"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE.TXT",
+          "path": "third_party/licenses/vendored/skia-freetype/LICENSE.TXT"
+        },
+        {
+          "member": "source/docs/FTL.TXT",
+          "path": "third_party/licenses/vendored/skia-freetype/docs/FTL.TXT"
+        },
+        {
+          "member": "source/docs/GPLv2.TXT",
+          "path": "third_party/licenses/vendored/skia-freetype/docs/GPLv2.TXT"
+        }
+      ]
+    },
+    {
+      "name": "skia-harfbuzz",
+      "path": "third_party/sources/skia-harfbuzz-9cb1fee51069b206effb4736e443b038d230789d.tar.gz",
+      "url": "https://chromium.googlesource.com/external/github.com/harfbuzz/harfbuzz.git",
+      "revision": "9cb1fee51069b206effb4736e443b038d230789d",
+      "dest": "third_party/externals/harfbuzz",
+      "sha256": "9fb5132c789e43367ea6064d6f42dc0756b868f507051d70c86cb15d4d1862fd",
+      "licenses": [
+        "source/COPYING",
+        "source/src/ms-use/COPYING",
+        "source/test/COPYING",
+        "source/test/shape/data/aots/COPYING",
+        "source/test/shape/data/text-rendering-tests/COPYING"
+      ],
+      "license_copies": [
+        {
+          "member": "source/COPYING",
+          "path": "third_party/licenses/vendored/skia-harfbuzz/COPYING"
+        },
+        {
+          "member": "source/src/ms-use/COPYING",
+          "path": "third_party/licenses/vendored/skia-harfbuzz/src/ms-use/COPYING"
+        },
+        {
+          "member": "source/test/COPYING",
+          "path": "third_party/licenses/vendored/skia-harfbuzz/test/COPYING"
+        },
+        {
+          "member": "source/test/shape/data/aots/COPYING",
+          "path": "third_party/licenses/vendored/skia-harfbuzz/test/shape/data/aots/COPYING"
+        },
+        {
+          "member": "source/test/shape/data/text-rendering-tests/COPYING",
+          "path": "third_party/licenses/vendored/skia-harfbuzz/test/shape/data/text-rendering-tests/COPYING"
+        }
+      ]
+    },
+    {
+      "name": "skia-icu",
+      "path": "third_party/sources/skia-icu-d578f2e8b7bd5938e21cfb6bf15c079e0aa5b738.tar.gz",
+      "url": "https://chromium.googlesource.com/chromium/deps/icu.git",
+      "revision": "d578f2e8b7bd5938e21cfb6bf15c079e0aa5b738",
+      "dest": "third_party/externals/icu",
+      "sha256": "0815850eba5da94a33dbde41ba0e347226fa42fa4fffe8b16f839f066e9a9b64",
+      "licenses": [
+        "source/LICENSE",
+        "source/license.html",
+        "source/scripts/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-icu/LICENSE"
+        },
+        {
+          "member": "source/license.html",
+          "path": "third_party/licenses/vendored/skia-icu/license.html"
+        },
+        {
+          "member": "source/scripts/LICENSE",
+          "path": "third_party/licenses/vendored/skia-icu/scripts/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "skia-libjpeg-turbo",
+      "path": "third_party/sources/skia-libjpeg-turbo-e14cbfaa85529d47f9f55b0f104a579c1061f9ad.tar.gz",
+      "url": "https://chromium.googlesource.com/chromium/deps/libjpeg_turbo.git",
+      "revision": "e14cbfaa85529d47f9f55b0f104a579c1061f9ad",
+      "dest": "third_party/externals/libjpeg-turbo",
+      "sha256": "bd6e202caccf9f0b08ddf6c9404c907615283d29c706e811b4394585577b6e21",
+      "licenses": [
+        "source/LICENSE.md",
+        "source/README.ijg"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE.md",
+          "path": "third_party/licenses/vendored/skia-libjpeg-turbo/LICENSE.md"
+        },
+        {
+          "member": "source/README.ijg",
+          "path": "third_party/licenses/vendored/skia-libjpeg-turbo/README.ijg"
+        }
+      ]
+    },
+    {
+      "name": "skia-libpng",
+      "path": "third_party/sources/skia-libpng-d5515b5b8be3901aac04e5bd8bd5c89f287bcd33.tar.gz",
+      "url": "https://skia.googlesource.com/third_party/libpng.git",
+      "revision": "d5515b5b8be3901aac04e5bd8bd5c89f287bcd33",
+      "dest": "third_party/externals/libpng",
+      "sha256": "7c2af5e3f58a02b87460b3c4141cc2acc7325f1bbb6b6b1422853cb40ceefc3b",
+      "licenses": [
+        "source/LICENSE",
+        "source/ci/LICENSE_MIT.txt",
+        "source/contrib/gregbook/COPYING",
+        "source/contrib/gregbook/LICENSE",
+        "source/contrib/pngexif/LICENSE_MIT.txt",
+        "source/contrib/pngminus/LICENSE.txt"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-libpng/LICENSE"
+        },
+        {
+          "member": "source/ci/LICENSE_MIT.txt",
+          "path": "third_party/licenses/vendored/skia-libpng/ci/LICENSE_MIT.txt"
+        },
+        {
+          "member": "source/contrib/gregbook/COPYING",
+          "path": "third_party/licenses/vendored/skia-libpng/contrib/gregbook/COPYING"
+        },
+        {
+          "member": "source/contrib/gregbook/LICENSE",
+          "path": "third_party/licenses/vendored/skia-libpng/contrib/gregbook/LICENSE"
+        },
+        {
+          "member": "source/contrib/pngexif/LICENSE_MIT.txt",
+          "path": "third_party/licenses/vendored/skia-libpng/contrib/pngexif/LICENSE_MIT.txt"
+        },
+        {
+          "member": "source/contrib/pngminus/LICENSE.txt",
+          "path": "third_party/licenses/vendored/skia-libpng/contrib/pngminus/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "skia-libwebp",
+      "path": "third_party/sources/skia-libwebp-845d5476a866141ba35ac133f856fa62f0b7445f.tar.gz",
+      "url": "https://chromium.googlesource.com/webm/libwebp.git",
+      "revision": "845d5476a866141ba35ac133f856fa62f0b7445f",
+      "dest": "third_party/externals/libwebp",
+      "sha256": "759e00efd652b7d42d14f436028e273545d93b2f058a9f7f6074a127f133870e",
+      "licenses": [
+        "source/COPYING"
+      ],
+      "license_copies": [
+        {
+          "member": "source/COPYING",
+          "path": "third_party/licenses/vendored/skia-libwebp/COPYING"
+        }
+      ]
+    },
+    {
+      "name": "skia-piex",
+      "path": "third_party/sources/skia-piex-bb217acdca1cc0c16b704669dd6f91a1b509c406.tar.gz",
+      "url": "https://android.googlesource.com/platform/external/piex.git",
+      "revision": "bb217acdca1cc0c16b704669dd6f91a1b509c406",
+      "dest": "third_party/externals/piex",
+      "sha256": "55eeb49b5912d580010e2bc17f86be4bee806427461f4a56908f4bd90689b045",
+      "licenses": [
+        "source/LICENSE",
+        "source/NOTICE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-piex/LICENSE"
+        },
+        {
+          "member": "source/NOTICE",
+          "path": "third_party/licenses/vendored/skia-piex/NOTICE"
+        }
+      ]
+    },
+    {
+      "name": "skia-vulkanmemoryallocator",
+      "path": "third_party/sources/skia-vulkanmemoryallocator-eb744ea7a2b17040121b4bbb4d6f9e8a77e3cae7.tar.gz",
+      "url": "https://chromium.googlesource.com/external/github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator",
+      "revision": "eb744ea7a2b17040121b4bbb4d6f9e8a77e3cae7",
+      "dest": "third_party/externals/vulkanmemoryallocator",
+      "sha256": "e12e10f92e72ce0d34d6b9cf44acf52f66c706895ef37cc57c712e20eba740a1",
+      "licenses": [
+        "source/LICENSE.txt"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE.txt",
+          "path": "third_party/licenses/vendored/skia-vulkanmemoryallocator/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "name": "skia-spirv-cross",
+      "path": "third_party/sources/skia-spirv-cross-b8fcf307f1f347089e3c46eb4451d27f32ebc8d3.tar.gz",
+      "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/SPIRV-Cross",
+      "revision": "b8fcf307f1f347089e3c46eb4451d27f32ebc8d3",
+      "dest": "third_party/externals/spirv-cross",
+      "sha256": "506f3f1a71557402f97d35dd1109d4164cc31f33ad926371343d2c3843832878",
+      "licenses": [
+        "source/LICENSE",
+        "source/LICENSES/Apache-2.0.txt",
+        "source/LICENSES/CC-BY-4.0.txt",
+        "source/LICENSES/LicenseRef-KhronosFreeUse.txt",
+        "source/LICENSES/MIT.txt"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-spirv-cross/LICENSE"
+        },
+        {
+          "member": "source/LICENSES/Apache-2.0.txt",
+          "path": "third_party/licenses/vendored/skia-spirv-cross/LICENSES/Apache-2.0.txt"
+        },
+        {
+          "member": "source/LICENSES/CC-BY-4.0.txt",
+          "path": "third_party/licenses/vendored/skia-spirv-cross/LICENSES/CC-BY-4.0.txt"
+        },
+        {
+          "member": "source/LICENSES/LicenseRef-KhronosFreeUse.txt",
+          "path": "third_party/licenses/vendored/skia-spirv-cross/LICENSES/LicenseRef-KhronosFreeUse.txt"
+        },
+        {
+          "member": "source/LICENSES/MIT.txt",
+          "path": "third_party/licenses/vendored/skia-spirv-cross/LICENSES/MIT.txt"
+        }
+      ]
+    },
+    {
+      "name": "skia-spirv-headers",
+      "path": "third_party/sources/skia-spirv-headers-0d25db97cb9b8f725e4c95e4553001710e7fc39d.tar.gz",
+      "url": "https://skia.googlesource.com/external/github.com/KhronosGroup/SPIRV-Headers.git",
+      "revision": "0d25db97cb9b8f725e4c95e4553001710e7fc39d",
+      "dest": "third_party/externals/spirv-headers",
+      "sha256": "fc0bcd6f437829fc51a4503c91a226862b8dbdaa4d33f43b2417fe03469ecff4",
+      "licenses": [
+        "source/LICENSE",
+        "source/LICENSES/CC-BY-4.0.txt",
+        "source/LICENSES/MIT.txt"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-spirv-headers/LICENSE"
+        },
+        {
+          "member": "source/LICENSES/CC-BY-4.0.txt",
+          "path": "third_party/licenses/vendored/skia-spirv-headers/LICENSES/CC-BY-4.0.txt"
+        },
+        {
+          "member": "source/LICENSES/MIT.txt",
+          "path": "third_party/licenses/vendored/skia-spirv-headers/LICENSES/MIT.txt"
+        }
+      ]
+    },
+    {
+      "name": "skia-spirv-tools",
+      "path": "third_party/sources/skia-spirv-tools-e39e5c5838bc4b4162c349f2a2e5f163efe5432f.tar.gz",
+      "url": "https://skia.googlesource.com/external/github.com/KhronosGroup/SPIRV-Tools.git",
+      "revision": "e39e5c5838bc4b4162c349f2a2e5f163efe5432f",
+      "dest": "third_party/externals/spirv-tools",
+      "sha256": "109cb29f719b2a8fc52864b2582254c767a53787fe3ada285be426d91c0dda5d",
+      "licenses": [
+        "source/LICENSE",
+        "source/utils/vscode/src/lsp/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-spirv-tools/LICENSE"
+        },
+        {
+          "member": "source/utils/vscode/src/lsp/LICENSE",
+          "path": "third_party/licenses/vendored/skia-spirv-tools/utils/vscode/src/lsp/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "skia-vulkan-headers",
+      "path": "third_party/sources/skia-vulkan-headers-0b7f383797fa7be53ae28213e001ae60668ee511.tar.gz",
+      "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Headers",
+      "revision": "0b7f383797fa7be53ae28213e001ae60668ee511",
+      "dest": "third_party/externals/vulkan-headers",
+      "sha256": "008013cb6a17120fbe525c1ccccaed7343f049d3500c704aef8a5eca0aa6c3b6",
+      "licenses": [
+        "source/LICENSE.md",
+        "source/LICENSES/Apache-2.0.txt",
+        "source/LICENSES/MIT.txt"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE.md",
+          "path": "third_party/licenses/vendored/skia-vulkan-headers/LICENSE.md"
+        },
+        {
+          "member": "source/LICENSES/Apache-2.0.txt",
+          "path": "third_party/licenses/vendored/skia-vulkan-headers/LICENSES/Apache-2.0.txt"
+        },
+        {
+          "member": "source/LICENSES/MIT.txt",
+          "path": "third_party/licenses/vendored/skia-vulkan-headers/LICENSES/MIT.txt"
+        }
+      ]
+    },
+    {
+      "name": "skia-wuffs",
+      "path": "third_party/sources/skia-wuffs-e3f919ccfe3ef542cfc983a82146070258fb57f8.tar.gz",
+      "url": "https://skia.googlesource.com/external/github.com/google/wuffs-mirror-release-c.git",
+      "revision": "e3f919ccfe3ef542cfc983a82146070258fb57f8",
+      "dest": "third_party/externals/wuffs",
+      "sha256": "be5104e27b78a9a10143cf83f29cd9e31ef3911bb6285abef35731eaabb5d923",
+      "licenses": [
+        "source/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-wuffs/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "skia-zlib",
+      "path": "third_party/sources/skia-zlib-646b7f569718921d7d4b5b8e22572ff6c76f2596.tar.gz",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/zlib",
+      "revision": "646b7f569718921d7d4b5b8e22572ff6c76f2596",
+      "dest": "third_party/externals/zlib",
+      "sha256": "d69f106b2819c228d5b3ea11687bb3af37334dfd9f1a6b13a0ffd64228b66cdd",
+      "licenses": [
+        "source/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/skia-zlib/LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "gn",
+      "path": "third_party/sources/gn-b2afae122eeb6ce09c52d63f67dc53fc517dbdc8.tar.gz",
+      "url": "https://gn.googlesource.com/gn",
+      "revision": "b2afae122eeb6ce09c52d63f67dc53fc517dbdc8",
+      "dest": "gn-source",
+      "sha256": "7d879d331a276bfe1d6c91c232ec4a99bff5709f56d2377e64cc9b65bc1a42a4",
+      "licenses": [
+        "source/LICENSE",
+        "source/src/base/third_party/icu/LICENSE"
+      ],
+      "license_copies": [
+        {
+          "member": "source/LICENSE",
+          "path": "third_party/licenses/vendored/gn/LICENSE"
+        },
+        {
+          "member": "source/src/base/third_party/icu/LICENSE",
+          "path": "third_party/licenses/vendored/gn/src/base/third_party/icu/LICENSE"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "blendModeRawValue": 14,
+  "case": "render parity layer blend mode Color",
+  "cases": [
+    {
+      "bytes": 27648,
+      "macPNG": "blend/Color-100.png",
+      "macPNG_SHA256": "f0a9316c7f3978e163c66fc33b453982332c62e28c000f8de5f3bfdfa93e5ae9",
+      "opacityPercent": 100,
+      "rawRGBA": "coregraphics-color-corpus-100.rgba",
+      "rawRGBA_SHA256": "9b446f1712368e19b5ae572f7fcd8d78c28f045330ee2f0296bf9b319891c8d8"
+    },
+    {
+      "bytes": 27648,
+      "macPNG": "blend/Color-50.png",
+      "macPNG_SHA256": "e9df08195b94aaf8e3c19d09b08925619e07f56152f81fe4df5dc9d88441cbb5",
+      "opacityPercent": 50,
+      "rawRGBA": "coregraphics-color-corpus-50.rgba",
+      "rawRGBA_SHA256": "4dad8342a72e7c3a494cce48e10f87e05eef921051726fdd30c6ef14cea93d19"
+    }
+  ],
+  "corpusSHA256": "ee5004f45175d4bd63a204405a2064b2a1308bc7c063b5e1613ce52f51260088",
+  "height": 72,
+  "inputsSHA256": "fefba214b8b3c35fdb819f573b86bf1b4de3cc32ec60dd7c712c2bc5f8fc5b38",
+  "nativeEnvironment": {
+    "backend": "Apple Core Image",
+    "machine": "arm64",
+    "os": "macOS-26.6.2-arm64-arm-64bit",
+    "toolchain": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0"
+  },
+  "nativeManifestSHA256": "94fb9a1dd045ed507188a98e92c5bdfb0225f1f4faba3401ea096d5db650ce53",
+  "pixelLayout": "RGBA8 sRGB decoded PNG bytes",
+  "platform": "macOS",
+  "referencePNGEncodingNotCompared": true,
+  "schema": 1,
+  "sourceDescription": "Opaque base RGBA8 gradient: R=x*255/95, G=y*255/71, B=100. Foreground RGBA8 gradient: same R/G, B=220, alpha 0 outside x=12...80 and y=12...58, otherwise 160; RGB premultiplied by alpha with integer division. Blend foreground over base at listed opacity.",
+  "sourceGenerator": "Tests/RenderParity/RenderParityTests.swift",
+  "upstream": "2d75d9172835e1dd6111cb2b659958ec33fa5abf",
+  "width": 96
+}

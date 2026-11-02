@@ -1,0 +1,40 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_ARB_gpu_shader_fp64 : require
+#include "../../brush/shaders/warp_precision.glsl"
+#include "raster_ops.glsl"
+// A whole pointwise graph in one pass: each pixel runs every step in order, keeping intermediate values in
+// registers instead of full-size buffers. The arithmetic is raster_ops.glsl's, as in the one-operation shader.
+layout(local_size_x=16,local_size_y=16) in;
+layout(push_constant) uniform Parameters { uint width; uint height; uint inputCount; uint stepCount; } u;
+// Every input, one after another, each width*height pixels.
+layout(std430,binding=0) readonly buffer Inputs { vec4 inputs[]; };
+layout(std430,binding=1) writeonly buffer Destination { vec4 destination[]; };
+// header: operation, channel, source node, background node; slots: mask node, result register.
+struct Step { uvec4 header; uvec4 slots; vec4 values[5]; };
+layout(std430,binding=2) readonly buffer Steps { Step steps[]; };
+const uint registerCount=16;
+
+void main() {
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if (p.x>=u.width || p.y>=u.height) return;
+    const uint pixels=u.width*u.height;
+    const uint i=p.y*u.width+p.x;
+    vec4 registers[registerCount];
+    uint result=0;
+    for (uint k=0;k<u.stepCount;++k) {
+        const uvec4 header=steps[k].header;
+        const uvec4 slots=steps[k].slots;
+        const uint operation=header.x;
+        const uint sourceNode=header.z, backgroundNode=header.w, maskNode=slots.x;
+        const vec4 s=sourceNode<u.inputCount?inputs[sourceNode*pixels+i]:registers[steps[sourceNode-u.inputCount].slots.y];
+        vec4 bg=vec4(0), m=vec4(0);
+        if (operation<=2) bg=backgroundNode<u.inputCount?inputs[backgroundNode*pixels+i]
+                                                         :registers[steps[backgroundNode-u.inputCount].slots.y];
+        if (operation==2) m=maskNode<u.inputCount?inputs[maskNode*pixels+i]:registers[steps[maskNode-u.inputCount].slots.y];
+        result=slots.y;
+        registers[result]=rasterOperation(operation,header.y,s,bg,m,steps[k].values[0],steps[k].values[1],
+                                          steps[k].values[2],steps[k].values[3],steps[k].values[4],p);
+    }
+    destination[i]=registers[result];
+}

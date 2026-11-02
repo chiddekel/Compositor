@@ -1,0 +1,25 @@
+# Independent CEO scope review
+
+Same-model Codex CLI reviewer; not cross-model confirmation.
+
+**The plan is too narrow for “Read Upstream and implement all Mac compatibility behavior on Linux.”** It can close known findings, but cannot establish full compatibility.
+
+Reviewed local `upstream/main` at `3081719`, HEAD `20128a5`, and current uncommitted changes.
+
+1. **P1 substitutes historical closeout for the latest requirement.** [The plan](/home/developer/Projekty/Compositor/docs/reviews/autoplan-resume-2026-10-11.md:37) limits work to TODOs and six findings without first inventorying upstream behavior. A concrete omitted difference is Undo: [the Linux patch](/home/developer/Projekty/Compositor/linux/patches/document-history-linux.patch:1) prevents undoing initial canvas creation, while [the exclusions document](/home/developer/Projekty/Compositor/linux/UPSTREAM_TEST_EXCLUSIONS.md:14) acknowledges upstream expects it. Earlier acceptance of that deviation needs reassessment under the latest instruction.
+
+2. **The alternatives omit the approach that actually addresses full compatibility.** WIP-only, WIP-plus-findings, and a GPU rewrite are not an adequate choice set. The missing alternative is an upstream behavior inventory followed by incremental fixes through existing compatibility seams. “10/10 for recovered scope” and the effort estimates have no coverage denominator. Their regret risk is declaring completion while unexamined behaviors remain.
+
+3. **P2 correctly identifies an output constraint, but overextends its implications.** [Upstream import](/home/developer/Projekty/Compositor/Compositor/IO/ImageImporter.swift:70) produces RGBA8 sRGB; that does not make source profiles or high-precision decoding irrelevant. [Current conversion](/home/developer/Projekty/Compositor/host/QtImageIO.cpp:63) bypasses grayscale profiles, treats every non-linear HEIF transfer as sRGB, defaults unknown primaries to sRGB, and decodes HEIF into eight-bit pixels before conversion. These are compatibility gaps within the existing document contract. They risk silently baking incorrect colors into saved projects.
+
+4. **The touch WIP introduces a concrete lifetime hazard and an unproven interaction model.** [The filter](/home/developer/Projekty/Compositor/host/SessionWindow.cpp:6251) belongs to `qApp`, but its callback captures a window’s raw `this`. Closing that window can leave a callable dangling pointer. Each window also installs a filter that changes application-wide styling. Enlarging controls during the initiating press can move targets; bitmap-rendered AppKit children do not automatically gain larger hit regions from Qt stylesheets. The geometry test establishes none of those behaviors. Prefer lifecycle-safe input ownership and stable hit-area adaptation before treating visible resizing as necessary.
+
+5. **Source preservation leaves important behavior outside the coverage boundary.** [The AppKit widget](/home/developer/Projekty/Compositor/host/SwiftUIQtRenderer.cpp:180) forwards pixels, pointer events, and keys. Upstream’s accessibility labels and actions require a corresponding native accessibility path; drawing them is insufficient. The plan needs explicit acceptance criteria for accessibility, text focus, keyboard navigation, dialogs, window lifecycle, and platform services—not merely source or generator checks.
+
+6. **Awaiting an upstream method does not establish command success.** [The bridge](/home/developer/Projekty/Compositor/Sources/LinuxBridge/UpstreamEditor.swift:372) continues after `commitGradient()`, but [upstream](/home/developer/Projekty/Compositor/Compositor/Document/Gradient.swift:111) returns immediately when busy and catches errors internally. Dependent commands need observed completion and refusal semantics. Adding an arbitrary timeout alone risks late mutations after reported failure.
+
+7. **The proposed evidence still permits false completion.** [The color tests](/home/developer/Projekty/Compositor/Tests/CompatTests/ColourManagementTests.swift:29) generate their “untagged” fixture through the newly tagging encoder and recognize export profiles through byte-string presence. They can also skip without host codecs. [Per-push CI](/home/developer/Projekty/Compositor/.github/workflows/linux-swift-tests.yml:44) filters to three suites, excluding these new tests and touch geometry coverage. Passing that workflow cannot validate this WIP.
+
+The strategy should start with a bounded upstream revision and a behavior-to-Linux acceptance matrix: implementation path, deviations, failure/cancellation behavior, and runnable evidence. Platform substitutions such as Vulkan and Flatpak should be assessed by observable outcomes. Preserve the existing document contract and defer unrelated GPU redesign, while allowing compatibility defects in current adapters to expand the work beyond six findings.
+
+Read-only checks confirmed the four protected upstream trees match the local upstream ref and `git diff --check` passes. No builds or runtime tests were run. No files were modified; no skill files were read or executed.

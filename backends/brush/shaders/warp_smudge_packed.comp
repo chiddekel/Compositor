@@ -1,0 +1,32 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "warp_precision.glsl"
+#include "warp_formats.glsl"
+layout(local_size_x=16,local_size_y=16) in;
+layout(push_constant) uniform Parameters {
+    uint width; uint height; float strength; uint format;
+    int cx; int cy; uint canvasWidth; uint canvasHeight;
+    uint radius; uint padding0; uint padding1; uint padding2;
+} u;
+layout(std430,binding=0) readonly buffer Under { uint under[]; };
+layout(std430,binding=1) buffer Carried { vec4 carried[]; };
+layout(std430,binding=2) readonly buffer Falloff { float falloff[]; };
+layout(std430,binding=3) writeonly buffer Packed { uint packed[]; };
+void main() {
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if (p.x>=u.width || p.y>=u.height) return;
+    uint i=p.y*u.width+p.x, stride=u.format==0?1u:2u, at=i*stride;
+    uint a=under[at], b=stride==1?0u:under[at+1];
+    packed[at]=a; if (stride==2) packed[at+1]=b;
+    ivec2 offset=ivec2(p)-int(u.radius), point=ivec2(u.cx,u.cy)+offset;
+    if (any(lessThan(point,ivec2(0))) || any(greaterThanEqual(point,ivec2(u.canvasWidth,u.canvasHeight)))) return;
+    float w=falloff[offset.x*offset.x+offset.y*offset.y];
+    if (!(w>0)) return;
+    vec4 base=decodeColor(a,b,u.format);
+    precise vec4 delta=carried[i]-base;
+    precise float blend=w*u.strength;
+    precise vec4 painted=base+delta*blend;
+    carried[i]=painted;
+    uvec2 result=encodeColor(painted,u.format);
+    packed[at]=result.x; if (stride==2) packed[at+1]=result.y;
+}

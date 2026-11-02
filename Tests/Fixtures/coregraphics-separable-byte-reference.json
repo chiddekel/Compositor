@@ -1,0 +1,879 @@
+{
+  "cases": [
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-0-divisor-1-opaque-true.rgba",
+      "mode": 0,
+      "opaqueBackdrop": true,
+      "outputSHA256": "248e66a4d4473fce50f0cd1454c5b5b5a3ae7b8a846f097127f517c0c2d1b769",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-0-divisor-2-opaque-true.rgba",
+      "mode": 0,
+      "opaqueBackdrop": true,
+      "outputSHA256": "335e65d0d645572f1de6a15e1397379719c9ea0e3120bcdb44f472204faddf8a",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-0-divisor-4-opaque-true.rgba",
+      "mode": 0,
+      "opaqueBackdrop": true,
+      "outputSHA256": "4ec4f25d6b73d48b6f87ac5b9c4db2f7c362ffc9c637e84da077f74881b09953",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-1-divisor-1-opaque-true.rgba",
+      "mode": 1,
+      "opaqueBackdrop": true,
+      "outputSHA256": "03160d951d7ce5e1879c91d62703dd48856118dd675cc6c0d3be9144f051990e",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-1-divisor-2-opaque-true.rgba",
+      "mode": 1,
+      "opaqueBackdrop": true,
+      "outputSHA256": "321439e3ec1578b4cba3a82e0f7ec6d23aa1509107dcd8ca6d1dbccf0e778026",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-1-divisor-4-opaque-true.rgba",
+      "mode": 1,
+      "opaqueBackdrop": true,
+      "outputSHA256": "f5b666a3c6a50f330200389e1edc8b2a4a355cfdb8723023938ed405b7a224c5",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-2-divisor-1-opaque-true.rgba",
+      "mode": 2,
+      "opaqueBackdrop": true,
+      "outputSHA256": "08cda30b6ece63b2fa1aaf8b5671e871588d59c31a761b6da11ec0137aeb8c5a",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-2-divisor-2-opaque-true.rgba",
+      "mode": 2,
+      "opaqueBackdrop": true,
+      "outputSHA256": "53a49393269416dca6960c0e81028b62f69d3d6bfc4c27184cb18d3167baacaa",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-2-divisor-4-opaque-true.rgba",
+      "mode": 2,
+      "opaqueBackdrop": true,
+      "outputSHA256": "7cca43b8b4528dfcee07a0ec150df022ac3fb94be60564fe86a09c34b0a7bfe5",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-3-divisor-1-opaque-true.rgba",
+      "mode": 3,
+      "opaqueBackdrop": true,
+      "outputSHA256": "4095754653c0c0861ed6733decf71edabecbadabf570efecefbbc80723ee7f66",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-3-divisor-2-opaque-true.rgba",
+      "mode": 3,
+      "opaqueBackdrop": true,
+      "outputSHA256": "edd0ecfb7d2c467f8ad4947c18cccb243440007a873b23a18b86dc4d55c59974",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-3-divisor-4-opaque-true.rgba",
+      "mode": 3,
+      "opaqueBackdrop": true,
+      "outputSHA256": "db303f0ba6714048488f8882fa836af4ef31ec25ef7f0a083c75e2440bf58fbf",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-4-divisor-1-opaque-true.rgba",
+      "mode": 4,
+      "opaqueBackdrop": true,
+      "outputSHA256": "56f35e4379fcee14bb7b2710de154d2d21c88cb4e9448a9849187bcfdb7fad8f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-4-divisor-2-opaque-true.rgba",
+      "mode": 4,
+      "opaqueBackdrop": true,
+      "outputSHA256": "b83b09ee9adb45a16caf470064d2d400d2a10f8af69a7a4e7faea5b898b4ff92",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-4-divisor-4-opaque-true.rgba",
+      "mode": 4,
+      "opaqueBackdrop": true,
+      "outputSHA256": "ce77775d45b9d8138479843baca2d73a0b555ebe93a66bd116fae230d8f6c109",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-5-divisor-1-opaque-true.rgba",
+      "mode": 5,
+      "opaqueBackdrop": true,
+      "outputSHA256": "5a0f6c9fd2326b0270272929e85a491fd8f48944e8939249ea891c5d93919e7f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-5-divisor-2-opaque-true.rgba",
+      "mode": 5,
+      "opaqueBackdrop": true,
+      "outputSHA256": "e1c35080d15208bedb6177d85fec9e098fd6119f97b0e7a4c4a9b36363a916d5",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-5-divisor-4-opaque-true.rgba",
+      "mode": 5,
+      "opaqueBackdrop": true,
+      "outputSHA256": "5a3e799e9126ceb9c2f4a102c8a768f48bb2760cce7bb88be0c53eef202c94cd",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-6-divisor-1-opaque-true.rgba",
+      "mode": 6,
+      "opaqueBackdrop": true,
+      "outputSHA256": "8c21cd8a52529061c028681a6ef3ad6cf8263e73c9be8bed474fa23f2ecd4f5f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-6-divisor-2-opaque-true.rgba",
+      "mode": 6,
+      "opaqueBackdrop": true,
+      "outputSHA256": "bf73744e51f29c5225df260c6d9f4cc38473c8f6f38a467b3677d6232e7b9c2f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-6-divisor-4-opaque-true.rgba",
+      "mode": 6,
+      "opaqueBackdrop": true,
+      "outputSHA256": "2c8b6796fa44cef02db75f0b4f5bf6fba541297af53a6fbfe4c6da2fdf078678",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-7-divisor-1-opaque-true.rgba",
+      "mode": 7,
+      "opaqueBackdrop": true,
+      "outputSHA256": "70394d9f5c1c0e5dcac2b49e61b13780d77059ae91a6ba1c110e6dd08f60b952",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-7-divisor-2-opaque-true.rgba",
+      "mode": 7,
+      "opaqueBackdrop": true,
+      "outputSHA256": "ed2744d3d56189ed8a26178b16ef205bf26b4ecb5e43f4ac2a27d4dca7916101",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-7-divisor-4-opaque-true.rgba",
+      "mode": 7,
+      "opaqueBackdrop": true,
+      "outputSHA256": "cd23eac0c743129174896e4316f55284bfbce74f2ffcece8131fd32ee2758a06",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-8-divisor-1-opaque-true.rgba",
+      "mode": 8,
+      "opaqueBackdrop": true,
+      "outputSHA256": "3dacc8f06fb9f2cd90ed64aa90fb36be4595e5da50ffe0beac607cee828b4bb7",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-8-divisor-2-opaque-true.rgba",
+      "mode": 8,
+      "opaqueBackdrop": true,
+      "outputSHA256": "30ff1c2cf897ebde312870b39a560867b0ad71091b37f6ab9b5209c1ce6f54c2",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-8-divisor-4-opaque-true.rgba",
+      "mode": 8,
+      "opaqueBackdrop": true,
+      "outputSHA256": "d46e13ba03f3e98153cda92b28d6200a2c89b30a5806c0566aa13305fe170655",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-9-divisor-1-opaque-true.rgba",
+      "mode": 9,
+      "opaqueBackdrop": true,
+      "outputSHA256": "e4a120df7d872a05232920ae1f52d66f38112a5c985a10dc4926cf1865825924",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-9-divisor-2-opaque-true.rgba",
+      "mode": 9,
+      "opaqueBackdrop": true,
+      "outputSHA256": "b29e84e019546d25ca310bb6ef49825150710f0ce9af824ab96c485dcf2a472f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-9-divisor-4-opaque-true.rgba",
+      "mode": 9,
+      "opaqueBackdrop": true,
+      "outputSHA256": "b22ff86be9bfb90486d79d73d10641493ae351ba74909e665d361cc6d0b046a0",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-10-divisor-1-opaque-true.rgba",
+      "mode": 10,
+      "opaqueBackdrop": true,
+      "outputSHA256": "8df48dc46be08ce2d5b40786828de60d4e3189fc55a3870197e7e18b7a4b260d",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-10-divisor-2-opaque-true.rgba",
+      "mode": 10,
+      "opaqueBackdrop": true,
+      "outputSHA256": "5577b41dd11a83dcc4b342107c6037eac4fa8c041705b6a160c2dbb18242a55c",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-10-divisor-4-opaque-true.rgba",
+      "mode": 10,
+      "opaqueBackdrop": true,
+      "outputSHA256": "7c05452e63e4634244be9662e367605b90c69705ef9dc35eba47067bc1b67c73",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-11-divisor-1-opaque-true.rgba",
+      "mode": 11,
+      "opaqueBackdrop": true,
+      "outputSHA256": "22eb0576af5255302aa9a4937b63d0d37be1ecc0716ac11ef4d8c663922f34f9",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-11-divisor-2-opaque-true.rgba",
+      "mode": 11,
+      "opaqueBackdrop": true,
+      "outputSHA256": "bb65aa146dcf75377f14c4a3d57bbbc6811e67467b2f7bc4a9b08b8b1aad668d",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-11-divisor-4-opaque-true.rgba",
+      "mode": 11,
+      "opaqueBackdrop": true,
+      "outputSHA256": "888c7b57fb35543336a90e888104140b433615a7f38630776b6013bf08e5cdaf",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-12-divisor-1-opaque-true.rgba",
+      "mode": 12,
+      "opaqueBackdrop": true,
+      "outputSHA256": "09b27548e9956e0f08a1728264e35c5f32cabf72b0b89120020934ef1afef828",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-12-divisor-2-opaque-true.rgba",
+      "mode": 12,
+      "opaqueBackdrop": true,
+      "outputSHA256": "2e655afc361d3d94a108e91d4a489c4daae6ac90a750e62d8388b431fe751d6f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-12-divisor-4-opaque-true.rgba",
+      "mode": 12,
+      "opaqueBackdrop": true,
+      "outputSHA256": "27761ea93cc898307ca56ca7aa39324842d48cff8ac116214e2beb29606fbe6f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-13-divisor-1-opaque-true.rgba",
+      "mode": 13,
+      "opaqueBackdrop": true,
+      "outputSHA256": "a8f405d5c61499e2914c767b43026cbd35b40660fffc3c58c7b7c96dfb5b2766",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-13-divisor-2-opaque-true.rgba",
+      "mode": 13,
+      "opaqueBackdrop": true,
+      "outputSHA256": "0585d64e7f8af211e018f0ed23dbc630cc05308fd628cff590cda29c230e678e",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-13-divisor-4-opaque-true.rgba",
+      "mode": 13,
+      "opaqueBackdrop": true,
+      "outputSHA256": "99cfceac3e343518996a3905560ae4d1da30ed6d943a30fa0cce0a273a632dae",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-14-divisor-1-opaque-true.rgba",
+      "mode": 14,
+      "opaqueBackdrop": true,
+      "outputSHA256": "50fd445eeb15226badd95ccf1ec4361a7b50515060a65bda0e2adab18ae8dc21",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-14-divisor-2-opaque-true.rgba",
+      "mode": 14,
+      "opaqueBackdrop": true,
+      "outputSHA256": "6c94b198c187f0bb15c31c61cfaa26b540c018cfc1ac766f7f26fa6551a3e6d9",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-14-divisor-4-opaque-true.rgba",
+      "mode": 14,
+      "opaqueBackdrop": true,
+      "outputSHA256": "bf84330f617c87ac83a4dc9a7f8f8ec09f9bde8fc0d4022ee1c4ec9b51eaa4e8",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 1,
+      "file": "mode-15-divisor-1-opaque-true.rgba",
+      "mode": 15,
+      "opaqueBackdrop": true,
+      "outputSHA256": "89d613fd40e4b57ad6eca6775d1c4a7728176e0f239c60c3ddc3df2fe83db184",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 2,
+      "file": "mode-15-divisor-2-opaque-true.rgba",
+      "mode": 15,
+      "opaqueBackdrop": true,
+      "outputSHA256": "2a55a7496123f5d2417a86af2f760031a4b00f0bade6ca3668af93bc654724e1",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "c6e344844fdcdd6b9fea848affced8520a561986a7ec0d26bacf4fb57a77a36b",
+      "divisor": 4,
+      "file": "mode-15-divisor-4-opaque-true.rgba",
+      "mode": 15,
+      "opaqueBackdrop": true,
+      "outputSHA256": "7c5723a95dcd195333bb6084811e4b4fea79c0248ceee174c3fe4ce2d4f5b518",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-0-divisor-1-opaque-false.rgba",
+      "mode": 0,
+      "opaqueBackdrop": false,
+      "outputSHA256": "d061d2e0fe4b678c0b2b99bc7276bb573fa0a926beae100e87c9c98b843b37ea",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-0-divisor-2-opaque-false.rgba",
+      "mode": 0,
+      "opaqueBackdrop": false,
+      "outputSHA256": "34f5c61c55f62556a03cf3b6cdfcd3137ca979069f15c5564190f4674388f103",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-0-divisor-4-opaque-false.rgba",
+      "mode": 0,
+      "opaqueBackdrop": false,
+      "outputSHA256": "58d2f694f090960849350e0809e87cd9bcd7fb02c1a9dba8e40ad7d592c829b3",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-1-divisor-1-opaque-false.rgba",
+      "mode": 1,
+      "opaqueBackdrop": false,
+      "outputSHA256": "1e9ff3619708423bc9425c0e320dc48a8e6e057f92e63642b5a984916afa389b",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-1-divisor-2-opaque-false.rgba",
+      "mode": 1,
+      "opaqueBackdrop": false,
+      "outputSHA256": "01804dac0e1587aaf01d53f034de936e29960e7902391ebafa90a86e98bb9996",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-1-divisor-4-opaque-false.rgba",
+      "mode": 1,
+      "opaqueBackdrop": false,
+      "outputSHA256": "049dee371a31091111c726c0a2ca956ff8e678815a3bcf06b752fae13e083929",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-2-divisor-1-opaque-false.rgba",
+      "mode": 2,
+      "opaqueBackdrop": false,
+      "outputSHA256": "0fca57997afed8daabbdd4e86144daa10b144e0a57730ada19b9eab2897f484c",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-2-divisor-2-opaque-false.rgba",
+      "mode": 2,
+      "opaqueBackdrop": false,
+      "outputSHA256": "71393c6e487d00a1bd94339a02adb670e02565a36e6b505a262fc3f1039238c7",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-2-divisor-4-opaque-false.rgba",
+      "mode": 2,
+      "opaqueBackdrop": false,
+      "outputSHA256": "da9af6b32e1883869c02e280cdf8f4e6c1baf46cfbdd56458e9745e638cdedca",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-3-divisor-1-opaque-false.rgba",
+      "mode": 3,
+      "opaqueBackdrop": false,
+      "outputSHA256": "c990601e6e04a866945531a6123c4b1ca2bc6adebfcc4f9a3aacf9499bf9851f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-3-divisor-2-opaque-false.rgba",
+      "mode": 3,
+      "opaqueBackdrop": false,
+      "outputSHA256": "7c35fe7334c6fad5cf40981cf0025523aa9f8cf2230ad5542bdd39c1be739768",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-3-divisor-4-opaque-false.rgba",
+      "mode": 3,
+      "opaqueBackdrop": false,
+      "outputSHA256": "d180a7397bc94cc1af2878a57263d6ecbd2fc41ade79cadb1f8f72fa33612e9f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-4-divisor-1-opaque-false.rgba",
+      "mode": 4,
+      "opaqueBackdrop": false,
+      "outputSHA256": "98946433185542a69b256c9564f2d61142bca2b98554c2f9fb7b0ec64283fcf7",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-4-divisor-2-opaque-false.rgba",
+      "mode": 4,
+      "opaqueBackdrop": false,
+      "outputSHA256": "a08e9ecbbf842ee1515bec0ef1cb09d80928e0b16d2086ae46fe0964012b3136",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-4-divisor-4-opaque-false.rgba",
+      "mode": 4,
+      "opaqueBackdrop": false,
+      "outputSHA256": "3058fe1fb160f3819f8b8b174d139752263009775bf385bfc07c993080c50344",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-5-divisor-1-opaque-false.rgba",
+      "mode": 5,
+      "opaqueBackdrop": false,
+      "outputSHA256": "3f6bae6cf4e326cc800e402e0667009092fe11fc9a9052d30d2e4cf433e8ff88",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-5-divisor-2-opaque-false.rgba",
+      "mode": 5,
+      "opaqueBackdrop": false,
+      "outputSHA256": "51c2a97b7cc423c88f539cf137b8489634f12989983ba99ea987222fa7532638",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-5-divisor-4-opaque-false.rgba",
+      "mode": 5,
+      "opaqueBackdrop": false,
+      "outputSHA256": "0976ab8acb6c59fa8592deb737b32c170544d776151fa52b11a9f1400d6d4b06",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-6-divisor-1-opaque-false.rgba",
+      "mode": 6,
+      "opaqueBackdrop": false,
+      "outputSHA256": "bfdce5733cd06c80433201d0ba066e64d80535ed08b4c44009737b3b760386b9",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-6-divisor-2-opaque-false.rgba",
+      "mode": 6,
+      "opaqueBackdrop": false,
+      "outputSHA256": "e9b7ae25f6744a971fa0844c8c81692e4462115c9841ec574448bcfe269ceb3a",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-6-divisor-4-opaque-false.rgba",
+      "mode": 6,
+      "opaqueBackdrop": false,
+      "outputSHA256": "644ee5e60eafcbceb12197181f94b834ad14056a8b264506848e3667d940838a",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-7-divisor-1-opaque-false.rgba",
+      "mode": 7,
+      "opaqueBackdrop": false,
+      "outputSHA256": "fb14fc19aee1591ce83401db5a0c9cf6ad340cabd67f8cb29c4f72d1211a27fc",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-7-divisor-2-opaque-false.rgba",
+      "mode": 7,
+      "opaqueBackdrop": false,
+      "outputSHA256": "0ab61b9cc4196027807da9dfceaa73f92fcef0e51d7e1380023d547a1443c440",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-7-divisor-4-opaque-false.rgba",
+      "mode": 7,
+      "opaqueBackdrop": false,
+      "outputSHA256": "0add58f68f5838b6bedb045333fd4f0c3b562bd1aeef7c9233faafd2ee52fed5",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-8-divisor-1-opaque-false.rgba",
+      "mode": 8,
+      "opaqueBackdrop": false,
+      "outputSHA256": "fb58942fbe64b2ea311b4060c4d73c3575c5c6f0072e2cb75ae55e576f76fdcb",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-8-divisor-2-opaque-false.rgba",
+      "mode": 8,
+      "opaqueBackdrop": false,
+      "outputSHA256": "5ac3a1eb7ef6bb52df9149bfb21f20c2539c4c725e311b86cead40b20f405a8d",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-8-divisor-4-opaque-false.rgba",
+      "mode": 8,
+      "opaqueBackdrop": false,
+      "outputSHA256": "41c6fc5e730ac0599d548280e3393cb1e4513b8d71821911969f67e153477249",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-9-divisor-1-opaque-false.rgba",
+      "mode": 9,
+      "opaqueBackdrop": false,
+      "outputSHA256": "5c62896bc5e6d51d3b575ae14c21c110e9cc44a549da1ca26859c604b99f8e8a",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-9-divisor-2-opaque-false.rgba",
+      "mode": 9,
+      "opaqueBackdrop": false,
+      "outputSHA256": "ab0aae875f1565cf2a0610e1e630837a7dae4dab5782eeaf5c6aa10966030e27",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-9-divisor-4-opaque-false.rgba",
+      "mode": 9,
+      "opaqueBackdrop": false,
+      "outputSHA256": "3786429d3bbae8498bdd088468eb9015709ee8e3d680f2c8954ab23ee0dbb4e0",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-10-divisor-1-opaque-false.rgba",
+      "mode": 10,
+      "opaqueBackdrop": false,
+      "outputSHA256": "63fb43f16c2e2f4596cf1770c1daf95ad2dec54003912e2226480468ebcde078",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-10-divisor-2-opaque-false.rgba",
+      "mode": 10,
+      "opaqueBackdrop": false,
+      "outputSHA256": "e16880f4f005c77658bbf07ff8ee6ab7ad83152c68ec18b859494cd582e2e666",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-10-divisor-4-opaque-false.rgba",
+      "mode": 10,
+      "opaqueBackdrop": false,
+      "outputSHA256": "ea81bd719f1f2c9846b1d47fe6d0bce0da26b2bdcc75e2f81b41bbbdecda3937",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-11-divisor-1-opaque-false.rgba",
+      "mode": 11,
+      "opaqueBackdrop": false,
+      "outputSHA256": "30cbffc647aad98b12bfe7b098d813901a5f466b4af34b642351e90d19ebeb77",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-11-divisor-2-opaque-false.rgba",
+      "mode": 11,
+      "opaqueBackdrop": false,
+      "outputSHA256": "4dcac3d840922749fc45bad1feb71063b1db673337f6e25683b14e2180ddecb3",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-11-divisor-4-opaque-false.rgba",
+      "mode": 11,
+      "opaqueBackdrop": false,
+      "outputSHA256": "1ecc89fe4b4b72e2577228337d1686fc399fd222188e11a4c87a1f6f0aae36ee",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-12-divisor-1-opaque-false.rgba",
+      "mode": 12,
+      "opaqueBackdrop": false,
+      "outputSHA256": "b259f913661cccd834e648fd4b36ad2f6734ba7a433d7bd441eb97519115a74d",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-12-divisor-2-opaque-false.rgba",
+      "mode": 12,
+      "opaqueBackdrop": false,
+      "outputSHA256": "7d2b8cc8519ce8fcfdafcbddfe22c1b6641a709b88cee30587432ad5f5721aaa",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-12-divisor-4-opaque-false.rgba",
+      "mode": 12,
+      "opaqueBackdrop": false,
+      "outputSHA256": "1e067e04dcd3534e37b2dfee6d36dd3a4c16162809cae5d7092297ba4be9e567",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-13-divisor-1-opaque-false.rgba",
+      "mode": 13,
+      "opaqueBackdrop": false,
+      "outputSHA256": "1fad1771774cb6fbeb02ef5fbbe2a8893bff4b9986822bf5d41c7a23a66b2696",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-13-divisor-2-opaque-false.rgba",
+      "mode": 13,
+      "opaqueBackdrop": false,
+      "outputSHA256": "e81faab341ec55593c062f585ba723efa5011041bc5507f9867cb0c4186d5fdb",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-13-divisor-4-opaque-false.rgba",
+      "mode": 13,
+      "opaqueBackdrop": false,
+      "outputSHA256": "e209c55c5fe86b01d5f211961da607a99373da6cc4fc26cb8334ab02f129d7a8",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-14-divisor-1-opaque-false.rgba",
+      "mode": 14,
+      "opaqueBackdrop": false,
+      "outputSHA256": "9d68d1e167d4235be08b8f905a9153ea4b44e541407e76b48d8c859063a01284",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-14-divisor-2-opaque-false.rgba",
+      "mode": 14,
+      "opaqueBackdrop": false,
+      "outputSHA256": "40020506e225a6e5334218b6fd02ee8c9b688ab333f816c8340382a56cbcbfde",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-14-divisor-4-opaque-false.rgba",
+      "mode": 14,
+      "opaqueBackdrop": false,
+      "outputSHA256": "9efa760bfebd6cdf91147a064fe7944a78a30f34e276b6a14c22880c72298053",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 1,
+      "file": "mode-15-divisor-1-opaque-false.rgba",
+      "mode": 15,
+      "opaqueBackdrop": false,
+      "outputSHA256": "aeeda85238cb902ac0b09a25125890a282e0219c6de76957556f64497622ae26",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 2,
+      "file": "mode-15-divisor-2-opaque-false.rgba",
+      "mode": 15,
+      "opaqueBackdrop": false,
+      "outputSHA256": "fef748466017f92e9b76ce94434b40fb343592c5394d0462cbf5a9248e648dd4",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    },
+    {
+      "backdropSHA256": "b2a86f675b944df225cf7f77a31920c8d74060359ce62c82c70a63a2197e138a",
+      "divisor": 4,
+      "file": "mode-15-divisor-4-opaque-false.rgba",
+      "mode": 15,
+      "opaqueBackdrop": false,
+      "outputSHA256": "083940d5e6fc9703cfbef0474f53f68143188e9593841b5d81b6e55b21f9883f",
+      "sourceSHA256": "23f8d5b5a3a85929bba900a61ca26fa559ac9deb276fa5cda7b0e304f43b1f7b"
+    }
+  ],
+  "height": 256,
+  "layout": "RGBA8-premultipliedLast-byteOrder32Big-sRGB",
+  "os": "Version 26.6.1 (Build 25G76)",
+  "platform": "macOS",
+  "schema": 1,
+  "scriptSHA256": "fc510cdcd4803932ed82a2621078bc98283ca4ea064a67c00683abd5d1dc8830",
+  "width": 256,
+  "nativeRun": 40334710500,
+  "nativeCommit": "c579b71e85eff93bea0ba2e277e1423062fb8a16",
+  "runner": "macos-26-intel",
+  "captureReportSHA256": "3b6d9d7abcb731b45462649a4e5202740843d08c51bbc04a28b8f337b3418398"
+}

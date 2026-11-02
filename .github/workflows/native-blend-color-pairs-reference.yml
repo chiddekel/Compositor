@@ -1,0 +1,36 @@
+name: Native Core Graphics blend color pairs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['verify/macos-unsharp-*']
+    paths:
+      - 'scripts/capture-native-blend-color-pairs.swift'
+      - '.github/workflows/native-blend-color-pairs-reference.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record native environment
+        run: |
+          sw_vers
+          uname -m
+          swift --version
+      - name: Capture all source color/alpha pairs
+        run: |
+          mkdir native-blend-color-pairs
+          swift scripts/capture-native-blend-color-pairs.swift native-blend-color-pairs > native-blend-color-pairs/report.json
+      - name: Validate all inputs and native controls
+        run: python3 scripts/validate-native-byte-blends.py native-blend-color-pairs/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-blend-color-pairs-reference
+          path: native-blend-color-pairs/
+          if-no-files-found: error

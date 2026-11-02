@@ -1,0 +1,79 @@
+name: Core Image spatial scanline diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      motion_radii:
+        description: JSON array of unique motion radii in 0...64 (empty selects default probes)
+        type: string
+        default: '[]'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      PROBE_MOTION_RADII: ${{ inputs.motion_radii || '[]' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Capture native spatial scanlines
+        run: swift scripts/capture-coreimage-spatial.swift --motion-radii "$PROBE_MOTION_RADII" > coreimage-spatial-reference.json
+      - name: Validate scanline controls and recipe matrix
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, os, re, struct
+          from pathlib import Path
+          reference = json.loads(Path('coreimage-spatial-reference.json').read_text())
+          assert reference['schema'] == 1 and reference['platform'] == 'macOS'
+          assert reference['scriptSha256'] == hashlib.sha256(Path('scripts/capture-coreimage-spatial.swift').read_bytes()).hexdigest()
+          assert (reference['sourceWidth'], reference['sourceHeight'], reference['scanlineY']) == (512, 8, 3)
+          motion = [0, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 10, 35 / math.sqrt(12), 12, 17, 24, 35]
+          supplied = json.loads(os.environ.get('PROBE_MOTION_RADII', '[]'))
+          assert isinstance(supplied, list) and len(supplied) <= 64
+          assert all(type(r) in [int, float] and math.isfinite(r) and 0 <= r <= 64 for r in supplied)
+          assert len(set(supplied)) == len(supplied)
+          motion = supplied or motion
+          gaussian = [5, 10, 17]
+          assert reference['motionRadii'] == motion and reference['gaussianRadii'] == gaussian
+          expected_inputs = {(fixture, phase) for fixture in ['impulse', 'step', 'stripes'] for phase in range(16)}
+          inputs = reference['inputs']
+          cases = reference['cases']
+          assert len(inputs) == 48 and {(c['fixture'], c['phase']) for c in inputs} == expected_inputs
+          expected = {(fixture, phase, name, radius) for fixture, phase in expected_inputs
+                      for name, radii in [('CIMotionBlur', motion), ('CIGaussianBlur', gaussian)] for radius in radii}
+          assert len(cases) == 48 * (len(motion) + len(gaussian))
+          assert {(c['fixture'], c['phase'], c['filter'], c['radius']) for c in cases} == expected
+          for case in inputs + cases:
+              output = case['output']
+              assert (output['width'], output['height']) == (512, 1)
+              assert (output['floatBytes'], output['byteBytes']) == (8192, 2048)
+              for data_key, hash_key, size in [('floatBase64', 'floatSha256', 8192), ('rgbaBase64', 'byteSha256', 2048)]:
+                  raw = base64.b64decode(output[data_key], validate=True)
+                  assert len(raw) == size and re.fullmatch('[0-9a-f]{64}', output[hash_key])
+                  assert hashlib.sha256(raw).hexdigest() == output[hash_key]
+              assert all(math.isfinite(v) for v in struct.unpack('<2048f', base64.b64decode(output['floatBase64'])))
+              assert 0 < len(output['description']) <= 65536
+          source_hashes = {}
+          for source in inputs:
+              fixture, phase = source['fixture'], source['phase']
+              values = [int(x == 256 + phase) if fixture == 'impulse' else
+                        int(x >= 256 + phase) if fixture == 'step' else ((x + phase) // 7) % 2 for x in range(512)]
+              expected_bytes = bytes(channel for value in values for channel in [value * 255] * 3 + [255])
+              assert base64.b64decode(source['output']['rgbaBase64']) == expected_bytes
+              source_hashes[fixture, phase] = source['output']['byteSha256']
+          for case in cases:
+              if case['filter'] == 'CIMotionBlur' and case['radius'] == 0:
+                  assert case['output']['byteSha256'] == source_hashes[case['fixture'], case['phase']]
+          print(f'Validated 48 source identities, {len(cases)} native spatial recipes and {2 * (48 + len(cases))} raw bitmap hashes')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coreimage-spatial-reference
+          path: coreimage-spatial-reference.json
+          if-no-files-found: error

@@ -1,0 +1,9 @@
+--- a/Compositor/Document/ProjectWorkspace.swift
++++ b/Compositor/Document/ProjectWorkspace.swift
+@@ -63,5 +63,6 @@
+     /// `tab` while it's still empty, the rest in new tabs named for them.
+     private func attach(_ tab: ProjectTab) {
++        ImportPrompts.attachArtboardSession(tab.session)
+         tab.session.opensArtboard = { [weak self, weak tab] document, name in
+             guard let self, let tab else { return }
+             let target: ProjectTab

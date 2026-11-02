@@ -1,0 +1,282 @@
+// SwiftUI's local state property wrappers. Upstream panels use these purely for their own transient UI state
+// (typed zoom text, focus, drag state); the underlying model state is `@Bindable var session: EditorSession`
+// (real `Observation`, already re-exported by SwiftUI.swift) and needs no wrapper of its own here.
+
+@propertyWrapper @dynamicMemberLookup public struct Binding<Value> {
+    private let getter: () -> Value
+    private let setter: (Value) -> Void
+    public init(get: @escaping () -> Value, set: @escaping (Value) -> Void) { getter = get; setter = set }
+    public var wrappedValue: Value {
+        get { getter() }
+        nonmutating set { setter(newValue) }
+    }
+    public var projectedValue: Binding<Value> { self }
+    public static func constant(_ value: Value) -> Binding<Value> { Binding(get: { value }, set: { _ in }) }
+
+    /// `$settings.channel` — a sub-binding into one of `Value`'s properties, the same dynamic-member projection
+    /// real SwiftUI's `Binding` supports.
+    public subscript<Subject>(dynamicMember keyPath: WritableKeyPath<Value, Subject>) -> Binding<Subject> {
+        Binding<Subject>(get: { wrappedValue[keyPath: keyPath] }, set: { wrappedValue[keyPath: keyPath] = $0 })
+    }
+}
+
+extension Binding where Value: MutableCollection {
+    /// A binding to one collection element, read from the current collection so other edits remain intact.
+    public subscript(index: Value.Index) -> Binding<Value.Element> {
+        Binding<Value.Element>(get: { wrappedValue[index] }, set: { value in
+            var collection = wrappedValue
+            collection[index] = value
+            wrappedValue = collection
+        })
+    }
+}
+
+// Not `@MainActor`: these are plain boxed storage (no AppKit/UIKit thread affinity of their own), and modifier
+// closures that write through them (`.onChange`, `.focused`, ...) run wherever the Qt bridge calls back from.
+//
+// Both are `struct`s wrapping a private class box, matching real SwiftUI's `State`/`FocusState` (also structs) —
+// NOT plain classes. This matters beyond style: Swift only treats a property-wrapper's own no-argument `init()` as
+// supplying an implicit default for the *enclosing* type's synthesized memberwise initializer when the wrapper is
+// a struct. A class-backed `@propertyWrapper` (what an earlier version of this file used) makes Swift require an
+// explicit argument for every such property, which then makes the whole synthesized initializer `private` — e.g.
+// `NavigationToolHeader(session:)` would stop compiling. Confirmed via a minimal repro against the toolchain.
+final class _Box<Value>: @unchecked Sendable { var value: Value; init(_ value: Value) { self.value = value } }
+
+/// Where a `State`/`FocusState` keeps its value. The wrapper struct is rebuilt with its view every render; the slot lets
+/// the resolver point a fresh one at the box the same view (same place in the tree) used last time — see StateStore.
+final class _Slot<Value>: @unchecked Sendable { var box: _Box<Value>; init(_ box: _Box<Value>) { self.box = box } }
+
+/// A dynamic property whose storage outlives one render of its view (SwiftUI's `DynamicProperty` storage).
+protocol _PersistentState {
+    /// Adopts `stored` (the box this property used at this place last render) when there is one, and returns the box
+    /// to keep for the next render.
+    func _link(to stored: AnyObject?) -> AnyObject
+}
+
+@propertyWrapper public struct State<Value> {
+    private let slot: _Slot<Value>
+    public init(wrappedValue: Value) { slot = _Slot(_Box(wrappedValue)) }
+    /// Deprecated-but-still-real SwiftUI spelling (`State(initialValue:)`), used directly (not via `@State`) when a
+    /// custom `init` needs to seed a property wrapper's storage explicitly.
+    public init(initialValue: Value) { slot = _Slot(_Box(initialValue)) }
+    public var wrappedValue: Value {
+        get { slot.box.value }
+        nonmutating set { slot.box.value = newValue }
+    }
+    public var projectedValue: Binding<Value> {
+        let slot = slot
+        return Binding(get: { slot.box.value }, set: { slot.box.value = $0 })
+    }
+}
+
+extension State: _PersistentState {
+    func _link(to stored: AnyObject?) -> AnyObject {
+        if let box = stored as? _Box<Value> { slot.box = box }
+        return slot.box
+    }
+}
+
+@propertyWrapper public struct FocusState<Value: Equatable> {
+    private let slot: _Slot<Value>
+    public init(wrappedValue: Value) { slot = _Slot(_Box(wrappedValue)) }
+    /// Must stay declared inline (not in a conditional `extension`) — Swift's memberwise-init default-detection for
+    /// property wrappers only recognises a zero-argument `init()` written directly on the primary type declaration,
+    /// even for a `struct` wrapper. Confirmed via a minimal repro: moving this to `extension FocusState where Value
+    /// == Bool` compiled, but silently stopped satisfying the default-parameter heuristic, making every enclosing
+    /// view's synthesized initializer `private` again (e.g. `NavigationToolHeader(session:)` failing to link).
+    public init() where Value == Bool { slot = _Slot(_Box(false)) }
+    /// For `@FocusState private var field: SomeEnum?` — matches real SwiftUI's `init() where Value:
+    /// ExpressibleByNilLiteral`, needed for the same inline-declaration reason as the `Bool` overload above.
+    public init() where Value: ExpressibleByNilLiteral { slot = _Slot(_Box(nil)) }
+    public var wrappedValue: Value {
+        get { slot.box.value }
+        nonmutating set { slot.box.value = newValue }
+    }
+    public var projectedValue: FocusState<Value> { self }
+}
+
+extension FocusState: _PersistentState {
+    func _link(to stored: AnyObject?) -> AnyObject {
+        if let box = stored as? _Box<Value> { slot.box = box }
+        return slot.box
+    }
+}
+
+/// SwiftUI keeps a view's `@State` for as long as the view stays at its place in the tree, and drops it when the view
+/// goes away. Views here are rebuilt on every resolve, so while a scope (one panel) resolves, each composite view's
+/// state is linked to the storage its predecessor at the same path had; storage no view claimed is released at `end`.
+public enum StateStore {
+    nonisolated(unsafe) private static var scope: String?
+    nonisolated(unsafe) private static var boxes: [String: AnyObject] = [:]
+    nonisolated(unsafe) private static var claimed = Set<String>()
+    /// View types with no persistent properties, so their resolve skips reflection.
+    nonisolated(unsafe) private static var stateless = Set<ObjectIdentifier>()
+
+    /// The scope being resolved (a panel), if any.
+    static var currentScope: String? { scope }
+    /// Starts resolving `scope`; returns false (and changes nothing) when a resolve is already running.
+    public static func begin(scope: String) -> Bool {
+        guard self.scope == nil else { return false }
+        self.scope = scope
+        claimed = []
+        ViewResolver.resetNestedPaths()
+        ImageRegistry.begin(scope: scope)
+        PreferenceValues.begin(scope: scope)
+        return true
+    }
+    public static func end() {
+        guard let scope else { return }
+        PreferenceValues.end(scope: scope)
+        ImageRegistry.end(scope: scope)
+        let prefix = scope + "|"
+        for key in boxes.keys where key.hasPrefix(prefix) && !claimed.contains(key) { boxes.removeValue(forKey: key) }
+        self.scope = nil
+    }
+    /// Forgets all state under `scope` (a panel that is closed for good).
+    public static func discard(scope: String) {
+        ImageRegistry.discard(scope: scope)
+        let prefix = scope + "|"
+        for key in boxes.keys where key.hasPrefix(prefix) { boxes.removeValue(forKey: key) }
+    }
+
+    static func link(_ view: any View, path: String) {
+        guard let scope else { return }
+        let type = ObjectIdentifier(Swift.type(of: view))
+        guard !stateless.contains(type) else { return }
+        var found = false
+        for child in Mirror(reflecting: view).children {
+            guard let property = child.value as? _PersistentState, let label = child.label else { continue }
+            found = true
+            let key = "\(scope)|\(path)|\(label)"
+            if claimed.contains(key) { continue }
+            claimed.insert(key)
+            boxes[key] = property._link(to: boxes[key])
+        }
+        if !found { stateless.insert(type) }
+    }
+}
+
+import Foundation
+
+/// Persists to `UserDefaults.standard`, matching real SwiftUI's `@AppStorage` contract for the primitive types
+/// upstream code uses it with (`Double` — `layersPanelWidth` in `ContentView.swift`).
+@propertyWrapper public struct AppStorage<Value> {
+    private let key: String
+    private let defaultValue: Value
+    private let get: (String, Value) -> Value
+    private let set: (String, Value) -> Void
+    public var wrappedValue: Value {
+        get { get(key, defaultValue) }
+        nonmutating set { set(key, newValue) }
+    }
+    public var projectedValue: Binding<Value> {
+        Binding(get: { wrappedValue }, set: { wrappedValue = $0 })
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == Double {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == Bool {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == String {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+    public init(wrappedValue: Value, _ key: String) where Value == Int {
+        self.key = key; self.defaultValue = wrappedValue
+        get = { UserDefaults.standard.object(forKey: $0) as? Value ?? $1 }
+        set = { UserDefaults.standard.set($1, forKey: $0) }
+    }
+}
+
+/// `openWindow(id:)`: shows the scene's window with that id. The host owns the windows (`handler`, installed by it);
+/// without one it does nothing.
+public struct OpenWindowAction {
+    nonisolated(unsafe) public static var handler: ((String) -> Void)?
+    public func callAsFunction(id: String) { Self.handler?(id) }
+    public func callAsFunction(id: String, value: some Hashable) { Self.handler?(id) }
+}
+
+public struct EnvironmentValues {
+    /// Active environment while `ViewResolver` walks a tree (pushed/popped around `.disabled`).
+    nonisolated(unsafe) public static var current = EnvironmentValues()
+
+    public var openWindow: OpenWindowAction { OpenWindowAction() }
+    public var displayScale: CGFloat { 1 }
+    /// Mirrors SwiftUI: false under an ancestor `.disabled(true)`.
+    public var isEnabled: Bool = true
+}
+
+/// Scroll view camera for `.scrollPosition` (JPEG export preview).
+public struct ScrollPosition: Equatable {
+    public private(set) var point: CGPoint = .zero
+    public init() {}
+    public mutating func scrollTo(point: CGPoint) { self.point = point }
+    public mutating func scrollTo(edge: Any) { _ = edge }
+}
+
+@propertyWrapper public struct Environment<Value> {
+    private let keyPath: KeyPath<EnvironmentValues, Value>
+    public init(_ keyPath: KeyPath<EnvironmentValues, Value>) { self.keyPath = keyPath }
+    /// Read at access time so `.disabled` applied outside a label still reaches `@Environment(\.isEnabled)`.
+    public var wrappedValue: Value { EnvironmentValues.current[keyPath: keyPath] }
+}
+
+/// Gives per-property `Binding`s into an `@Observable` reference type (`EditorSession`, ...) via dynamic member
+/// lookup — `@Bindable var session: EditorSession` then `$session.brushMode` — matching real SwiftUI's contract.
+@propertyWrapper @dynamicMemberLookup public struct Bindable<Value: AnyObject> {
+    public var wrappedValue: Value
+    public init(wrappedValue: Value) { self.wrappedValue = wrappedValue }
+    public var projectedValue: Bindable<Value> { self }
+    public subscript<Subject>(dynamicMember keyPath: ReferenceWritableKeyPath<Value, Subject>) -> Binding<Subject> {
+        Binding(get: { wrappedValue[keyPath: keyPath] }, set: { wrappedValue[keyPath: keyPath] = $0 })
+    }
+}
+
+
+// MARK: - Preferences
+
+/// SwiftUI's `PreferenceKey`: values views publish up the tree, combined by `reduce`.
+public protocol PreferenceKey {
+    associatedtype Value
+    static var defaultValue: Value { get }
+    static func reduce(value: inout Value, nextValue: () -> Value)
+}
+
+/// The preferences a panel's views published, per panel. `.preference` adds to the resolve in progress;
+/// `onPreferenceChange` reads the last complete resolve's value — SwiftUI delivers a preference after layout, and
+/// the bridge resolves again until the actions it triggers settle, so the value lands on the next pass.
+public enum PreferenceValues {
+    // Resolves run on the main thread (the StateStore's own statics work the same way).
+    nonisolated(unsafe) private static var collecting: [ObjectIdentifier: Any] = [:]
+    nonisolated(unsafe) private static var settled: [String: [ObjectIdentifier: Any]] = [:]
+    nonisolated(unsafe) private static var scope: String?
+    static func begin(scope: String) { self.scope = scope; collecting = [:] }
+    static func end(scope: String) { settled[scope] = collecting; collecting = [:]; self.scope = nil }
+    static func publish<K: PreferenceKey>(_ key: K.Type, _ value: K.Value) {
+        var combined = (collecting[ObjectIdentifier(key)] as? K.Value) ?? K.defaultValue
+        K.reduce(value: &combined, nextValue: { value })
+        collecting[ObjectIdentifier(key)] = combined
+    }
+    static func value<K: PreferenceKey>(_ key: K.Type) -> K.Value {
+        guard let scope else { return K.defaultValue }
+        return (settled[scope]?[ObjectIdentifier(key)] as? K.Value) ?? K.defaultValue
+    }
+}
+
+extension View {
+    public func preference<K: PreferenceKey>(key: K.Type, value: K.Value) -> some View {
+        modified { _ in PreferenceValues.publish(key, value) }
+    }
+    /// Runs `action` with the panel's combined value for `key` when it changes (and once at first, as SwiftUI does).
+    public func onPreferenceChange<K: PreferenceKey>(_ key: K.Type, perform action: @escaping (K.Value) -> Void) -> some View
+    where K.Value: Equatable {
+        let value = PreferenceValues.value(key)
+        return onChange(of: value, initial: true) { _, new in action(new) }
+    }
+}

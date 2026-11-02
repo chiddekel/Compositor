@@ -1,0 +1,7 @@
+# Keep hooks, MCP clients, and CLI lookups in the same project scope.
+workspace = "default"
+project = "robbietilton-compositor"
+
+[briefing]
+inject_on_session_start = true
+max_chars = 12000

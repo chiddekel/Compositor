@@ -1,0 +1,16 @@
+{
+  "height": 256,
+  "os": "Version 26.6.1 (Build 25G76)",
+  "platform": "macOS",
+  "pngSHA256": "74303883b7396f7fd409a224f13172ca719a09c4118242f335f5a2baac278c9b",
+  "schema": 1,
+  "scriptSHA256": "038f89fc355ad054763b3822689d012261945e9e04af74840f7f73e669735b99",
+  "sourceLayout": "RGBA8-premultipliedLast-byteOrder32Big-sRGB",
+  "sourceSHA256": "ad250d87f06d811f84562c6c9e7ca8beaf038b0831d1d8667d88d121925bdea2",
+  "validColorAlphaPairs": 32896,
+  "width": 256,
+  "nativeRun": 40331254861,
+  "nativeCommit": "786aa871a883f4667f859a694dcfe8ea8675b987",
+  "runner": "macos-26-intel",
+  "captureReportSHA256": "ac17385328ac1200c5a06148d3d5dbbb93e63c241e53ca9bbc651c2a86fe6265"
+}

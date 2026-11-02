@@ -1,0 +1,80 @@
+name: Core Image blur reference
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Capture native blur, sampling, and mask references
+        run: swift scripts/capture-coreimage-reference.swift > coreimage-reference.json
+      - name: Validate native reference buffers
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          reference = json.loads(Path('coreimage-reference.json').read_text())
+          assert reference['platform'] == 'macOS' and reference['schema'] == 1
+          assert len(reference['inputs']) == 2 and len(reference['cases']) == 358
+          keys = [json.dumps({key: value for key, value in item.items() if key != 'output'}, sort_keys=True)
+                  for item in reference['cases']]
+          assert len(set(keys)) == len(keys)
+          buffers = 0
+          records = [(item['identity'], [0, 0, 96, 72]) for item in reference['inputs']]
+          records += [(item['output'], item.get('sampleBounds', [0, 0, 96, 72])) for item in reference['cases']]
+          for output, bounds in records:
+              assert len(bounds) == 4 and all(math.isfinite(value) for value in bounds)
+              width, height = bounds[2:]
+              assert (width, height) in [(96, 72), (192, 72), (32, 24)]
+              for kind, bits in [('byte', 8), ('float', 32)]:
+                  item = output[kind]
+                  assert item['width'] == width and item['height'] == height
+                  assert item['bitsPerComponent'] == bits and item['rowBytes'] == width * 4 * bits // 8
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if kind == 'float':
+                      assert all(math.isfinite(value[0]) for value in struct.iter_unpack('<f', raw))
+                  buffers += 1
+          assert buffers == 720
+          print(f'Validated {len(reference["cases"])} native cases and {buffers} buffers')
+          PY
+      - name: Validate native Gaussian working-precision controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coreimage-reference.json').read_text())['workingPrecision']
+          assert len(cases) == 504
+          assert len({(c['fixture'], c['alphaLevel'], c['radius'], c['sourceFormat'], c['workingFormat']) for c in cases}) == 504
+          for case in cases:
+              assert case['fixture'] in ['opaque-rectangle', 'step-x', 'step-y', 'impulse']
+              assert case['alphaLevel'] in [0.25, 0.5, 1] and case['radius'] in [0.5, 1, 2, 5, 10, 17, 35]
+              assert case['sourceFormat'] in ['RGBA8', 'RGBAf']
+              assert case['workingFormat'] in ['default', 'RGBAh', 'RGBAf']
+              assert case['contextPolicy'] == 'shared-no-cache'
+              items = [(case['input'], 32 if case['sourceFormat'] == 'RGBAf' else 8),
+                       (case['output']['float'], 32), (case['output']['byte'], 8)]
+              for item, bits in items:
+                  assert (item['width'], item['height'], item['bitsPerComponent']) == (96, 72, bits)
+                  assert item['rowBytes'] == 96 * 4 * bits // 8
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * 72
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if bits == 32:
+                      assert all(math.isfinite(value[0]) for value in struct.iter_unpack('<f', raw))
+          print('Validated 504 working-precision recipes and 1512 native bitmap buffers')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coreimage-reference
+          path: coreimage-reference.json
+          if-no-files-found: error

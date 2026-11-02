@@ -1,0 +1,27 @@
+#version 450
+// Premultiplied RGBA8 source-over for CompRenderer's Vulkan path (Metal → Vulkan canvas).
+// src and dst are packed little-endian R|G|B|A bytes in each uint; same contract as compositor_render_rgba.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer Src { uint src[]; };
+layout(std430, binding = 1) buffer Dst { uint dst[]; };
+layout(push_constant) uniform Push { uint width; uint height; } pc;
+
+vec4 unpackPremul(uint c) {
+    return vec4(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u), float((c >> 24) & 255u)) / 255.0;
+}
+
+uint packPremul(vec4 c) {
+    uvec4 v = uvec4(clamp(c, vec4(0.0), vec4(1.0)) * 255.0 + 0.5);
+    return v.r | (v.g << 8u) | (v.b << 16u) | (v.a << 24u);
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    if (x >= pc.width || y >= pc.height) return;
+    uint i = y * pc.width + x;
+    vec4 s = unpackPremul(src[i]);
+    vec4 d = unpackPremul(dst[i]);
+    dst[i] = packPremul(s + d * (1.0 - s.a));
+}

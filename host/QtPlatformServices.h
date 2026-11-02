@@ -1,0 +1,216 @@
+#pragma once
+
+// Qt Widgets / XDG-portal implementations of the platform seams. Header-only and
+// Q_OBJECT-free (SwiftPM cannot run moc). A macOS shell would provide AppKit-backed
+// implementations of the same interfaces; nothing above this file would change.
+
+#include "interfaces/IPlatformServices.h"
+#include "ColorPickerDialog.h"
+#include "ImageImportDialog.h"
+#include "LocalFilePath.h"
+
+#include <QApplication>
+#include <QClipboard>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QStandardPaths>
+#include <QStorageInfo>
+#include <QUrl>
+#include <QByteArray>
+
+namespace qtplatform {
+
+namespace {
+bool isDocumentPortalPath(const QString &path) {
+    // XDG document portal fuse: /run/user/<uid>/doc/<id>/name — file grants only, not directory packages.
+    return path.startsWith(QStringLiteral("/run/user/")) && path.contains(QStringLiteral("/doc/"));
+}
+
+bool isFlatpakSandbox() {
+    return qEnvironmentVariableIsSet("FLATPAK_ID") || QFile::exists(QStringLiteral("/.flatpak-info"));
+}
+
+/// Flatpak's default $HOME is a session tmpfs when home/xdg-documents are not granted.
+bool isEphemeralSandboxPath(const QString &path) {
+    if (!isFlatpakSandbox() || path.isEmpty()) return false;
+    const QStorageInfo storage(path);
+    return storage.isValid() && storage.fileSystemType() == QByteArrayLiteral("tmpfs");
+}
+
+/// Durable directory for .comp packages when the dialog returns an unusable portal file path.
+QString durableProjectSaveDirectory() {
+    const auto usable = [](const QString &dir) {
+        if (dir.isEmpty() || isDocumentPortalPath(dir)) return false;
+        if (!QFileInfo::exists(dir) && !QDir().mkpath(dir)) return false;
+        return QFileInfo(dir).isWritable() && !isEphemeralSandboxPath(dir);
+    };
+    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (usable(documents)) return documents;
+    const QString download = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (usable(download)) return download;
+    // Flatpak xdg-documents mounts the real folder under its localized name while Qt may still
+    // suggest ~/Documents when user-dirs.dirs is missing.
+    if (isFlatpakSandbox()) {
+        for (const QString &name : {QStringLiteral("Dokumenty"), QStringLiteral("Documents"),
+                                    QStringLiteral("Pobrane"), QStringLiteral("Downloads")}) {
+            const QString candidate = QDir::home().filePath(name);
+            if (QFileInfo(candidate).isDir() && usable(candidate)) return candidate;
+        }
+    }
+    // Last resort inside the sandbox: persistent app data (visible under ~/.var/app/… on the host).
+    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/Projects");
+    QDir().mkpath(appData);
+    return appData;
+}
+
+QString runProjectSaveDialog(const QString &suggestedPath, bool native) {
+    QFileDialog dialog(QApplication::activeWindow(), QObject::tr("Save Project As"));
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    dialog.setNameFilters({QObject::tr("Compositor project (*.comp)"), QObject::tr("All files (*)")});
+    dialog.setOption(QFileDialog::DontUseNativeDialog, !native);
+    const QString fallbackDir = durableProjectSaveDirectory();
+    const QFileInfo suggestedInfo(suggestedPath.isEmpty() ? QDir(fallbackDir).filePath(QStringLiteral("Untitled.comp"))
+                                                          : suggestedPath);
+    // Always start in the parent folder. An existing .comp package is a directory; browsing
+    // into it made Save As write Untitled.comp/Untitled.comp.
+    QString fileName = suggestedInfo.fileName();
+    if (fileName.isEmpty()) fileName = QStringLiteral("Untitled.comp");
+    if (!fileName.endsWith(QStringLiteral(".comp"), Qt::CaseInsensitive))
+        fileName += QStringLiteral(".comp");
+    QString startDir = suggestedInfo.absolutePath();
+    if (isDocumentPortalPath(startDir) || isDocumentPortalPath(suggestedInfo.absoluteFilePath())
+        || isEphemeralSandboxPath(startDir) || !QFileInfo(startDir).isWritable())
+        startDir = fallbackDir;
+    dialog.setDirectory(startDir);
+    dialog.selectFile(fileName);
+    // selectFile already ends with .comp — defaultSuffix would produce *.comp.comp on some dialogs.
+    dialog.setDefaultSuffix(QString());
+    if (dialog.exec() != QDialog::Accepted) return {};
+    const QStringList selected = dialog.selectedFiles();
+    if (selected.isEmpty()) return {};
+    const QString path = localFilePath(selected.first());
+    if (path.isEmpty()) return {};
+    return QDir::cleanPath(path);
+}
+}  // namespace
+
+class FileDialogs final : public IFileDialogService {
+public:
+    static QString imageFilter() {
+        return QObject::tr("Images and PDF (*.pdf *.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.heic *.heif *.hif *.psd *.psb *.dng *.cr2 *.cr3 *.crw *.nef *.nrw *.arw *.orf *.raf *.rw2 *.pef *.srw *.x3f *.3fr *.iiq *.erf *.kdc *.mos *.mrw);;PDF documents (*.pdf);;Photoshop (*.psd *.psb);;Camera RAW (*.dng *.cr2 *.cr3 *.crw *.nef *.nrw *.arw *.orf *.raf *.rw2 *.pef *.srw *.x3f *.3fr *.iiq *.erf *.kdc *.mos *.mrw);;All files (*)");
+    }
+    QString chooseImageToOpen() override {
+        return QFileDialog::getOpenFileName(QApplication::activeWindow(), QObject::tr("Open Image"), QString(), imageFilter());
+    }
+    QStringList chooseImagesToImport() override {
+        ImageImportDialog dialog(imageFilter(), QApplication::activeWindow());
+        return dialog.exec() == QDialog::Accepted ? dialog.selectedPaths() : QStringList();
+    }
+    QString chooseProjectToOpen() override {
+        return QFileDialog::getExistingDirectory(QApplication::activeWindow(), QObject::tr("Open Project"));
+    }
+    QString chooseProjectSavePath(const QString &suggestedPath) override {
+        // .comp is a directory package. Prefer the system chooser; if the dialog still returns an
+        // XDG document-portal *file* grant, remap to a durable folder (Documents/Downloads, or
+        // app data inside Flatpak when those are unavailable).
+        const QByteArray previousPortal = qgetenv("QT_NO_XDG_DESKTOP_PORTAL");
+        const QByteArray previousGtkPortal = qgetenv("GTK_USE_PORTAL");
+        qputenv("QT_NO_XDG_DESKTOP_PORTAL", "1");
+        qputenv("GTK_USE_PORTAL", "0");
+        QString path = runProjectSaveDialog(suggestedPath, true);
+        if (previousPortal.isNull()) qunsetenv("QT_NO_XDG_DESKTOP_PORTAL");
+        else qputenv("QT_NO_XDG_DESKTOP_PORTAL", previousPortal);
+        if (previousGtkPortal.isNull()) qunsetenv("GTK_USE_PORTAL");
+        else qputenv("GTK_USE_PORTAL", previousGtkPortal);
+
+        if (path.isEmpty()) return {};
+
+        QString fileName = QFileInfo(path).fileName();
+        if (fileName.isEmpty()) fileName = QStringLiteral("Untitled.comp");
+        if (!fileName.endsWith(QStringLiteral(".comp"), Qt::CaseInsensitive))
+            fileName += QStringLiteral(".comp");
+
+        if (isDocumentPortalPath(path) || isEphemeralSandboxPath(QFileInfo(path).absolutePath())) {
+            const QString redirected = QDir(durableProjectSaveDirectory()).filePath(fileName);
+            qWarning("project save: unusable sandbox path %s → automatic save at %s",
+                     qPrintable(path), qPrintable(redirected));
+            if (QFileInfo(path).isFile()) QFile::remove(path);
+            return redirected;
+        }
+        return path;
+    }
+    QString chooseExportPath(const QString &formatName, const QString &filter) override {
+        return QFileDialog::getSaveFileName(QApplication::activeWindow(), QObject::tr("Export %1").arg(formatName), QString(), filter);
+    }
+};
+
+class Clipboard final : public IClipboardService {
+public:
+    void setImage(const QImage &image) override {
+        if (auto *clipboard = QGuiApplication::clipboard()) clipboard->setImage(image);
+    }
+    QImage image() const override {
+        const QClipboard *clipboard = QGuiApplication::clipboard();
+        const QMimeData *mime = clipboard ? clipboard->mimeData() : nullptr;
+        return (mime && mime->hasImage()) ? qvariant_cast<QImage>(mime->imageData()) : QImage();
+    }
+};
+
+class ColorPicker final : public IColorPickerService {
+public:
+    QColor pick(const QColor &initial, const QString &title) override {
+        return ColorPickerDialog::getColor(initial, QApplication::activeWindow(), title);
+    }
+    QColor pick(const QColor &initial, const QString &title, const std::function<void(const QColor &)> &preview) override {
+        return ColorPickerDialog::getColor(initial, QApplication::activeWindow(), title, preview);
+    }
+};
+
+class Notifier final : public IUserNotifier {
+public:
+    void warn(const QString &title, const QString &text) override {
+        QMessageBox::warning(QApplication::activeWindow(), title, text);
+    }
+};
+
+class Storage final : public IStorageLocator {
+public:
+    QString appDataDirectory() const override {
+        QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        return dir.isEmpty() ? QDir::tempPath() + "/Compositor" : dir;
+    }
+};
+
+}  // namespace qtplatform
+
+#include "FlatpakUpdateService.h"
+
+inline PlatformServices PlatformServices::qtDefaults() {
+    PlatformServices services;
+    services.files = std::make_shared<qtplatform::FileDialogs>();
+    services.clipboard = std::make_shared<qtplatform::Clipboard>();
+    services.colors = std::make_shared<qtplatform::ColorPicker>();
+    services.notifier = std::make_shared<qtplatform::Notifier>();
+    services.storage = std::make_shared<qtplatform::Storage>();
+    services.updates = std::make_shared<qtplatform::FlatpakUpdateService>();
+    return services;
+}
+
+inline PlatformServices PlatformServices::withDefaults() const {
+    const PlatformServices fallback = qtDefaults();
+    PlatformServices merged = *this;
+    if (!merged.files) merged.files = fallback.files;
+    if (!merged.clipboard) merged.clipboard = fallback.clipboard;
+    if (!merged.colors) merged.colors = fallback.colors;
+    if (!merged.notifier) merged.notifier = fallback.notifier;
+    if (!merged.storage) merged.storage = fallback.storage;
+    if (!merged.updates) merged.updates = fallback.updates;
+    return merged;
+}

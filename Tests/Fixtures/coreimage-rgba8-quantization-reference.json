@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "platform": "macOS",
+  "captureRun": 40307286103,
+  "captureCommit": "fe9238ccc537b7ef934ea5a6efd6e6ba69286047",
+  "captureSHA256": "72a795180d7c26184c17aea969a93588e203e0589340d235133386bb248b6604",
+  "nativeComponentsChecked": 3247104,
+  "floatScalingMismatches": 332,
+  "doubleScalingMismatches": 0,
+  "samples": [
+    {
+      "value": 0.0,
+      "float32Bits": "00000000",
+      "byte": 0,
+      "observation": {
+        "fixture": "opaque-gradient",
+        "workingFormat": "RGBAh",
+        "pixel": 0,
+        "channel": 0
+      }
+    },
+    {
+      "value": 0.5,
+      "float32Bits": "3f000000",
+      "byte": 128,
+      "observation": {
+        "fixture": "float-hdr",
+        "workingFormat": "RGBAh",
+        "pixel": 12,
+        "channel": 0
+      }
+    },
+    {
+      "value": 0.5156862735748291,
+      "float32Bits": "3f040404",
+      "byte": 131,
+      "observation": {
+        "fixture": "overlay-gradient",
+        "workingFormat": "RGBAh",
+        "filter": "CIUnsharpMask",
+        "radius": 1,
+        "clamped": false,
+        "intensity": 0.5,
+        "pixel": 139,
+        "channel": 0
+      }
+    },
+    {
+      "value": 0.5980392098426819,
+      "float32Bits": "3f191919",
+      "byte": 152,
+      "observation": {
+        "fixture": "overlay-gradient",
+        "workingFormat": "RGBAh",
+        "filter": "CIGaussianBlur",
+        "radius": 0.3,
+        "clamped": false,
+        "pixel": 76,
+        "channel": 3
+      }
+    },
+    {
+      "value": 0.8647058606147766,
+      "float32Bits": "3f5d5d5d",
+      "byte": 220,
+      "observation": {
+        "fixture": "float-hdr",
+        "workingFormat": "RGBAh",
+        "filter": "CIUnsharpMask",
+        "radius": 1,
+        "clamped": false,
+        "intensity": 0.5,
+        "pixel": 312,
+        "channel": 1
+      }
+    },
+    {
+      "value": 0.9313725233078003,
+      "float32Bits": "3f6e6e6e",
+      "byte": 237,
+      "observation": {
+        "fixture": "opaque-gradient",
+        "workingFormat": "RGBAf",
+        "filter": "CIUnsharpMask",
+        "radius": 5,
+        "clamped": false,
+        "intensity": 1,
+        "pixel": 291,
+        "channel": 1
+      }
+    },
+    {
+      "value": 0.9941176176071167,
+      "float32Bits": "3f7e7e7e",
+      "byte": 253,
+      "observation": {
+        "fixture": "opaque-gradient",
+        "workingFormat": "RGBAh",
+        "filter": "CIGaussianBlur",
+        "radius": 0.2,
+        "clamped": false,
+        "pixel": 1,
+        "channel": 3
+      }
+    },
+    {
+      "value": 1.0,
+      "float32Bits": "3f800000",
+      "byte": 255,
+      "observation": {
+        "fixture": "opaque-gradient",
+        "workingFormat": "RGBAh",
+        "pixel": 0,
+        "channel": 3
+      }
+    }
+  ]
+}

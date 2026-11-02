@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Exercise the spectral compute backend independently of Swift and the application renderer."""
+import ctypes as C
+import base64
+import hashlib
+import json
+import gzip
+import math
+import struct
+from pathlib import Path
+import sys
+import zlib
+
+
+def main(path):
+    root = Path(__file__).resolve().parent.parent
+    reference = json.loads((root / 'Tests/Fixtures/metal/rgb-split.json').read_text())
+    upstream = (root / 'Compositor/Rendering/MetalDispersion.swift').read_text()
+    shader = upstream.split('private static let source = """\n', 1)[1].split('\n"""', 1)[0]
+    # The original one-pass entry point remains the oracle for the historical fixture;
+    # upstream appended the two-pass kernels without changing that entry point.
+    legacy_shader = shader.split('\n// Two passes, with blur.', 1)[0].rstrip()
+    assert hashlib.sha256(legacy_shader.encode()).hexdigest() == reference['shaderSHA256']
+    lib = C.CDLL(path)
+    floats = C.POINTER(C.c_float)
+    lib.compositor_vulkan_raster_create.argtypes = [C.c_int]
+    lib.compositor_vulkan_raster_create.restype = C.c_void_p
+    lib.compositor_vulkan_raster_destroy.argtypes = [C.c_void_p]
+    lib.compositor_vulkan_raster_submissions.argtypes = [C.c_void_p]
+    lib.compositor_vulkan_raster_submissions.restype = C.c_uint64
+    lib.compositor_dispersion_render.argtypes = [C.c_void_p, C.c_uint, C.c_uint, floats, floats, floats]
+    # Permit Mesa lavapipe so SDK/CI machines without a physical GPU exercise the shader too.
+    gpu = lib.compositor_vulkan_raster_create(1)
+    width, height = 61, 45
+    source = [0.0] * (width * height * 4)
+    for y in range(20, 25):
+        for x in range(28, 33):
+            source[(y * width + x) * 4:(y * width + x) * 4 + 4] = [0.5] * 4
+    parameters = [30.5, 22.5, 1, 0, 8, 0, 20, 0, 0, 8, 1, 0, 0, 0, 0, 1, width, height, 0, 0]
+
+    def run(p, pixels=source, w=width, h=height, driver=None):
+        output = (C.c_float * (w * h * 4))()
+        code = lib.compositor_dispersion_render(driver, w, h, (C.c_float * len(pixels))(*pixels),
+                                               (C.c_float * 20)(*p), output)
+        assert code == (1 if driver else 0), code
+        return list(output)
+
+    try:
+        drivers = [None, gpu] if gpu else [None]
+        sampling = json.loads(gzip.decompress((root / 'Tests/Fixtures/metal/unorm8-sampling-reference.json.gz').read_bytes()))
+        assert sampling['nativeRun'] == 40318276957 and len(sampling['cases']) == 22
+        assert len(sampling['inputs']) == 2
+        def captured_bytes(item):
+            raw = base64.b64decode(item['base64'], validate=True)
+            assert hashlib.sha256(raw).hexdigest() == item['sha256']
+            return raw
+        sw, sh = sampling['width'], sampling['height']
+        samples = {item['fixture']: [v / 255 for v in captured_bytes(item['pixels'])]
+                   for item in sampling['inputs']}
+        for driver in drivers:
+            for case in sampling['cases']:
+                # A one-tap, zero-distance spectrum observes a translated texture
+                # sample without involving the approximate sine hash.
+                dx, dy = case['offset']
+                p = [0, 0, 1, 0, 0, 0, 1, 0, 15, 1, 1, dx, dy, 0, 0, 1, sw, sh, 0, 2]
+                actual = run(p, pixels=samples[case['fixture']], w=sw, h=sh, driver=driver)
+                expected = struct.unpack('<' + 'f' * len(actual), captured_bytes(case['output']))
+                error = max(abs(a - b) for a, b in zip(actual, expected))
+                assert error <= 1.2e-7, ('native byte sampling', case['fixture'], dx, dy, error)
+            print(f"Native UNORM8 sampling ({'Vulkan' if driver else 'CPU'}): all 22 cases pass")
+        native = json.loads(gzip.decompress((root / 'Tests/Fixtures/metal/adjustment-compute-reference.json.gz').read_bytes()))
+        assert native['upstreamCommit'] == '7651033e0abab135db40e9375a639fae55c313ff'
+        assert len(native['dispersionCases']) == 4
+        def raw(buffer):
+            result = base64.b64decode(buffer['rgbaBase64'], validate=True)
+            assert hashlib.sha256(result).hexdigest() == buffer['sha256']
+            return result
+        image = [v / 255 for v in raw(native['dispersionInput'])]
+        for driver in drivers:
+            for case in native['dispersionCases']:
+                pad = case['pad']
+                sw, sh = case['streaks']['width'], case['streaks']['height']
+                p = [30.5, 30.5, 1, 0, case['distance'], case['blur'], case['reach'], case['radial'],
+                     0, case['spectral'], case['smear'], -pad, -pad, 0, 0, 1, 61, 61, 1, 0]
+                streak = run(p, pixels=image, w=sw, h=sh, driver=driver)
+                # The application's padded intermediate is half precision on both platforms.
+                packed = struct.pack('<' + 'e' * len(streak), *streak)
+                streak = list(struct.unpack('<' + 'e' * len(streak), packed))
+                expected = list(struct.unpack('<' + 'e' * len(streak), raw(case['streaks'])))
+                error = max(abs(a - b) for a, b in zip(streak, expected))
+                assert error <= 0.002, ('native smear', case['radial'], case['distance'], error)
+                p[8], p[11:18], p[18] = 15, [0, 0, -pad, -pad, 1, sw, sh], 2
+                output = run(p, pixels=streak, w=61, h=61, driver=driver)
+                error = max(abs(round(max(0, min(1, a)) * 255) - b) for a, b in zip(output, raw(case['output'])))
+                assert error <= 2, ('native spectrum', case['radial'], case['distance'], error)
+            print(f"Native two-pass RGB Split ({'Vulkan' if driver else 'CPU'}): all 4 cases pass")
+        # Complete native application output, independent of the synthetic edge probes below.
+        # A few ulps of sine error can wrap the amplified jitter and change alpha by 17 bytes.
+        captured = json.loads((root / 'Tests/Fixtures/metal/rgb-split-default-reference.json').read_text())
+        expected = zlib.decompress(base64.b64decode(captured['rgbaZlibBase64'], validate=True))
+        assert hashlib.sha256(expected).hexdigest() == captured['rgbaSHA256']
+        assert len(expected) == captured['width'] * captured['height'] * 4
+        # The application corpus gained unrelated cases after this native capture.
+        # Preserve and verify its original source instead of relabeling the reference.
+        original_corpus = (root / 'Tests/Fixtures/metal/rgb-split-reference-corpus.swift').read_bytes()
+        assert captured['corpusSHA256'] == hashlib.sha256(original_corpus).hexdigest()
+        current_corpus = (root / 'Tests/RenderParity/RenderParityTests.swift').read_text()
+        def source_recipe(text):
+            return text.split('    private func image(', 1)[1].split('    private func snapshot(', 1)[0]
+        assert source_recipe(original_corpus.decode()) == source_recipe(current_corpus)
+        native_source = []
+        w, h = captured['width'], captured['height']
+        for y in range(h):
+            for x in range(w):
+                a = 0 if x < 12 or y < 12 or x > 80 or y > 58 else 160
+                native_source.extend([v / 255 for v in [(x * 255 // (w - 1)) * a // 255,
+                    (y * 255 // (h - 1)) * a // 255, 220 * a // 255, a]])
+        native_parameters = [w / 2, h / 2, 1, 0, 10, 0, 1000, 0, 15, 10, 1, 0, 0, 0, 0, 1, w, h, 0, 2]
+        for driver in drivers:
+            output = run(native_parameters, pixels=native_source, w=w, h=h, driver=driver)
+            error = max(abs(round(max(0, min(1, value)) * 255) - target) for value, target in zip(output, expected))
+            assert error <= 2, ('native RGB Split default', 'Vulkan' if driver else 'CPU', error)
+            print(f"Native RGB Split reference ({'Vulkan' if driver else 'CPU'}): max error {error}/255")
+        # The unchanged one-pass adjustment exposes a reciprocal/FMA boundary case:
+        # alpha must meet the application corpus's one-byte limit on the CPU fallback too.
+        adjustment = json.loads((root / 'Tests/Fixtures/metal/rgb-split-adjustment-alpha-reference.json').read_text())
+        assert adjustment['schema'] == 1 and adjustment['legacyShaderSHA256'] == reference['shaderSHA256']
+        assert adjustment['upstream'] == captured['upstream']
+        assert adjustment['corpusSHA256'] == captured['corpusSHA256']
+        assert adjustment['inputsSHA256'] == captured['inputsSHA256']
+        assert (adjustment['width'], adjustment['height']) == (w, h)
+        alpha = zlib.decompress(base64.b64decode(adjustment['alphaZlibBase64'], validate=True))
+        assert len(alpha) == w * h and hashlib.sha256(alpha).hexdigest() == adjustment['alphaSHA256']
+        opaque = bytes(v for y in range(h) for x in range(w)
+                       for v in [x * 255 // (w - 1), y * 255 // (h - 1), 100, 255])
+        assert hashlib.sha256(opaque).hexdigest() == adjustment['sourceRGBA_SHA256']
+        p = native_parameters.copy()
+        p[8] = 0
+        for driver in drivers:
+            output = run(p, pixels=[v / 255 for v in opaque], w=w, h=h, driver=driver)
+            error = max(abs(round(max(0, min(1, output[i * 4 + 3])) * 255) - value)
+                        for i, value in enumerate(alpha))
+            assert error <= 1, ('native RGB Split adjustment alpha', 'Vulkan' if driver else 'CPU', error)
+            print(f"Native RGB Split adjustment alpha ({'Vulkan' if driver else 'CPU'}): max error {error}/255")
+        for driver in drivers:
+            # New entry points: padded streaks may contain HDR, then the spectrum
+            # samples them with their own input/output origins and row direction.
+            constant = [2.0, 0.3, 0.4, 1.0] * (width * height)
+            first = parameters.copy()
+            first[5], first[8], first[10], first[18] = 12, 15, 8, 1
+            first[11:16] = [-4, 49, 0, 45, -1]
+            streak = run(first, pixels=constant, w=width + 8, h=height + 8, driver=driver)
+            assert max(abs(a - b) for a, b in zip(streak, [2.0, 0.3, 0.4, 1.0] * ((width + 8) * (height + 8)))) < 1e-5
+            last = parameters.copy()
+            last[8], last[18] = 15, 2
+            last[11:18] = [0, 45, -4, 49, -1, width + 8, height + 8]
+            spectrum = run(last, pixels=streak, driver=driver)
+            assert max(abs(a - b) for a, b in zip(spectrum, [1.0, 0.3, 0.4, 1.0] * (width * height))) < 1e-5
+            if driver:
+                # An impulse exercises the individual gather positions, beyond constant-image normalization.
+                for mode in [1, 2]:
+                    probe = parameters.copy()
+                    probe[5], probe[8], probe[10], probe[18] = 12, 15, 8, mode
+                    cpu = run(probe)
+                    hardware = run(probe, driver=driver)
+                    assert max(abs(a - b) for a, b in zip(cpu, hardware)) <= 2 / 255
+            # Native Metal output, captured from the unchanged upstream shader. Fast-math
+            # rounding may differ by a byte, but the outer blurred tail must survive.
+            square = [0.0] * (61 * 61 * 4)
+            for y in range(28, 33):
+                for x in range(28, 33):
+                    square[(y * 61 + x) * 4:(y * 61 + x) * 4 + 4] = [1.0] * 4
+            assert hashlib.sha256(bytes(int(v * 255) for v in square)).hexdigest() == reference['fixtureSHA256']
+            for distance, blur, spectral, smear, key in [(8, 0, 8, 1, 'flatRGBA'), (4, 16, 4, 8, 'streakedRGBA')]:
+                settings = [30.5, 30.5, 1, 0, distance, blur, 1, 0, 0, spectral, smear,
+                            0, 0, 0, 0, 1, 61, 61, 0, 0]
+                captured = run(settings, pixels=square, w=61, h=61, driver=driver)
+                for point in reference['edgePixels']:
+                    start = (point['y'] * 61 + point['x']) * 4
+                    actual = [round(value * 255) for value in captured[start:start + 4]]
+                    assert max(abs(a - b) for a, b in zip(actual, point[key])) <= 2, (point, actual, key)
+            # Direction, continuous spectrum, streaks, radial center and associated alpha.
+            out = run(parameters, driver=driver)
+            red = sum(out[(22 * width + x) * 4] for x in range(34, 42))
+            blue = sum(out[(22 * width + x) * 4 + 2] for x in range(34, 42))
+            assert red > blue * 2, (red, blue)
+            assert all(math.isfinite(v) for v in out)
+            for i in range(0, len(out), 4):
+                assert all(-1e-6 <= out[i + c] <= out[i + 3] + 1e-6 for c in range(3))
+                assert 0 <= out[i + 3] <= 0.500001
+            streak = parameters.copy()
+            streak[5], streak[10] = 16, 8
+            blurred = run(streak, driver=driver)
+            assert sum(blurred[(22 * width + x) * 4 + 3] for x in range(36, 41)) > 0
+            # Blur without a spectral split spreads both ways and keeps the light's center.
+            centered = streak.copy()
+            centered[4], centered[9], centered[10] = 0, 1, 64
+            symmetric = run(centered, driver=driver)
+            weights = [symmetric[(22 * width + x) * 4 + 3] for x in range(width)]
+            centroid = sum(x * weight for x, weight in enumerate(weights)) / sum(weights)
+            assert abs(centroid - 30) < 0.6, centroid
+            assert sum(weights[20:28]) > 0 and sum(weights[33:41]) > 0
+            radial = parameters.copy()
+            radial[7] = 1
+            radial_result = run(radial, driver=driver)
+            assert abs(radial_result[(22 * width + 30) * 4] - 0.5) < 1e-5
+            # A different output size, translated origins and upward rows: no implicit same-size or row-order assumption.
+            identity = parameters.copy()
+            identity[4], identity[9], identity[10] = 0, 1, 1
+            identity[11:16] = [27, 26, 0, 45, -1]
+            result = run(identity, w=9, h=9, driver=driver)
+            expected = []
+            for y in range(9):
+                start = ((19 + y) * width + 27) * 4
+                expected.extend(source[start:start + 9 * 4])
+            assert max(abs(a - b) for a, b in zip(result, expected)) < 1e-5
+            # Outside an unextended side is clear; an enabled canvas edge repeats its nearest texel.
+            constant = [0.2, 0.3, 0.4, 0.5] * (width * height)
+            identity[11:16] = [-3, -3, 0, 0, 1]
+            clear = run(identity, pixels=constant, w=2, h=2, driver=driver)
+            assert max(abs(v) for v in clear) < 1e-6
+            identity[8] = 15
+            edge = run(identity, pixels=constant, w=2, h=2, driver=driver)
+            assert max(abs(a - b) for a, b in zip(edge, [0.2, 0.3, 0.4, 0.5] * 4)) < 1e-5
+        if gpu:
+            assert lib.compositor_vulkan_raster_submissions(gpu) >= 6
+            # Sharp alpha boundaries expose individual jitter errors hidden by
+            # averages. The unqualified GPU phase/sine produced errors up to
+            # 94/255 on this image, despite passing the statistics below.
+            wide, tall = 192, 144
+            disc = []
+            for y in range(tall):
+                for x in range(wide):
+                    a = float((x - 96) ** 2 + (y - 72) ** 2 < 48 ** 2)
+                    disc.extend([a * x / (wide - 1), a * y / (tall - 1), a * 0.4, a])
+            for distance, blur, spectral, smear in [(8, 0, 8, 1), (4, 16, 4, 8),
+                                                    (18, 0, 8, 1), (40, 4, 16, 4), (0, 40, 1, 64)]:
+                settings = [96, 72, 0.819152, -0.573576, distance, blur, 96, 0, 0,
+                            spectral, smear, 0, 0, 0, 0, 1, wide, tall, 0, 0]
+                cpu = run(settings, pixels=disc, w=wide, h=tall)
+                hardware = run(settings, pixels=disc, w=wide, h=tall, driver=gpu)
+                error = max(abs(a - b) for a, b in zip(cpu, hardware)) * 255
+                assert error <= 2, (distance, blur, spectral, smear, error)
+            # sin/fract jitter can differ between GPU and libm. Hold the overall signal to the same mean/spread;
+            # the pixel/geometry assertions above apply independently to each backend.
+            ramp = []
+            for y in range(height):
+                for x in range(width):
+                    disc = ((x - 40) / 14) ** 2 + ((y - 22) / 12) ** 2 < 1
+                    ramp.extend([x / (width - 1), y / (height - 1), 40 / 255 if disc else (255 - x * 3) / 255, 1])
+            cpu = run(parameters, pixels=ramp)
+            hardware = run(parameters, pixels=ramp, driver=gpu)
+            for channel in range(4):
+                def statistics(values):
+                    samples = values[channel::4]
+                    mean = sum(samples) / len(samples)
+                    spread = math.sqrt(sum((v - mean) ** 2 for v in samples) / len(samples))
+                    return mean, spread
+                for a, b in zip(statistics(cpu), statistics(hardware)):
+                    assert abs(a - b) <= 2 / 255, (channel, a, b)
+        print(f"Dispersion OK (CPU{' and hardware Vulkan' if gpu else ''}: spectrum, streaks, radial, alpha, ROI and edges)")
+    finally:
+        lib.compositor_vulkan_raster_destroy(gpu)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1])

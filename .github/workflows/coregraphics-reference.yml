@@ -1,0 +1,399 @@
+name: Core Graphics sampling reference
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Capture native bitmap sampling
+        run: swift scripts/capture-coregraphics-reference.swift > coregraphics-reference.json
+      - name: Validate native stroke coverage controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['strokeCoverage']
+          assert len(cases) == len({c['name'] for c in cases}) == 91
+          assert sum(c['transformName'] == 'identity' and c['cap'] == 'butt' for c in cases) == 73
+          assert sum(c['transformName'] == 'translated' for c in cases) == 6
+          assert sum(c['transformName'] == 'affine' for c in cases) == 6
+          assert sum(c['cap'] == 'round' for c in cases) == 3
+          assert sum(c['cap'] == 'square' for c in cases) == 3
+          for case in cases:
+              assert case['width'] > 0
+              assert len(case['start']) == len(case['end']) == 2 and len(case['transform']) == 6
+              assert len(case['rgba']) == 4 and all(0 <= v <= 1 for v in case['rgba'])
+              assert all(math.isfinite(v) for key in ['start', 'end', 'transform', 'rgba'] for v in case[key])
+              assert math.isfinite(case['degrees']) and math.isfinite(case['phase'])
+              item = case['output']
+              assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (96, 72, 384, 8)
+              raw = base64.b64decode(item['rgbaBase64'], validate=True)
+              assert len(raw) == 384 * 72 and hashlib.sha256(raw).hexdigest() == item['sha256']
+              assert any(raw[3::4]), 'Native stroke draw is empty'
+              assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
+          print('Validated 91 native stroke coverage recipes and bitmap buffers')
+          PY
+      - name: Validate native curved paths and stroke outlines
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math
+          from pathlib import Path
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          curves = reference['curveCoverage']
+          outlines = reference['strokeOutlines']
+          assert len(curves) == len({c['name'] for c in curves}) == 109
+          assert {c['family'] for c in curves} == {'ellipse', 'rounded', 'smooth', 'quad-cap', 'cubic-cap'}
+          assert sum(c['flatness'] == 'default' for c in curves) == 94
+          assert {c['flatness'] for c in curves} == {'default', '0.01', '0.1', '0.6', '1.0', '10.0'}
+          assert sum(c['transformName'] == 'translated' for c in curves) == 30
+          assert sum(c['transformName'] == 'affine' for c in curves) == 30
+          assert len(outlines) == len({c['name'] for c in outlines}) == 91
+          assert {c['name'] for c in outlines} == {c['name'] for c in reference['strokeCoverage']}
+          point_counts = {'move': 1, 'line': 1, 'quad': 2, 'cubic': 3, 'close': 0}
+          for case in curves:
+              assert len(case['transform']) == 6 and len(case['rgba']) == 4
+              assert all(math.isfinite(v) for key in ['transform', 'rgba'] for v in case[key])
+          flattened = [p for c in curves for p in c['flattened']]
+          assert len(flattened) == 1090
+          assert all(len(c['flattened']) == 10 and {p['threshold'] for p in c['flattened']} ==
+                     {0.025, 0.05, 0.0625, 0.075, 0.1, 0.25, 0.5, 0.6, 1.0, 10.0} for c in curves)
+          for case in flattened:
+              assert all(s['verb'] in {'move', 'line', 'close'} for s in case['path'])
+          rebuilt = [{'path': c['rebuiltPath'], 'output': c['rebuiltOutput']} for c in curves]
+          print('Rebuilt paths retaining identical elements:', sum(c['path'] == c['rebuiltPath'] for c in curves), 'of', len(curves))
+          for case in curves + outlines + flattened + rebuilt:
+              assert case['path'] and case['path'][0]['verb'] == 'move'
+              for segment in case['path']:
+                  assert len(segment['points']) == point_counts[segment['verb']]
+                  assert all(len(p) == 2 and all(math.isfinite(v) for v in p) for p in segment['points'])
+              item = case['output']
+              assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (96, 72, 384, 8)
+              raw = base64.b64decode(item['rgbaBase64'], validate=True)
+              assert len(raw) == 384 * 72 and hashlib.sha256(raw).hexdigest() == item['sha256']
+              assert any(raw[3::4]), 'Native path draw is empty'
+              assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
+          print('Validated 109 curves, 91 outlines, 1090 flattened copies, 109 rebuilt paths and 1399 buffers')
+          PY
+      - name: Validate high-quality sampling linearity controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingLinearity']
+          assert len(cases) == 104
+          keys = {(c['mode'], c['axis'], c['position'], c['base'], c['amplitude'], c['block']) for c in cases}
+          assert len(keys) == 104
+          assert sum(c['mode'] == 'impulse' for c in cases) == 96
+          assert sum(c['mode'] == 'ramp' for c in cases) == 4
+          assert sum(c['mode'] == 'checker' for c in cases) == 4
+          for case in cases:
+              assert case['axis'] in [0, 1] and case['block'] in [2, 6]
+              for key in ['input', 'output']:
+                  item = case[key]
+                  expected = (96, 72) if key == 'input' else (96 // case['block'], 72 // case['block'])
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == 32 and item['rowBytes'] == item['width'] * 16
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                             for p in struct.iter_unpack('<4f', raw))
+          print('Validated 104 sampling-linearity recipes and 208 native floating-point buffers')
+          PY
+      - name: Validate sampling corner and fractional-bound controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingCorners']
+          assert len(cases) == 80
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['block'], c['quality']) for c in cases}) == 80
+          for case in cases:
+              assert case['quality'] in ['none', 'high'] and case['block'] in [1, 2, 3, 6]
+              width, height = case['sourceWidth'], case['sourceHeight']
+              for key in ['input', 'output']:
+                  item = case[key]
+                  expected = (width, height) if key == 'input' else (
+                      (width + case['block'] - 1) // case['block'], (height + case['block'] - 1) // case['block'])
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+          print('Validated 80 corner/fractional-bound recipes and 160 native bitmap buffers')
+          PY
+      - name: Validate isolated fractional sampling geometry controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingGeometry']
+          assert len(cases) == 144
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['mode'], c['block'], c['quality']) for c in cases}) == 144
+          for case in cases:
+              assert (case['sourceWidth'], case['sourceHeight']) in [(17, 13), (65, 49), (97, 73)]
+              assert case['mode'] in ['constant', 'ramps', 'checker', 'corners']
+              assert case['quality'] in ['none', 'high'] and case['block'] in [2, 3, 6]
+              width, height, block = case['sourceWidth'], case['sourceHeight'], case['block']
+              for key in ['input', 'output', 'alignedOutput']:
+                  item = case[key]
+                  expected = (width, height) if key == 'input' else (
+                      (width + block - 1) // block, (height + block - 1) // block)
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+          print('Validated 144 isolated sampling-geometry recipes and 432 native bitmap buffers')
+          PY
+      - name: Validate sampling alpha and single-fractional-axis controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingAlphaGeometry']
+          assert len(cases) == 432
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['mode'], c['alphaMode'], c['block'], c['quality']) for c in cases}) == 432
+          assert {mode: sum(c['alphaMode'] == mode for c in cases) for mode in ['opaque', 'half', 'ramp']} == {
+              'opaque': 48, 'half': 192, 'ramp': 192}
+          periodic = json.loads(Path('coregraphics-reference.json').read_text())['samplingPeriodicGeometry']
+          assert len(periodic) == 24
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['block'], c['quality']) for c in periodic}) == 24
+          assert all(c['mode'] == 'period5' and (c['sourceWidth'], c['sourceHeight']) in [(17, 13), (97, 73)] for c in periodic)
+          cases += [dict(c, alphaMode='ramp') for c in periodic]
+          for case in cases:
+              width, height, block = case['sourceWidth'], case['sourceHeight'], case['block']
+              assert (width, height) in ([(32, 24)] if case['alphaMode'] == 'opaque' else [(17, 13), (32, 24), (65, 49), (97, 73)])
+              assert case['mode'] in ['constant', 'ramps', 'checker', 'corners', 'period5']
+              assert case['quality'] in ['none', 'high'] and block in [2, 3, 6]
+              for key in ['input', 'output', 'alignedOutput']:
+                  item = case[key]
+                  expected = (width, height) if key == 'input' else (
+                      (width + block - 1) // block, (height + block - 1) // block)
+                  assert (item['width'], item['height']) == expected
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+                  if key == 'input':
+                      alpha = [p[3] for p in struct.iter_unpack('<4f', raw)] if case['floating'] else list(raw[3::4])
+                      expected_alpha = {'opaque': (1, 1), 'half': (0.5, 0.5), 'ramp': (0.25, 1)} if case['floating'] else {
+                          'opaque': (255, 255), 'half': (128, 128), 'ramp': (64, 255)}
+                      assert (min(alpha), max(alpha)) == expected_alpha[case['alphaMode']]
+          print('Validated 456 alpha/periodic/single-fractional-axis recipes and 1368 native bitmap buffers')
+          PY
+      - name: Validate minor and mixed-axis image scaling controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingScales']
+          assert len(cases) == 256
+          assert len({(c['sourceWidth'], c['sourceHeight'], c['floating'], c['mode'], c['quality'],
+                       c['output']['width'], c['output']['height']) for c in cases}) == 256
+          for case in cases:
+              source_size = case['sourceWidth'], case['sourceHeight']
+              assert source_size in [(96, 72), (17, 13)]
+              targets = [(95, 71), (80, 60), (64, 48), (96, 36), (48, 72), (80, 36),
+                         (48, 60), (96, 71), (95, 72), (192, 36), (48, 144), (96, 72)] if source_size == (96, 72) else [
+                         (16, 12), (17, 12), (16, 13), (2, 2)]
+              assert (case['output']['width'], case['output']['height']) in targets
+              assert case['block'] == 1 and case['quality'] in ['none', 'high']
+              assert case['mode'] in ['ramps', 'checker', 'period5', 'corners']
+              assert case['output'] == case['alignedOutput']
+              for key in ['input', 'output']:
+                  item = case[key]
+                  if key == 'input': assert (item['width'], item['height']) == source_size
+                  assert item['bitsPerComponent'] == (32 if case['floating'] else 8)
+                  assert item['rowBytes'] == item['width'] * (16 if case['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * item['height']
+                  assert hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if case['floating']:
+                      assert all(all(math.isfinite(v) for v in p) and 0 <= p[3] <= 1.000001
+                                 for p in struct.iter_unpack('<4f', raw))
+          print('Validated 256 minor/mixed-axis scaling recipes and 512 unique native bitmap buffers')
+          PY
+      - name: Validate high-quality stripe signal controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json
+          from pathlib import Path
+          cases = json.loads(Path('coregraphics-reference.json').read_text())['samplingSignals']
+          assert len(cases) == 2 and {c['alpha'] for c in cases} == {128, 255}
+          for case in cases:
+              assert case['fixture'] == 'period-5-two-white' and case['block'] == 10
+              for key, side in [('input', 320), ('output', 32)]:
+                  item = case[key]
+                  assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (side, side, side * 4, 8)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == side * side * 4 and hashlib.sha256(raw).hexdigest() == item['sha256']
+                  assert all(raw[i + c] <= raw[i + 3] for i in range(0, len(raw), 4) for c in range(3))
+          print('Validated opaque/translucent stripe signals and four native bitmap buffers')
+          PY
+      - name: Validate coverage opacity and transform controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math, struct
+          from pathlib import Path
+          curves = json.loads(Path('coregraphics-reference.json').read_text())['curveCoverage']
+          count = 0
+          for case in curves:
+              controls = case['coverageControls']
+              assert len(controls) == len({c['name'] for c in controls}) == 9
+              assert {c['name'] for c in controls} == {'opaque', 'alpha-0.7', 'alpha-0.5', 'alpha-0.25',
+                                                     'transformed-opaque', 'transformed-color', 'floating-opaque',
+                                                     'reversed-opaque', 'rotated-opaque'}
+              for control in controls:
+                  item = control['output']
+                  assert (item['width'], item['height']) == (96, 72)
+                  assert item['bitsPerComponent'] == (32 if control['floating'] else 8)
+                  assert item['rowBytes'] == 96 * (16 if control['floating'] else 4)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == item['rowBytes'] * 72 and hashlib.sha256(raw).hexdigest() == item['sha256']
+                  if control['floating']:
+                      pixels = list(struct.iter_unpack('<4f', raw))
+                      assert all(all(math.isfinite(v) for v in pixel) and 0 <= pixel[3] <= 1 for pixel in pixels)
+                      assert all(0 <= pixel[c] <= pixel[3] + 1e-6 for pixel in pixels for c in range(3))
+                      assert any(pixel[3] > 0 for pixel in pixels)
+                  else:
+                      assert any(raw[3::4])
+                      assert all(raw[i + c] <= raw[i + 3] for i in range(0, len(raw), 4) for c in range(3))
+                  count += 1
+          assert count == 981
+          print('Validated 981 coupled coverage, opacity, transform and contour-order buffers')
+          PY
+      - name: Validate paired Hue and Saturation controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json
+          from pathlib import Path
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          assert reference['schema'] == 1 and reference['platform'] == 'macOS'
+          pairs = reference['nonseparablePairs']
+          assert len(pairs['labels']) == len(set(pairs['labels'])) == 8
+          assert len(pairs['cases']) == 6
+          assert {(c['mode'], c['opacity']) for c in pairs['cases']} == {
+              (mode, opacity) for mode in ['hue', 'saturation'] for opacity in [1, 0.5, 0.25]}
+          buffers = [pairs['source']] + [case[key] for case in pairs['cases'] for key in ['input', 'output']]
+          for item in buffers:
+              assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (8, 1, 32, 8)
+              raw = base64.b64decode(item['rgbaBase64'], validate=True)
+              assert len(raw) == 32 and hashlib.sha256(raw).hexdigest() == item['sha256']
+              assert all(raw[i + channel] <= raw[i + 3] for i in range(0, 32, 4) for channel in range(3))
+          print('Validated eight source/backdrop pairs, six recipes and thirteen buffers')
+          PY
+      - name: Validate native text geometry and baseline controls
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, math
+          from pathlib import Path
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          geometry = reference['textGeometry']
+          expected = {(face, size) for face in ['Inter-Regular', 'Inter-Bold', 'Inter-Light']
+                      for size in [12, 24, 36, 12.5, 24.5, 36.5]}
+          assert len(geometry) == 18 and {(c['face'], c['size']) for c in geometry} == expected
+          assert all(c['matchesBundledFont'] and c['bundledSha256'] == c['resolvedSha256'] for c in reference['text'])
+          buffers = 0
+          for case in geometry:
+              assert len(case['glyphs']) == 4
+              assert [g['characterIndex'] for g in case['glyphs']] == [0, 1, 2, 3]
+              for glyph in case['glyphs']:
+                  assert 0 <= glyph['glyph'] <= 65535
+                  assert all(math.isfinite(v) for key in ['location', 'advance', 'bounds', 'lineFragment'] for v in glyph[key])
+              assert all(math.isfinite(v) for v in case['usedRect'])
+              assert case['lineHeight'] > 0 and all(math.isfinite(v) for v in case['coreTextMetrics'].values())
+              runs = case['coreTextRuns']
+              assert sum(len(run['glyphs']) for run in runs) == 4
+              for run in runs:
+                  assert len(run['glyphs']) == len(run['positions']) == len(run['advances'])
+                  assert all(math.isfinite(v) for key in ['positions', 'advances'] for point in run[key] for v in point)
+              draws = case['draws']
+              assert len(draws) == 8
+              assert {(d['engine'], d['smoothing'], d.get('baselinePolicy')) for d in draws} == {
+                  (engine, smoothing, policy) for smoothing in [True, False]
+                  for engine, policies in [('NSLayoutManager', [None]),
+                                           ('CTLine', ['rounded-ascent', 'fractional-ascent', 'descent'])]
+                  for policy in policies}
+              for draw in draws:
+                  if draw['engine'] == 'CTLine':
+                      assert math.isfinite(draw['baselineOffset'])
+                  item = draw['output']
+                  assert (item['width'], item['height'], item['rowBytes'], item['bitsPerComponent']) == (96, 144, 384, 8)
+                  raw = base64.b64decode(item['rgbaBase64'], validate=True)
+                  assert len(raw) == 384 * 144 and hashlib.sha256(raw).hexdigest() == item['sha256']
+                  assert any(raw[3::4]), 'Native text draw is empty'
+                  assert all(raw[i + channel] <= raw[i + 3] for i in range(0, len(raw), 4) for channel in range(3))
+                  buffers += 1
+          assert buffers == 144
+          print('Validated eighteen text layouts, seventy-two glyph records and 144 native baseline buffers')
+          PY
+      - name: Validate native paragraph geometry
+        run: |
+          python3 - <<'PY'
+          import json, math
+          from pathlib import Path
+          reference = json.loads(Path('coregraphics-reference.json').read_text())
+          cases = reference['textParagraphGeometry']
+          base = {'tight-leading', 'loose-leading', 'wrapped', 'tracking',
+              'centered', 'right-aligned', 'multiline', 'combining', 'ligature', 'surrogate', 'bidi-controls',
+              'bidi-left-override', 'bidi-right-embedding', 'bidi-left-embedding', 'bidi-right-isolate',
+              'bidi-left-isolate', 'bidi-unmatched', 'bidi-nested', 'bidi-tracking', 'bidi-size24',
+              'bidi-only', 'bidi-initial', 'bidi-adjacent', 'bidi-first-strong',
+              'bidi-back-to-back', 'bidi-empty', 'bidi-wrapped'}
+          tracked = {name + '-tracking' for name in base if name.startswith('bidi-')
+                     and name not in {'bidi-controls', 'bidi-tracking'}}
+          negative = {'bidi-negative-tracking', 'bidi-nested-negative-tracking', 'bidi-initial-negative-tracking'}
+          assert len(cases) == 45 and {c['name'] for c in cases} == base | tracked | negative
+          for case in cases:
+              assert case['face'] == 'Inter-Regular'
+              assert 0 <= case['controlGlyph'] <= 0xFFFFFFFF
+              assert len(case['text'].encode('utf-16-le')) // 2 == case['utf16Length']
+              assert case['glyphs'] and all(math.isfinite(case[k]) for k in ['size', 'lineHeight', 'tracking', 'width'])
+              for glyph in case['glyphs']:
+                  assert 0 <= glyph['glyph'] <= 0xFFFFFFFF and 0 <= glyph['characterIndex'] < case['utf16Length']
+                  assert len(glyph['location']) == 2 and len(glyph['lineFragment']) == 4
+                  assert all(math.isfinite(v) for key in ['location', 'lineFragment'] for v in glyph[key])
+                  start, count = glyph['effectiveRange']
+                  assert 0 <= start < len(case['glyphs']) and 0 < count <= len(case['glyphs']) - start
+          fallback = reference['textFallbackFonts']
+          assert len(fallback) == 3 and {c['name'] for c in fallback} == {'plain', 'surrogate', 'bidi-controls'}
+          for case in fallback:
+              assert case['primary']['name'] == 'Inter-Regular' and case['runs']
+              length = len(case['text'].encode('utf-16-le')) // 2
+              for run in case['runs']:
+                  start, count = run['range']
+                  assert 0 <= start < length and 0 < count <= length - start
+                  assert run['font']['name'] and run['font']['file']
+                  assert all(math.isfinite(run['font'][k]) for k in ['size', 'ascent', 'descent', 'leading'])
+                  assert len(run['glyphs']) == len(run['advances'])
+                  assert all(0 <= glyph <= 65535 for glyph in run['glyphs'])
+                  assert all(math.isfinite(v) for advance in run['advances'] for v in advance)
+          print('Validated 45 native paragraph layouts and three fallback font controls')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coregraphics-reference
+          path: coregraphics-reference.json
+          if-no-files-found: error

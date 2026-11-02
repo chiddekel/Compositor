@@ -1,0 +1,128 @@
+// The JSON-codable mirror of `RenderNode`/`RenderModifier` that crosses the C ABI to the Qt host (see
+// Sources/LinuxBridge/SwiftUIBridge.swift). `RenderNode` itself carries live Swift closures (`handlers`, and a few
+// `RenderModifier` cases), which aren't `Codable`; this DTO drops them and keeps everything else, keyed by the
+// same stable `id` so a later phase can dispatch a Qt-side action back to the right node without needing the
+// closures to cross the wire too.
+
+public struct RenderNodeWire: Codable {
+    public var id: String
+    public var kind: String
+    public var stringParams: [String: String]
+    public var doubleParams: [String: Double]
+    public var boolParams: [String: Bool]
+    /// Which `handlers` keys this node's live `RenderNode` had (the closures themselves don't cross the wire —
+    /// they stay behind in `Entry.actionHandlers`, see SwiftUIBridge.swift). Tells the Qt renderer which dispatch
+    /// key to use, since e.g. `TextField` carries either `"text"` or `"value"` depending on which upstream
+    /// initializer built it.
+    public var handlerKeys: [String]
+    public var modifiers: [RenderModifierWire]
+    public var children: [RenderNodeWire]
+}
+
+public struct RenderModifierWire: Codable {
+    public var kind: String
+    public var stringParams: [String: String] = [:]
+    public var doubleParams: [String: Double] = [:]
+    public var boolParams: [String: Bool] = [:]
+}
+
+extension RenderNode {
+    /// Converts this (already `assignIDs()`-ed) node and its descendants to the wire format. Closures stay in the
+    /// handler registry; the host gets the names it can dispatch. Nested overlay nodes are omitted here.
+    public func wire() -> RenderNodeWire {
+        var keys = Set(handlers.keys)
+        for m in modifiers {
+            if case .sink(let key, _) = m {
+                keys.insert(key)
+            } else if case .resultSink(let key, _) = m {
+                keys.insert(key)
+            } else if case .onSubmit = m {
+                keys.insert("onSubmit")
+            } else if case .onExitCommand = m {
+                keys.insert("onExitCommand")
+            }
+        }
+        // JSON has no infinity or NaN: a single one (e.g. `.frame(maxWidth: .infinity)`) would fail the whole panel's
+        // encoding, so non-finite values never reach the wire (frames say "expand" with a flag instead, below).
+        return RenderNodeWire(id: id, kind: kind, stringParams: stringParams, doubleParams: doubleParams.filter { $0.value.isFinite },
+                              boolParams: boolParams,
+                              handlerKeys: keys.sorted(),   // sorted: a set's order changes between runs, and the shell compares trees byte for byte
+                              modifiers: modifiers.compactMap { $0.wire() }.map { modifier in
+                                  var finite = modifier
+                                  finite.doubleParams = modifier.doubleParams.filter { $0.value.isFinite }
+                                  return finite
+                              },
+                              children: children.map { $0.wire() })
+    }
+}
+
+extension RenderModifier {
+    func wire() -> RenderModifierWire? {
+        switch self {
+        case let .frame(width, height, minWidth, minHeight, maxWidth, maxHeight, alignment):
+            var d: [String: Double] = [:]
+            if let width { d["width"] = width }
+            if let height { d["height"] = height }
+            if let minWidth { d["minWidth"] = minWidth }
+            if let minHeight { d["minHeight"] = minHeight }
+            var b: [String: Bool] = [:]
+            if let maxWidth { if maxWidth.isFinite { d["maxWidth"] = maxWidth } else if maxWidth > 0 { b["maxWidthInfinity"] = true } }
+            if let maxHeight { if maxHeight.isFinite { d["maxHeight"] = maxHeight } else if maxHeight > 0 { b["maxHeightInfinity"] = true } }
+            return RenderModifierWire(kind: "frame", stringParams: ["alignment": alignment], doubleParams: d.filter { $0.value.isFinite },
+                                      boolParams: b)
+        case let .padding(top, leading, bottom, trailing):
+            return RenderModifierWire(kind: "padding", doubleParams: ["top": top, "leading": leading, "bottom": bottom, "trailing": trailing])
+        case let .font(name): return RenderModifierWire(kind: "font", stringParams: ["name": name])
+        case let .foregroundStyle(name): return RenderModifierWire(kind: "foregroundStyle", stringParams: ["name": name])
+        case let .background(name): return RenderModifierWire(kind: "background", stringParams: ["name": name])
+        case let .position(x, y): return RenderModifierWire(kind: "position", doubleParams: ["x": x, "y": y])
+        case let .border(name, width): return RenderModifierWire(kind: "border", stringParams: ["name": name], doubleParams: ["width": width])
+        case let .opacity(v): return RenderModifierWire(kind: "opacity", doubleParams: ["value": v])
+        case let .disabled(v): return RenderModifierWire(kind: "disabled", boolParams: ["value": v])
+        case let .fixedSize(h, v): return RenderModifierWire(kind: "fixedSize", boolParams: ["horizontal": h, "vertical": v])
+        case let .buttonStyle(name): return RenderModifierWire(kind: "buttonStyle", stringParams: ["name": name])
+        case let .buttonBorderShape(name): return RenderModifierWire(kind: "buttonBorderShape", stringParams: ["name": name])
+        case let .pointerStyle(name): return RenderModifierWire(kind: "pointerStyle", stringParams: ["name": name])
+        case let .toggleStyle(name): return RenderModifierWire(kind: "toggleStyle", stringParams: ["name": name])
+        case let .pickerStyle(name): return RenderModifierWire(kind: "pickerStyle", stringParams: ["name": name])
+        case let .menuStyle(name): return RenderModifierWire(kind: "menuStyle", stringParams: ["name": name])
+        case let .controlSize(name): return RenderModifierWire(kind: "controlSize", stringParams: ["name": name])
+        case let .textFieldStyle(name): return RenderModifierWire(kind: "textFieldStyle", stringParams: ["name": name])
+        case let .multilineTextAlignment(name): return RenderModifierWire(kind: "multilineTextAlignment", stringParams: ["name": name])
+        case let .lineLimit(lines): return RenderModifierWire(kind: "lineLimit", doubleParams: ["lines": Double(lines)])
+        case let .contentShape(name): return RenderModifierWire(kind: "contentShape", stringParams: ["name": name])
+        case let .clipShape(name): return RenderModifierWire(kind: "clipShape", stringParams: ["name": name])
+        case .clipped: return RenderModifierWire(kind: "clipped")
+        case let .tapGesture(count): return RenderModifierWire(kind: "tapGesture", doubleParams: ["count": Double(count)])
+        case let .spatialTapGesture(count): return RenderModifierWire(kind: "spatialTapGesture", doubleParams: ["count": Double(count)])
+        case let .offset(x, y): return RenderModifierWire(kind: "offset", doubleParams: ["x": x, "y": y])
+        case let .cornerRadius(r): return RenderModifierWire(kind: "cornerRadius", doubleParams: ["radius": r])
+        case let .shadow(r): return RenderModifierWire(kind: "shadow", doubleParams: ["radius": r])
+        case let .scaleEffect(s): return RenderModifierWire(kind: "scaleEffect", doubleParams: ["scale": s])
+        case let .rotationEffect(r): return RenderModifierWire(kind: "rotationEffect", doubleParams: ["radians": r])
+        case let .help(text): return RenderModifierWire(kind: "help", stringParams: ["text": text])
+        case let .accessibilityLabel(text): return RenderModifierWire(kind: "accessibilityLabel", stringParams: ["text": text])
+        case let .accessibilityIdentifier(text): return RenderModifierWire(kind: "accessibilityIdentifier", stringParams: ["text": text])
+        case let .identifier(text): return RenderModifierWire(kind: "identifier", stringParams: ["text": text])
+        case let .scrollIndicators(name): return RenderModifierWire(kind: "scrollIndicators", stringParams: ["name": name])
+        case let .keyboardShortcut(key, modifiers):
+            return RenderModifierWire(kind: "keyboardShortcut", stringParams: ["key": key], doubleParams: ["modifiers": Double(modifiers)])
+        case let .tag(text): return RenderModifierWire(kind: "tag", stringParams: ["text": text])
+        case let .layoutPriority(value): return RenderModifierWire(kind: "layoutPriority", doubleParams: ["value": value])
+        case let .timer(interval): return RenderModifierWire(kind: "timer", doubleParams: ["interval": interval])
+        case let .coordinateSpace(name): return RenderModifierWire(kind: "coordinateSpace", stringParams: ["name": name])
+        case let .dragGesture(minimumDistance, coordinateSpace):
+            return RenderModifierWire(kind: "dragGesture", stringParams: ["coordinateSpace": coordinateSpace],
+                                      doubleParams: ["minimumDistance": minimumDistance])
+        case let .accessibilityHidden(hidden):
+            return RenderModifierWire(kind: "accessibilityHidden", boolParams: ["value": hidden])
+        case let .accessibilityValue(value):
+            return RenderModifierWire(kind: "accessibilityValue", stringParams: ["value": value])
+        case let .accessibilityElement(children):
+            return RenderModifierWire(kind: "accessibilityElement", stringParams: ["children": children])
+        case let .allowsHitTesting(enabled):
+            return RenderModifierWire(kind: "allowsHitTesting", boolParams: ["enabled": enabled])
+        case .overlay, .onAppear, .onDisappear, .onSubmit, .onExitCommand, .sink, .resultSink, .observe: return nil
+        }
+    }
+}
