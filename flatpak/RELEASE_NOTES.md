@@ -1,3 +1,11 @@
+Compositor 1.6.1-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
+
+- ci: run GNU_Linux workflows and Swift tests sequentially
+- Update compatibility layer for GNU/Linux
+- Publish update feed for Compositor 1.6.1
+
+Previous release notes:
+
 Compositor 1.6.1-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream Compositor 1.6.1 through `9b0892b`, including Xcode version 1.6.1 build 60.

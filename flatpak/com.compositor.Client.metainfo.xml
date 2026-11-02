@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.6.1-linux-alpha.2" date="2026-11-02" type="development">
+      <description><p>ci: run GNU_Linux workflows and Swift tests sequentially; Update compatibility layer for GNU/Linux; Publish update feed for Compositor 1.6.1</p></description>
+    </release>
     <release version="1.6.1-linux-alpha.1" date="2026-11-02" type="development">
       <description><p>Integrate upstream Compositor 1.6.1: Volumetric Light waits for the depth model on first preview, edit panels open at the layers-panel edge, and protected trees match tip.</p></description>
     </release>
