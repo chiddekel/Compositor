@@ -76,6 +76,7 @@ xmark.circle.fill custom/xmark-circle-fill
 eye.fill custom/eye-fill
 plusminus.circle custom/plusminus-circle
 circle.dotted custom/circle-dotted
+circle.dotted.and.circle custom/circle-dotted
 circle.filled.pattern.diagonalline.rectangle custom/circle-pattern-rectangle
 scale.3d custom/scale-3d
 checkmark custom/check

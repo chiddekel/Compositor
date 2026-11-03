@@ -176,6 +176,50 @@ public func vImageScale_ARGB8888(_ src: UnsafePointer<vImage_Buffer>, _ dest: Un
     scale(src, dest, channels: 4, flags: flags)
 }
 
+/// Reorders the four interleaved 8-bit channels of each pixel by `permuteMap` (destination channel ← source index).
+/// Tip Reduce Noise uses `[2,1,0,3]` to swap red/blue between BGRA and RGBA in place or into another buffer.
+@discardableResult
+public func vImagePermuteChannels_ARGB8888(_ src: UnsafePointer<vImage_Buffer>, _ dest: UnsafePointer<vImage_Buffer>,
+                                           _ permuteMap: UnsafePointer<UInt8>, _ flags: vImage_Flags) -> vImage_Error {
+    _ = flags
+    let s = src.pointee, d = dest.pointee
+    guard s.data != nil, d.data != nil else { return kvImageInvalidParameter }
+    guard s.width == d.width, s.height == d.height else { return kvImageBufferSizeMismatch }
+    let map0 = Int(permuteMap[0]), map1 = Int(permuteMap[1]), map2 = Int(permuteMap[2]), map3 = Int(permuteMap[3])
+    guard (0..<4).contains(map0), (0..<4).contains(map1), (0..<4).contains(map2), (0..<4).contains(map3) else {
+        return kvImageInvalidParameter
+    }
+    let width = Int(s.width), height = Int(s.height)
+    // In-place: stage each row so a channel isn't overwritten before it's read.
+    let inPlace = s.data == d.data
+    var scratch = inPlace ? [UInt8](repeating: 0, count: width * 4) : []
+    for y in 0..<height {
+        let from = (s.data + y * s.rowBytes).assumingMemoryBound(to: UInt8.self)
+        let to = (d.data + y * d.rowBytes).assumingMemoryBound(to: UInt8.self)
+        if inPlace {
+            for x in 0..<width {
+                let i = x * 4
+                scratch[i] = from[i + map0]
+                scratch[i + 1] = from[i + map1]
+                scratch[i + 2] = from[i + map2]
+                scratch[i + 3] = from[i + map3]
+            }
+            scratch.withUnsafeBufferPointer { buf in
+                to.update(from: buf.baseAddress!, count: width * 4)
+            }
+        } else {
+            for x in 0..<width {
+                let i = x * 4
+                to[i] = from[i + map0]
+                to[i + 1] = from[i + map1]
+                to[i + 2] = from[i + map2]
+                to[i + 3] = from[i + map3]
+            }
+        }
+    }
+    return kvImageNoError
+}
+
 @discardableResult
 public func vImageScale_Planar8(_ src: UnsafePointer<vImage_Buffer>, _ dest: UnsafePointer<vImage_Buffer>,
                                 _ tempBuffer: UnsafeMutableRawPointer?, _ flags: vImage_Flags) -> vImage_Error {

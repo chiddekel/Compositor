@@ -1067,8 +1067,11 @@ private indirect enum Node {
 
 private extension Node {
     /// Processor textures run top-down; Raster stores CI coordinates bottom-up. Each input retains its full ROI.
+    /// 8-bit formats (RGBA8 / BGRA8) use CPU bitmaps so tip kernels like Reduce Noise can read `baseAddress`.
     static func executeProcessor(_ kernel: CIImageProcessorKernel.Type, inputs: [Node],
                                  arguments: [String: Any], region: CGRect, env: Env) -> Raster {
+        let outputFormat = kernel.outputFormat
+        let eightBit = outputFormat == .RGBA8 || outputFormat == .BGRA8
         func texture(_ raster: Raster, format: CIFormat) -> MTLTexture {
             let half = format == .RGBAh
             let pixelBytes = half ? 8 : 16
@@ -1087,13 +1090,68 @@ private extension Node {
             }
             return result
         }
-        let processorInputs = inputs.enumerated().map { index, node in
+        /// Raster (bottom-up float) → top-down 8-bit interleaved; BGRA swaps R/B for tip Reduce Noise.
+        func bitmap8(_ raster: Raster, format: CIFormat) -> CIImageProcessorBitmap {
+            let row = raster.width * 4
+            let bitmap = CIImageProcessorBitmap(count: row * raster.height, bytesPerRow: row)
+            let dst = bitmap.baseAddress.assumingMemoryBound(to: UInt8.self)
+            let bgra = format == .BGRA8
+            for y in 0..<raster.height {
+                let srcY = raster.height - 1 - y
+                for x in 0..<raster.width {
+                    let s = (srcY * raster.width + x) * 4
+                    let d = y * row + x * 4
+                    let r = UInt8(min(255, max(0, (raster.data[s] * 255).rounded())))
+                    let g = UInt8(min(255, max(0, (raster.data[s + 1] * 255).rounded())))
+                    let b = UInt8(min(255, max(0, (raster.data[s + 2] * 255).rounded())))
+                    let a = UInt8(min(255, max(0, (raster.data[s + 3] * 255).rounded())))
+                    if bgra {
+                        dst[d] = b; dst[d + 1] = g; dst[d + 2] = r; dst[d + 3] = a
+                    } else {
+                        dst[d] = r; dst[d + 1] = g; dst[d + 2] = b; dst[d + 3] = a
+                    }
+                }
+            }
+            return bitmap
+        }
+        let processorInputs = inputs.enumerated().map { index, node -> CIImageProcessorInput in
+            let format = kernel.formatForInput(at: Int32(index))
             let roi = kernel.roi(forInput: Int32(index), arguments: arguments, outputRect: region).integral
             let raster = node.eval(roi, Env(linear: false, gpu: env.gpu, halfGaussian: env.halfGaussian))
-            return CIImageProcessorInput(region: roi, metalTexture: texture(raster, format: kernel.formatForInput(at: Int32(index))))
+            if format == .RGBA8 || format == .BGRA8 {
+                return CIImageProcessorInput(region: roi, bitmap: bitmap8(raster, format: format))
+            }
+            return CIImageProcessorInput(region: roi, metalTexture: texture(raster, format: format))
         }
         let command = MTLCommandBuffer()
-        let target = texture(Raster(rect: region), format: kernel.outputFormat)
+        if eightBit {
+            let width = max(1, Int(region.width.rounded(.towardZero)))
+            let height = max(1, Int(region.height.rounded(.towardZero)))
+            let row = width * 4
+            let outBitmap = CIImageProcessorBitmap(count: row * height, bytesPerRow: row)
+            let output = CIImageProcessorOutput(region: region, bitmap: outBitmap, metalCommandBuffer: command)
+            do { try kernel.process(with: processorInputs, arguments: arguments, output: output) }
+            catch { return Raster(rect: region) }
+            var result = Raster(rect: region)
+            let src = outBitmap.baseAddress.assumingMemoryBound(to: UInt8.self)
+            let bgra = outputFormat == .BGRA8
+            for y in 0..<height {
+                let dstY = height - 1 - y
+                for x in 0..<width {
+                    let s = y * row + x * 4
+                    let d = (dstY * width + x) * 4
+                    let c0 = Float(src[s]) / 255, c1 = Float(src[s + 1]) / 255
+                    let c2 = Float(src[s + 2]) / 255, a = Float(src[s + 3]) / 255
+                    if bgra {
+                        result.data[d] = c2; result.data[d + 1] = c1; result.data[d + 2] = c0; result.data[d + 3] = a
+                    } else {
+                        result.data[d] = c0; result.data[d + 1] = c1; result.data[d + 2] = c2; result.data[d + 3] = a
+                    }
+                }
+            }
+            return result
+        }
+        let target = texture(Raster(rect: region), format: outputFormat)
         let output = CIImageProcessorOutput(region: region, metalTexture: target, metalCommandBuffer: command)
         do { try kernel.process(with: processorInputs, arguments: arguments, output: output) }
         catch { return Raster(rect: region) }
@@ -1805,12 +1863,47 @@ public final class CIRAWFilter: @unchecked Sendable {
 
 // MARK: - CIImageProcessorKernel
 
+/// Owns a contiguous 8-bit pixel buffer for `CIImageProcessorKernel` CPU paths (tip Reduce Noise).
+final class CIImageProcessorBitmap: @unchecked Sendable {
+    let baseAddress: UnsafeMutableRawPointer
+    let count: Int
+    let bytesPerRow: Int
+    init(count: Int, bytesPerRow: Int) {
+        self.count = count
+        self.bytesPerRow = bytesPerRow
+        baseAddress = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 16)
+        baseAddress.initializeMemory(as: UInt8.self, repeating: 0, count: count)
+    }
+    init(copying bytes: [UInt8], bytesPerRow: Int) {
+        self.count = bytes.count
+        self.bytesPerRow = bytesPerRow
+        baseAddress = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 16)
+        bytes.withUnsafeBytes { baseAddress.copyMemory(from: $0.baseAddress!, byteCount: count) }
+    }
+    deinit { baseAddress.deallocate() }
+}
+
 public final class CIImageProcessorInput {
     public let region: CGRect
     public let metalTexture: MTLTexture?
+    /// CPU pixel base for 8-bit processor kernels (tip Reduce Noise); rows top-down.
+    public let baseAddress: UnsafeMutableRawPointer
+    public let bytesPerRow: Int
+    fileprivate let bitmap: CIImageProcessorBitmap?
     public init(region: CGRect, metalTexture: MTLTexture?) {
         self.region = region
         self.metalTexture = metalTexture
+        self.bitmap = nil
+        // Metal-only kernels never read these; a non-null sentinel keeps the tip surface compiling.
+        self.baseAddress = UnsafeMutableRawPointer(bitPattern: 1)!
+        self.bytesPerRow = 0
+    }
+    fileprivate init(region: CGRect, bitmap: CIImageProcessorBitmap) {
+        self.region = region
+        self.metalTexture = nil
+        self.bitmap = bitmap
+        self.baseAddress = bitmap.baseAddress
+        self.bytesPerRow = bitmap.bytesPerRow
     }
 }
 
@@ -1818,10 +1911,25 @@ public final class CIImageProcessorOutput {
     public let region: CGRect
     public let metalTexture: MTLTexture?
     public let metalCommandBuffer: MTLCommandBuffer?
+    /// CPU pixel base for 8-bit processor kernels; rows top-down.
+    public let baseAddress: UnsafeMutableRawPointer
+    public let bytesPerRow: Int
+    fileprivate let bitmap: CIImageProcessorBitmap?
     public init(region: CGRect, metalTexture: MTLTexture?, metalCommandBuffer: MTLCommandBuffer?) {
         self.region = region
         self.metalTexture = metalTexture
         self.metalCommandBuffer = metalCommandBuffer
+        self.bitmap = nil
+        self.baseAddress = UnsafeMutableRawPointer(bitPattern: 1)!
+        self.bytesPerRow = 0
+    }
+    fileprivate init(region: CGRect, bitmap: CIImageProcessorBitmap, metalCommandBuffer: MTLCommandBuffer?) {
+        self.region = region
+        self.metalTexture = nil
+        self.metalCommandBuffer = metalCommandBuffer
+        self.bitmap = bitmap
+        self.baseAddress = bitmap.baseAddress
+        self.bytesPerRow = bitmap.bytesPerRow
     }
 }
 

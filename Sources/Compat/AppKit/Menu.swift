@@ -13,6 +13,12 @@ import Foundation
     public weak var delegate: (any NSMenuDelegate)?
     public weak var supermenu: NSMenu?
     public var autoenablesItems = true
+    /// Fitted size of the item titles (tip LayersPanel footer opens just above its icon using `size.height`).
+    public var size: CGSize {
+        let width = items.reduce(CGFloat(120)) { max($0, CGFloat($1.title.count) * 7 + 24) }
+        let height = CGFloat(max(1, items.count)) * 22
+        return CGSize(width: width, height: height)
+    }
 
     public init(title: String = "") { self.title = title }
 

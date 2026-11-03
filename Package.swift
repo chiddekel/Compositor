@@ -148,9 +148,11 @@ let package = Package(
                 "MetalBokeh.swift",
                 "MetalFinishing.swift",
                 "MetalLayerEffects.swift",
+                "MetalNonlocalMeans.swift",
                 "MetalRimLight.swift",
                 "MetalVolumetricLight.swift",
                 "MetalWarp.swift",
+                "GPUReduceNoise.swift",
                 "NavigatorGeometry.swift",
                 "RasterSnapshot.swift",
                 "SampleRingOverlay.swift",
@@ -335,7 +337,9 @@ let package = Package(
                      "Rendering/TransformOverlay.swift",
                      "UI/ProjectTabs.swift",
                      "UI/FontListPanel.swift",
-                     "UI/LayerMaskMenu.swift"],
+                     "UI/LayerMaskMenu.swift",
+                     // Tip footer menus use #selector/@objc; Overrides/LayersPanel.swift uses NSSelectorDispatching.
+                     "UI/LayersPanel.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),

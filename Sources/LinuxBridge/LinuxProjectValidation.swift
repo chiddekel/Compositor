@@ -82,6 +82,10 @@ enum LinuxProjectValidation {
                 if adjustment.kind == .sharpen || filterLayer?.sharpen != nil {
                     guard manifest.version >= 19 else { throw ProjectError.invalid }
                 }
+                // Reduce Noise layers arrived in version 21.
+                if adjustment.kind == .reduceNoise || filterLayer?.reduceNoise != nil {
+                    guard manifest.version >= 21 else { throw ProjectError.invalid }
+                }
             }
             // Layer masks arrived in version 4, folder masks in version 6.
             guard layer.maskFile == nil || (manifest.version >= (layer.isGroup == true ? 6 : 4)

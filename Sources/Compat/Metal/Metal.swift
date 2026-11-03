@@ -133,11 +133,28 @@ public struct MTLResourceOptions: OptionSet, Sendable {
     public let rawValue: UInt
     public init(rawValue: UInt) { self.rawValue = rawValue }
     public static let storageModePrivate = MTLResourceOptions(rawValue: 1)
+    /// Tip MetalNonlocalMeans allocates shared CPU/GPU buffers; Linux Metal stores them in process memory.
+    public static let storageModeShared = MTLResourceOptions(rawValue: 0)
 }
 
 public final class MTLBuffer {
-    public var data: Data
-    public init(length: Int) { data = Data(count: length) }
+    public var data: Data {
+        get { Data(bytes: storage, count: length) }
+        set {
+            precondition(newValue.count <= length)
+            newValue.withUnsafeBytes { storage.copyMemory(from: $0.baseAddress!, byteCount: newValue.count) }
+        }
+    }
+    private let storage: UnsafeMutableRawPointer
+    private let length: Int
+    public init(length: Int) {
+        self.length = max(0, length)
+        storage = UnsafeMutableRawPointer.allocate(byteCount: max(1, self.length), alignment: 16)
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: max(1, self.length))
+    }
+    deinit { storage.deallocate() }
+    /// Tip MetalNonlocalMeans reads/writes shared buffers through this pointer.
+    public func contents() -> UnsafeMutableRawPointer { storage }
 }
 
 public final class MTLComputeCommandEncoder {
