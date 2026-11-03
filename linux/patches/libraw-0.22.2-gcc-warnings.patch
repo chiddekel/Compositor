@@ -1,0 +1,27 @@
+# GCC: ZERO redefined (losslessjpeg.cpp) and the ignored fread result (ext_preprocess.cpp).
+diff -ruN a/src/decompressors/losslessjpeg.cpp b/src/decompressors/losslessjpeg.cpp
+--- a/src/decompressors/losslessjpeg.cpp
++++ b/src/decompressors/losslessjpeg.cpp
+@@ -21,6 +21,8 @@
+ #include "../../internal/losslessjpeg.h"
+ #include <string.h>
+ 
++// libraw_cxx_defs.h defines its own ZERO; this file keeps its array form.
++#undef ZERO
+ #define ZERO(a) do { memset(a,0,sizeof(a));} while(0)
+ 
+ bool ByteStreamBE::skip_to_marker() // true: success, false - no marker
+diff -ruN a/src/preprocessing/ext_preprocess.cpp b/src/preprocessing/ext_preprocess.cpp
+--- a/src/preprocessing/ext_preprocess.cpp
++++ b/src/preprocessing/ext_preprocess.cpp
+@@ -117,7 +117,9 @@
+   std::vector<ushort> pixel(width, 0);
+   for (row = 0; row < height; row++)
+   {
+-    fread(pixel.data(), 2, width, fp);
++    // A short dark frame stops the subtraction instead of subtracting a stale row.
++    if (fread(pixel.data(), 2, width, fp) < width)
++      break;
+     for (col = 0; col < width; col++)
+       BAYER(row, col) = MAX(BAYER(row, col) - ntohs(pixel[col]), 0);
+   }

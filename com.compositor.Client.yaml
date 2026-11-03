@@ -56,8 +56,15 @@ finish-args:
   - --talk-name=com.canonical.AppMenu.Registrar   # the desktop's global menu, where there is one (menus as on the Mac)
 
 # Strip static archives post-link (they are consumed at build time).
+# LLVM wherever it works: the Swift extension's clang 21 compiles C and C++ (against the SDK's libstdc++, so everything
+# links with the runtime's GCC-built Qt) and ld.lld links. LibRaw alone keeps GCC (its module says why).
 build-options:
   no-debuginfo: true
+  append-path: /usr/lib/sdk/swift6/bin
+  env:
+    CC: clang
+    CXX: clang++
+  ldflags: -fuse-ld=lld
 
 cleanup:
   - '*.a'
@@ -69,12 +76,16 @@ modules:
     # Skia needs python3 + ninja from the SDK. Vulkan headers/loader come
     # from the Freedesktop 26.08 SDK (vulkan 1.4.357 pkgconfig).
     # All required Linux sources are checked in; this module builds without network access.
+    # GN does not read CC/CXX: Skia's compilers are its cc/cxx arguments (clang, Skia's primary compiler).
     build-commands:
       # Build the pinned GN source locally; dependency archives are already unpacked below.
-      - cd gn-source && CXX=g++ python3 build/gen.py --no-last-commit-position && ninja -j${FLATPAK_BUILDER_N_JOBS:-6} -C out && cp out/gn ../bin/gn
+      - cd gn-source && python3 build/gen.py --no-last-commit-position && ninja -j${FLATPAK_BUILDER_N_JOBS:-6} -C out gn && cp out/gn ../bin/gn
       - |
         bin/gn gen out/Static --args='
             is_official_build=true
+            cc="clang"
+            cxx="clang++"
+            skia_use_partition_alloc=false
             skia_enable_ganesh=true
             skia_use_vulkan=true
             skia_use_gl=true
@@ -104,6 +115,9 @@ modules:
        - type: archive
          path: third_party/sources/skia-canvaskit-0.42.0.tar.gz
          sha256: 3b574f9b0315d00b54c611ff6d827c29a1b65121ceed7278b451c20f0f8516a1
+       # skcms compiles .cc sources: its -std=c11 goes to C compiles only.
+       - type: patch
+         path: linux/patches/skia-skcms-c-std.patch
 
        - type: archive
          path: third_party/sources/skia-brotli-6d03dfbedda1615c4cba1211f8d81735575209c8.tar.gz
@@ -214,7 +228,7 @@ modules:
       - cmake --build _build --target rawspeed
       - mkdir -p _capi /app/pugixml && cp /app/include/pugi*.hpp /app/pugixml/
       - sh libraw-src/RawSpeed3/rawspeed3_c_api/rsxml2c.sh < data/cameras.xml > _capi/cameras.cpp
-      - for src in libraw-src/RawSpeed3/rawspeed3_c_api/rawspeed3_capi.cpp _capi/cameras.cpp; do g++ -std=c++17 -O3 -fPIC
+      - for src in libraw-src/RawSpeed3/rawspeed3_c_api/rawspeed3_capi.cpp _capi/cameras.cpp; do "$CXX" -std=c++17 -O3 -fPIC
         -DNDEBUG -I src/librawspeed -I src/external -I _build/src -I _build -I /app/include -c "$src"
         -o "_capi/$(basename "$src" .cpp).o"; done
       - ar rcs /app/lib/librawspeed3_capi.a _capi/rawspeed3_capi.o _capi/cameras.o
@@ -229,9 +243,12 @@ modules:
         path: third_party/sources/LibRaw-0.22.2.tar.gz
         sha256: de86b035655accff8d4010f1a221fdf50d353cb7b1422ba26f14a0db92612cfa
         dest: libraw-src
+      # FileReader's FILE deleter as a type, not decltype(&fclose), whose attributes a template argument drops.
+      - type: patch
+        path: linux/patches/rawspeed-file-reader-deleter.patch
 
   # LibRaw: camera RAW decoding (host/RawDecoder.cpp). Static and PIC, linked into the app; OpenMP for the
-  # multithreaded demosaic of very large files; JasPer and LCMS off (not needed); RawSpeed-v3 for faster unpacking
+  # multithreaded demosaic of very large files; LCMS off (not needed; LibRaw 0.22 has no JasPer option); RawSpeed-v3 for faster unpacking
   # (COMPOSITOR_RAWSPEED=0 turns it off at run time). Same options as scripts/build-libraw.sh uses for the dev loop.
   - name: libraw
     buildsystem: autotools
@@ -242,10 +259,14 @@ modules:
       - --disable-shared
       - --enable-openmp
       - --disable-examples
-      - --disable-jasper
       - --disable-lcms
       - --enable-zlib
+    # GCC: LibRaw's demosaic uses OpenMP, and the Swift extension's clang has no OpenMP runtime or omp.h (the SDK's
+    # libgomp comes with GCC).
     build-options:
+      env:
+        CC: gcc
+        CXX: g++
       cflags: -O3 -fPIC
       cxxflags: -O3 -fPIC
       cppflags: -DUSE_RAWSPEED3 -DUSE_RAWSPEED_BITS -I/app/include
@@ -256,6 +277,9 @@ modules:
       # Initialize the OpenMP wavelet allocation count before Noise Reduction uses it.
       - type: patch
         path: linux/patches/libraw-0.22.2-wavelet-size.patch
+      # One ZERO macro per file, and a short dark frame read stops instead of being ignored.
+      - type: patch
+        path: linux/patches/libraw-0.22.2-gcc-warnings.patch
 
   # RAW Lens Correction for files without a profile of their own: lensfun's lens database (LGPL-3 library, CC-BY-SA 3.0
   # data) by camera and lens, static over the runtime's GLib (host/RawLensfun.h). Same options as
@@ -283,6 +307,9 @@ modules:
       - type: archive
         path: third_party/sources/lensfun-0.3.4.tar.gz
         sha256: dafb39c08ef24a0e2abd00d05d7341b1bf1f0c38bfcd5a4c69cf5f0ecb6db112
+      # INSTALL_PYTHON_MODULE=OFF also skips the module's setup.py install.
+      - type: patch
+        path: linux/patches/lensfun-0.3.4-python-module-option.patch
 
   # EXR import and export (compat ImageIO through host/QtImageIO.cpp, as Apple's ImageIO reads and writes it):
   # OpenEXR with its Imath and libdeflate, static, as scripts/build-openexr.sh builds them for the dev loop.
@@ -339,6 +366,9 @@ modules:
       - type: archive
         path: third_party/sources/openexr-3.5.1.tar.gz
         sha256: 61559d6d0657f228f8dd5e3165ed6b74437b95e81849ad41c6d3493c0c144c1d
+      # WidenFilename decodes UTF-8 itself instead of the deprecated std::wstring_convert.
+      - type: patch
+        path: linux/patches/openexr-3.5.1-widen-filename.patch
 
   - name: opencv
     buildsystem: cmake-ninja
@@ -421,6 +451,9 @@ modules:
       - type: archive
         path: third_party/sources/poppler-26.10.0.tar.xz
         sha256: 6792cb7c69205007ad87d2e936cecc5b3a31fac29ab54ffc3175fdb6b2a6ce35
+      # SHA-384/512 padding zeroes the block up front instead of in loops GCC cannot bound.
+      - type: patch
+        path: linux/patches/poppler-26.10.0-sha-padding.patch
 
   # ───────────────────────── Module 3: Compositor app ─────────────────────
   - name: compositor

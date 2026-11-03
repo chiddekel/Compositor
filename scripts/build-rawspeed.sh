@@ -31,6 +31,8 @@ patch -d "rawspeed-$COMMIT" -p1 -R < "$LIBRAW_SRC/RawSpeed3/patches/01.CameraMet
 for patch in "$LIBRAW_SRC"/RawSpeed3/patches/0[2-5]*.patch; do
     patch -d "rawspeed-$COMMIT" -p1 --forward < "$patch"
 done
+# FileReader's FILE deleter as a type, as the Flatpak manifest patches it.
+patch -d "rawspeed-$COMMIT" -p1 < "$ROOT/linux/patches/rawspeed-file-reader-deleter.patch"
 
 # pugixml (static, PIC).
 cmake -S "pugixml-$PUGIXML" -B build/pugixml -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \

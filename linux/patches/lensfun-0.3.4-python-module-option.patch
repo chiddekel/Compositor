@@ -1,0 +1,14 @@
+# Honor INSTALL_PYTHON_MODULE: 0.3.4 declares the option but always runs setup.py install.
+diff -ruN a/apps/CMakeLists.txt b/apps/CMakeLists.txt
+--- a/apps/CMakeLists.txt
++++ b/apps/CMakeLists.txt
+@@ -22,7 +22,8 @@
+ # Inspired by http://bloerg.net/2012/11/10/cmake-and-distutils.html
+ 
+ FIND_PROGRAM(PYTHON "python3")
+-IF(PYTHON)
++# INSTALL_PYTHON_MODULE=OFF also skips building and installing the module (its setup.py install is deprecated).
++IF(PYTHON AND INSTALL_PYTHON_MODULE)
+     SET(SETUP_PY_IN "${CMAKE_CURRENT_SOURCE_DIR}/setup.py.in")
+     SET(SETUP_PY    "${CMAKE_CURRENT_BINARY_DIR}/setup.py")
+     SET(DEPS_IN     "${CMAKE_CURRENT_SOURCE_DIR}/lensfun/__init__.py.in")

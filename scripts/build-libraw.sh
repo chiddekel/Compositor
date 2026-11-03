@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the pinned LibRaw (camera RAW decoding) for the dev loop into build/libraw/install — the same options as the
-# Flatpak manifest's `libraw` module: static, PIC, OpenMP (multithreaded demosaic), -O3, no JasPer/LCMS, no examples.
+# Flatpak manifest's `libraw` module: static, PIC, OpenMP (multithreaded demosaic), -O3, no LCMS (0.22 has no JasPer option), no examples.
 # Run inside the KDE SDK (it has the toolchain and zlib):
 #   flatpak run --command=bash --devel --filesystem=host --share=network org.kde.Sdk//6.11 scripts/build-libraw.sh
 set -e
@@ -19,6 +19,8 @@ tar -xzf "LibRaw-$VERSION.tar.gz"
 cd "LibRaw-$VERSION"
 # The 0.22.2 OpenMP wavelet path allocates with an uninitialized pixel count.
 patch -p1 < "$ROOT/linux/patches/libraw-0.22.2-wavelet-size.patch"
+# One ZERO macro per file, and a short dark frame read stops instead of being ignored.
+patch -p1 < "$ROOT/linux/patches/libraw-0.22.2-gcc-warnings.patch"
 # With RawSpeed built (scripts/build-rawspeed.sh), LibRaw uses it for the formats it supports (USE_RAWSPEED3).
 RAWSPEED="$ROOT/build/rawspeed/install"
 RAWSPEED_FLAGS=""
@@ -27,7 +29,7 @@ if [ -f "$RAWSPEED/lib/librawspeed3_capi.a" ]; then
     echo "LibRaw: with RawSpeed-v3"
 fi
 CPPFLAGS="$RAWSPEED_FLAGS" CFLAGS="-O3 -fPIC" CXXFLAGS="-O3 -fPIC" ./configure --prefix="$WORK/install" --enable-static --disable-shared \
-    --enable-openmp --disable-examples --disable-jasper --disable-lcms --enable-zlib
+    --enable-openmp --disable-examples --disable-lcms --enable-zlib
 make -j"$(nproc)"
 make install
 # Marks the build for Package.swift (link RawSpeed too) and host/RawDecoder.cpp (turn it on).

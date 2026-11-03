@@ -1,0 +1,56 @@
+# GCC: -Warray-bounds on the SHA-384/512 padding loops in revision6Hash (Decrypt.cc).
+diff -ruN a/poppler/Decrypt.cc b/poppler/Decrypt.cc
+--- a/poppler/Decrypt.cc
++++ b/poppler/Decrypt.cc
+@@ -1637,6 +1637,8 @@
+         sha512HashBlock(msg + i, H);
+     }
+     blkLen = msgLen - i;
++    // Zero the block first, so padding never indexes past it (GCC could not bound the old zeroing loops).
++    memset(blk, 0, sizeof(blk));
+     if (blkLen > 0) {
+         memcpy(blk, msg + i, blkLen);
+     }
+@@ -1644,15 +1646,10 @@
+     // pad the message
+     blk[blkLen++] = 0x80;
+     if (blkLen > 112) {
+-        while (blkLen < 128) {
+-            blk[blkLen++] = 0;
+-        }
+         sha512HashBlock(blk, H);
++        memset(blk, 0, sizeof(blk));
+         blkLen = 0;
+     }
+-    while (blkLen < 112) {
+-        blk[blkLen++] = 0;
+-    }
+     blk[112] = 0;
+     blk[113] = 0;
+     blk[114] = 0;
+@@ -1711,6 +1708,8 @@
+         sha512HashBlock(msg + i, H);
+     }
+     blkLen = msgLen - i;
++    // Zero the block first, so padding never indexes past it (GCC could not bound the old zeroing loops).
++    memset(blk, 0, sizeof(blk));
+     if (blkLen > 0) {
+         memcpy(blk, msg + i, blkLen);
+     }
+@@ -1718,15 +1717,10 @@
+     // pad the message
+     blk[blkLen++] = 0x80;
+     if (blkLen > 112) {
+-        while (blkLen < 128) {
+-            blk[blkLen++] = 0;
+-        }
+         sha512HashBlock(blk, H);
++        memset(blk, 0, sizeof(blk));
+         blkLen = 0;
+     }
+-    while (blkLen < 112) {
+-        blk[blkLen++] = 0;
+-    }
+     blk[112] = 0;
+     blk[113] = 0;
+     blk[114] = 0;

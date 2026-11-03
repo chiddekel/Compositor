@@ -1,0 +1,41 @@
+# skcms sources are C++ (.cc): -std=c11 belongs to C compiles only (GCC: "-std=c11 is valid for C/ObjC but not for C++").
+diff -ruN a/modules/skcms/BUILD.gn b/modules/skcms/BUILD.gn
+--- a/modules/skcms/BUILD.gn
++++ b/modules/skcms/BUILD.gn
+@@ -24,6 +24,7 @@
+                              [
+                                "sources",
+                                "cflags",
++                               "cflags_c",
+                                "defines",
+                              ])
+     }
+@@ -47,8 +48,8 @@
+     cflags = [
+       "-mavx2",
+       "-mf16c",
+-      "-std=c11",
+     ]
++    cflags_c = [ "-std=c11" ]
+   }
+ }
+ 
+@@ -75,15 +76,15 @@
+       "-mavx512cd",
+       "-mavx512bw",
+       "-mavx512vl",
+-      "-std=c11",
+     ]
++    cflags_c = [ "-std=c11" ]
+   }
+ }
+ 
+ static_library("skcms") {
+-  cflags = []
++  cflags_c = []
+   if (!is_win || is_clang) {
+-    cflags += [ "-std=c11" ]
++    cflags_c += [ "-std=c11" ]
+   }
+   if (target_cpu != "x64" || target_os == "android") {
+     defines = [

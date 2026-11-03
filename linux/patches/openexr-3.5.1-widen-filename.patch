@@ -1,0 +1,41 @@
+# GCC: std::wstring_convert is deprecated (ImfMisc.cpp WidenFilename).
+diff -ruN a/src/lib/OpenEXR/ImfMisc.cpp b/src/lib/OpenEXR/ImfMisc.cpp
+--- a/src/lib/OpenEXR/ImfMisc.cpp
++++ b/src/lib/OpenEXR/ImfMisc.cpp
+@@ -23,7 +23,7 @@
+ #include "ImfXdr.h"
+ #include <Imath/ImathFun.h>
+ 
+-#include <codecvt>
++#include <stdexcept>
+ #include <locale>
+ 
+ OPENEXR_IMF_INTERNAL_NAMESPACE_SOURCE_ENTER
+@@ -1999,8 +1999,25 @@
+ std::wstring
+ WidenFilename (const char* filename)
+ {
+-    std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t> converter;
+-    return converter.from_bytes (filename);
++    // Decode UTF-8 by hand, as codecvt_utf8 did: std::wstring_convert is deprecated since C++17.
++    std::wstring wide;
++    const unsigned char* p = reinterpret_cast<const unsigned char*> (filename);
++    while (*p)
++    {
++        unsigned int code = *p++;
++        if (code >= 0x80 && code < 0xC0)
++            throw std::range_error ("WidenFilename: invalid UTF-8");
++        int more = code >= 0xF0 ? 3 : code >= 0xE0 ? 2 : code >= 0xC0 ? 1 : 0;
++        if (more) code &= 0x3F >> more;
++        for (; more > 0; --more)
++        {
++            if ((*p & 0xC0) != 0x80)
++                throw std::range_error ("WidenFilename: invalid UTF-8");
++            code = (code << 6) | (*p++ & 0x3F);
++        }
++        wide.push_back (static_cast<wchar_t> (code));
++    }
++    return wide;
+ }
+ 
+ const char*

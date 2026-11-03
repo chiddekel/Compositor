@@ -35,6 +35,7 @@ cmake -S Imath-3.2.3 -B Imath-3.2.3/_build $COMMON -DBUILD_TESTING=OFF -DPYTHON=
 cmake --build Imath-3.2.3/_build --parallel && cmake --install Imath-3.2.3/_build
 
 rm -rf openexr-3.5.1 && tar -xzf openexr-v3.5.1.tar.gz
+patch -d openexr-3.5.1 -p1 < "$ROOT/linux/patches/openexr-3.5.1-widen-filename.patch"
 cmake -S openexr-3.5.1 -B openexr-3.5.1/_build $COMMON -DBUILD_TESTING=OFF -DOPENEXR_BUILD_TOOLS=OFF \
     -DOPENEXR_BUILD_EXAMPLES=OFF -DOPENEXR_INSTALL_EXAMPLES=OFF -DOPENEXR_INSTALL_TOOLS=OFF -DOPENEXR_BUILD_PYTHON=OFF \
     -DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF -DOPENEXR_FORCE_INTERNAL_IMATH=OFF -DOPENEXR_INSTALL_DOCS=OFF

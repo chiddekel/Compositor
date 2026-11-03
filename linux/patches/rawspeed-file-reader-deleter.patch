@@ -1,0 +1,19 @@
+# GCC: "ignoring attributes on template argument int (*)(FILE*)" for unique_ptr<FILE, decltype(&fclose)>.
+diff -ruN a/src/librawspeed/io/FileReader.cpp b/src/librawspeed/io/FileReader.cpp
+--- a/src/librawspeed/io/FileReader.cpp
++++ b/src/librawspeed/io/FileReader.cpp
+@@ -45,8 +45,12 @@
+   size_t fileSize = 0;
+ 
+ #if defined(__unix__) || defined(__APPLE__)
+-  using file_ptr = std::unique_ptr<FILE, decltype(&fclose)>;
+-  file_ptr file(fopen(fileName, "rb"), &fclose);
++  // A deleter type rather than decltype(&fclose): glibc declares fclose with attributes a template argument drops.
++  struct FileCloser {
++    void operator()(FILE* f) const { fclose(f); }
++  };
++  using file_ptr = std::unique_ptr<FILE, FileCloser>;
++  file_ptr file(fopen(fileName, "rb"));
+ 
+   if (file == nullptr)
+     ThrowFIE("Could not open file \"%s\".", fileName);
