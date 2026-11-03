@@ -1,3 +1,10 @@
+Compositor 1.6.2-linux-alpha.4 for Linux — signed Flatpak alpha, x86_64.
+
+- Fix dependency source warnings and CMake compatibility for LLVM builds.
+- ci: run GNU_Linux workflows side by side and drop duplicate work.
+
+Previous release notes:
+
 Compositor 1.6.2-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
 
 - ci: cache built Flatpak modules in releases; key caches on patches too.

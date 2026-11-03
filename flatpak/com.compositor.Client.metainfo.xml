@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.6.2-linux-alpha.4" date="2026-11-04" type="development">
+      <description><p>Fix dependency source warnings and CMake compatibility for LLVM builds.; ci: run GNU_Linux workflows side by side and drop duplicate work.</p></description>
+    </release>
     <release version="1.6.2-linux-alpha.3" date="2026-11-03" type="development">
       <description><p>ci: cache built Flatpak modules in releases; key caches on patches too.; Build the Flatpak with LLVM and fix the dependencies' build warnings in code.; Fix compiler warnings in the compat layer and the text field test.; Return activation to a sheet when its pop-up button's menu closes.</p></description>
     </release>
