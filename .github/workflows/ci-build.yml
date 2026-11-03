@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .flatpak-builder
-          key: contract-native-${{ hashFiles('com.compositor.Client.yaml') }}
+          key: contract-native-${{ hashFiles('com.compositor.Client.yaml', 'linux/patches/**') }}
 
       - name: Build dependency modules inside the merged manifest's SDK
         run: |
