@@ -1,3 +1,10 @@
+Compositor 1.6.2-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
+
+- Add NSWindow.StyleMask.fullScreen to Linux AppKit compat.
+- ci: keep Flatpak release alone on prepare commits and linux-v tags
+
+Previous release notes:
+
 Compositor 1.6.2-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream Compositor 1.6.2 through `0b90cc8`, including Xcode version 1.6.2 build 61 and project format 21 (Reduce Noise adjustment layers).
