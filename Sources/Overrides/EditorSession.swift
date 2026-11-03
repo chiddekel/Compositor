@@ -74,7 +74,7 @@ struct CanvasDocument: Equatable {
     var guides: [CanvasGuide] = []
     /// Part of the document so undo/redo covers selection changes. Not saved to disk.
     var selection: DocumentSelection?
-    var size: CGSize { CGSize(width: width, height: height) }
+    nonisolated var size: CGSize { CGSize(width: width, height: height) }
     init(id: UUID = UUID(), width: Int, height: Int, layers: [ImageLayer] = [], resolution: Double = 72, guides: [CanvasGuide] = []) {
         self.id = id
         self.width = width

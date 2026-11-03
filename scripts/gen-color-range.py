@@ -133,8 +133,13 @@ private actor ColorRangeWorker {
             '#include "ColorRange.h"\n#include <stdlib.h>\n\n'
             + 'static inline int color_near' + wand_c.split('static inline int color_near', 1)[1]
         )
+    # A canvas document's size is plain value arithmetic, as tip's LayerTransform.size already says with
+    # `nonisolated`; EditorCanvas reads it from a detached task (Swift 6 makes that read an error otherwise).
+    session = source('Document/EditorSession.swift').replace(
+        '    var size: CGSize { CGSize(width: width, height: height) }',
+        '    nonisolated var size: CGSize { CGSize(width: width, height: height) }')
     outputs = {
-        'Sources/Overrides/EditorSession.swift': source('Document/EditorSession.swift'),
+        'Sources/Overrides/EditorSession.swift': session,
         'Sources/Overrides/ColorRangeSelection.swift': model,
         'Sources/Overrides/ColorRangeSheet.swift': sheet,
         'backends/selection/ColorRange.c': color_range_c,

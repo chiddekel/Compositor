@@ -134,7 +134,7 @@ public struct MTLResourceOptions: OptionSet, Sendable {
     public init(rawValue: UInt) { self.rawValue = rawValue }
     public static let storageModePrivate = MTLResourceOptions(rawValue: 1)
     /// Tip MetalNonlocalMeans allocates shared CPU/GPU buffers; Linux Metal stores them in process memory.
-    public static let storageModeShared = MTLResourceOptions(rawValue: 0)
+    public static let storageModeShared: MTLResourceOptions = []
 }
 
 public final class MTLBuffer {

@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
         QVBoxLayout layout(&window);
         QLineEdit field, other;
         layout.addWidget(&field); layout.addWidget(&other);
-        window.show(); QApplication::setActiveWindow(&window);
+        window.show(); window.activateWindow();
         field.setFocus(); QApplication::processEvents();
         require(field.hasFocus(), "text field fixture did not acquire focus");
         int changed = 0;
