@@ -2,6 +2,9 @@ name: Verify
 
 on:
   push:
+    # Linux Flatpak release tags only need flatpak-release.yml; skip macOS Verify on those tags.
+    tags-ignore:
+      - 'linux-v*'
   pull_request:
   # Weekly, and by hand from the Actions tab, every suite runs, the filter suites included.
   schedule:
@@ -20,7 +23,10 @@ jobs:
   unit:
     name: unit
     # Push covers same-repo branches. pull_request runs only for forks, so a PR is not tested twice.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    # Flatpak prepare commits share the lane with flatpak-release.yml only — skip macOS Verify there.
+    if: |
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository)
+      && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Prepare Linux Flatpak alpha'))
     runs-on: macos-26
     timeout-minutes: 60
     steps:

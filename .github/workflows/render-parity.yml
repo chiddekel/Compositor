@@ -25,6 +25,8 @@ concurrency:
 
 jobs:
   inputs:
+    # Flatpak prepare commits only run flatpak-release.yml so the signed build is not starved.
+    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Prepare Linux Flatpak alpha')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
