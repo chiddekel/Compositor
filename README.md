@@ -87,6 +87,7 @@ Requires **macOS 26 or later on Apple silicon**. macOS builds and support come f
 - Free distort (⌘-drag a handle), with Shift to lock to an axis
 - Transform several layers, or a whole folder, together
 - Snapping to canvas and layer edges and centers, with guides
+- Distances (View › Show › Distances): pixel gaps to the canvas edges and nearby layers while moving a layer, and to the layer under the pointer with ⌘ held
 - Exact values for position, size, scale and angle, stepped with the arrow keys
 - Flip Layer and Flip Canvas, horizontal and vertical
 - Align and Distribute layers to each other, the selection or the canvas, from the Move tool's bar or the Layer menu
