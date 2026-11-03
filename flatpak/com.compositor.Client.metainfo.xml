@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.6.2-linux-alpha.3" date="2026-11-03" type="development">
+      <description><p>ci: cache built Flatpak modules in releases; key caches on patches too.; Build the Flatpak with LLVM and fix the dependencies' build warnings in code.; Fix compiler warnings in the compat layer and the text field test.; Return activation to a sheet when its pop-up button's menu closes.</p></description>
+    </release>
     <release version="1.6.2-linux-alpha.2" date="2026-11-03" type="development">
       <description><p>Add NSWindow.StyleMask.fullScreen to Linux AppKit compat.; ci: keep Flatpak release alone on prepare commits and linux-v tags</p></description>
     </release>

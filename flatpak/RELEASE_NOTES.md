@@ -1,3 +1,12 @@
+Compositor 1.6.2-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
+
+- ci: cache built Flatpak modules in releases; key caches on patches too.
+- Build the Flatpak with LLVM and fix the dependencies' build warnings in code.
+- Fix compiler warnings in the compat layer and the text field test.
+- Return activation to a sheet when its pop-up button's menu closes.
+
+Previous release notes:
+
 Compositor 1.6.2-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
 - Add NSWindow.StyleMask.fullScreen to Linux AppKit compat.
