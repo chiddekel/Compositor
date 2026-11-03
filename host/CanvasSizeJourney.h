@@ -86,21 +86,12 @@ inline void type(QDialog *sheet, const QString &title, const QString &value) {
     QObject::connect(edit, &QLineEdit::selectionChanged, &observer, [&] { record("selection changed"); });
     QObject::connect(edit, &QLineEdit::textChanged, &observer, [&] { record("text changed"); });
     record("snapshot"); edit->setFocus(); record("focused");
-    // Mark typed before keys: a SwiftUI panel refresh during processEvents can clearFocus on
-    // untyped fields (SwiftUIQtRenderer), which flakes under offscreen CI even when text sticks.
-    edit->setProperty("swiftuiTyped", true);
     stage = "select all"; key(edit, Qt::Key_A, Qt::ControlModifier); record("after key");
     int index = 0;
     for (const auto character : value) {
         require(edit, "canvas size typing retired its field");
         stage = QString("character %1").arg(index++);
         key(edit, 0, Qt::NoModifier, QString(character)); record("after key");
-    }
-    // Offscreen QPA sometimes drops focus after a refresh while keeping text and caret.
-    if (edit && edit->text() == value && edit->cursorPosition() == value.size() && !edit->hasFocus()) {
-        edit->setFocus(Qt::OtherFocusReason);
-        QApplication::processEvents();
-        record("refocused");
     }
     const bool valid = edit && edit->text() == value && edit->hasFocus() && edit->cursorPosition() == value.size();
     if (!valid || qEnvironmentVariableIsSet("COMPOSITOR_TRACE_SIZE_FIELDS"))

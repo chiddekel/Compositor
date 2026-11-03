@@ -3627,6 +3627,21 @@ QWidget *buildNode(uint64_t handle, const QString &panel, const QJsonObject &nod
             public:
                 std::function<void()> present;
                 void showPopup() override { if (present) present(); else QComboBox::showPopup(); }
+                HostedPopUpButton() { view()->window()->installEventFilter(this); }
+            protected:
+                // Some platforms (offscreen, and compositors without a window manager) leave focus on the pop-up's
+                // window after it closes: no window is active, so a field in the sheet cannot take focus. Activate the
+                // button's window again, as a desktop window manager does.
+                bool eventFilter(QObject *watched, QEvent *event) override {
+                    if (event->type() == QEvent::Hide && watched == view()->window()) {
+                        // The choice can rebuild the panel and retire this button, so the window is held instead.
+                        QTimer::singleShot(0, window(), [owner = QPointer<QWidget>(window()), list = QPointer<QWidget>(view()->window())] {
+                            if (!owner || !owner->isVisible() || !list || QApplication::activePopupWidget()) return;
+                            if (QGuiApplication::focusWindow() == list->windowHandle()) owner->activateWindow();
+                        });
+                    }
+                    return QComboBox::eventFilter(watched, event);
+                }
             };
             auto *combo = new HostedPopUpButton;
             if (bools.value("customPopup").toBool()) {

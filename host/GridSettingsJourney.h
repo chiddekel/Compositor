@@ -94,18 +94,10 @@ inline QComboBox *picker(QDialog *sheet, const QString &member) {
 
 inline void type(QDialog *sheet, const QString &name, const QString &text) {
     QPointer<QLineEdit> edit = field(sheet, name); edit->setFocus();
-    // Same offscreen/CI protection as canvassizejourney::type: keep the field typed so a
-    // SwiftUI refresh does not clearFocus mid-input, and restore focus if only focus was stolen.
-    edit->setProperty("swiftuiTyped", true);
     key(edit, Qt::Key_A, Qt::ControlModifier);
     for (const auto &character : text) {
         require(edit, "grid typing replaced its field");
         key(edit, 0, Qt::NoModifier, QString(character));
-    }
-    if (edit && edit->text() == text && edit->cursorPosition() == text.size()
-        && QApplication::focusWidget() != edit) {
-        edit->setFocus(Qt::OtherFocusReason);
-        QApplication::processEvents();
     }
     require(edit && QApplication::focusWidget() == edit && edit->text() == text && edit->cursorPosition() == text.size(),
         "grid typing lost text, focus or cursor");
