@@ -20,8 +20,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: gnu-linux-${{ github.ref }}
-  cancel-in-progress: false
+  # One queue per workflow, so the GNU_Linux workflows run side by side; a newer push supersedes an older run.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   inputs:
@@ -109,8 +110,11 @@ jobs:
         with:
           name: parity-inputs
           path: .build/parity-inputs
-      - name: Full Linux contract
-        run: flatpak-builder --run --filesystem="$PWD" build-parity-sdk com.compositor.Client.yaml bash "$PWD/scripts/linux-contract-tests.sh"
+      # The full contract runs in linux-swift-tests.yml; this job only builds what it renders with.
+      - name: Build the Linux renderer
+        run: |
+          flatpak-builder --run --filesystem="$PWD" build-parity-sdk com.compositor.Client.yaml \
+            env COMPOSITOR_CONTRACT_BUILD_ONLY=1 bash "$PWD/scripts/linux-contract-tests.sh"
       - name: Project launch from a desktop entry (APP-12)
         run: |
           flatpak-builder --run --filesystem="$PWD" build-parity-sdk com.compositor.Client.yaml \

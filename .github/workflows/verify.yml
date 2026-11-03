@@ -5,6 +5,14 @@ on:
     # Linux Flatpak release tags only need flatpak-release.yml; skip macOS Verify on those tags.
     tags-ignore:
       - 'linux-v*'
+    # The macOS app only changes when its sources, tests or project do (upstream merges); Linux-only pushes skip it.
+    paths:
+      - 'Compositor/**'
+      - 'CompositorTests/**'
+      - 'CompositorUITests/**'
+      - 'Compositor.xcodeproj/**'
+      - 'scripts/ci-tests.sh'
+      - '.github/workflows/verify.yml'
   pull_request:
   # Weekly, and by hand from the Actions tab, every suite runs, the filter suites included.
   schedule:
@@ -12,9 +20,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Share the GNU_Linux queue with linux-swift-tests / upstream-sync guard / render-parity.
-  group: gnu-linux-${{ github.ref }}
-  cancel-in-progress: false
+  # One queue per workflow, so the GNU_Linux workflows run side by side; a newer push supersedes an older run.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

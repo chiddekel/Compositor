@@ -17,8 +17,9 @@ on:
 # One GNU_Linux CI workflow at a time for this ref — parallel Verify / contract / guard
 # runs contended for the same Flatpak SDK and shared test state.
 concurrency:
-  group: gnu-linux-${{ github.ref }}
-  cancel-in-progress: false
+  # One queue per workflow, so the GNU_Linux workflows run side by side; a newer push supersedes an older run.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   contract-tests:

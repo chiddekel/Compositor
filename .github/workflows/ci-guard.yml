@@ -12,8 +12,9 @@ on:
     branches: [main, GNU_Linux]
 
 concurrency:
-  group: gnu-linux-${{ github.ref }}
-  cancel-in-progress: false
+  # One queue per workflow, so the GNU_Linux workflows run side by side; a newer push supersedes an older run.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check-upstream-clean:

@@ -125,7 +125,10 @@ new version first when curated notes are needed.
 The tag triggers the existing build, test, signing, and Pages pipeline. Branch
 pushes whose commit subject starts with `Prepare Linux Flatpak alpha` skip Verify,
 linux swift tests, upstream-sync guard and render parity so the Flatpak job owns
-that lane; `linux-v*` tags also skip macOS Verify. Only after successful
+that lane; `linux-v*` tags also skip macOS Verify. On other pushes each workflow
+has its own concurrency queue (a newer push cancels an older run), macOS Verify
+runs only when the macOS sources, tests or project change, and render parity only
+builds before rendering, since linux swift tests runs the full contract. Only after successful
 deployment does CI publish with GitHub's **Latest** label. GitHub does
 not allow Latest on a prerelease, so the published release has `prerelease=false`
 while its title, version, and Flatpak channel continue to identify it as alpha.
