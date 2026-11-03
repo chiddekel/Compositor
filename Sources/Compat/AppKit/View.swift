@@ -501,6 +501,8 @@ public enum NSAccessibility {
         public static let borderless = StyleMask([])
         public static let titled = StyleMask(rawValue: 1 << 0), closable = StyleMask(rawValue: 1 << 1)
         public static let miniaturizable = StyleMask(rawValue: 1 << 2), resizable = StyleMask(rawValue: 1 << 3)
+        /// Matches AppKit's bit; Linux windows are never full-screen chrome, so this stays unset.
+        public static let fullScreen = StyleMask(rawValue: 1 << 14)
         public static let fullSizeContentView = StyleMask(rawValue: 1 << 15)
     }
     public enum BackingStoreType: UInt, Sendable { case retained, nonretained, buffered }
