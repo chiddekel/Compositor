@@ -25,6 +25,7 @@ echo "$PUGIXML_SHA256  pugixml-$PUGIXML.tar.gz" | sha256sum -c -
 rm -rf "rawspeed-$COMMIT" "pugixml-$PUGIXML" build "$PREFIX"
 tar -xzf rawspeed.tar.gz
 tar -xzf "pugixml-$PUGIXML.tar.gz"
+patch -d "pugixml-$PUGIXML" -p1 < "$ROOT/linux/patches/pugixml-1.14-cmake-minimum.patch"
 # LibRaw's fixes. 01 (drop `final` from CameraMetaData, so the wrapper can load cameras.xml from memory) is stored
 # reversed in LibRaw's tree, so it is applied with -R.
 patch -d "rawspeed-$COMMIT" -p1 -R < "$LIBRAW_SRC/RawSpeed3/patches/01.CameraMeta-extensibility.patch"

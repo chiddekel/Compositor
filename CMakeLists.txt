@@ -95,11 +95,6 @@ elseif(DEFINED ENV{FLATPAK_ID} AND COMPOSITOR_REQUIRE_VENDORED_DEPS)
     # The Skia module installs its include/ tree under /app/include/skia (headers include "include/core/...").
     find_path(Skia_INCLUDE_DIR NAMES include/core/SkCanvas.h PATHS /app/include/skia NO_DEFAULT_PATH REQUIRED)
     find_library(Skia_STATIC_LIB NAMES skia PATHS /app/lib REQUIRED)
-    # Verify Skia was built with Vulkan enabled
-    if(NOT SKIA_STATIC_LIB MATCHES ".*vulkan.*")
-        message(WARNING "Skia library found but may not have Vulkan enabled; "
-                  "Vulkan backend will be unavailable.")
-    endif()
     if(Skia_INCLUDE_DIR AND Skia_STATIC_LIB)
         set(Skia_FOUND TRUE)
     endif()

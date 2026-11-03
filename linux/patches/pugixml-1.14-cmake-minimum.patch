@@ -1,0 +1,10 @@
+# CMake 4 deprecates compatibility with versions before 3.10.
+diff -ruN a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-cmake_minimum_required(VERSION 3.5)
++cmake_minimum_required(VERSION 3.5...3.10)
+ 
+ # Policy configuration; this *MUST* be specified before project is defined
+ if(POLICY CMP0091)

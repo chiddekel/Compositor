@@ -1,0 +1,69 @@
+# clang: CMake 2.8.12 minimum (deprecated in CMake 4), memset on non-trivially copyable structs, int sentinels
+# compared as floats.
+diff -ruN a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ # require at least cmake 2.8.12
+-CMAKE_MINIMUM_REQUIRED(VERSION 2.8.12 FATAL_ERROR )
++CMAKE_MINIMUM_REQUIRED(VERSION 3.10 FATAL_ERROR )
+ 
+ # path for helper modules
+ set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" "${CMAKE_SOURCE_DIR}/cmake/modules")
+diff -ruN a/libs/lensfun/camera.cpp b/libs/lensfun/camera.cpp
+--- a/libs/lensfun/camera.cpp
++++ b/libs/lensfun/camera.cpp
+@@ -13,7 +13,8 @@
+     // lfLens instances used for searches could not be matched against database
+     // lenses easily.  If you need defaults for database tags, set them when
+     // reading the database.
+-    memset (this, 0, sizeof (*this));
++    // Zero the plain C fields; the struct has no virtual table, so its raw storage is all fields.
++    memset (static_cast<void *> (this), 0, sizeof (*this));
+ }
+ 
+ lfCamera::~lfCamera ()
+diff -ruN a/libs/lensfun/lens.cpp b/libs/lensfun/lens.cpp
+--- a/libs/lensfun/lens.cpp
++++ b/libs/lensfun/lens.cpp
+@@ -111,7 +111,8 @@
+     // lfLens instances used for searches could not be matched against database
+     // lenses easily.  If you need defaults for database tags, set them when
+     // reading the database.
+-    memset (this, 0, sizeof (*this));
++    // Zero the plain C fields; the struct has no virtual table, so its raw storage is all fields.
++    memset (static_cast<void *> (this), 0, sizeof (*this));
+     Type = LF_UNKNOWN;
+     _lf_lens_regex_refs++;
+ }
+@@ -325,13 +326,13 @@
+ 
+     }
+ 
+-    if (minf != INT_MAX && !MinFocal)
++    if (minf != float (INT_MAX) && !MinFocal)
+         MinFocal = minf;
+-    if (maxf != INT_MIN && !MaxFocal)
++    if (maxf != float (INT_MIN) && !MaxFocal)
+         MaxFocal = maxf;
+-    if (mina != INT_MAX && !MinAperture)
++    if (mina != float (INT_MAX) && !MinAperture)
+         MinAperture = mina;
+-    if (maxa != INT_MIN && !MaxAperture)
++    if (maxa != float (INT_MIN) && !MaxAperture)
+         MaxAperture = maxa;
+ 
+     if (!MaxFocal)
+diff -ruN a/libs/lensfun/mount.cpp b/libs/lensfun/mount.cpp
+--- a/libs/lensfun/mount.cpp
++++ b/libs/lensfun/mount.cpp
+@@ -13,7 +13,8 @@
+     // lfLens instances used for searches could not be matched against database
+     // lenses easily.  If you need defaults for database tags, set them when
+     // reading the database.
+-    memset (this, 0, sizeof (*this));
++    // Zero the plain C fields; the struct has no virtual table, so its raw storage is all fields.
++    memset (static_cast<void *> (this), 0, sizeof (*this));
+ }
+ 
+ lfMount::~lfMount ()

@@ -10,6 +10,7 @@ SHA256=ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e
 echo "$SHA256  $ARCHIVE" | sha256sum -c -
 SRC="$ROOT/build/opencv/src"
 rm -rf "$SRC" && mkdir -p "$SRC" && tar -xzf "$ARCHIVE" -C "$SRC" --strip-components=1
+patch -d "$SRC" -p1 < "$ROOT/linux/patches/opencv-4.14.0-cmake-policies.patch"
 flatpak run --command=bash --devel --filesystem=host org.kde.Sdk//6.11 -c "
   set -e
   cmake -S '$SRC' -B '$ROOT/build/opencv/build' -G Ninja -DCMAKE_BUILD_TYPE=Release \

@@ -12,3 +12,9 @@ diff -ruN a/apps/CMakeLists.txt b/apps/CMakeLists.txt
      SET(SETUP_PY_IN "${CMAKE_CURRENT_SOURCE_DIR}/setup.py.in")
      SET(SETUP_PY    "${CMAKE_CURRENT_BINARY_DIR}/setup.py")
      SET(DEPS_IN     "${CMAKE_CURRENT_SOURCE_DIR}/lensfun/__init__.py.in")
+@@ -43,4 +44,4 @@
+       SET(SETUP_PY_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
+     ENDIF()
+     INSTALL(CODE "execute_process(COMMAND ${PYTHON} ${SETUP_PY} install --prefix=\$ENV{DESTDIR}${SETUP_PY_INSTALL_PREFIX})")
+-ENDIF(PYTHON)
++ENDIF()

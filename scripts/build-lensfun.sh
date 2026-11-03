@@ -17,6 +17,7 @@ echo "$SHA256  lensfun-$VERSION.tar.gz" | sha256sum -c -
 rm -rf "lensfun-$VERSION" build
 tar -xzf "lensfun-$VERSION.tar.gz"
 patch -d "lensfun-$VERSION" -p1 < "$ROOT/linux/patches/lensfun-0.3.4-python-module-option.patch"
+patch -d "lensfun-$VERSION" -p1 < "$ROOT/linux/patches/lensfun-0.3.4-clang-warnings.patch"
 cmake -S "lensfun-$VERSION" -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$WORK/install" -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_STATIC=ON -DBUILD_TESTS=OFF -DBUILD_LENSTOOL=OFF -DBUILD_DOC=OFF \
     -DINSTALL_HELPER_SCRIPTS=OFF -DINSTALL_PYTHON_MODULE=OFF -DBUILD_FOR_SSE=ON -DBUILD_FOR_SSE2=ON

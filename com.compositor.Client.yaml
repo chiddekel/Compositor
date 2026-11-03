@@ -211,6 +211,9 @@ modules:
       - type: archive
         path: third_party/sources/pugixml-1.14.tar.gz
         sha256: 2f10e276870c64b1db6809050a75e11a897a8d7456c4be5c6b2e35a11168a015
+      # CMake 4 deprecates compatibility with versions before 3.10.
+      - type: patch
+        path: linux/patches/pugixml-1.14-cmake-minimum.patch
 
   # RawSpeed (darktable's RAW decoder) for LibRaw's RawSpeed-v3 path: 2-2.5x faster unpacking of compressed CR2/NEF
   # and the other formats it lists. LibRaw supports exactly this commit, with the patches and C wrapper it ships in
@@ -310,6 +313,9 @@ modules:
       # INSTALL_PYTHON_MODULE=OFF also skips the module's setup.py install.
       - type: patch
         path: linux/patches/lensfun-0.3.4-python-module-option.patch
+      # CMake 3.10 minimum, memset through void * on its plain structs, float sentinels compared as floats.
+      - type: patch
+        path: linux/patches/lensfun-0.3.4-clang-warnings.patch
 
   # EXR import and export (compat ImageIO through host/QtImageIO.cpp, as Apple's ImageIO reads and writes it):
   # OpenEXR with its Imath and libdeflate, static, as scripts/build-openexr.sh builds them for the dev loop.
@@ -354,7 +360,6 @@ modules:
       - -DBUILD_TESTING=OFF
       - -DOPENEXR_BUILD_TOOLS=OFF
       - -DOPENEXR_BUILD_EXAMPLES=OFF
-      - -DOPENEXR_INSTALL_EXAMPLES=OFF
       - -DOPENEXR_INSTALL_TOOLS=OFF
       - -DOPENEXR_BUILD_PYTHON=OFF
       - -DOPENEXR_INSTALL_DOCS=OFF
@@ -417,6 +422,9 @@ modules:
        - type: archive
          path: third_party/sources/opencv-4.14.0.tar.gz
          sha256: ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e
+       # CMake 4: minimum 3.10 and NEW policies for FindCUDA/FindPython (not built) and the variable dump.
+       - type: patch
+         path: linux/patches/opencv-4.14.0-cmake-policies.patch
 
   - name: poppler-data
     buildsystem: simple
