@@ -1,3 +1,14 @@
+Compositor 1.6.2-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream Compositor 1.6.2 through `0b90cc8`, including Xcode version 1.6.2 build 61 and project format 21 (Reduce Noise adjustment layers).
+- Linux Compat: vImage channel permute, Core Image processor 8-bit/BGRA paths, Metal shared storage/`contents()`, and NSMenu.size for footer menu placement.
+- LayersPanel override uses NSSelectorDispatching for tip footer menus; GPUCanvas routes Reduce Noise; regenerated Filters/AdjustmentEditing/ProjectStore overrides.
+- Canvas Size and Grid Settings journeys mark fields `swiftuiTyped` and refocus after offscreen refresh so CI typing no longer flakes on lost focus.
+
+This remains an alpha port. Existing macOS render-comparison differences and physical tablet validation limits from earlier Linux releases still apply.
+
+Previous release notes:
+
 Compositor 1.6.1-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
 - ci: run GNU_Linux workflows and Swift tests sequentially
