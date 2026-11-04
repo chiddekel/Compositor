@@ -417,6 +417,7 @@ private indirect enum Node {
 
     private static func encodeProcessorStep(kernel: CIImageProcessorKernel.Type, arguments: [String: Any],
                                             region: CGRect, sourceIndex: Int = 0) -> VulkanRasterStep? {
+        guard !kernel.processesCPUBitmaps else { return nil }
         let outRect = region.integral
         let w = Int(outRect.width), h = Int(outRect.height)
         guard w > 0, h > 0 else { return nil }
@@ -579,6 +580,7 @@ private indirect enum Node {
     /// Inspect the upstream processor's actual encoding rather than depending on its application type name.
     private static func processorEncoder(_ kernel: CIImageProcessorKernel.Type, inputs: [Node],
                                          arguments: [String: Any], region: CGRect) -> MTLComputeCommandEncoder? {
+        guard !kernel.processesCPUBitmaps else { return nil }
         let textures = inputs.indices.map { index -> CIImageProcessorInput in
             let roi = kernel.roi(forInput: Int32(index), arguments: arguments, outputRect: region).integral
             return CIImageProcessorInput(region: roi, metalTexture: MTLTexture(proxyWidth: max(1, Int(roi.width)),
@@ -1071,7 +1073,7 @@ private extension Node {
     static func executeProcessor(_ kernel: CIImageProcessorKernel.Type, inputs: [Node],
                                  arguments: [String: Any], region: CGRect, env: Env) -> Raster {
         let outputFormat = kernel.outputFormat
-        let eightBit = outputFormat == .RGBA8 || outputFormat == .BGRA8
+        let eightBit = kernel.processesCPUBitmaps
         func texture(_ raster: Raster, format: CIFormat) -> MTLTexture {
             let half = format == .RGBAh
             let pixelBytes = half ? 8 : 16
@@ -1947,4 +1949,8 @@ nonisolated open class CIImageProcessorKernel {
         let nodes = (inputs ?? []).map { $0.cropped(to: rect).node }
         return CIImage(node: .crop(.processor(self, nodes, arguments ?? [:], rect), rect))
     }
+
+    /// 8-bit kernels (tip Reduce Noise) work on CPU bitmaps through `baseAddress`. They are never probed with proxy
+    /// textures: those carry only a non-null sentinel address, so the kernel's reads and writes would fault.
+    static var processesCPUBitmaps: Bool { outputFormat == .RGBA8 || outputFormat == .BGRA8 }
 }
