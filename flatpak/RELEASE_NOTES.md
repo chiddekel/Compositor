@@ -1,3 +1,9 @@
+Compositor 1.6.3-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
+
+- Restore Apple-style picture() and y-up-aware software fills.
+
+Previous release notes:
+
 Compositor 1.6.3-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream Compositor 1.6.3 through `7f703b4` (distance guides, drag-size labels, Magic Wand Deselect invalidation, Volumetric Light canvas color sampling).
