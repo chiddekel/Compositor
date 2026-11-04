@@ -184,6 +184,18 @@
     "category": "adjustment"
   },
   {
+    "file": "adjustment/Reduce Noise--35.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Reduce Noise-0.png",
+    "category": "adjustment"
+  },
+  {
+    "file": "adjustment/Reduce Noise-35.png",
+    "category": "adjustment"
+  },
+  {
     "file": "adjustment/Sharpen--35.png",
     "category": "adjustment"
   },
@@ -590,6 +602,22 @@
     "category": "filter"
   },
   {
+    "file": "filter/Reduce Noise-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Reduce Noise-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Rim Light-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Rim Light-extreme.png",
+    "category": "filter"
+  },
+  {
     "file": "filter/Scanlines-default.png",
     "category": "filter"
   },
@@ -619,6 +647,14 @@
   },
   {
     "file": "filter/Vignette-extreme.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Volumetric Light-default.png",
+    "category": "filter"
+  },
+  {
+    "file": "filter/Volumetric Light-extreme.png",
     "category": "filter"
   },
   {
