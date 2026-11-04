@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <QHash>
 #include <QKeyEvent>
-#include <private/qkeymapper_p.h>
 #include "NativeKeyboardLayout.h"
 
 extern "C" void compositor_keyboard_set_latin_character(int32_t keyCode, int32_t shifted, const char *characters);
@@ -44,11 +43,10 @@ inline int appKitPrintableKeyCode(const QKeyEvent *event) {
             return code;
         }
     }
-    QList<QKeyCombination> candidates = QKeyMapper::possibleKeys(event);
+    QList<int> candidates = event->nativeScanCode() ? nativekeyboard::asciiKeys(event->nativeScanCode()) : QList<int>{};
     if (event->key() >= 0x20 && event->key() < 0x7f)
-        candidates.prepend(QKeyCombination(event->modifiers(), Qt::Key(event->key())));
-    for (const auto &candidate : candidates) {
-        const int key = int(candidate.key());
+        candidates.prepend(event->key());
+    for (const int key : candidates) {
         if (key < 0x20 || key >= 0x7f || !codes.contains(key)) continue;
         const QChar label{ushort(key)};
         const QByteArray text = QString(shift ? label.toUpper() : label.toLower()).toUtf8();

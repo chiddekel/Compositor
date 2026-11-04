@@ -20,8 +20,8 @@ class KeyboardWindow final : public QWindow {
         recorded.clear();
         const int code = appKitPrintableKeyCode(key);
         QJsonArray candidates;
-        for (const auto &candidate : QKeyMapper::possibleKeys(key))
-            candidates.append(QJsonObject{{"key", int(candidate.key())}, {"modifiers", int(candidate.keyboardModifiers())}});
+        for (const int candidate : nativekeyboard::asciiKeys(key->nativeScanCode()))
+            candidates.append(QJsonObject{{"key", candidate}, {"modifiers", int(key->modifiers())}});
         const QJsonObject result{{"typed", key->text()}, {"latin", recorded}, {"code", code},
                                  {"scanCode", int(key->nativeScanCode())}, {"candidates", candidates}};
         std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << std::endl;

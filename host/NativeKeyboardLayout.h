@@ -2,6 +2,7 @@
 
 #include <QGuiApplication>
 #include <QtGui/qguiapplication_platform.h>
+#include <QList>
 #include <QString>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
@@ -147,6 +148,29 @@ inline LatinKey lookupLatinKey(uint32_t code) {
     xkb_keymap_unref(map);
     xkb_context_unref(context);
     return result;
+}
+
+// The ASCII symbols the key types in each installed layout, as Qt keys (letters upper case): the shortcut
+// candidates a non-Latin layout leaves for keys outside the physical table.
+inline QList<int> asciiKeys(uint32_t code) {
+    QList<int> keys;
+    auto *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!context) return keys;
+    if (auto *map = currentKeymap(context)) {
+        for (xkb_layout_index_t layout = 0; layout < xkb_keymap_num_layouts_for_key(map, code); ++layout)
+            for (xkb_level_index_t level = 0; level < xkb_keymap_num_levels_for_key(map, code, layout); ++level) {
+                const xkb_keysym_t *symbols = nullptr;
+                const int count = xkb_keymap_key_get_syms_by_level(map, code, layout, level, &symbols);
+                for (int i = 0; i < count; ++i) {
+                    const uint32_t c = xkb_keysym_to_utf32(symbols[i]);
+                    const int key = c >= 'a' && c <= 'z' ? int(c - 'a' + 'A') : int(c);
+                    if (c >= 0x20 && c < 0x7f && !keys.contains(key)) keys.append(key);
+                }
+            }
+        xkb_keymap_unref(map);
+    }
+    xkb_context_unref(context);
+    return keys;
 }
 
 inline QString latinCharacter(uint32_t code, bool shifted) {
