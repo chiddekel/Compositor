@@ -52,7 +52,8 @@ cmake --build "$NATIVE_BUILD" --parallel "$BUILD_JOBS" --target CompositorSkiaBr
 # COMPOSITOR_CONTRACT_BUILD_ONLY=1 builds what the tests use (native libraries, the Swift products and test bundles)
 # and stops: for jobs that run their own tests on these builds, such as render parity.
 if [[ ${COMPOSITOR_CONTRACT_BUILD_ONLY:-0} == 1 ]]; then
-    swift build -c release --scratch-path "$SWIFT_BUILD" --manifest-cache none --build-tests "${SWIFT_JOB_ARGS[@]}"
+    # `swift test` enables testability on its own; a release `swift build` does not, and @testable imports need it.
+    swift build -c release --scratch-path "$SWIFT_BUILD" --manifest-cache none --build-tests -Xswiftc -enable-testing "${SWIFT_JOB_ARGS[@]}"
     SWIFT_BIN="$(swift build -c release --scratch-path "$SWIFT_BUILD" --show-bin-path)"
     install -m644 Compositor/Resources/CameraRawTables.bin Compositor/Resources/CameraRawShadows.bin "$SWIFT_BIN/"
     exit 0
