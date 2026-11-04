@@ -7,12 +7,23 @@ import CoreGraphics
 
 extension NSView {
     /// Runs `body` in a space whose y grows down from this view's top-left, whichever way the view is flipped.
+    /// When this view is unflipped, the CTM is inverted into that space and `NSGraphicsContext.isFlipped` is set
+    /// true for the body so glyph/CGImage drawing (which keys off the flag) stays upright — otherwise layer
+    /// names and other labels paint upside down under NativeLowering.
     func withTopDownSpace(_ body: (CGContext) -> Void) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        context.saveGState()
-        if !isFlipped { context.translateBy(x: 0, y: bounds.height); context.scaleBy(x: 1, y: -1) }
-        body(context)
-        context.restoreGState()
+        if !isFlipped {
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            context.translateBy(x: 0, y: bounds.height)
+            context.scaleBy(x: 1, y: -1)
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+            body(context)
+        } else {
+            context.saveGState()
+            defer { context.restoreGState() }
+            body(context)
+        }
     }
 
     /// `rect` (this view's coordinates) in the top-down space `withTopDownSpace` sets up.

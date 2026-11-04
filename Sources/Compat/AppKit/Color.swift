@@ -75,6 +75,7 @@ open class NSColor: @unchecked Sendable, Equatable {
     public static let separatorColor = NSColor(white: 1, alpha: 0.1)
     public static let textColor = NSColor(white: 1, alpha: 1)
     public static let systemRed = NSColor(srgbRed: 1, green: 0.271, blue: 0.227, alpha: 1)
+    public static let systemPink = NSColor(srgbRed: 1, green: 0.216, blue: 0.373, alpha: 1)
     public static let systemOrange = NSColor(srgbRed: 1, green: 0.624, blue: 0.039, alpha: 1)
     public static let systemYellow = NSColor(srgbRed: 1, green: 0.839, blue: 0.039, alpha: 1)
     public static let systemGreen = NSColor(srgbRed: 0.188, green: 0.82, blue: 0.345, alpha: 1)

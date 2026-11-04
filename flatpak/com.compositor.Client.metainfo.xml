@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.6.3-linux-alpha.1" date="2026-11-04" type="development">
+      <description><p>Upstream Compositor 1.6.3 on GNU/Linux; distance guides and drag-size labels; upright layer-name glyphs; CTM-aware software fills.</p></description>
+    </release>
     <release version="1.6.2-linux-alpha.4" date="2026-11-04" type="development">
       <description><p>Fix dependency source warnings and CMake compatibility for LLVM builds.; ci: run GNU_Linux workflows side by side and drop duplicate work.</p></description>
     </release>

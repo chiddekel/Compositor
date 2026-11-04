@@ -1,5 +1,5 @@
-import AppKit
 import CoreGraphics
+@testable import AppKit
 @testable import SwiftUI
 import Testing
 
@@ -37,6 +37,81 @@ import Testing
         NSGraphicsContext.restoreGraphicsState()
         #expect(NSGraphicsContext.current == nil && second.ctm.tx == 7 && second.ctm.ty == 2)
         second.restoreGState()
+    }
+
+    @Test func withTopDownSpaceMarksUnflippedDrawingAsFlipped() {
+        // Unflipped NSTextField / labels invert the CTM in withTopDownSpace; isFlipped must follow so
+        // TextBackend glyph images (keyed off the flag) stay upright — layer names were upside down.
+        final class Probe: NSView {
+            var sawFlipped: Bool?
+            override func draw(_ dirtyRect: CGRect) {
+                withTopDownSpace { _ in sawFlipped = NSGraphicsContext.current?.isFlipped }
+            }
+        }
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = nil
+        defer { NSGraphicsContext.current = previous }
+        let probe = Probe(frame: CGRect(x: 0, y: 0, width: 40, height: 20))
+        #expect(probe.isFlipped == false)
+        _ = NativeLowering.picture(of: probe, size: probe.frame.size)
+        #expect(probe.sawFlipped == true)
+    }
+
+    @Test func unflippedLabelKeepsGlyphImageTopAtTop() throws {
+        // Layer-name path: unflipped NSTextField → withTopDownSpace → NSString/NSLayoutManager draws a
+        // TextBackend CGImage, flipping only when isFlipped. A top-heavy glyph image must stay top-heavy
+        // in the NativeLowering bitmap; upside-down names put that ink in the bottom half.
+        final class GlyphLabel: NSView {
+            override func draw(_ dirtyRect: CGRect) {
+                withTopDownSpace { context in
+                    let width = 24, height = 24
+                    guard let bitmap = CGContext(
+                        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    ), let data = bitmap.data?.assumingMemoryBound(to: UInt8.self) else { return }
+                    // PortableImage / makeImage rows are top-down: row 0 is the top of the glyph.
+                    // Mark only the top third opaque (low y in the pixel buffer).
+                    for y in 0..<height {
+                        for x in 0..<width {
+                            let i = (y * width + x) * 4
+                            let topThird = y < height / 3
+                            let a: UInt8 = topThird ? 255 : 0
+                            data[i] = a; data[i + 1] = a; data[i + 2] = a; data[i + 3] = a
+                        }
+                    }
+                    guard let picture = bitmap.makeImage() else { return }
+                    let rect = CGRect(x: 8, y: 8, width: 24, height: 24)
+                    context.saveGState()
+                    if NSGraphicsContext.current?.isFlipped == true {
+                        context.translateBy(x: 0, y: rect.minY + rect.maxY)
+                        context.scaleBy(x: 1, y: -1)
+                    }
+                    context.draw(picture, in: rect)
+                    context.restoreGState()
+                }
+            }
+        }
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = nil
+        defer { NSGraphicsContext.current = previous }
+        let label = GlyphLabel(frame: CGRect(x: 0, y: 0, width: 40, height: 40))
+        #expect(label.isFlipped == false)
+        let image = try #require(NativeLowering.picture(of: label, size: label.frame.size))
+        let bytes = [UInt8](try #require(image.dataProvider?.data) as Data)
+        func alpha(_ x: Int, _ y: Int) -> UInt8 {
+            bytes[y * image.bytesPerRow + x * 4 + 3]
+        }
+        // NativeLowering.picture is top-left based: small y is the top of the label.
+        var topInk = 0, bottomInk = 0
+        for y in 0..<image.height {
+            for x in 0..<image.width where alpha(x, y) > 128 {
+                if y < image.height / 2 { topInk += 1 } else { bottomInk += 1 }
+            }
+        }
+        #expect(topInk > 0, "glyph ink missing from the painted label")
+        #expect(topInk > bottomInk * 2, "layer-name glyph image painted upside down (top=\(topInk) bottom=\(bottomInk))")
+        #expect(NSGraphicsContext.current == nil)
     }
 
     @Test func nestedViewDrawingPreservesDistinctRowPositionsAndClips() throws {

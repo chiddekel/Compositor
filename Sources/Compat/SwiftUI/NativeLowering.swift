@@ -576,11 +576,9 @@ import Observation
     /// upright; the picture then goes into the host's context.
     public static func picture(of view: NSView, size: CGSize) -> CGImage? {
         let width = max(1, Int(size.width.rounded(.up))), height = max(1, Int(size.height.rounded(.up)))
-        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
+        // Top-left user space (y down), matching UpstreamCanvas overlays — avoids the Apple bitmap
+        // context's hidden y-up canvas flip fighting picture/drawHierarchy transforms.
+        let context = CGContext(width: width, height: height)
         drawHierarchy(view, in: context, height: CGFloat(height))
         return context.makeImage()
     }

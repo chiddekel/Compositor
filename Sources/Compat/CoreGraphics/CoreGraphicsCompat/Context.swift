@@ -806,8 +806,10 @@ public final class CGContext: @unchecked Sendable {
         let g = UInt8(clamping: Int(color.green * 255))
         let b = UInt8(clamping: Int(color.blue * 255))
         let a = UInt8(clamping: Int(color.alpha * state.alpha * 255))
-        let ix = max(0, Int(rect.minX)), iy = max(0, Int(rect.minY))
-        let iw = min(width - ix, Int(rect.width)), ih = min(height - iy, Int(rect.height))
+        // Software fills must honor the CTM (NativeLowering nests child views with translates).
+        let device = Self.bounds(of: rect, under: state.ctm)
+        let ix = max(0, Int(floor(device.minX))), iy = max(0, Int(floor(device.minY)))
+        let iw = min(width - ix, Int(ceil(device.maxX)) - ix), ih = min(height - iy, Int(ceil(device.maxY)) - iy)
         guard iw > 0 && ih > 0 else { return }
 
         for y in iy..<(iy + ih) {

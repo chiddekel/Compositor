@@ -83,6 +83,12 @@ struct RenderParityTests {
                 if amount != 0 {
                     switch kind {
                     case .hsv: adjustment.hue = amount; adjustment.saturation = amount
+                    case .reduceNoise:
+                        var settings = FilterSettings()
+                        settings.reduceNoiseLuminance = amount > 0 ? 100 : 20
+                        settings.reduceNoiseDetail = amount > 0 ? 40 : 80
+                        settings.reduceNoiseColor = amount > 0 ? 60 : 10
+                        adjustment.filterLayer.reduceNoise = ReduceNoiseLayerSettings(settings)
                     case .sharpen:
                         var settings = FilterSettings()
                         settings.sharpenAmount = amount > 0 ? 200 : 50

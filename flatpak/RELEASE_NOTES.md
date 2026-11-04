@@ -1,3 +1,11 @@
+Compositor 1.6.3-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream Compositor 1.6.3 through `7f703b4` (distance guides, drag-size labels, Magic Wand Deselect invalidation, Volumetric Light canvas color sampling).
+- Compat: `NSColor.systemPink`; `withTopDownSpace` marks unflipped drawing flipped so layer-name glyphs stay upright; `NativeLowering.picture` uses top-left contexts; software `fill` honors the CTM.
+- Regenerated Linux overrides for tip EditorSession, ContentView, CompositorApp, and TransformOverlay.
+
+Previous release notes:
+
 Compositor 1.6.2-linux-alpha.4 for Linux — signed Flatpak alpha, x86_64.
 
 - Fix dependency source warnings and CMake compatibility for LLVM builds.
