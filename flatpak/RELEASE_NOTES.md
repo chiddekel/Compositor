@@ -1,8 +1,12 @@
+Compositor 1.6.3-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
+
+- Drop Qt private APIs so the build no longer needs Qt6::GuiPrivate.
+
+Previous release notes:
+
 Compositor 1.6.3-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
 - Restore Apple-style picture() and y-up-aware software fills.
-
-Previous release notes:
 
 Compositor 1.6.3-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
