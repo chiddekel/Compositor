@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.6.9-linux-alpha.2" date="2026-11-16" type="development">
+      <description><p>New Canvas remembers the last blank canvas size.</p></description>
+    </release>
     <release version="1.6.9-linux-alpha.1" date="2026-11-16" type="development">
       <description><p>Upstream Compositor 1.6.9 on GNU/Linux: selection Expand/Contract/Feather, AppSlider, circular stroke, pencil anti-alias, Color Picker and tool-rail polish, transform corner rotate, open-as-document export.</p></description>
     </release>

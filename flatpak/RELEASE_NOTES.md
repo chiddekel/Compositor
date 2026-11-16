@@ -1,3 +1,10 @@
+Compositor 1.6.9-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream through `cee4d09`: New Canvas remembers the last blank canvas size.
+- Linux adapters for the blank-canvas size memory.
+
+Previous release notes:
+
 Compositor 1.6.9-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream Compositor 1.6.9 through `a2a5812` (selection Expand/Contract/Feather, AppSlider, circular stroke, pencil anti-alias, Color Picker/tool-rail polish, transform corner rotate, open-as-document export).
