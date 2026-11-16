@@ -371,7 +371,6 @@ struct ContentView: View {
     var toolRail: some View { ToolRail(session: session) }
     private var welcome: some View {
         NewCanvasSheet(session: session,
-            onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
             onOpen: { Task { await applicationDelegate?.projects.open() } })
     }
     var statusBar: some View {   // Linux: internal, see toolHeaders

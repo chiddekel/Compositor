@@ -92,14 +92,13 @@
          .onChange(of: session.selectionAmountOperation) { _, operation in
              if let operation {
                  selectionAmountPanel.onClose = { session.selectionAmountOperation = nil }
-@@ -333,12 +364,13 @@
+@@ -333,11 +364,12 @@
          if let applicationDelegate { Task { await applicationDelegate.projects.newCanvas() } }
          else { session.clearProject() }
      }
 +    var toolRail: some View { ToolRail(session: session) }
      private var welcome: some View {
          NewCanvasSheet(session: session,
-             onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
              onOpen: { Task { await applicationDelegate?.projects.open() } })
      }
 -    private var statusBar: some View {
@@ -107,7 +106,7 @@
          HStack(spacing: 16) {
              if let document = session.document {
                  Text(session.viewport.zoom, format: .percent.precision(.fractionLength(0...1)))
-@@ -475,7 +507,12 @@
+@@ -474,7 +506,12 @@
                  stepper.change = change
                  active ? stepper.listen(step: step) : stepper.stopListening()
              }
