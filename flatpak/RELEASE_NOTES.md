@@ -1,6 +1,9 @@
-Compositor 1.6.9-linux-alpha.1 for Linux — in progress catch-up.
+Compositor 1.6.9-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream Compositor 1.6.9 through `a2a5812` (selection Expand/Contract/Feather, AppSlider, circular stroke, pencil anti-alias, Color Picker/tool-rail polish, transform corner rotate, open-as-document export).
+- Linux adapters: regenerated overrides, Compat glassEffect/AppSlider support, circular stroke distance transform, pencil hard edges via `antialiasWidth == 0`, JPEG preferred extension `jpeg`, Skia bridge discovery for soft mask clipping.
+
+Previous release notes:
 
 Compositor 1.6.3-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
 

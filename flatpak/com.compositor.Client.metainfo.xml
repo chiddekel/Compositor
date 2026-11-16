@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.6.9-linux-alpha.1" date="2026-11-16" type="development">
+      <description><p>Upstream Compositor 1.6.9 on GNU/Linux: selection Expand/Contract/Feather, AppSlider, circular stroke, pencil anti-alias, Color Picker and tool-rail polish, transform corner rotate, open-as-document export.</p></description>
+    </release>
     <release version="1.6.3-linux-alpha.3" date="2026-11-04" type="development">
       <description><p>Drop Qt private APIs so the build no longer needs Qt6::GuiPrivate.</p></description>
     </release>
