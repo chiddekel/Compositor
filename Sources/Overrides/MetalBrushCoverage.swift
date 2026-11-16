@@ -12,6 +12,11 @@ import CoreGraphics
 final class MetalBrushCoverage {
     static let shared: MetalBrushCoverage? = MetalBrushCoverage()
 
+    /// The GPU didn't finish the work: it was reset, or ran out of memory. The session paints the stroke again on the CPU.
+    struct Failed: Error {}
+    /// Renders left to fail on purpose, for tests of that recovery.
+    var failuresForTesting = 0
+
     private lazy var backend: BrushCoverageComputing = BrushCoverageBackends.automatic()
     private let cpu: BrushCoverageComputing = BrushCoverageBackends.cpu()
 
@@ -39,16 +44,19 @@ final class MetalBrushCoverage {
     func render(_ tiles: [(Tile, CGRect, CGContext)], settled: [BrushSegment], tail: [BrushSegment],
                 mapping: CGAffineTransform, settings: BrushSettings, canvas: CGSize) throws {
         guard !tiles.isEmpty else { return }
+        if failuresForTesting > 0 { failuresForTesting -= 1; throw Failed() }
         // For hard tips and small soft tips, a Vulkan submission and fence per tile costs more than
         // the CPU kernel. Keep expensive wide soft-tip integration on the accelerated backend.
         let computer = settings.hardness >= 1 || settings.diameter <= 64 ? cpu : backend
         let scale = Float(max(0.001, min(hypot(mapping.a, mapping.b), hypot(mapping.c, mapping.d))))
+        // Tip 1.6.7: antialias off (pencil) asks the kernel for hard pixel edges via antialiasWidth == 0.
+        let antialiasWidth = settings.antialiased ? scale : Float(0)
         let spacing = Float(max(0.25, settings.diameter * BrushStroke.spacingFraction(settings.hardness)))
         // Compute every tile first; only publish once all succeeded, so a failure leaves nothing half-written.
         let requests = tiles.map { (tile, rect, _) in
             BrushCoverageRequest(
                 width: Int(rect.width), height: Int(rect.height), origin: rect.origin.applying(mapping), mapping: mapping, canvas: canvas,
-                radius: Float(settings.diameter / 2), hardness: Float(settings.hardness), antialiasWidth: scale,
+                radius: Float(settings.diameter / 2), hardness: Float(settings.hardness), antialiasWidth: antialiasWidth,
                 spacing: spacing, settled: settled.map(\.line), tail: tail.map(\.line), permanent: tile.permanent,
                 dynamics: settings.pressureSize || settings.pressureOpacity ? (settled + tail).map(\.dynamics) : [], cap: tile.cap)
         }

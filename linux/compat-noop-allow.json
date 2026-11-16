@@ -1,7 +1,8 @@
 {
   "animation": {
-    "reason": "Animations are not run on Linux; the state change still happens, instantly (tab reorder slide, Transform inspector transition). Visual only.",
+    "reason": "Animations are not run on Linux; the state change still happens, instantly (tab reorder slide, Transform inspector transition, AppSlider knob glass pulse). Visual only.",
     "uses": [
+      "Compositor/UI/AppSlider.swift: .animation(.easeOut(duration: 0.15), value: grab != nil)",
       "Compositor/UI/ProjectTabs.swift: .animation(isDragged ? nil : .easeOut(duration: 0.15), value: reorder?.targetIndex)",
       "Compositor/UI/TransformInspector.swift: .animation(.easeOut(duration: 0.12), value: pending)"
     ]

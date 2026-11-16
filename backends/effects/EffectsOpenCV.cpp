@@ -50,10 +50,8 @@ extern "C" int compositor_effects_opencv(const CompositorEffectsParams *p, const
         first.convertTo(first, CV_32F, 1.0 / 255.0);
         cv::Mat ring, shadow, inner, outer, innerGlow;
         if (p->has_stroke) {
-            const cv::Mat moved = spread(first, static_cast<int>(std::max(1u, p->stroke_reach)), p->stroke_inside != 0);
-            cv::Mat difference = p->stroke_inside ? first - moved : moved - first;
-            cv::max(difference, 0.0, difference);
-            cv::min(difference, 1.0, ring);
+            // Tip 1.6.4+ circular stroke: rectangular dilate/erode no longer matches. Fall through to the C++ tier.
+            return -2;
         }
         if (p->has_shadow) {
             shadow = shift(first, p->shadow_dx, p->shadow_dy);

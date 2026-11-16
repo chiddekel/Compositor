@@ -40,6 +40,9 @@ OUTPUTS = {
     'Sources/Overrides/ProjectStore.swift': (
         'Compositor/IO/ProjectStore.swift', 'linux/patches/project-store-linux.patch',
         'nonisolated importableImages/openEXR/radianceHDR for Linux default MainActor isolation on tip importer paths.'),
+    'Sources/Overrides/ToolHeaderStyle.swift': (
+        'Compositor/UI/ToolHeaderStyle.swift', 'linux/patches/tool-header-style-linux.patch',
+        'ToolHeaderPill skips Group(subviews:)/ButtonStyle (not in Compat yet); joined pill chrome still via Capsule.'),
 }
 
 

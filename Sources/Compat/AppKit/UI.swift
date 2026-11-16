@@ -73,6 +73,8 @@ extension NSApplication {
     public private(set) static var activePanel: NSSavePanel?
     public var allowedContentTypes: [UTType] = []
     public var nameFieldStringValue = ""
+    /// Starting folder for Save/Export when opening an image as a document (tip 1.6.6).
+    public var directoryURL: URL?
     public var title = ""
     /// The line a panel shows above its file list (the Qt dialog shows it as its caption, as it has no message line).
     public var message = ""

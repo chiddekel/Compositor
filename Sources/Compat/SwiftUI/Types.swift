@@ -118,6 +118,13 @@ public typealias Font = StyleToken
 public typealias Color = StyleToken
 public typealias ShapeStyle = StyleToken
 
+/// Tip 1.6.8 AppSlider Liquid Glass knob while held. Linux draws a translucent fill instead of system glass.
+public struct GlassEffectStyle: Sendable, Equatable {
+    let name: String
+    public static let clear = GlassEffectStyle(name: "clear")
+    public static let regular = GlassEffectStyle(name: "regular")
+}
+
 /// Type-erased `ShapeStyle` (Apple's `AnyShapeStyle`); here a thin wrapper over `StyleToken`.
 public struct AnyShapeStyle: Sendable, Equatable {
     let token: StyleToken
@@ -148,6 +155,8 @@ extension StyleToken {
     public static let cyan = StyleToken("cyan")
     public static let white = StyleToken("white"), black = StyleToken("black"), gray = StyleToken("gray")
     public static let accentColor = StyleToken("accentColor")
+    /// `blendMode(.destinationOut)` for cutout swatches (tip 1.6.4 Color Palette).
+    public static let destinationOut = StyleToken("destinationOut")
     // Font.Weight-shaped members (also reused for `.controlSize`/similar small enums — a bare style tag either way).
     public static let ultraLight = StyleToken("ultraLight"), thin = StyleToken("thin"), light = StyleToken("light")
     public static let regular = StyleToken("regular"), medium = StyleToken("medium"), semibold = StyleToken("semibold")
@@ -377,6 +386,10 @@ extension Shape {
     public func fill(_ gradient: AngularGradient) -> some View {
         fill(gradient.gradient.colors.first ?? .clear)
     }
+    public func fill(_ gradient: LinearGradient) -> some View {
+        // Qt renders LinearGradient nodes; a shape fill records the gradient colors as its fill.
+        fill(gradient.colors.first ?? .clear)
+    }
     public func stroke(_ style: ShapeStyle, lineWidth: Double = 1) -> some View {
         strokeBorder(style, lineWidth: lineWidth)
     }
@@ -444,8 +457,23 @@ public struct SpatialTapGesture {
 /// Minimal `Gradient`/`AngularGradient` — enough for `AngularGradient(gradient:center:)`-style construction to
 /// type-check and resolve as a tree node; the Qt renderer doesn't paint gradients from these yet.
 public struct Gradient: Sendable {
+    public struct Stop: Sendable {
+        public let color: Color
+        public let location: Double
+        public init(color: Color, location: Double) { self.color = color; self.location = location }
+    }
     public var colors: [Color]
-    public init(colors: [Color]) { self.colors = colors }
+    public var stops: [Stop]
+    public init(colors: [Color]) {
+        self.colors = colors
+        guard !colors.isEmpty else { stops = []; return }
+        if colors.count == 1 { stops = [Stop(color: colors[0], location: 0)]; return }
+        stops = colors.enumerated().map { Stop(color: $0.element, location: Double($0.offset) / Double(colors.count - 1)) }
+    }
+    public init(stops: [Stop]) {
+        self.stops = stops
+        self.colors = stops.map(\.color)
+    }
 }
 
 public struct AngularGradient: View, PrimitiveView {

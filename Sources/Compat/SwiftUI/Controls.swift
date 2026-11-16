@@ -523,6 +523,12 @@ public struct LinearGradient: View, PrimitiveView {
     public init(colors: [Color], startPoint: UnitPoint, endPoint: UnitPoint) {
         self.colors = colors; self.startPoint = startPoint; self.endPoint = endPoint
     }
+    public init(stops: [Gradient.Stop], startPoint: UnitPoint, endPoint: UnitPoint) {
+        self.colors = stops.map(\.color); self.startPoint = startPoint; self.endPoint = endPoint
+    }
+    public init(gradient: Gradient, startPoint: UnitPoint, endPoint: UnitPoint) {
+        self.init(colors: gradient.colors, startPoint: startPoint, endPoint: endPoint)
+    }
     public func _makeNode(children: [RenderNode]) -> RenderNode {
         var node = RenderNode(kind: "LinearGradient")
         node.stringParams["colors"] = colors.map(\.name).joined(separator: "|")   // color tokens can hold commas

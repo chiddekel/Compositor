@@ -261,6 +261,9 @@ extern "C" int compositor_vulkan_effects_render(CompositorVulkanEffects *context
                                                 const uint8_t *pixels, uint8_t *out) {
     if (!p || !pixels || !out || p->width == 0 || p->height == 0 || static_cast<size_t>(p->width) * p->height > kMaxPixels) return -1;
     if (!context) return -2;
+    // Tip 1.6.4+ uses a circular distance transform for stroke; the compute shader still has the old rectangular
+    // spread. Fall through to OpenCV/CPU until the shader matches.
+    if (p->has_stroke) return -2;
     std::lock_guard<std::mutex> guard(context->lock);
     if (!context->usable) return -2;
     try { context->render(*p, pixels, out); return 0; }

@@ -1,3 +1,7 @@
+Compositor 1.6.9-linux-alpha.1 for Linux — in progress catch-up.
+
+- Integrates upstream Compositor 1.6.9 through `a2a5812` (selection Expand/Contract/Feather, AppSlider, circular stroke, pencil anti-alias, Color Picker/tool-rail polish, transform corner rotate, open-as-document export).
+
 Compositor 1.6.3-linux-alpha.3 for Linux — signed Flatpak alpha, x86_64.
 
 - Drop Qt private APIs so the build no longer needs Qt6::GuiPrivate.

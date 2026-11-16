@@ -1,6 +1,6 @@
 --- a/Compositor/Rendering/TransformOverlay.swift
 +++ b/Compositor/Rendering/TransformOverlay.swift
-@@ -23,8 +23,17 @@
+@@ -21,20 +21,29 @@
          showsRotation = false
      }
  
@@ -16,10 +16,10 @@
 +        }.min() ?? 0
 +        let slop = min(Self.hitSlop, shortestSide / 3)
 +        func near(_ other: CGPoint) -> Bool { hypot(point.x - other.x, point.y - other.y) <= slop }
-         if showsRotation, near(rotationHandle) { return .rotate }
          if let index = handles.firstIndex(where: near) { return .resize(index) }
          for (start, end, handle) in [(0, 2, 1), (2, 4, 3), (4, 6, 5), (6, 0, 7)] {
-@@ -33,7 +42,7 @@
+             let a = handles[start], b = handles[end]
+             let dx = b.x - a.x, dy = b.y - a.y
              let lengthSquared = dx * dx + dy * dy
              guard lengthSquared > 0 else { continue }
              let t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared
@@ -27,4 +27,9 @@
 +            if (0...1).contains(t), hypot(point.x - a.x - t * dx, point.y - a.y - t * dy) <= slop {
                  return .resize(handle)
              }
+         }
+         // Just outside the box, around a corner: rotates, from wherever the press lands.
+         if showsRotation, !box.contains(point),
+            [0, 2, 4, 6].contains(where: { hypot(point.x - handles[$0].x, point.y - handles[$0].y) <= Self.rotationReach }) {
+             return .rotate
          }

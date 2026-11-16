@@ -14,7 +14,8 @@ typedef struct { float r, g, b, opacity; } CompositorEffectColor;
 typedef struct CompositorEffectsParams {
     uint32_t width, height;
     int32_t has_stroke, stroke_inside;
-    uint32_t stroke_reach;                      // whole pixels, at least 1
+    uint32_t stroke_reach;                      // search limit in pixels (ceil(size)+2)
+    float stroke_size;                          // tip 1.6.4+: true radial reach in document pixels
     CompositorEffectColor stroke;
     int32_t has_shadow;
     float shadow_dx, shadow_dy, shadow_sigma;   // sigma <= 0.01 means no blur

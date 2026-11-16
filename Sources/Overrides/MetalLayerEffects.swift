@@ -149,7 +149,9 @@ nonisolated final class CEffectsBackend: LayerEffectsBackend {
         if let stroke = effects.stroke, stroke.isEnabled, stroke.size > 0, stroke.opacity > 0 {
             p.has_stroke = 1
             p.stroke_inside = stroke.inside ? 1 : 0
-            p.stroke_reach = UInt32(max(1, Int(stroke.size.rounded())))
+            // Tip 1.6.4+: circular reach; search limit is ceil(size)+2, size itself is the true radius.
+            p.stroke_reach = UInt32(Int(stroke.size.rounded(.up)) + 2)
+            p.stroke_size = Float(stroke.size)
             p.stroke = color(stroke.color, stroke.opacity)
         }
         if let shadow = effects.shadow, shadow.isEnabled, shadow.opacity > 0 {

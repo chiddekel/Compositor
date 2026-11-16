@@ -97,6 +97,11 @@ public final class NSEvent: @unchecked Sendable {
     public var rotation: Float = 0
     public var deltaX: CGFloat = 0, deltaY: CGFloat = 0
     public var scrollingDeltaX: CGFloat = 0, scrollingDeltaY: CGFloat = 0
+    /// Whether the device inverts scroll (natural scrolling). Tip 1.6.7 uses this so Option/Command-zoom
+    /// follows the wheel the same way regardless of that setting. Linux defaults to natural (inverted).
+    public var isDirectionInvertedFromDevice = true
+    /// System double-click threshold in seconds (tip AppSlider knob reset). Linux uses 0.5s.
+    public static var doubleClickInterval: TimeInterval = 0.5
     public var hasPreciseScrollingDeltas = false
     public var magnification: CGFloat = 0
     public var cgEvent: CGEvent?

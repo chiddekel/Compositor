@@ -602,11 +602,11 @@ final class UpstreamEditor {
             s.featherSelection(by: Int(command.parameters?["amount"] ?? 1))
         case "expandSelection":
             let amt = Int(command.parameters?["amount"] ?? 1)
-            s.selectionExpandAmount = amt
+            s.selectionModifyAmount = amt
             s.expandSelection(by: amt)
         case "setSelectionExpandAmount":
             if let amt = command.parameters?["amount"] {
-                s.selectionExpandAmount = Int(amt)
+                s.selectionModifyAmount = Int(amt)
             }
         case "setSelectionMode":
             if let k = command.kind, let mode = SelectionMode(rawValue: k) ?? SelectionMode.allCases.first(where: { "\($0)".caseInsensitiveCompare(k) == .orderedSame }) {

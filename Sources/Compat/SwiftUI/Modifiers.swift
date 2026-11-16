@@ -187,9 +187,19 @@ extension View {
     }
     public func cornerRadius(_ radius: Double) -> some View { modified { $0.modifiers.append(.cornerRadius(radius)) } }
     public func offset(x: Double = 0, y: Double = 0) -> some View { modified { $0.modifiers.append(.offset(x: x, y: y)) } }
+    public func offset(_ size: CGSize) -> some View { offset(x: Double(size.width), y: Double(size.height)) }
+    /// Flatten before clipping so soft edges don't show through (Color Picker / palette swatches).
+    public func compositingGroup() -> some View { modified { $0.boolParams["compositingGroup"] = true } }
+    public func blendMode(_ mode: StyleToken) -> some View {
+        modified { $0.stringParams["blendMode"] = mode.name }
+    }
     public func shadow(radius: Double = 1) -> some View { modified { $0.modifiers.append(.shadow(radius: radius)) } }
     public func shadow(color: Color = .black, radius: Double, x: Double = 0, y: Double = 0) -> some View {
         modified { $0.modifiers.append(.shadow(radius: radius)) }
+    }
+    /// Liquid Glass while an AppSlider knob is held: a translucent white fill stands in on Linux.
+    public func glassEffect(_ style: GlassEffectStyle = .regular, in shape: some Shape) -> some View {
+        overlay { shape.fill(Color.white.opacity(0.35)) }
     }
     public func scaleEffect(_ scale: Double) -> some View { modified { $0.modifiers.append(.scaleEffect(scale)) } }
     public func scaleEffect(x: Double = 1, y: Double = 1, anchor: UnitPoint = .center) -> some View {
@@ -232,6 +242,13 @@ extension View {
     }
     public func accessibilityValue(_ value: String) -> some View {
         modified { $0.modifiers.append(.accessibilityValue(value)) }
+    }
+    public func accessibilityValue(_ text: Text) -> some View {
+        accessibilityValue(text.content)
+    }
+    /// VoiceOver increment/decrement for AppSlider / CameraRawSlider; Linux stores the handler unused.
+    public func accessibilityAdjustableAction(_ handler: @escaping (AccessibilityAdjustmentDirection) -> Void) -> some View {
+        modified { $0.boolParams["accessibilityAdjustable"] = true }
     }
     public func accessibilityAddTraits(_ traits: AccessibilityTraits) -> some View {
         modified {
@@ -714,6 +731,10 @@ extension View {
 
 public enum AccessibilityChildBehavior: Sendable {
     case ignore, contain, combine
+}
+
+public enum AccessibilityAdjustmentDirection: Sendable {
+    case increment, decrement
 }
 
 /// The last value each `.onScrollGeometryChange` reported, by its place in the tree (it outlives a re-render).

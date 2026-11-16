@@ -39,6 +39,11 @@ public struct Path: Shape {
         cgPath.addCurve(to: end, control1: control1, control2: control2)
     }
     public mutating func addQuadCurve(to end: CGPoint, control: CGPoint) { cgPath.addQuadCurve(to: end, control: control) }
+    public mutating func addArc(center: CGPoint, radius: CGFloat, startAngle: Angle, endAngle: Angle,
+                                clockwise: Bool) {
+        cgPath.addArc(center: center, radius: radius, startAngle: CGFloat(startAngle.radians),
+                      endAngle: CGFloat(endAngle.radians), clockwise: clockwise)
+    }
     public mutating func closeSubpath() { cgPath.closeSubpath() }
 }
 
@@ -57,6 +62,8 @@ public struct GraphicsContextShading: Sendable {
 
 public struct GraphicsContext {
     public let cgContext: CGContext
+    /// Tip 1.6.4 LassoControls icons fade nested strokes; stored for the Skia draw but not yet applied per-call.
+    public var opacity: Double = 1
     public init(cgContext: CGContext) { self.cgContext = cgContext }
 
     public func fill(_ path: Path, with shading: GraphicsContextShading) {

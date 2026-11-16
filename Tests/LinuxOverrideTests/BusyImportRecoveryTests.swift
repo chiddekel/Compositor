@@ -171,7 +171,7 @@ struct BusyImportRecoveryTests {
         for amount in [1.75, -1.75] {
             let valid: [String: Any] = ["version": 1, "action": "setSelectionExpandAmount", "parameters": ["amount": amount]]
             #expect(await editor.commandAsync(try JSONSerialization.data(withJSONObject: valid)) == 0)
-            #expect(session.selectionExpandAmount == Int(amount) && editor.error == nil)
+            #expect(session.selectionModifyAmount == Int(amount) && editor.error == nil)
         }
     }
 
@@ -185,7 +185,7 @@ struct BusyImportRecoveryTests {
         let mode = try JSONSerialization.data(withJSONObject: ["version": 1, "action": "setSelectionMode",
                                                               "kind": SelectionMode.subtract.rawValue])
         #expect(await editor.commandAsync(amount) == 0)
-        #expect(editor.session.selectionExpandAmount == 7)
+        #expect(editor.session.selectionModifyAmount == 7)
         #expect(await editor.commandAsync(mode) == 0)
         #expect(editor.session.selectionModeChoice == .subtract)
     }

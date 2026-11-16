@@ -106,12 +106,18 @@ final class CompCanvasBridge: @unchecked Sendable {
 
     private init() {
         #if canImport(Glibc)
+        // Prefer an explicit path. Fall back to Flatpak, then common local build outputs so ad-hoc
+        // `swift test` / xctest runs still get soft mask clipping (without Skia, clip(to:mask:) is a
+        // no-op and brush tiles fill solid — PencilTests then look like soft-edge regressions).
+        let cwd = FileManager.default.currentDirectoryPath
         let candidates = [
             ProcessInfo.processInfo.environment["COMPOSITOR_SKIA_BRIDGE"] ?? "",
             // Bare name: the system loader's search path only. Never the working directory, where a stray
             // library would be picked up.
             "libCompositorSkiaBridge.so",
-            "/app/lib/libCompositorSkiaBridge.so"
+            "/app/lib/libCompositorSkiaBridge.so",
+            "\(cwd)/build/lib/libCompositorSkiaBridge.so",
+            "\(cwd)/.build/linux-contract-native/libCompositorSkiaBridge.so",
         ]
         for path in candidates where !path.isEmpty {
             if let handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL) {

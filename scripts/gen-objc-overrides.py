@@ -26,24 +26,6 @@ def header(tip, note):
             + ''.join(f'// {line}\n' if line else '//\n' for line in note.split('\n')))
 
 
-def slider_snap():
-    tip = 'Compositor/UI/SliderSnap.swift'
-    source = (root / tip).read_text()
-    # Tip swizzles NSSliderCell.startTracking(at:in:) through the Objective-C runtime. Compat AppKit's cell runs
-    # `NSSliderCell.startTrackingHook` at the same moment instead; the snap itself (the extension below) is tip's.
-    swizzle_start = source.index('    private static let installed: Void = {')
-    swizzle_end = source.index('    }()\n', swizzle_start) + len('    }()\n')
-    source = source[:swizzle_start] + (
-        '    private static let installed: Void = {\n'
-        '        NSSliderCell.startTrackingHook = { cell, point, view in cell.snapValue(to: point, in: view) }\n'
-        '    }()\n') + source[swizzle_end:]
-    source = source.replace('import ObjectiveC\n', '')
-    if 'class_getInstanceMethod' in source or 'method_setImplementation' in source:
-        raise SystemExit(f'{tip}: swizzle not fully replaced')
-    return header(tip, 'Only the swizzle in `installed` differs: compat NSSliderCell calls `startTrackingHook` where tip\n'
-                       'replaced startTracking(at:in:) through the Objective-C runtime.') + source
-
-
 def command_palette_view():
     tip = 'Compositor/UI/CommandPaletteView.swift'
     source = (root / tip).read_text()
@@ -180,7 +162,6 @@ OUTPUTS = {
         'Compositor/UI/LayerSearchControls.swift',
         'Original layer search, type filters and field delegate; Escape is dispatched by selector name.'),
     'Sources/Overrides/CommandPaletteView.swift': command_palette_view,
-    'Sources/Overrides/SliderSnap.swift': slider_snap,
     'Sources/Overrides/CameraRawSlider.swift': plain(
         'Compositor/UI/CameraRawSlider.swift',
         'Tip\'s file through scripts/objc_selectors.py: the slider\'s action reaches its Coordinator by name. The Qt shell\n'
@@ -193,6 +174,14 @@ def main():
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     stale = []
+    # Tip 1.6.4+ replaced SliderSnap with AppSlider; reject stale override copies.
+    for retired_rel in ("Sources/Overrides/SliderSnap.swift",):
+        retired = root / retired_rel
+        if retired.exists():
+            if args.check:
+                stale.append(retired_rel)
+            else:
+                retired.unlink()
     for path, make in OUTPUTS.items():
         text = make()
         target = root / path

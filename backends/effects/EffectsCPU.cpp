@@ -5,7 +5,9 @@
 #include "CompositorEffectsBackend.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -27,24 +29,65 @@ void parallelRows(uint32_t rows, const std::function<void(uint32_t, uint32_t)> &
 
 using Plane = std::vector<float>;
 
-// The largest (or smallest) value within reach along a row or column; past the edge there is nothing (0).
-void spread(const Plane &source, Plane &result, uint32_t w, uint32_t h, int reach, bool smallest, bool rows) {
-    parallelRows(h, [&](uint32_t y0, uint32_t y1) {
-        for (uint32_t y = y0; y < y1; ++y) {
-            for (uint32_t x = 0; x < w; ++x) {
-                float best = smallest ? 1.0f : 0.0f;
-                for (int offset = -reach; offset <= reach; ++offset) {
-                    const int sample = static_cast<int>(rows ? x : y) + offset;
-                    const int limit = static_cast<int>(rows ? w : h);
-                    const float value = (sample < 0 || sample >= limit) ? 0.0f
-                        : source[rows ? static_cast<size_t>(y) * w + static_cast<uint32_t>(sample)
-                                      : static_cast<size_t>(sample) * w + x];
-                    best = smallest ? std::min(best, value) : std::max(best, value);
-                }
-                result[static_cast<size_t>(y) * w + x] = best;
-            }
+// Tip 1.6.4+: true (circular) distance from the shape's edge via a row pass then a column lower-envelope pass
+// (Felzenszwalb & Huttenlocher). Distances beyond `limit` come back as at least `limit + 1`.
+void edgeDistances(const Plane &levels, Plane &result, uint32_t w, uint32_t h, bool inside, int limit) {
+    const int cap = limit + 1;
+    const float far = static_cast<float>(cap * cap);
+    Plane squared(levels.size(), far);
+    for (uint32_t row = 0; row < h; ++row) {
+        const size_t base = static_cast<size_t>(row) * w;
+        auto isTarget = [&](int x) { return (levels[base + static_cast<size_t>(x)] >= 0.5f) != inside; };
+        // int64_t: tip Swift uses 64-bit Int sentinels; 32-bit int overflows for "far left/right".
+        int64_t last = inside ? -1 : std::numeric_limits<int64_t>::min() / 2;
+        for (int x = 0; x < static_cast<int>(w); ++x) {
+            if (isTarget(x)) last = x;
+            const int gap = static_cast<int>(std::min<int64_t>(cap, x - last));
+            squared[base + static_cast<size_t>(x)] = static_cast<float>(gap * gap);
         }
-    });
+        last = inside ? static_cast<int64_t>(w) : std::numeric_limits<int64_t>::max() / 2;
+        for (int x = static_cast<int>(w) - 1; x >= 0; --x) {
+            if (isTarget(x)) last = x;
+            const int gap = static_cast<int>(std::min<int64_t>(cap, last - x));
+            squared[base + static_cast<size_t>(x)] = std::min(squared[base + static_cast<size_t>(x)],
+                                                              static_cast<float>(gap * gap));
+        }
+    }
+    Plane column(h), bounds(h + 1);
+    std::vector<int> lowest(h);
+    for (uint32_t x = 0; x < w; ++x) {
+        for (uint32_t y = 0; y < h; ++y) column[y] = squared[static_cast<size_t>(y) * w + x];
+        int count = 0;
+        lowest[0] = 0;
+        bounds[0] = -std::numeric_limits<float>::infinity();
+        bounds[1] = std::numeric_limits<float>::infinity();
+        auto crossing = [&](int q, int p) {
+            return ((column[static_cast<size_t>(q)] - column[static_cast<size_t>(p)]) /
+                    static_cast<float>(q - p) + static_cast<float>(q + p)) / 2.0f;
+        };
+        for (int q = 1; q < static_cast<int>(h); ++q) {
+            float crossesAt = crossing(q, lowest[static_cast<size_t>(count)]);
+            while (crossesAt <= bounds[static_cast<size_t>(count)]) {
+                --count;
+                crossesAt = crossing(q, lowest[static_cast<size_t>(count)]);
+            }
+            ++count;
+            lowest[static_cast<size_t>(count)] = q;
+            bounds[static_cast<size_t>(count)] = crossesAt;
+            bounds[static_cast<size_t>(count) + 1] = std::numeric_limits<float>::infinity();
+        }
+        count = 0;
+        for (int y = 0; y < static_cast<int>(h); ++y) {
+            while (bounds[static_cast<size_t>(count) + 1] < static_cast<float>(y)) ++count;
+            const int p = lowest[static_cast<size_t>(count)];
+            float distance = static_cast<float>((y - p) * (y - p)) + column[static_cast<size_t>(p)];
+            if (inside) {
+                distance = std::min(distance, static_cast<float>((y + 1) * (y + 1)));
+                distance = std::min(distance, static_cast<float>((static_cast<int>(h) - y) * (static_cast<int>(h) - y)));
+            }
+            result[static_cast<size_t>(y) * w + x] = std::sqrt(distance);
+        }
+    }
 }
 
 // The shape moved by (dx, dy), bilinearly, so a shadow moves smoothly rather than in whole steps.
@@ -109,12 +152,16 @@ extern "C" int compositor_effects_cpu(const CompositorEffectsParams *p, const ui
             for (size_t i = static_cast<size_t>(y0) * w; i < static_cast<size_t>(y1) * w; ++i) first[i] = static_cast<float>(pixels[i * 4 + 3]) / 255.0f;
         });
         if (p->has_stroke) {
-            // second: the shape reached out (or pulled in) by the stroke's size; third: the ring between them.
-            const int reach = static_cast<int>(std::max(1u, p->stroke_reach));
-            spread(first, third, w, h, reach, p->stroke_inside != 0, true);
-            spread(third, second, w, h, reach, p->stroke_inside != 0, false);
-            for (size_t i = 0; i < count; ++i)
-                third[i] = clamp01(p->stroke_inside ? first[i] - second[i] : second[i] - first[i]);
+            // third: circular ring between the shape and the shape grown/shrunk by stroke_size (tip 1.6.4+).
+            const float size = p->stroke_size > 0.0f ? p->stroke_size
+                                                     : static_cast<float>(std::max(1u, p->stroke_reach));
+            const int limit = p->stroke_reach > 0 ? static_cast<int>(p->stroke_reach)
+                                                 : static_cast<int>(std::ceil(size)) + 2;
+            edgeDistances(first, second, w, h, p->stroke_inside != 0, limit);
+            for (size_t i = 0; i < count; ++i) {
+                const float reached = clamp01(size + 1.0f - second[i]);
+                third[i] = clamp01(p->stroke_inside ? first[i] - (1.0f - reached) : reached - first[i]);
+            }
         }
         if (p->has_shadow) {
             shift(first, second, w, h, p->shadow_dx, p->shadow_dy);

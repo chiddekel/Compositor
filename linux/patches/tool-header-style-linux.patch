@@ -1,0 +1,44 @@
+--- a/Compositor/UI/ToolHeaderStyle.swift
++++ b/Compositor/UI/ToolHeaderStyle.swift
+@@ -19,30 +19,14 @@
+ 
+     var body: some View {
+         HStack(spacing: 0) {
+-            Group(subviews: content) { segments in
+-                ForEach(segments.indices, id: \.self) { index in
+-                    if index > 0 { Rectangle().fill(.white.opacity(isEnabled ? 0.12 : 0.06)).frame(width: 1, height: 12) }
+-                    segments[index]
+-                }
+-            }
++            // Linux Compat has no Group(subviews:)/ButtonStyle yet; the Qt shell still draws joined pills.
++            content
+         }
+-        .buttonStyle(ToolHeaderPillButtonStyle(width: segmentWidth))
++        .buttonStyle(.plain)
+         // Fainter while disabled, as the system's own buttons go, so a dimmed pill doesn't stand out from them.
+         .background(.white.opacity(isEnabled ? 0.09 : 0.045))
+         .clipShape(Capsule())
+-    }
+-}
+-
+-private struct ToolHeaderPillButtonStyle: ButtonStyle {
+-    let width: CGFloat
+-    @Environment(\.isEnabled) private var isEnabled
+-
+-    func makeBody(configuration: Configuration) -> some View {
+-        configuration.label
+-            .opacity(isEnabled ? 1 : 0.4)
+-            .frame(width: width, height: 24)
+-            .contentShape(Rectangle())
+-            .background(.white.opacity(configuration.isPressed ? 0.14 : 0))
++        .opacity(isEnabled ? 1 : 0.4)
+     }
+ }
+ 
+@@ -72,4 +56,4 @@
+             .frame(height: ToolHeaderStyle.height)
+             .fixedSize(horizontal: false, vertical: true)
+     }
+-}
++}
+\ Brak znaku nowej linii na końcu pliku

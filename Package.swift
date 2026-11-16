@@ -332,7 +332,9 @@ let package = Package(
                      "UI/FontListPanel.swift",
                      "UI/LayerMaskMenu.swift",
                      // Tip footer menus use #selector/@objc; Overrides/LayersPanel.swift uses NSSelectorDispatching.
-                     "UI/LayersPanel.swift"],
+                     "UI/LayersPanel.swift",
+                     // Tip 1.6.4 ToolHeaderPill uses Group(subviews:)/ButtonStyle; Overrides/ToolHeaderStyle simplifies for Compat.
+                     "UI/ToolHeaderStyle.swift"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .defaultIsolation(MainActor.self),

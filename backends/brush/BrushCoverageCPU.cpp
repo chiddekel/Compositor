@@ -5,7 +5,9 @@
 namespace {
 float coverage(float distanceSquared, const CompositorBrushUniforms &u) {
     const float distance = std::sqrt(distanceSquared);
-    if (u.hardness >= 1) return std::clamp((u.radius - distance) / u.antialias_width + 0.5f, 0.0f, 1.0f);
+    // Tip 1.6.7 pencil: Anti-alias off forces hardness 1 and antialias_width 0 → hard pixel edges.
+    if (u.antialias_width <= 0.0f && u.hardness >= 1) return distance < u.radius ? 1.0f : 0.0f;
+    if (u.hardness >= 1) return std::clamp((u.radius - distance) / std::max(u.antialias_width, 0.001f) + 0.5f, 0.0f, 1.0f);
     const float t = std::clamp((distance / u.radius - u.hardness) / (1 - u.hardness), 0.0f, 1.0f);
     return std::max(0.0f, (std::exp(-2.5f*t*t) - std::exp(-2.5f)) / (1 - std::exp(-2.5f)));
 }

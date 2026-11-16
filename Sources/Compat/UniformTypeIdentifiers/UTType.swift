@@ -14,7 +14,8 @@ public struct UTType: Hashable, Sendable {
         "public.image": Info(ext: [], mime: nil, parents: ["public.data", "public.content"]),
         "public.png": Info(ext: ["png"], mime: "image/png", parents: ["public.image"]),
         "public.svg-image": Info(ext: ["svg"], mime: "image/svg+xml", parents: ["public.image"]),
-        "public.jpeg": Info(ext: ["jpg", "jpeg"], mime: "image/jpeg", parents: ["public.image"]),
+        // Preferred extension is "jpeg" (Apple's UTType.jpeg); "jpg" stays accepted.
+            "public.jpeg": Info(ext: ["jpeg", "jpg"], mime: "image/jpeg", parents: ["public.image"]),
         "public.tiff": Info(ext: ["tiff", "tif"], mime: "image/tiff", parents: ["public.image"]),
         // ICC colour profiles (Apple's ColorSync profile type), for upstream's CMYK Load Profile panels.
         "com.apple.colorsync-profile": Info(ext: ["icc", "icm"], mime: "application/vnd.iccprofile", parents: ["public.data"]),

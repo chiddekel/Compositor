@@ -5,7 +5,7 @@ import Observation
 import UniformTypeIdentifiers
 
 @MainActor
-final class ProjectTab: Identifiable {
+@Observable final class ProjectTab: Identifiable {
     let id = UUID()
     let session: EditorSession
     let controller: ProjectController
@@ -207,6 +207,8 @@ final class ProjectWorkspace {
             } else { tab = addTab() }
             selectedID = tab.id
             await tab.session.importImages([url], at: point)
+            // A document begun from this image is named after it until it's saved, as an opened project is.
+            if tab.session.sourceImageURL == url { tab.defaultName = url.deletingPathExtension().lastPathComponent }
         }
     }
     func receiveProviders(_ providers: [NSItemProvider], into destination: UUID? = nil, at point: CGPoint? = nil) async {
