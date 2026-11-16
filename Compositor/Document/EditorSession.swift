@@ -206,6 +206,9 @@ final class EditorSession {
     var effectSelection: LayerEffectSelection?
     @ObservationIgnored var effectsPreviews = EffectsPreviewCache()
     var projectURL: URL?
+    /// The image file the document began as, opened or dropped into an empty window: until the document is saved as a
+    /// project, Export offers that file's name, folder and format, so editing a PNG and writing it back is quick.
+    @ObservationIgnored var sourceImageURL: URL?
     /// Blocks overlapping edits immediately. Not observed by the UI: controls only dim via
     /// `showsBusy`, after an operation has run long enough to be worth showing, so quick
     /// edits (invert, fills, stroke commits) never flash the interface.
@@ -282,7 +285,7 @@ final class EditorSession {
     @ObservationIgnored var snapGuides: (xs: [CGFloat], ys: [CGFloat]) = ([], [])
     /// Pixel gaps the Move tool shows while a layer is dragged, or with Command held over another layer.
     @ObservationIgnored var distanceLines: [DistanceLine] = []
-    /// A Move tool resize in progress: the layer's size, and where the pointer has the handle, in document pixels.
+    /// A Move tool resize or rotation in progress: the layer's size or angle, and where the pointer is, in document pixels.
     @ObservationIgnored var resizeSize: (text: String, corner: CGPoint)?
     /// Crop, resize and selection moves follow View › Snap (⇧⌘;) too: they had a Snap item of their own, which left
     /// the View menu with two called Snap.
@@ -298,6 +301,9 @@ final class EditorSession {
     @ObservationIgnored var brushPointer: CGPoint?
     /// The pen's latest pressure in this stroke; 1 for a mouse. Events that carry none (the release) keep it.
     @ObservationIgnored var brushPressure: CGFloat = 1
+    /// Every point the stroke in progress has been given, with its pressure, so it can be painted again from the start
+    /// (see `restartBrush`).
+    @ObservationIgnored var brushInput: [(point: CGPoint, pressure: CGFloat)] = []
     @ObservationIgnored var maskDistortPreviewCache: MaskDistortPreviewCache?
     /// The last rounded rectangle drawn for a transform in progress, by layer, with the size it was drawn at.
     @ObservationIgnored var shapeTransformPreviewCache: [UUID: (size: CGSize, image: CGImage)] = [:]
@@ -387,7 +393,6 @@ final class EditorSession {
     @ObservationIgnored var previewZoom: ((PreviewZoomCommand) -> Void)?
     /// The text's style before the font menu started previewing faces on it (see `previewFont`).
     @ObservationIgnored var fontPreviewOriginal: LayerTextStyle?
-    var selectionFeatherAmount = 2
     var wandSettings = WandSettings()
     var objectSelectionSettings = ObjectSelectionSettings()
     var showsPixelGrid = ToolDefaults.bool("pixelGrid", true) { didSet { ToolDefaults.set(showsPixelGrid, "pixelGrid") } }
@@ -467,9 +472,8 @@ final class EditorSession {
     var snapToDocumentBounds = ToolDefaults.bool("snapBounds", true) { didSet { ToolDefaults.set(snapToDocumentBounds, "snapBounds") } }
     var locksGuides = ToolDefaults.bool("lockGuides", false) { didSet { ToolDefaults.set(locksGuides, "lockGuides") } }
     var guideDrag: GuideDrag?
-    /// Pixels the Expand / Contract buttons grow or shrink the selection by.
-    var selectionExpandAmount = 1
-    var selectionContractAmount = 1
+    /// Pixels the Expand, Contract and Feather buttons and commands change the selection by.
+    var selectionModifyAmount = 5
     @ObservationIgnored var pendingOpacityDigit: (digit: Int, time: TimeInterval)?
     var colorPicker: ColorPickerState?
     var brushError: String?
@@ -1028,8 +1032,9 @@ final class EditorSession {
             let startsDocument = document == nil
             var psdProfile: CMYKProfile?
             defer {
-                if startsDocument, document != nil, let profile = psdProfile ?? CMYK.profile(ofImageAt: url) {
-                    proofProfile = CMYK.adopt(profile)
+                if startsDocument, document != nil {
+                    if projectURL == nil { sourceImageURL = url }
+                    if let profile = psdProfile ?? CMYK.profile(ofImageAt: url) { proofProfile = CMYK.adopt(profile) }
                 }
             }
             do {
