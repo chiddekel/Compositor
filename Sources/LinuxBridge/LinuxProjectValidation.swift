@@ -56,6 +56,15 @@ enum LinuxProjectValidation {
             if let shape = layer.shape, shape.lineStyle != nil || shape.lineCap != nil {
                 guard manifest.version >= 15, shape.kind == .line else { throw ProjectError.invalid }
             }
+            // A rectangle or ellipse's inside stroke arrived in version 22, and only those shapes have one.
+            if let shape = layer.shape,
+               shape.strokeWidth != nil || shape.strokeRed != nil || shape.strokeGreen != nil || shape.strokeBlue != nil {
+                guard manifest.version >= 22, shape.kind == .rectangle || shape.kind == .ellipse,
+                      let width = shape.strokeWidth, width.isFinite, width > 0, width <= 5000,
+                      let red = shape.strokeRed, let green = shape.strokeGreen, let blue = shape.strokeBlue,
+                      red.isFinite, green.isFinite, blue.isFinite,
+                      (0...1).contains(red), (0...1).contains(green), (0...1).contains(blue) else { throw ProjectError.invalid }
+            }
             if let text = layer.text {
                 // Per-letter colors arrived in version 10, per-letter faces in version 11.
                 guard text.isValid,

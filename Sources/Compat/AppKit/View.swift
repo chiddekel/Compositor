@@ -162,6 +162,14 @@ public final class NSTrackingArea {
         registeredDraggedTypes += newTypes.filter { !registeredDraggedTypes.contains($0) }
     }
     open func unregisterDraggedTypes() { registeredDraggedTypes = [] }
+    /// Drop-destination hooks (AppKit's `NSDraggingDestination`); subclasses such as `LayerDropForwarder` override these.
+    open func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { [] }
+    open func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    open func draggingExited(_ sender: NSDraggingInfo?) {}
+    open func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
+    open func performDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
+    open func concludeDragOperation(_ sender: NSDraggingInfo?) {}
+    open func updateDraggingItemsForDrag(_ sender: NSDraggingInfo?) {}
     open func viewWillMove(toWindow newWindow: NSWindow?) {}
     open func viewWillMove(toSuperview newSuperview: NSView?) {}
     open func accessibilityPerformPress() -> Bool { false }
@@ -640,15 +648,20 @@ public enum NSAccessibility {
     /// event loop runs (`NSApp.eventPump`) while the pointer is still down, and its events for this window arrive here
     /// (`isTrackingEvents`). Nil once nothing more can come — no pump (a test), or the button let go elsewhere.
     open func nextEvent(matching mask: NSEvent.EventTypeMask) -> NSEvent? {
+        nextEvent(matching: mask, until: nil, inMode: nil, dequeue: true)
+    }
+    /// AppKit's timed tracking variant: waits until `until` when a pump is available; otherwise same as the untimed form.
+    open func nextEvent(matching mask: NSEvent.EventTypeMask, until: Date?, inMode: RunLoop.Mode?, dequeue: Bool) -> NSEvent? {
         func take() -> NSEvent? {
             guard let index = queuedEvents.firstIndex(where: { mask.contains(NSEvent.EventTypeMask(type: $0.type)) }) else { return nil }
-            return queuedEvents.remove(at: index)
+            return dequeue ? queuedEvents.remove(at: index) : queuedEvents[index]
         }
         if let event = take() { return event }
         guard let pump = NSApp.eventPump else { return nil }
         trackingDepth += 1
         defer { trackingDepth -= 1 }
-        while pump() {
+        let deadline = until ?? Date.distantFuture
+        while Date() < deadline, pump() {
             if let event = take() { return event }
         }
         return take()
@@ -1355,6 +1368,20 @@ extension NSTableViewDelegate {
         addSubview(view)
         return view
     }
+    /// The view for a whole row (AppKit's `rowView(atRow:makeIfNecessary:)`).
+    open func rowView(atRow row: Int, makeIfNecessary: Bool) -> NSTableRowView? {
+        if let cached = rowViews[row] as? NSTableRowView { return cached }
+        guard makeIfNecessary else { return nil }
+        return view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableRowView
+            ?? view(atColumn: 0, row: row, makeIfNecessary: true).map { content in
+                let rowView = NSTableRowView(frame: rect(ofRow: row))
+                rowView.addSubview(content)
+                content.frame = rowView.bounds
+                rowViews[row] = rowView
+                addSubview(rowView)
+                return rowView
+            }
+    }
     /// A row view the reuse pool has for `identifier` (one `reloadData` gave back), or nil to make a new one.
     open func makeView(withIdentifier identifier: NSUserInterfaceItemIdentifier, owner: Any?) -> NSView? {
         recycledViews[identifier]?.popLast()
@@ -1548,6 +1575,20 @@ extension NSTableViewDelegate {
     open func draggingSourceOperationMask(forLocal isLocal: Bool) -> NSDragOperation { isLocal ? localDragMask : externalDragMask }
     /// Retargets the drop being validated, as AppKit's: the data source calls this from `validateDrop`.
     open func setDropRow(_ row: Int, dropOperation: DropOperation) { dropRow = row; self.dropOperation = dropOperation }
+
+    /// Destination hooks so `LayerDropForwarder` can forward a drag into the table as AppKit does.
+    open override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        validateDrop(sender, at: convert(sender.draggingLocation, from: nil)).operation
+    }
+    open override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        validateDrop(sender, at: convert(sender.draggingLocation, from: nil)).operation
+    }
+    open override func draggingExited(_ sender: NSDraggingInfo?) {}
+    open override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        !validateDrop(sender, at: convert(sender.draggingLocation, from: nil)).operation.isEmpty
+    }
+    open override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { acceptDrop(sender) }
+    open override func concludeDragOperation(_ sender: NSDraggingInfo?) {}
 
     /// The pasteboard items a drag of `rows` carries (the data source's writers), or nil when the source won't drag them.
     public func draggingItems(forRows rows: IndexSet) -> [NSPasteboardWriting]? {

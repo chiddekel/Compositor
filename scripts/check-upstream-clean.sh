@@ -69,6 +69,7 @@ check "1.6.2 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check doc
 check "1.6.3 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.6.3-ledger.md --from 0b90cc8 --to 7f703b4 --include-kernels
 check "1.6.9 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.6.9-ledger.md --from 7f703b4 --to a2a5812 --include-kernels
 check "post-1.6.9 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-after-1.6.9-ledger.md --from a2a5812 --to cee4d09 --include-kernels
+check "1.6.13 ledger" python3 "$ROOT/scripts/upstream-ledger-rows.py" --check docs/upstream-1.6.13-ledger.md --from cee4d09 --to 1910aea --include-kernels
 
 if [ "$failures" -ne 0 ]; then
   echo "UPSTREAM CHECK FAILED: $failures checks failed" >&2

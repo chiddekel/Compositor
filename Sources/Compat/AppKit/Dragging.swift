@@ -56,12 +56,56 @@ extension NSPasteboard {
     }
 }
 
+/// One visual piece of a dragged item (AppKit's `NSDraggingImageComponent`).
+@MainActor public final class NSDraggingImageComponent {
+    public var contents: Any?
+    public var frame: CGRect = .zero
+    public init(key: String = "icon") { self.key = key }
+    public let key: String
+}
+
 @MainActor public final class NSDraggingItem {
     public let item: NSPasteboardWriting
     public var draggingFrame: CGRect = .zero
     public private(set) var imageComponentsContents: Any?
+    /// Components drawn for this item; synthesized from `imageComponentsContents` when that is an image.
+    public var imageComponents: [NSDraggingImageComponent]? {
+        get {
+            if let stored = _imageComponents { return stored }
+            guard let contents = imageComponentsContents else { return nil }
+            let component = NSDraggingImageComponent()
+            component.contents = contents
+            component.frame = CGRect(origin: .zero, size: draggingFrame.size)
+            return [component]
+        }
+        set { _imageComponents = newValue }
+    }
+    private var _imageComponents: [NSDraggingImageComponent]?
     public init(pasteboardWriter: NSPasteboardWriting) { item = pasteboardWriter }
-    public func setDraggingFrame(_ frame: CGRect, contents: Any?) { draggingFrame = frame; imageComponentsContents = contents }
+    public func setDraggingFrame(_ frame: CGRect, contents: Any?) {
+        draggingFrame = frame
+        imageComponentsContents = contents
+        _imageComponents = nil
+    }
+}
+
+public struct NSDraggingItemEnumerationOptions: OptionSet, Sendable {
+    public let rawValue: UInt
+    public init(rawValue: UInt) { self.rawValue = rawValue }
+    public static let concurrent = NSDraggingItemEnumerationOptions(rawValue: 1)
+    public static let clearNonenumeratedImages = NSDraggingItemEnumerationOptions(rawValue: 2)
+}
+
+public enum NSDraggingFormation: Int, Sendable { case `default`, none, pile, list, stack }
+public enum NSSpringLoadingHighlight: Int, Sendable { case none, standard, emphasized }
+
+/// CoreFoundation type-id helpers used when tip drag code distinguishes `CGImage` contents.
+public typealias CFTypeRef = AnyObject
+public typealias CFTypeID = UInt
+private let compositorCGImageTypeID: CFTypeID = 0xC6_1A_6E_01
+public func CFGetTypeID(_ cf: CFTypeRef) -> CFTypeID { cf is CGImage ? compositorCGImageTypeID : 0 }
+extension CGImage {
+    public static var typeID: CFTypeID { compositorCGImageTypeID }
 }
 
 @MainActor public protocol NSDraggingSource: AnyObject {
@@ -109,6 +153,17 @@ extension NSDraggingSource {
         source?.draggingSession(self, endedAt: point, operation: operation)
         if Self.current === self { Self.current = nil }
     }
+
+    /// Walks the session's drag items (tip Layers panel half-alpha image rewrite).
+    public func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                       classes: [AnyClass], searchOptions: [AnyHashable: Any] = [:],
+                                       using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
+        var stop = ObjCBool(false)
+        for (index, item) in items.enumerated() {
+            block(item, index, &stop)
+            if stop.boolValue { break }
+        }
+    }
 }
 
 extension NSView {
@@ -130,6 +185,37 @@ extension NSView {
     var draggingSourceOperationMask: NSDragOperation { get }
     var draggingDestinationWindow: NSWindow? { get }
     var numberOfValidItemsForDrop: Int { get set }
+    var animatesToDestination: Bool { get set }
+    var draggedImage: NSImage? { get }
+    var draggedImageLocation: NSPoint { get }
+    var draggingFormation: NSDraggingFormation { get set }
+    var draggingSequenceNumber: Int { get }
+    var springLoadingHighlight: NSSpringLoadingHighlight { get }
+    func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?,
+                                classes: [AnyClass], searchOptions: [AnyHashable: Any],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void)
+    func resetSpringLoading()
+    func slideDraggedImage(to screenPoint: NSPoint)
+}
+
+extension NSDraggingInfo {
+    public var animatesToDestination: Bool {
+        get { false }
+        set {}
+    }
+    public var draggedImage: NSImage? { nil }
+    public var draggedImageLocation: NSPoint { draggingLocation }
+    public var draggingFormation: NSDraggingFormation {
+        get { .default }
+        set {}
+    }
+    public var draggingSequenceNumber: Int { ObjectIdentifier(self).hashValue }
+    public var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    public func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?,
+                                       classes: [AnyClass], searchOptions: [AnyHashable: Any],
+                                       using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    public func resetSpringLoading() {}
+    public func slideDraggedImage(to screenPoint: NSPoint) {}
 }
 
 /// A drag as a destination sees it: from a session in flight, or built by a host for a drag Qt carried in.
@@ -140,9 +226,17 @@ extension NSView {
     public var draggingSourceOperationMask: NSDragOperation
     public weak var draggingDestinationWindow: NSWindow?
     public var numberOfValidItemsForDrop = 1
+    public var animatesToDestination = false
+    public var draggedImage: NSImage?
+    public var draggedImageLocation: NSPoint
+    public var draggingFormation: NSDraggingFormation = .default
+    public var draggingSequenceNumber = 0
+    public var springLoadingHighlight: NSSpringLoadingHighlight = .none
+    private weak var session: NSDraggingSession?
     public init(source: Any?, location: NSPoint, pasteboard: NSPasteboard, operationMask: NSDragOperation, window: NSWindow?) {
         draggingSource = source
         draggingLocation = location
+        draggedImageLocation = location
         draggingPasteboard = pasteboard
         draggingSourceOperationMask = operationMask
         draggingDestinationWindow = window
@@ -150,5 +244,13 @@ extension NSView {
     public convenience init(session: NSDraggingSession, location: NSPoint, window: NSWindow?) {
         self.init(source: session.source, location: location, pasteboard: session.draggingPasteboard,
                   operationMask: session.sourceOperationMask, window: window)
+        self.session = session
     }
+    public func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?,
+                                       classes: [AnyClass], searchOptions: [AnyHashable: Any],
+                                       using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
+        session?.enumerateDraggingItems(options: options, for: view, classes: classes, searchOptions: searchOptions, using: block)
+    }
+    public func resetSpringLoading() {}
+    public func slideDraggedImage(to screenPoint: NSPoint) { draggedImageLocation = screenPoint }
 }
