@@ -165,13 +165,23 @@ final class EditorSession {
     @ObservationIgnored private var gifFrameSelectionRequestID: UUID?
 
     /// Frame navigation stays in runtime state; pixel edits are immutable assets stored on the animation.
+    /// A shape color being chosen is drawn in place of the committed pixels and is not part of the saved document.
     func displayedAsset(for layer: ImageLayer) -> ImportedImage? {
+        let saved = savedAsset(for: layer)
+        if let preview = shapeColorPreview, preview.layerID == layer.id, let saved {
+            return ImportedImage(image: preview.image, thumbnail: saved.thumbnail, name: saved.name)
+        }
+        return saved
+    }
+
+    /// The asset a save writes: the committed layer, or a GIF frame, never a shape-color preview.
+    func savedAsset(for layer: ImageLayer) -> ImportedImage? {
         guard let timeline = gifTimeline(for: layer) else { return layer.asset }
         return layer.gifAnimation?.framePixels[timeline.selectedFrameIndex] ?? timeline.displayedAsset ?? layer.asset
     }
 
     func displayedLayer(for layer: ImageLayer) -> ImageLayer {
-        guard gifTimeline(for: layer) != nil, let asset = displayedAsset(for: layer) else { return layer }
+        guard let asset = displayedAsset(for: layer), asset.image !== layer.asset?.image else { return layer }
         var displayed = layer
         displayed.asset = asset
         return displayed
@@ -209,6 +219,19 @@ final class EditorSession {
     /// The image file the document began as, opened or dropped into an empty window: until the document is saved as a
     /// project, Export offers that file's name, folder and format, so editing a PNG and writing it back is quick.
     @ObservationIgnored var sourceImageURL: URL?
+    /// Where the Layers panel is in its window (top-left origin): a layer dragged in the list stays in the list until
+    /// the pointer leaves the panel.
+    @ObservationIgnored var layersPanelFrame: CGRect = .zero
+    /// Where the panel's blend and opacity controls are, likewise: a row dragged up over them stays the list's, and
+    /// above them it leaves the list.
+    @ObservationIgnored var layerControlsFrame: CGRect = .zero
+    /// A layer drag is under way that may leave the list for the system's drag (above the panel's controls, or out of
+    /// the panel): set as the row is picked up, so the controls are ready to take it back for the list if it returns
+    /// over them (`LayerDropForwarder`), and cleared as it ends.
+    var layerDragIsOutside = false
+    /// The list, and the dragged row as it draws it, for `LayerDropForwarder`.
+    @ObservationIgnored weak var layerList: NSTableView?
+    @ObservationIgnored var layerDragImage: NSImage?
     /// Blocks overlapping edits immediately. Not observed by the UI: controls only dim via
     /// `showsBusy`, after an operation has run long enough to be worth showing, so quick
     /// edits (invert, fills, stroke commits) never flash the interface.
@@ -358,6 +381,16 @@ final class EditorSession {
     /// A Line shape's dash pattern and the finish on its ends (and on each dash).
     var shapeLineStyle = ShapeLineStyle.solid
     var shapeLineCap = ShapeLineCap.square
+    /// The next rectangle or ellipse's inside stroke. 0 draws none, which is how every shape started.
+    var shapeStrokeWidth: Double = 0
+    var shapeStrokeColor = PaletteColor.black
+    /// A fill picked in the Shape bar, and the foreground color when it was: the next shape uses it until the
+    /// foreground changes. Otherwise the next shape is the foreground color.
+    var shapeFillChoice: (fill: PaletteColor, foreground: PaletteColor)?
+    /// The layer whose stroke or radius a drag is changing, so the drag is one undo step.
+    var shapeStyleEditLayerID: UUID?
+    /// The preview drawn while a shape's fill or stroke color is being chosen. Not part of the document or its history.
+    var shapeColorPreview: (layerID: UUID, image: CGImage)?
     /// The shape being dragged out with the Shape tool, before it becomes a layer.
     var shapeDraft: ShapeDraft?
     var selectionModeChoice = SelectionMode.replace
@@ -522,6 +555,7 @@ final class EditorSession {
         if id != activeLayerID { commitTransform(); resolveGradient() }
         activeLayerID = id
         revealActiveLayer()
+        if tool == .shape { adoptShapeKindFromSelection() }
     }
     func selectTool(_ value: NavigationTool) {
         if tool != value, !finishText() { return }
@@ -537,6 +571,7 @@ final class EditorSession {
             brushSettings = settings
         }
         tool = value
+        if value == .shape { adoptShapeKindFromSelection() }
         if value.isBrushTool { _ = MetalBrushCoverage.shared }
         if value == .crop, cropRect == nil, let document {
             cropRatioChoice = "Free"
@@ -698,6 +733,14 @@ final class EditorSession {
         if let group = edit.group { return group.originals[layer.id].map { $0.following(from: group.box, to: edit.draft) } }
         return edit.layerID == layer.id ? edit.draft : nil
     }
+    /// Option-arrow with the Move tool: a copy of the selected layers, moved by the arrow's step, as an Option-drag
+    /// makes, in one undo step.
+    func duplicateAndNudgeLayer(dx: CGFloat, dy: CGFloat) {
+        beginDuplicateTransform()
+        guard transformDuplicate != nil else { return }
+        nudgeLayer(dx: dx, dy: dy)
+        commitTransform()
+    }
     func nudgeLayer(dx: CGFloat, dy: CGFloat) {
         let alreadyEditing = transformEdit != nil
         if !alreadyEditing { beginTransform(persistent: false) }
@@ -794,6 +837,8 @@ final class EditorSession {
     var canRedo: Bool { canUseHistory && history.canRedo }
 
     func undo() {
+        // A shape color that was only being previewed is not an edit, so it gets out of the way first.
+        cancelShapeColorPreview()
         // Like Photoshop, the first Undo discards a pending gradient.
         if gradientEdit != nil { cancelGradient(); return }
         guard canUndo, let snapshot = history.undo() else { return }
@@ -801,6 +846,7 @@ final class EditorSession {
     }
 
     func redo() {
+        cancelShapeColorPreview()
         guard canRedo, let snapshot = history.redo() else { return }
         restore(snapshot)
     }
@@ -849,18 +895,12 @@ final class EditorSession {
         return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && document != nil && brushStroke == nil && warpStroke == nil && !isProjectBusy && !isImporting && !showsNewDocument && !showsImporter && renamingLayerID == nil && cropRect == nil && gradientEdit == nil && pixelMove == nil && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
     }
 
-    func addBlankLayer() {
-        guard canEditLayers, let document else { return }
-        let names = Set(document.layers.map(\.name))
-        var number = 1
-        while names.contains("Layer \(number)") { number += 1 }
-        var layer = ImageLayer(name: "Layer \(number)", blankSize: document.size)
-        layer.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
-        if let parent = layer.parentID { collapsedGroupIDs.remove(parent) }
-        var insertion = document.layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? document.layers.count
-        // With a folder selected the layer goes to the top of the folder: just above its last (topmost) contents.
+    /// Where a new layer goes in `layers`: just above the active layer, or with a folder selected, at the top of the
+    /// folder — just above its last (topmost) contents. With nothing active, on top.
+    func newLayerIndex(in layers: [ImageLayer]) -> Int {
+        var insertion = layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? layers.count
         if activeLayer?.isGroup == true, let folder = activeLayerID {
-            let parents = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0.parentID) })
+            let parents = Dictionary(uniqueKeysWithValues: layers.map { ($0.id, $0.parentID) })
             func isInside(_ id: UUID) -> Bool {
                 var parent = parents[id] ?? nil
                 var steps = 0
@@ -871,11 +911,27 @@ final class EditorSession {
                 }
                 return false
             }
-            if let topmost = document.layers.lastIndex(where: { isInside($0.id) }) { insertion = max(insertion, topmost + 1) }
+            if let topmost = layers.lastIndex(where: { isInside($0.id) }) { insertion = max(insertion, topmost + 1) }
         }
+        return insertion
+    }
+
+    func addBlankLayer() {
+        guard canEditLayers, let document else { return }
+        let names = Set(document.layers.map(\.name))
+        var number = 1
+        while names.contains("Layer \(number)") { number += 1 }
+        var layer = ImageLayer(name: "Layer \(number)", blankSize: document.size)
+        layer.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
+        if let parent = layer.parentID { collapsedGroupIDs.remove(parent) }
+        let insertion = newLayerIndex(in: document.layers)
+        var layers = document.layers
+        layers.insert(layer, at: insertion)
+        // Added in the middle of a clipping group, it joins the group.
+        Self.adoptClipping(layer.id, in: &layers)
         beginEdit("New Blank Layer")
         defer { endEdit() }
-        self.document?.layers.insert(layer, at: insertion)
+        self.document?.layers = layers
         activeLayerID = layer.id
     }
 
