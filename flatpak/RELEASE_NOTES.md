@@ -1,3 +1,10 @@
+Compositor 1.6.13-linux-alpha.1 for Linux — signed Flatpak alpha, x86_64.
+
+- Integrates upstream Compositor 1.6.13 through `1910aea` (layers panel row drag, shape fill/stroke editing, PSD Export As, paste/clipping/folder placement, and related 1.6.10–1.6.13 work).
+- Linux adapters: Compat AppKit drag APIs for NativeLayerList/LayerDropForwarder, LayersPanel overlay, AppMenus `.psd`, regenerated EditorSession/ContentView/NativeLayerList/ProjectStore overrides.
+
+Previous release notes:
+
 Compositor 1.6.9-linux-alpha.2 for Linux — signed Flatpak alpha, x86_64.
 
 - Integrates upstream through `cee4d09`: New Canvas remembers the last blank canvas size.

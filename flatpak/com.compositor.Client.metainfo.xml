@@ -31,6 +31,9 @@
   </description>
 
   <releases>
+    <release version="1.6.13-linux-alpha.1" date="2026-11-18" type="development">
+      <description><p>Upstream Compositor 1.6.13 on GNU/Linux: layers panel row drag, shape fill/stroke editing, PSD Export As, paste and clipping placement, and 1.6.10–1.6.13 work.</p></description>
+    </release>
     <release version="1.6.9-linux-alpha.2" date="2026-11-16" type="development">
       <description><p>New Canvas remembers the last blank canvas size.</p></description>
     </release>
